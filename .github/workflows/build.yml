@@ -29,6 +29,15 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run check
+      - name: Verify real Windows npm Claude launcher
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $claudeNpmPrefix = Join-Path $env:RUNNER_TEMP 'cc-desk npm launcher'
+          npm install --global --prefix "$claudeNpmPrefix" @anthropic-ai/claude-code@2.1.278 --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --import tsx scripts/verify-windows-npm.ts (Join-Path $claudeNpmPrefix 'claude.cmd')
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - if: runner.os == 'Linux'
         run: xvfb-run -a npm run test:e2e
       - if: runner.os != 'Linux'

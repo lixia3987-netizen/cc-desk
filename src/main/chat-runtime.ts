@@ -189,12 +189,13 @@ export class ChatRuntime {
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
       const resumed = await (this.options.transcriptExists ?? transcriptExists)(session.claudeId);
       if (this.shuttingDown || !this.starting.has(id)) throw new Error('会话启动已取消。');
+      const env = environment();
       const invocation = this.options.invocation?.(session, capabilities, resumed) ?? (() => {
-        const cli = cliInvocation(this.store.state.settings);
+        const cli = cliInvocation(this.store.state.settings, env);
         return { file: cli.file, args: [...cli.prefix, ...chatArguments(session, capabilities, resumed)] };
       })();
       this.state(id, 'starting');
-      const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env: environment(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
+      const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
       entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, controls: new Map(), approvals: new Map(), streams: new Map(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
       const current = entry;
       current.decoder = new JsonLineDecoder(value => this.receive(id, current, value));

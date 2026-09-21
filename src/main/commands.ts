@@ -6,13 +6,23 @@ import { promisify } from 'node:util';
 import type { Capabilities, Effort, Session, Settings } from '../shared/types';
 export const execFileAsync = promisify(execFile);
 
+// These errors contain only application-owned text, never child-process output or paths.
+export class CLIResolutionError extends Error {}
+const unquote = (value: string) => value.trim().replace(/^"(.*)"$/, '$1');
+const pathKey = (env: Record<string, string>, platform: NodeJS.Platform) => platform === 'win32'
+  ? Object.keys(env).sort().find(key => key.toLowerCase() === 'path') ?? 'PATH' : 'PATH';
+
 export function environment(): Record<string,string> {
   const env: Record<string,string> = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;
-  const key = Object.keys(env).find(k => k.toLowerCase() === 'path') ?? 'PATH';
-  const extra = [path.join(os.homedir(), '.local', 'bin'), path.join(os.homedir(), '.npm-global', 'bin'), '/opt/homebrew/bin', '/usr/local/bin'];
-  if (process.platform === 'win32') extra.push(path.join(env.APPDATA ?? '', 'npm'));
-  env[key] = [...(env[key] ?? '').split(path.delimiter), ...extra].filter(Boolean).join(path.delimiter);
+  const inheritedPath = env[pathKey(env, process.platform)] ?? '';
+  const extra = [path.join(os.homedir(), '.local', 'bin'), path.join(os.homedir(), '.npm-global', 'bin')];
+  if (process.platform === 'win32') {
+    if (env.APPDATA) extra.push(path.join(env.APPDATA, 'npm'));
+    // Windows treats keys case-insensitively. Pass exactly one PATH to child processes.
+    for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
+  } else extra.push('/opt/homebrew/bin', '/usr/local/bin');
+  env.PATH = [...inheritedPath.split(path.delimiter), ...extra].map(unquote).filter(Boolean).join(path.delimiter);
   // Electron's startup switches must not propagate to shell / CLI processes.
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.WORKBENCH_DEV_URL;
@@ -22,29 +32,61 @@ export function environment(): Record<string,string> {
   return env;
 }
 
-export function findExecutable(name: string, env = environment()): string | undefined {
-  const dirs = path.isAbsolute(name) || /[/\\]/.test(name) ? [''] : (env.PATH ?? env.Path ?? '').split(path.delimiter);
-  const extensions = process.platform === 'win32' && !path.extname(name) ? ['.exe', '.cmd', '.bat', ''] : [''];
+export function findExecutable(name: string, env = environment(), platform: NodeJS.Platform = process.platform): string | undefined {
+  name = unquote(name);
+  if (!name || /[\x00\r\n]/.test(name)) return;
+  const dirs = path.isAbsolute(name) || /[/\\]/.test(name) ? ['']
+    : (env[pathKey(env, platform)] ?? '').split(platform === 'win32' ? ';' : ':').map(unquote).filter(Boolean);
+  const extensions = platform === 'win32' && !path.extname(name) ? ['.exe', '.cmd', '.bat', ''] : [''];
   for (const dir of dirs) for (const extension of extensions) {
     const file = dir ? path.join(dir, name + extension) : name + extension;
     try {
       if (!fs.statSync(file).isFile()) continue;
-      fs.accessSync(file, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
+      fs.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
       return path.resolve(file);
     } catch { /* Try the next PATH entry. */ }
   }
 }
 
-export function cliInvocation(settings: Settings): { file: string; prefix: string[] } {
-  const file = findExecutable(settings.claudePath || 'claude');
-  if (!file) throw new Error('找不到 Claude Code。请先安装 CLI，或在设置中填写 claude 可执行文件的完整路径。');
-  if (/\.(cmd|bat)$/i.test(file)) {
-    // Do not pass arbitrary strings through cmd.exe: resolve npm's standard shim.
-    const script = path.join(path.dirname(file), 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
-    const node = findExecutable('node');
-    if (!node || !fs.existsSync(script)) throw new Error('该 CMD/BAT 启动器无法安全解析。请使用官方 claude.exe，或标准 npm 安装并将 node.exe 加入 PATH。');
-    return { file: node, prefix: [script] };
+/** Resolve npm package metadata, never execute or interpret a CMD/BAT script. */
+export function resolveNpmLauncher(file: string, env = environment(), platform: NodeJS.Platform = process.platform): { file: string; prefix: string[] } {
+  const directory = path.dirname(file);
+  const roots = [path.join(directory, 'node_modules', '@anthropic-ai', 'claude-code')];
+  if (path.basename(directory).toLowerCase() === '.bin') roots.push(path.join(directory, '..', '@anthropic-ai', 'claude-code'));
+  const root = roots.find(candidate => fs.existsSync(path.join(candidate, 'package.json')));
+  if (!root) throw new CLIResolutionError('未找到此 CMD/BAT 启动器对应的 Claude Code npm 包。请选择 npm 安装生成的 claude.cmd，或 claude.exe 的完整路径。');
+  let metadata: { name?: unknown; bin?: unknown };
+  try {
+    const manifest = path.join(root, 'package.json');
+    if (fs.statSync(manifest).size > 128 * 1024) throw new Error();
+    metadata = JSON.parse(fs.readFileSync(manifest, 'utf8'));
+    if (!metadata || metadata.name !== '@anthropic-ai/claude-code') throw new Error();
+  } catch { throw new CLIResolutionError('Claude Code npm 包信息无效，请重新安装 @anthropic-ai/claude-code。'); }
+  const bin = typeof metadata.bin === 'string' ? metadata.bin
+    : metadata.bin && typeof metadata.bin === 'object' && 'claude' in metadata.bin ? metadata.bin.claude : undefined;
+  if (typeof bin !== 'string' || !bin || bin.length > 4096 || /[\x00-\x1f]/.test(bin)
+      || path.posix.isAbsolute(bin) || path.win32.isAbsolute(bin) || bin.includes(':') || bin.split(/[/\\]/).includes('..')) {
+    throw new CLIResolutionError('Claude Code npm 包声明了不支持的启动入口，请检查或重新安装该包。');
   }
+  const target = path.resolve(root, ...bin.split(/[/\\]/));
+  const relative = path.relative(path.resolve(root), target);
+  if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new CLIResolutionError('Claude Code npm 启动入口必须位于安装包内。');
+  try { if (!fs.statSync(target).isFile()) throw new Error(); }
+  catch { throw new CLIResolutionError('Claude Code npm 启动文件缺失，安装可能未完成。请重新安装并允许 npm 安装脚本执行。'); }
+  // New npm releases install a native binary and need no Node.js at runtime.
+  if (/\.exe$/i.test(target)) return { file: target, prefix: [] };
+  if (!/\.(?:c|m)?js$/i.test(target)) throw new CLIResolutionError('Claude Code npm 启动入口类型不受支持；请选择 claude.exe 或标准 npm 安装生成的 claude.cmd。');
+  // Match npm's preference for a Node executable beside the shim; never select node.cmd.
+  const nodeName = platform === 'win32' ? 'node.exe' : 'node';
+  const node = findExecutable(path.join(directory, nodeName), env, platform) ?? findExecutable(nodeName, env, platform);
+  if (!node) throw new CLIResolutionError('此旧版 Claude Code npm 包需要 Node.js。请将 node.exe 加入 PATH 并完全退出后重开客户端，或更新 Claude Code npm 包。');
+  return { file: node, prefix: [target] };
+}
+
+export function cliInvocation(settings: Settings, env = environment()): { file: string; prefix: string[] } {
+  const file = findExecutable(settings.claudePath || 'claude', env);
+  if (!file) throw new CLIResolutionError('找不到 Claude Code。请先安装 CLI，或在设置中填写 claude 可执行文件的完整路径。');
+  if (/\.(cmd|bat)$/i.test(file)) return resolveNpmLauncher(file, env);
   return { file, prefix: [] };
 }
 
@@ -62,15 +104,16 @@ export function parseCapabilities(help: string, executable: string, version: str
 
 export async function detectCLI(settings: Settings): Promise<Capabilities> {
   try {
-    const { file, prefix } = cliInvocation(settings);
-    const options = { env: environment(), timeout: 12000, maxBuffer: 2 * 1024 * 1024, windowsHide: true };
+    const env = environment();
+    const { file, prefix } = cliInvocation(settings, env);
+    const options = { env, timeout: 12000, maxBuffer: 2 * 1024 * 1024, windowsHide: true };
     const [version, help] = await Promise.all([
       execFileAsync(file, [...prefix, '--version'], options), execFileAsync(file, [...prefix, '--help'], options)
     ]);
     return parseCapabilities(help.stdout, file, version.stdout);
-  } catch {
+  } catch (error) {
     // A failed process can echo configuration/credentials through stderr. Do not forward it over IPC.
-    return { available: false, executable: '', version: '', flags: [], efforts: ['default'], error: 'Claude Code 检测失败。请检查 CLI 安装、可执行路径和权限，然后重新检测。' };
+    return { available: false, executable: '', version: '', flags: [], efforts: ['default'], error: error instanceof CLIResolutionError ? error.message : 'Claude Code 检测失败。请检查 CLI 安装、可执行路径和权限，然后重新检测。' };
   }
 }
 

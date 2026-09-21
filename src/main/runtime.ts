@@ -117,10 +117,11 @@ export class Runtime {
     let hooks: PtyHookBridge | undefined;
     try {
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
+      const env = environment();
       let file: string; let args: string[];
       if (session.kind === 'claude') {
         if (!capabilities.available) throw new Error(capabilities.error || 'Claude Code 尚未就绪，请在设置中检测。');
-        const cli = cliInvocation(this.store.state.settings);
+        const cli = cliInvocation(this.store.state.settings, env);
         file = cli.file;
         args = [...cli.prefix, ...claudeArguments(session, capabilities, await transcriptExists(session.claudeId))];
         if (supportsPtyHooks(capabilities)) {
@@ -133,7 +134,7 @@ export class Runtime {
       } else ({ file, args } = shellInvocation(this.store.state.settings));
       if (this.shuttingDown || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
-      const child = pty.spawn(file, args, { name: 'xterm-256color', cwd: session.cwd, env: environment(), cols: 100, rows: 30 });
+      const child = pty.spawn(file, args, { name: 'xterm-256color', cwd: session.cwd, env, cols: 100, rows: 30 });
       const entry: ProcessEntry = { process: child, ending: false, hooks };
       this.running.set(id, entry);
       child.onData(data => this.queue(id,data));

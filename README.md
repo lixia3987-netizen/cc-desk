@@ -2,23 +2,33 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
+**v0.2.1** 修复 Windows npm 安装的 Claude Code 检测和启动，兼容新版原生入口与旧版 Node.js 入口。
+
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
 ## 下载安装包与便携包
 
-登录有仓库访问权限的 GitHub 账户，打开 [v0.2.0 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.0)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+登录有仓库访问权限的 GitHub 账户，打开 [v0.2.1 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.1)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.2.0-windows-x64-setup.exe` | `cc-desk-0.2.0-windows-x64-portable.exe`，或 `cc-desk-0.2.0-windows-x64-portable.zip` |
-| macOS | `cc-desk-0.2.0-macos-<arch>-setup.dmg` | `cc-desk-0.2.0-macos-<arch>-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.0-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.0-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.2.1-windows-x64-setup.exe` | `cc-desk-0.2.1-windows-x64-portable.exe`，或 `cc-desk-0.2.1-windows-x64-portable.zip` |
+| macOS | `cc-desk-0.2.1-macos-<arch>-setup.dmg` | `cc-desk-0.2.1-macos-<arch>-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.1-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.1-linux-x64-portable.tar.gz` |
 
 macOS 的 `<arch>` 以 Release 实际文件名为准：`arm64` 用于 Apple silicon，`x64` 用于 Intel；本次构建沿用 macOS runner 的架构。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 
 这里的“便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。Release 同时提供 `SHA256SUMS.txt`，可校验下载文件。
 
 安装包尚未签名或公证，当前没有自动更新；更新时下载新版本。使用前先安装并登录本机 Claude Code CLI，再在“设置与连接”中检测或指定 CLI 路径。安装桌面包本身不需要执行下面的源码构建命令。
+
+### Windows npm 安装的 CLI
+
+新版 npm 包声明的入口是 `bin/claude.exe`，旧版是 `cli.js`；工作台读取实际包信息，分别直接启动原生程序或使用 Node.js。无需把 npm 的 `claude.cmd` 改名为 `.exe`。
+
+自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，再重新检测。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
+
+若提示 npm 启动文件缺失，先在终端确认 `claude --version` 能运行，再修复 npm 安装；工作台不会执行任意 CMD/BAT 内容，也不会自动改写 Claude 配置。
 
 ## 运行与打包
 

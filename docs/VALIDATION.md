@@ -1,5 +1,14 @@
 # v0.2 验证记录
 
+## v0.2.1 Windows npm 兼容性补丁
+
+- 本地 `npm run check` 通过：70 项 Node 测试通过，1 项仅 Windows 执行的真实子进程测试跳过；TypeScript 和生产构建通过。
+- 新增测试验证新版 npm 原生入口、旧版 JavaScript/Node 入口、全局/自定义 prefix/本地 .bin 布局、引号/中文/空格路径、PATH 大小写、入口边界、分类安装错误。Windows 专用测试检查真实原生/Node 子进程保留参数字面值，未执行 CMD/BAT 内容。
+- Windows CI 新增实际安装 `@anthropic-ai/claude-code@2.1.278` 的门禁：仅执行 `--version` / `--help`，验证显式 `.cmd`、PATH 自动发现及无 Node PATH 的原生入口解析。三平台实际结果见 [v0.2.1 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.1) 附带的构建记录。
+- 本补丁不包含之前独立检查报告中的其它优化。下面保留 v0.2.0 的历史验收记录；本补丁没有把它们重新表述为真实安装包或模型端到端验收。
+
+## v0.2.0 历史记录
+
 日期：2026-09-21。此文区分代码测试、真实 CLI 控制验证和未完成的外部环境验收。
 
 ## 本地验证
