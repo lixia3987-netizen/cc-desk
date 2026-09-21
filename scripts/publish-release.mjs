@@ -49,12 +49,15 @@ const optional = endpoint => {
 };
 const existingTag = optional(`git/ref/tags/${tag}`);
 if (existingTag && api(`commits/${tag}`).sha !== commit) throw new Error('Existing tag points to another commit; refusing to move it.');
-// The tag endpoint is for published releases; list also includes drafts for this token.
+// gh resolves pending draft tags through GraphQL as well as published releases.
 const findRelease = () => {
-  const pages = JSON.parse(gh(['api', `repos/${repository}/releases?per_page=100`, '--paginate', '--slurp']));
-  const matches = pages.flat().filter(item => item.tag_name === tag);
-  if (matches.length > 1) throw new Error('Multiple releases use this tag; refusing an ambiguous update.');
-  return matches[0];
+  try {
+    const found = JSON.parse(gh(['release', 'view', tag, '--repo', repository, '--json', 'databaseId,isDraft,targetCommitish,tagName']));
+    return { id: found.databaseId, draft: found.isDraft, target_commitish: found.targetCommitish, tag_name: found.tagName };
+  } catch (error) {
+    if (/^(?:gh: )?release not found\s*$/i.test(String(error.stderr).trim())) return undefined;
+    throw error;
+  }
 };
 let release = findRelease();
 if (release && (!release.draft || release.target_commitish !== commit)) throw new Error('Release already published or belongs to another commit; refusing to replace it.');
@@ -62,13 +65,21 @@ if (release && (!release.draft || release.target_commitish !== commit)) throw ne
 const notesDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-release-'));
 try {
   const notes = await fs.readFile(`docs/releases/${tag}.md`, 'utf8');
-  const notesFile = path.join(notesDirectory, 'notes.md');
-  await fs.writeFile(notesFile, `${notes}\n\n源码提交：\`${commit}\`\n\n[构建与验证记录](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID})\n`);
   if (!release) {
-    gh(['release', 'create', tag, '--repo', repository, '--target', commit, '--title', `Claude Workbench ${tag}`, '--notes-file', notesFile, '--draft']);
-    release = findRelease();
+    const payloadFile = path.join(notesDirectory, 'release.json');
+    await fs.writeFile(payloadFile, JSON.stringify({
+      tag_name: tag,
+      target_commitish: commit,
+      name: `Claude Workbench ${tag}`,
+      body: `${notes}\n\n源码提交：\`${commit}\`\n\n[构建与验证记录](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID})\n`,
+      draft: true,
+    }));
+    // Use the creation response directly: a new draft may not appear in listings yet.
+    release = JSON.parse(gh(['api', `repos/${repository}/releases`, '--method', 'POST', '--input', payloadFile]));
   }
-  if (!release?.draft || release.target_commitish !== commit) throw new Error('Expected a draft for the verified source commit.');
+  if (!release?.draft || release.target_commitish !== commit || release.tag_name !== tag || !Number.isSafeInteger(release.id)) {
+    throw new Error('Expected a draft for the verified source commit.');
+  }
   const releaseId = release.id;
   gh(['release', 'upload', tag, ...names.map(name => path.join(directory, name)), '--repo', repository, '--clobber']);
   release = api(`releases/${releaseId}`);
