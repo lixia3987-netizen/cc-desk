@@ -96,7 +96,13 @@ test('deferred observations batch into one snapshot and critical changes durably
 
 test('failed deferred persistence reports the error and retains validated state for explicit retry', { timeout: 5000 }, async () => {
   const dir = temp(); let failed!: (error: Error) => void;
-  const failure = new Promise<Error>(resolve => { failed = resolve; });
+  let deadline!: NodeJS.Timeout;
+  // Production flush timers intentionally do not keep an exiting app alive.
+  // Keep this test's wait alive, while still failing if error reporting never occurs.
+  const failure = new Promise<Error>((resolve, reject) => {
+    failed = resolve;
+    deadline = setTimeout(() => reject(new Error('Deferred persistence did not report its failure.')), 4000);
+  });
   const store = new StateStore(dir, { writeDelayMs: 10, onError: failed });
   try {
     store.change(state => state.sessions.push(session()));
@@ -112,5 +118,5 @@ test('failed deferred persistence reports the error and retains validated state 
     store.flush();
     assert.equal(store.persistenceError, undefined);
     assert.equal(JSON.parse(fs.readFileSync(store.file, 'utf8')).sessions[0].draft, 'recoverable');
-  } finally { fs.rmSync(store.file + '.tmp', { recursive: true, force: true }); store.flush(); fs.rmSync(dir, { recursive: true, force: true }); }
+  } finally { clearTimeout(deadline); fs.rmSync(store.file + '.tmp', { recursive: true, force: true }); store.flush(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
