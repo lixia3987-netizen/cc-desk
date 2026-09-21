@@ -32,10 +32,12 @@ for (const target of targets) {
     });
     const args = [`--user-data-dir=${profile}`, ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])];
     let app: ElectronApplication | undefined;
+    let launchedProcess: ReturnType<ElectronApplication['process']> | undefined;
     const errors: string[] = [];
     const launch = async () => {
       const launched = await electron.launch({ executablePath: target.executable, args, env, cwd: directory, timeout: 45_000 });
       app = launched;
+      launchedProcess = launched.process();
       const identity = await launched.evaluate(({ app }) => ({
         packaged: app.isPackaged, arch: process.arch, profile: app.getPath('userData'),
         appPath: app.getAppPath(), executable: process.execPath,
@@ -55,10 +57,14 @@ for (const target of targets) {
     };
     const close = async () => {
       const launched = app!;
+      // Playwright disposes its application channel on close; retain the native
+      // child handle while that channel is still available to inspect real exit status.
+      const child = launchedProcess!;
       await launched.close();
-      expect(launched.process().exitCode).toBe(0);
-      expect(launched.process().signalCode).toBeNull();
       app = undefined;
+      launchedProcess = undefined;
+      expect(child.exitCode).toBe(0);
+      expect(child.signalCode).toBeNull();
     };
     try {
       let page = await launch();
@@ -136,7 +142,7 @@ for (const target of targets) {
             for (const session of (await window.desktop.snapshot()).state.sessions) await window.desktop.stopSession(session.id);
           }).catch(() => {});
         }
-        await app.close().catch(() => app?.process().kill());
+        await app.close().catch(() => launchedProcess?.kill());
       }
       await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
     }
