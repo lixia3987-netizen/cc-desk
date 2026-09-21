@@ -45,12 +45,35 @@ test('Git review supports deleted and renamed files and bounds large diffs', asy
   const f = await fixture(); try {
     await git(f.repo, 'mv', 'file.txt', 'renamed.txt');
     assert.equal((await gitChanges(f.repo)).changes.find(change => change.path === 'renamed.txt')?.originalPath, 'file.txt');
-    assert.match((await gitDiff(f.repo, 'renamed.txt', true)).text, /renamed.txt/);
+    const rename = (await gitDiff(f.repo, 'renamed.txt', true)).text;
+    assert.match(rename, /rename from file.txt/);
+    assert.match(rename, /rename to renamed.txt/);
+    assert.doesNotMatch(rename, /new file mode/);
     await git(f.repo, 'commit', '-am', 'Rename'); await fs.unlink(path.join(f.repo, 'renamed.txt'));
     assert.match((await gitDiff(f.repo, 'renamed.txt')).text, /-initial/);
     await fs.writeFile(path.join(f.repo, 'renamed.txt'), 'changed line\n'.repeat(60000));
     const large = await gitDiff(f.repo, 'renamed.txt');
     assert.equal(large.truncated, true); assert.ok(large.text.length <= 256 * 1024);
+  } finally { await f.dispose(); }
+});
+
+test('staged rename review includes real modifications and preserves session path boundaries', async () => {
+  const f = await fixture(); try {
+    const lines = Array.from({length:30},(_,i)=>`line ${i}`).join('\n')+'\n';
+    await fs.writeFile(path.join(f.repo,'file.txt'),lines);
+    await git(f.repo,'commit','-am','Long source');
+    await git(f.repo,'mv','file.txt','renamed.txt');
+    await fs.writeFile(path.join(f.repo,'renamed.txt'),lines.replace('line 15\n','modified 15\n'));
+    await git(f.repo,'add','renamed.txt');
+    const diff = (await gitDiff(f.repo,'renamed.txt',true)).text;
+    assert.match(diff,/rename from file.txt/);
+    assert.match(diff,/-line 15\n\+modified 15/);
+    await git(f.repo,'commit','-am','Rename with edit');
+    await fs.mkdir(path.join(f.repo,'scoped'));
+    await git(f.repo,'mv','renamed.txt','scoped/renamed.txt');
+    const scoped=path.join(f.repo,'scoped');
+    assert.doesNotMatch((await gitDiff(scoped,'renamed.txt',true)).text,/rename from \.\.\//);
+    await assert.rejects(gitDiff(scoped,'../renamed.txt',true),/项目外/);
   } finally { await f.dispose(); }
 });
 

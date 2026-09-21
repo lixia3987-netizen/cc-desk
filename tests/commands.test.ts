@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { cliInvocation, detectCLI, execFileAsync, findExecutable, resolveNpmLauncher } from '../src/main/commands';
 import { settingsSchema } from '../src/shared/schema';
+import type { Session } from '../src/shared/types';
 
 function fixture(local = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-commands-'));
@@ -28,6 +30,137 @@ function fixture(local = false) {
     cleanup() { fs.rmSync(root, { recursive: true, force: true }); },
   };
 }
+
+function posixFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-posix-cli-'));
+  const prefix = path.join(root, 'nvm 空格 & tools', 'versions', 'node', 'fixture');
+  const bin = path.join(prefix, 'bin');
+  const script = path.join(prefix, 'lib', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js');
+  const cli = path.join(bin, 'claude'); const node = path.join(bin, 'node');
+  const record = path.join(root, 'invocations.jsonl');
+  const flags = ['--session-id', '--permission-mode', '--model', '--print', '--input-format', '--output-format', '--verbose', '--permission-prompt-tool', '--include-partial-messages'];
+  fs.mkdirSync(bin, { recursive: true }); fs.mkdirSync(path.dirname(script), { recursive: true });
+  fs.symlinkSync(process.execPath, node);
+  fs.symlinkSync(path.relative(bin, script), cli);
+  fs.writeFileSync(script, `#!/usr/bin/env node
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const args = process.argv.slice(2);
+// A CLI tool needs the same selected Node in PATH, not just a working entry point.
+const child = spawnSync('node', ['-e', 'process.stdout.write(process.execPath)'], { encoding: 'utf8' });
+if (child.status !== 0) throw new Error('child Node unavailable');
+const proof = { args, path: process.env.PATH, child: child.stdout };
+fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify(proof) + '\\n');
+const emit = value => process.stdout.write(JSON.stringify(value) + '\\n');
+if (args[0] === '--version') process.stdout.write('2.1.278 (POSIX fixture)');
+else if (args[0] === '--help') process.stdout.write(${JSON.stringify(flags.join('\n'))});
+else if (args.includes('--print')) {
+  const session = args[args.indexOf('--session-id') + 1];
+  require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+    const message = JSON.parse(line);
+    if (message.type === 'control_request') emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: {} } });
+    else if (message.type === 'user') {
+      emit({ type: 'system', subtype: 'init', session_id: session, model: 'fixture', permissionMode: 'default' });
+      emit({ type: 'result', subtype: 'success', result: 'POSIX chat complete', session_id: session });
+    }
+  });
+} else if (args.includes('--session-id')) process.stdout.write('POSIX PTY complete\\n');
+else emit(proof);
+`, { mode: 0o755 });
+  const settings = settingsSchema.parse({ claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 5000 });
+  return { root, bin, cli, node, script, record, settings, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+test('POSIX explicit npm/nvm symlinks use their sibling Node and pass literal arguments with a stripped PATH', { skip: process.platform === 'win32' }, async () => {
+  const f = posixFixture();
+  try {
+    const env = { PATH: '', KEEP_VALUE: 'untouched' };
+    const invocation = cliInvocation(f.settings, env);
+    assert.deepEqual(invocation, { file: f.node, prefix: [f.cli] });
+    assert.equal(env.PATH, f.bin); assert.equal(env.KEEP_VALUE, 'untouched');
+    const literal = 'name with spaces; $(touch forbidden) & | "quotes"';
+    const result = await execFileAsync(invocation.file, [...invocation.prefix, literal], { env, timeout: 10000 });
+    const proof = JSON.parse(result.stdout);
+    assert.deepEqual(proof.args, [literal]); assert.equal(proof.path, f.bin);
+    assert.equal(proof.child, fs.realpathSync(process.execPath));
+    cliInvocation(f.settings, env); assert.equal(env.PATH, f.bin, 'resolution is idempotent');
+
+    const other = path.join(f.root, 'other'); fs.mkdirSync(other);
+    fs.symlinkSync(process.execPath, path.join(other, 'node'));
+    const mixed = { PATH: `${other}:${f.bin}` };
+    assert.equal(cliInvocation(f.settings, mixed).file, f.node, 'selected CLI keeps its matching Node');
+    assert.equal(mixed.PATH, `${f.bin}:${other}`);
+    fs.unlinkSync(f.node);
+    assert.equal(cliInvocation(f.settings, { PATH: other }).file, path.join(other, 'node'), 'PATH remains a supported fallback');
+    assert.throws(() => cliInvocation(f.settings, { PATH: '' }), /Node\.js/);
+  } finally { f.cleanup(); }
+});
+
+test('POSIX launcher recognition leaves native binaries and unrelated shell scripts unchanged', { skip: process.platform === 'win32' }, () => {
+  const f = posixFixture();
+  try {
+    const env = { PATH: '' };
+    assert.deepEqual(cliInvocation({ ...f.settings, claudePath: process.execPath }, env), { file: process.execPath, prefix: [] });
+    for (const shebang of ['#!/bin/sh', '#!/usr/bin/env bash', '#!/usr/bin/env node-not-node']) {
+      fs.writeFileSync(f.script, `${shebang}\nexit 0\n`);
+      assert.deepEqual(cliInvocation(f.settings, env), { file: f.cli, prefix: [] });
+      assert.equal(env.PATH, '');
+    }
+    fs.writeFileSync(f.script, '#! /usr/bin/env\tnode\r\nprocess.exit(0);\n');
+    assert.equal(cliInvocation(f.settings, env).file, f.node);
+  } finally { f.cleanup(); }
+});
+
+test('POSIX detection, PTY and structured chat share the explicit npm Node environment without shell startup', { skip: process.platform === 'win32', timeout: 20000 }, async () => {
+  const [{ Runtime }, { ChatRuntime }, { StateStore }] = await Promise.all([
+    import('../src/main/runtime'), import('../src/main/chat-runtime'), import('../src/main/store'),
+  ]);
+  const f = posixFixture();
+  const inherited = { PATH: process.env.PATH, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, BASH_ENV: process.env.BASH_ENV, ENV: process.env.ENV };
+  const marker = path.join(f.root, 'shell-startup-ran');
+  const startup = path.join(f.root, 'shell-startup.sh');
+  fs.writeFileSync(startup, `printf unexpected > '${marker}'\n`);
+  process.env.PATH = '';
+  process.env.CLAUDE_CONFIG_DIR = path.join(f.root, 'isolated-config');
+  process.env.BASH_ENV = startup; process.env.ENV = startup;
+  const store = new StateStore(path.join(f.root, 'data'));
+  const createSession = (adapter: Session['adapter']): Session => ({
+    id: randomUUID(), projectId: randomUUID(), title: 'POSIX fixture', kind: 'claude', adapter, cwd: f.root,
+    claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  });
+  const terminal = createSession('terminal'); const structured = createSession('structured');
+  store.change(state => { state.settings = f.settings; state.sessions = [terminal, structured]; });
+  let output = '';
+  const runtime = new Runtime(store, () => {}, chunk => { output += chunk.data; });
+  const chat = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 3000, transcriptExists: async () => false });
+  try {
+    const capabilities = await detectCLI(f.settings);
+    assert.equal(capabilities.available, true, capabilities.error);
+    assert.equal(capabilities.version, '2.1.278 (POSIX fixture)');
+    await runtime.start(terminal.id, capabilities);
+    const deadline = Date.now() + 5000;
+    while (runtime.activeCount || !output.includes('POSIX PTY complete')) {
+      assert.ok(Date.now() < deadline, `PTY fixture did not finish: ${output}`);
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    assert.equal(store.state.sessions.find(session => session.id === terminal.id)?.exitCode, 0);
+    const result = await chat.send(structured.id, 'fixture only', capabilities);
+    assert.equal(result.success, true, result.error); assert.equal(result.summary, 'POSIX chat complete');
+    const probes = fs.readFileSync(f.record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(probes.length, 4, 'only version/help probes and the two fixture sessions run');
+    for (const probe of probes) {
+      assert.equal(probe.path.split(path.delimiter)[0], f.bin);
+      assert.equal(probe.child, fs.realpathSync(process.execPath));
+    }
+    assert.equal(fs.existsSync(marker), false);
+    assert.equal(process.env.PATH, '', 'resolving a CLI never mutates the parent environment');
+  } finally {
+    await chat.shutdown(); await runtime.shutdown();
+    for (const [key, value] of Object.entries(inherited)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    f.cleanup();
+  }
+});
 
 test('Windows npm native bin is resolved from metadata without Node or executing the batch file', () => {
   const f = fixture();

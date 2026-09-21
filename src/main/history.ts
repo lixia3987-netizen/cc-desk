@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { createReadStream, createWriteStream } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
 import { pipeline } from 'node:stream/promises';
 import type { HistoryEntry } from '../shared/types';
@@ -14,6 +14,11 @@ interface TranscriptFile { file: string; id: string; modified: number; size: num
 interface IndexedTranscript { signature: string; entry: HistoryEntry | null }
 // Cache metadata only: conversation bodies and credentials never enter a persistent index.
 const metadata = new Map<string, IndexedTranscript>();
+const queries = new Map<string, { signature:string; entries:HistoryEntry[] }>();
+const QUERY_ENTRY_LIMIT = 20000;
+let parsedFiles = 0;
+/** Read-only counters for profiling the metadata cache; no transcript contents. */
+export function historyCacheStats() { return { parsedFiles, metadataEntries:metadata.size, queryEntries:[...queries.values()].reduce((sum,item)=>sum+item.entries.length,0) }; }
 
 function normalizedPath(value: string): string {
   const resolved = path.resolve(value);
@@ -85,15 +90,17 @@ function recordText(record: TranscriptRecord): string {
   return [record.summary, record.customTitle, contentText(message?.content)].filter(value => typeof value === 'string').join('\n');
 }
 
-async function indexFile(file: TranscriptFile): Promise<HistoryEntry | null> {
+async function indexFile(file: TranscriptFile, cache:ReadonlyMap<string,IndexedTranscript> = metadata): Promise<HistoryEntry | null> {
   const signature = `${file.modified}:${file.size}`;
-  const previous = metadata.get(file.file);
+  const previous = cache.get(file.file);
   if (previous?.signature === signature) {
     metadata.delete(file.file); metadata.set(file.file, previous);
+    while(metadata.size>INDEX_LIMIT)metadata.delete(metadata.keys().next().value!);
     return previous.entry;
   }
   let cwd = ''; let title = ''; let summary = ''; let customTitle = '';
   try {
+    parsedFiles++;
     await visitRecords(file.file, record => {
       if (!cwd && typeof record.cwd === 'string') cwd = record.cwd;
       if (typeof record.summary === 'string') summary = record.summary;
@@ -117,11 +124,24 @@ export async function queryHistory(cwd: string, options: HistoryQuery = {}): Pro
   const query = (options.query ?? '').trim().toLocaleLowerCase();
   if (query.length > 1000) throw new Error('搜索内容过长。');
   const expected = await canonicalPath(cwd);
+  const files = await transcriptFiles();
+  const signatureHash=createHash('sha256');
+  for(const file of files)signatureHash.update(JSON.stringify([file.file,file.modified,file.size]));
+  const signature=signatureHash.digest('hex');
+  const key=JSON.stringify([claudeProjects(),expected,query]);
+  const cached=queries.get(key);
+  const page=(entries:HistoryEntry[]):HistoryPage=>({entries:entries.slice(offset,offset+limit).map(entry=>({...entry})),total:entries.length,nextOffset:offset+limit<entries.length?offset+limit:null});
+  if(cached?.signature===signature) {
+    queries.delete(key);queries.set(key,cached);return page(cached.entries);
+  }
+  // Freeze the previous generation during this scan. New misses cannot evict entries
+  // before we get to them when the number of transcripts exceeds the LRU capacity.
+  const cachedMetadata=new Map(metadata);
   const projectMatches = new Map<string, boolean>();
   const entries: HistoryEntry[] = [];
   const seen = new Set<string>();
-  for (const file of await transcriptFiles()) {
-    const entry = await indexFile(file);
+  for (const file of files) {
+    const entry = await indexFile(file,cachedMetadata);
     if (!entry || seen.has(entry.id)) continue;
     if (!projectMatches.has(entry.cwd)) projectMatches.set(entry.cwd, await canonicalPath(entry.cwd) === expected);
     if (!projectMatches.get(entry.cwd)) continue;
@@ -136,7 +156,10 @@ export async function queryHistory(cwd: string, options: HistoryQuery = {}): Pro
     }
     seen.add(entry.id); entries.push(entry);
   }
-  return { entries: entries.slice(offset, offset + limit), total: entries.length, nextOffset: offset + limit < entries.length ? offset + limit : null };
+  queries.delete(key);
+  if(entries.length<=QUERY_ENTRY_LIMIT)queries.set(key,{signature,entries});
+  while(queries.size>8 || historyCacheStats().queryEntries>QUERY_ENTRY_LIMIT)queries.delete(queries.keys().next().value!);
+  return page(entries);
 }
 
 export async function readHistory(cwd: string): Promise<HistoryEntry[]> {

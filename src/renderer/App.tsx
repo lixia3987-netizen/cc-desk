@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { version as appVersion } from '../../package.json';
 import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X, Zap } from 'lucide-react';
-import type { AppState, Capabilities, Effort, HistoryEntry, NewSession, PermissionMode, Session, Settings } from '../shared/types';
+import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, PermissionMode, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, busyTask, taskLabels } from './ChatPane';
 import { DiagnosticsPanel, FilePicker, GitPanel } from './ProjectPanels';
 import { WorkflowPanel } from './WorkflowPanel';
 import { SessionConfig } from './SessionConfig';
+import { Dialog } from './Dialog';
+import { SessionSelection } from './selection';
+import { ApprovalDrafts } from './approval-drafts';
 
 const statusLabel = {idle:'待启动',running:'运行中',stopping:'停止中',stopped:'已停止',error:'需处理'};
 const sessionLabel=(session:Session)=>session.adapter==='structured'?(taskLabels[session.taskState??'idle']??statusLabel[session.status]):session.kind==='claude'&&session.status==='running'?(session.terminalSync==='synced'?taskLabels[session.taskState??'idle']??'进程运行中':'进程运行中'):statusLabel[session.status];
@@ -29,10 +33,13 @@ export function App() {
   const latestState=useRef(state);latestState.current=state;
   const pendingDrafts=useRef(new Map<string,string>());
   const draftTimers=useRef(new Map<string,ReturnType<typeof setTimeout>>());
-  const initialized=useRef(false);
+  const selection=useRef(new SessionSelection());
+  const stateEvents=useRef(0);
+  const approvalDrafts=useRef(new ApprovalDrafts());
+  const latestActiveId=useRef(activeId);latestActiveId.current=activeId;
   const [inspectorTab,setInspectorTab]=useState<'context'|'git'|'workflows'|'diagnostics'>('context');
   const [filePicker,setFilePicker]=useState('');
-  const [attachments,setAttachments]=useState<Record<string,string[]>>({});
+  const [attachments,setAttachments]=useState<Record<string,Attachment[]>>({});
   const [deleteConfirm,setDeleteConfirm]=useState('');
   const [paletteQuery,setPaletteQuery]=useState('');
   const [historyQuery,setHistoryQuery]=useState('');
@@ -52,15 +59,24 @@ export function App() {
   const structured=active?.kind==='claude'&&active.adapter==='structured';
   const project=state?.projects.find(p => p.id===(active?.projectId ?? projectId));
   const report=useCallback((error:unknown) => setError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,'') : String(error)),[]);
-  const refresh=useCallback(async () => {const snapshot=await window.desktop.snapshot();setState(snapshot.state);setCap(snapshot.capabilities);setDataPath(snapshot.dataPath);setPlatform(snapshot.platform);if(!initialized.current){initialized.current=true;const selected=snapshot.state.sessions.find(s=>s.id===snapshot.state.selectedSessionId);if(selected){setActiveId(selected.id);setArchived(selected.archived);}}},[]);
+  const applyState=useCallback((value:AppState)=>{
+    latestState.current=value;setState(value);approvalDrafts.current.retainSessions(value.sessions.map(session=>session.id));
+    const id=selection.current.receive(value.selectedSessionId);
+    if(id!==undefined){const selected=value.sessions.find(session=>session.id===id);setActiveId(selected?.id??'');setDeleteConfirm('');if(selected){setProjectId('all');setArchived(selected.archived);setSearch('');}}
+  },[]);
+  const refresh=useCallback(async () => {const revision=stateEvents.current;const snapshot=await window.desktop.snapshot();if(revision===stateEvents.current)applyState(snapshot.state);setCap(snapshot.capabilities);setDataPath(snapshot.dataPath);setPlatform(snapshot.platform);},[applyState]);
   const perform=useCallback(async (action:()=>Promise<unknown>) => {setError('');setBusy(true);try {await action();}catch(error){report(error);}finally{setBusy(false);}},[report]);
   useEffect(() => {
     if(!window.desktop){setError('请使用 npm run dev 或已安装的桌面应用打开此界面。');return;}
     void refresh().catch(report);
-    const offState=window.desktop.onState(value => setState(value));
+    const offState=window.desktop.onState(value => {stateEvents.current++;applyState(value);});
+    const approvalRequests=new Map<string,number>();let disposed=false;
+    const offChat=window.desktop.onChat(id=>{if(id!==latestActiveId.current&&approvalDrafts.current.has(id)){const seq=(approvalRequests.get(id)??0)+1;approvalRequests.set(id,seq);void window.desktop.chatSnapshot(id).then(value=>{if(!disposed&&approvalRequests.get(id)===seq&&id!==latestActiveId.current)approvalDrafts.current.reconcile(id,value.pending);}).catch(report);}});
+    const offError=window.desktop.onError(message=>report(new Error(message)));
+    const offNavigate=window.desktop.onNavigate(id=>{const selected=latestState.current?.sessions.find(session=>session.id===id);if(!selected)return;selection.current.navigate(id);setActiveId(id);setDeleteConfirm('');setProjectId('all');setArchived(selected.archived);setSearch('');});
     const offCapabilities=window.desktop.onCapabilities(value => setCap(value));
-    return ()=>{offState();offCapabilities();};
-  },[refresh,report]);
+    return ()=>{disposed=true;offState();offCapabilities();offChat();offError();offNavigate();};
+  },[refresh,report,applyState]);
   useEffect(() => {
     const sessions=state?.sessions??[];
     setMounted(ids=>{
@@ -87,10 +103,9 @@ export function App() {
     for(const [id,text] of pendingDrafts.current){clearTimeout(draftTimers.current.get(id));void window.desktop.saveDraft(id,text).catch(report);}
     pendingDrafts.current.clear();draftTimers.current.clear();
   },[report]);
-  const selectSession=(id:string)=>{flushDrafts();setActiveId(id);setDeleteConfirm('');void window.desktop.setSelection(id).catch(report);};
+  const selectSession=(id:string)=>{flushDrafts();selection.current.request(id);setActiveId(id);setDeleteConfirm('');void window.desktop.setSelection(id).catch(report);};
   const setComposer=(value:string)=>{if(active)saveDraftFor(active.id,value);};
   useEffect(()=>{window.addEventListener('beforeunload',flushDrafts);return()=>{window.removeEventListener('beforeunload',flushDrafts);flushDrafts();};},[flushDrafts]);
-  useEffect(()=>{if(activeId&&state&&!state.sessions.some(s=>s.id===activeId))setActiveId('');},[activeId,state]);
   useEffect(()=>{
     if(modal!=='history'||!draft.projectId)return;
     const request=++historySeq.current;setHistoryBusy(true);setHistory([]);
@@ -99,13 +114,17 @@ export function App() {
   },[modal,draft.projectId,historyQuery,report]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{
-      if(event.key==='Escape'){setModal(null);setFilePicker('');}
-      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'){event.preventDefault();setPaletteQuery('');setModal('palette');}
+      if((event.metaKey||event.ctrlKey)&&event.key.toLowerCase()==='k'&&!document.querySelector('[role=dialog]')){event.preventDefault();setPaletteQuery('');setModal('palette');}
     };
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
   useEffect(() => {if(!notice)return;const timer=setTimeout(()=>setNotice(''),3500);return ()=>clearTimeout(timer);},[notice]);
 
+  useEffect(()=>{
+    if(!activeId)return;let cancelled=false;
+    void window.desktop.listAttachments(activeId).then(files=>{if(!cancelled)setAttachments(old=>({...old,[activeId]:files}));}).catch(report);
+    return()=>{cancelled=true;};
+  },[activeId,report]);
   const openNew=(kind:'claude'|'shell'='claude',fork?:Session) => {
     const selected=fork?.projectId ?? (projectId==='all'?state?.projects[0]?.id:projectId) ?? '';
     setDraft({projectId:selected,title:fork?`${fork.title} · 分支`:'',kind,model:fork?.model??'',effort:fork?.effort??'default',permissionMode:fork?.permissionMode??'default',isolated:false,adapter:kind==='shell'?'terminal':fork?.adapter??'structured',resumeFrom:fork?.claudeId,fork:!!fork});
@@ -131,7 +150,7 @@ export function App() {
   if(!state)return <main className="boot"><Command size={36}/><h2>Claude Workbench</h2><p>{error||'正在打开你的工作台…'}</p></main>;
   const addAttachments=(id:string)=>perform(async()=>{
     const files=await window.desktop.pickAttachments(id);
-    setAttachments(old=>({...old,[id]:[...new Set([...(old[id]??[]),...files.map(f=>f.path)])]}));
+    setAttachments(old=>({...old,[id]:[...new Map([...(old[id]??[]),...files].map(file=>[file.path,file])).values()]}));
   });
   const appendReview=(text:string)=>{if(active)saveDraftFor(active.id,(composer?composer+'\n\n':'')+text);};
   const sessions=state.sessions.filter(s => s.archived===archived && (projectId==='all'||s.projectId===projectId) && `${s.title} ${s.cwd}`.toLowerCase().includes(search.toLowerCase()));
@@ -165,7 +184,7 @@ export function App() {
         <p>在独立会话中运行 Claude Code。保留你的终端、工具和上下文，<br/>把注意力放在正在构建的东西上。</p>
         <div className="welcome-actions"><button className="primary" onClick={()=>state.projects.length?openNew():void chooseProject()}><Plus size={17}/>{state.projects.length?'开始新会话':'添加第一个项目'}<ArrowUpRight size={16}/></button><button className="secondary" onClick={()=>void openHistory()}><History size={16}/>恢复已有会话</button></div>
         <div className="feature-grid"><article><Layers size={23}/><h3>各有上下文</h3><p>项目分组与多会话切换，<br/>随时继续之前的工作。</p><span>01 / SESSIONS</span></article><article><TerminalSquare size={23}/><h3>熟悉的 Claude Code</h3><p>真实交互式终端，保留审批、<br/>MCP、命令与登录方式。</p><span>02 / NATIVE CLI</span></article><article><GitBranch size={23}/><h3>放心探索分支</h3><p>可选 Git worktree，<br/>让并行任务拥有独立目录。</p><span>03 / ISOLATION</span></article></div>
-        <div className="welcome-foot"><ShieldCheck size={15}/>凭据和模型连接由本机 Claude Code 管理。<span>WORKBENCH / v0.2.0</span></div>
+        <div className="welcome-foot"><ShieldCheck size={15}/>凭据和模型连接由本机 Claude Code 管理。<span>WORKBENCH / v{appVersion}</span></div>
       </div>:<>
         <div className="session-header"><div><div className="eyebrow">{active.kind==='shell'?'SHELL SESSION':'CLAUDE CODE SESSION'}</div><h1>{active.title}<button className="icon-button" title="重命名" onClick={()=>{setRename(active.title);setModal('rename');}}><MoreHorizontal size={20}/></button></h1><div className="session-tags"><span className={`status-tag ${active.status}`}><span className={`dot ${active.status}`}/>{sessionLabel(active)}</span><span>{active.kind==='shell'?'Shell':active.model||'CLI 默认模型'}</span>{active.kind==='claude'&&<span><Zap size={12}/>{active.effort==='default'?'默认强度':active.effort}</span>}{active.worktree&&<span><GitBranch size={12}/>隔离目录</span>}</div></div>
           <div className="session-actions"><button className="secondary compact" title="导出会话记录" onClick={()=>void perform(async()=>{const file=await window.desktop.exportTranscript(active.id);if(file)setNotice('会话记录已导出');})}><ArrowDownToLine size={16}/></button>{active.status==='running'?<><button className="secondary compact" onClick={()=>void perform(()=>window.desktop.interruptSession(active.id))}>中断任务</button><button className="secondary compact danger" onClick={()=>void perform(()=>window.desktop.stopSession(active.id))}><Square size={13}/>停止</button></>:<button className="primary compact" disabled={busy||active.archived||active.status==='stopping'} onClick={()=>void start(active)}><Play size={14}/>{structured?'准备会话':active.started?'恢复会话':'启动会话'}</button>}</div>
@@ -173,7 +192,7 @@ export function App() {
         {active.kind==='claude'&&!structured&&active.status==='running'&&active.terminalSync!=='synced'&&<div className="sync-note">{active.terminalSync==='unsupported'?'当前 CLI 不支持状态同步，任务状态请查看终端。':'等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
         {active.error&&<div className="inline-warning">{active.error}</div>}
         <div className="session-content"><section className="terminal-section"><div className="terminal-toolbar"><span><TerminalSquare size={14}/>{structured?'结构化对话':'交互终端'}</span><span title={active.cwd}>{active.cwd}</span><button className="icon-button" title="打开工作目录" onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={14}/></button></div>
-          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} onRemoveAttachment={path=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(p=>p!==path)}))}/>}
+          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
           <div className="terminals" style={{display:structured?'none':undefined}}>{mounted.map(id=>{const session=state.sessions.find(s=>s.id===id);return session?<div className="terminal-slot" key={id} style={{display:id===activeId?'block':'none'}}><TerminalPane session={session} settings={state.settings} active={id===activeId} onError={report} ref={handle=>{if(handle)handles.current.set(id,handle);else handles.current.delete(id);}}/></div>:null;})}
             {!active.started&&<div className="terminal-empty"><TerminalSquare size={30}/><h3>会话准备就绪</h3><p>启动后，在这里与 {active.kind==='shell'?'Shell':'Claude Code'} 直接交互。</p>{active.kind==='claude'&&<small>登录、信任目录与工具审批均在终端内完成</small>}</div>}
           </div>
@@ -186,14 +205,14 @@ export function App() {
           <button className="text-button danger archive-button" disabled={['running','stopping'].includes(active.status)} onClick={()=>setDeleteConfirm(active.id)}>删除会话</button>
           {deleteConfirm===active.id&&<div className="action-confirm"><p>删除工作台中的会话记录。原始 CLI 历史会保留；隔离目录需要先清理。</p><button className="secondary compact" onClick={()=>setDeleteConfirm('')}>取消</button><button className="secondary compact danger" disabled={busy} onClick={()=>void perform(async()=>{flushDrafts();await window.desktop.deleteSession(active.id);selectSession('');})}>确认删除会话</button></div>}</div>}
           {inspectorTab==='git'&&<GitPanel key={active.id} session={active} onError={report} onReview={appendReview}/>}
-          {inspectorTab==='diagnostics'&&<DiagnosticsPanel key={active.projectId} projectId={active.projectId} onError={report}/>}
+          {inspectorTab==='diagnostics'&&<DiagnosticsPanel key={active.id+active.cwd} sessionId={active.id} onError={report}/>}
           {inspectorTab==='workflows'&&<WorkflowPanel key={active.id} session={active} onError={report} onTemplate={setComposer}/>}
         </aside></div>
       </>}
-      <footer className="statusbar"><span><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?cap.version:'未检测到 Claude Code'}</span><span>{platform==='win32'?'Windows':platform==='darwin'?'macOS':'Linux'}<span>UTF-8</span><span>v0.2.0</span></span></footer>
+      <footer className="statusbar"><span><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?cap.version:'未检测到 Claude Code'}</span><span>{platform==='win32'?'Windows':platform==='darwin'?'macOS':'Linux'}<span>UTF-8</span><span>v{appVersion}</span></span></footer>
     </main>
     {filePicker&&<FilePicker key={filePicker} sessionId={filePicker} selected={[]} onClose={()=>setFilePicker('')} onError={report} onPick={paths=>{const id=filePicker;const value=drafts[id]??state.sessions.find(s=>s.id===id)?.draft??'';saveDraftFor(id,value+(value?'\n\n':'')+'请参考以下项目文件：\n'+paths.map(p=>'@'+JSON.stringify(p)).join('\n'));setFilePicker('');}}/>}
-    {modal&&<div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)setModal(null);}}><section className={`modal ${modal==='settings'?'wide':''}`} role="dialog" aria-modal="true" aria-label={modal==='new'?'新建会话':modal==='settings'?'设置与连接':modal==='rename'?'重命名会话':modal==='palette'?'命令面板':'导入 CLI 历史'}><button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={()=>setModal(null)}><X size={20}/></button>
+    {modal&&<Dialog className={modal==='settings'?'wide':''} onClose={()=>setModal(null)} closeDisabled={busy} label={modal==='new'?'新建会话':modal==='settings'?'设置与连接':modal==='rename'?'重命名会话':modal==='palette'?'命令面板':'导入 CLI 历史'}><button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={()=>setModal(null)}><X size={20}/></button>
       {modal==='palette'&&<><div className="eyebrow">COMMAND PALETTE</div><h2>快速切换</h2><input aria-label="查找命令与会话" autoFocus placeholder="查找会话或操作…" value={paletteQuery} onChange={e=>setPaletteQuery(e.target.value)}/><div className="palette-results">{['新建会话','导入 CLI 历史','设置与连接'].filter(name=>name.includes(paletteQuery)).map(name=><button key={name} onClick={()=>{if(name==='新建会话')openNew();else if(name==='导入 CLI 历史')void openHistory();else{setDraftSettings({...state.settings});setModal('settings');}}}>{name}<ChevronRight size={14}/></button>)}{state.sessions.filter(s=>(s.title+' '+s.cwd).toLowerCase().includes(paletteQuery.toLowerCase())).map(s=><button key={s.id} onClick={()=>{setProjectId('all');setArchived(s.archived);selectSession(s.id);setModal(null);}}><span>{s.title}<small>{s.cwd}</small></span><ChevronRight size={14}/></button>)}</div></>}
       {modal==='new'&&<><div className="eyebrow">NEW SESSION</div><h2>{draft.fork?'创建会话分支':'开始新的工作'}</h2><p>为这次任务选择项目和运行方式。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{const session=await window.desktop.createSession({...draft,title:draft.title.trim()||(draft.kind==='shell'?'项目终端':'新的开发会话')});selectSession(session.id);setArchived(false);setModal(null);});}}>
         <label>项目<select aria-label="项目" value={draft.projectId} onChange={e=>setDraft({...draft,projectId:e.target.value})}>{state.projects.map(p=><option key={p.id} value={p.id}>{p.name} — {p.path}</option>)}</select></label>
@@ -217,6 +236,6 @@ export function App() {
       {modal==='history'&&<><div className="eyebrow">CONTINUE YOUR WORK</div><h2>导入 CLI 历史</h2><p>{state.projects.find(p=>p.id===draft.projectId)?.name} · 最近的本地会话</p><input aria-label="搜索历史全文" placeholder="搜索标题和对话内容…" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/><div className="history-list">{historyBusy?<p>正在读取 Claude 历史…</p>:history.length?history.map(h=><button key={h.id} disabled={busy} onClick={()=>void importHistory(h.id,h.title)}><div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0,8)}</small></div><ArrowUpRight size={16}/></button>):<p>没有找到可导入的记录。也可以使用会话 UUID。</p>}</div>{historyNext!==null&&!historyBusy&&<button className="secondary compact full" disabled={busy} onClick={()=>void moreHistory()}>加载更多历史</button>}<form onSubmit={event=>{event.preventDefault();void importHistory(draft.resumeFrom||'',`导入会话 · ${(draft.resumeFrom||'').slice(0,8)}`);}}><label>通过 UUID 导入<input aria-label="历史会话 UUID" placeholder="00000000-0000-0000-0000-000000000000" value={draft.resumeFrom||''} onChange={e=>setDraft({...draft,resumeFrom:e.target.value})}/></label><button className="primary full" disabled={busy||!draft.resumeFrom}><History size={15}/>导入会话</button></form><p className="hint">只读扫描 CLI 记录。导入不会修改原始历史；首次恢复时会由 Claude Code 校验。</p></>}
       {modal==='rename'&&active&&<><h2>重命名会话</h2><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.updateSession({id:active.id,title:rename});setModal(null);});}}><label>名称<input aria-label="新的会话名称" autoFocus maxLength={120} value={rename} onChange={e=>setRename(e.target.value)}/></label><button className="primary full" disabled={busy||!rename.trim()}>保存</button></form></>}
       {error&&<div className="modal-error" role="alert">{error}</div>}
-    </section></div>}
+    </Dialog>}
   </div>;
 }

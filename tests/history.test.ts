@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { readHistory, transcriptExists, queryHistory, exportClaudeTranscript } from '../src/main/history';
+import { readHistory, transcriptExists, queryHistory, exportClaudeTranscript, historyCacheStats } from '../src/main/history';
 
 test('history is project-scoped, tolerates incomplete JSONL, preserves original bytes and finds transcripts',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-history-'));
@@ -78,4 +78,31 @@ test('raw transcript export preserves every byte, isolates malformed lines and c
     await assert.rejects(exportClaudeTranscript('/wrong-project', id, destination), /未找到/);
     assert.equal(await transcriptExists('../bad'), false);
   } finally { if (old === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = old; await fs.rm(root, { recursive: true, force: true }); }
+});
+
+test('history beyond metadata capacity reuses pages and preserves cached metadata across sequential scans',async()=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'history-cache-capacity-'));
+  const old=process.env.CLAUDE_CONFIG_DIR;process.env.CLAUDE_CONFIG_DIR=root;
+  try {
+    const folder=path.join(root,'projects','large');await fs.mkdir(folder,{recursive:true});
+    const cwd=path.join(root,'project');
+    const ids=Array.from({length:5000},()=>randomUUID());
+    for(let start=0;start<ids.length;start+=100)await Promise.all(ids.slice(start,start+100).map(id=>fs.writeFile(path.join(folder,id+'.jsonl'),JSON.stringify({type:'user',cwd,message:{content:'unchanged transcript'}}))));
+    const first=await queryHistory(cwd,{limit:50});assert.equal(first.total,5000);
+    const reads=historyCacheStats().parsedFiles;
+    const next=await queryHistory(cwd,{offset:50,limit:50});assert.equal(next.entries.length,50);
+    assert.equal(historyCacheStats().parsedFiles,reads,'unchanged pagination must not parse transcripts again');
+    first.entries[0].title='caller mutation';
+    assert.notEqual((await queryHistory(cwd)).entries[0].title,'caller mutation');
+    await fs.appendFile(path.join(folder,ids[0]+'.jsonl'),'\n'+JSON.stringify({type:'custom-title',customTitle:'new title'}));
+    const changed=await queryHistory(cwd,{query:'new title'});
+    assert.equal(changed.entries[0].id,ids[0]);
+    assert.ok(historyCacheStats().parsedFiles-reads<=5000-2048+1,'cache hits must survive new misses within the scan');
+    assert.ok(historyCacheStats().metadataEntries<=2048);assert.ok(historyCacheStats().queryEntries<=20000);
+    // A second population just over the boundary catches the original all-miss cycle.
+    for(let start=2049;start<ids.length;start+=100)await Promise.all(ids.slice(start,start+100).map(id=>fs.rm(path.join(folder,id+'.jsonl'))));
+    assert.equal((await queryHistory(cwd)).total,2049);
+    const after=historyCacheStats().parsedFiles;
+    await queryHistory(cwd,{offset:50});assert.equal(historyCacheStats().parsedFiles,after);
+  }finally{if(old===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=old;await fs.rm(root,{recursive:true,force:true});}
 });

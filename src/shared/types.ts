@@ -41,6 +41,8 @@ export interface DesktopAPI {
   sendChat(id: string, text: string, attachments?: string[]): Promise<ChatTurnResult>;
   respondChat(id: string, requestId: string, decision: ChatDecision): Promise<void>;
   pickAttachments(id: string): Promise<Attachment[]>;
+  listAttachments(id: string): Promise<Attachment[]>;
+  removeAttachment(id: string, path: string): Promise<void>;
   onChat(callback: (sessionId: string) => void): () => void;
   queryHistory(projectId: string, options?: {query?: string; offset?: number; limit?: number}): Promise<HistoryPage>;
   gitChanges(id: string): Promise<GitChanges>;
@@ -50,13 +52,15 @@ export interface DesktopAPI {
   worktreeInfo(id: string): Promise<WorktreeInfo>;
   mergeWorktree(id: string): Promise<WorktreeActionResult>;
   cleanupWorktree(id: string): Promise<WorktreeActionResult>;
-  diagnostics(projectId?: string): Promise<EnvironmentDiagnostics>;
+  diagnostics(sessionId?: string): Promise<EnvironmentDiagnostics>;
   workflows(sessionId?: string): Promise<WorkflowRun[]>;
   createWorkflow(input: NewWorkflow): Promise<WorkflowRun>;
   startWorkflow(id: string): Promise<WorkflowRun>;
   continueWorkflow(id: string): Promise<WorkflowRun>;
   retryWorkflow(id: string): Promise<WorkflowRun>;
   cancelWorkflow(id: string): Promise<WorkflowRun>;
+  deleteWorkflow(id: string): Promise<void>;
+  exportWorkflow(id: string): Promise<string | null>;
   reviseWorkflowStage(id: string, stageId: string, instruction: string): Promise<WorkflowRun>;
   onWorkflows(callback: () => void): () => void;
   startSession(id: string): Promise<void>;
@@ -72,6 +76,8 @@ export interface DesktopAPI {
   exportTranscript(id: string): Promise<string | null>;
   openFolder(id: string): Promise<void>;
   onState(callback: (state: AppState) => void): () => void;
+  onError(callback: (message: string) => void): () => void;
+  onNavigate(callback: (sessionId: string) => void): () => void;
   onCapabilities(callback: (capabilities: Capabilities) => void): () => void;
   onTerminal(callback: (chunk: TerminalChunk) => void): () => void;
 }

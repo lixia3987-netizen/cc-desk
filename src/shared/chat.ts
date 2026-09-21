@@ -5,6 +5,10 @@ export interface ChatMessage {
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
+  /** The visible text or tool input omits content retained in the event journal. */
+  truncated?: boolean;
+  /** Stable CLI identity used when reconciling a stopped session with its transcript. */
+  sourceId?: string;
 }
 export interface ChatQuestion {
   question: string; header?: string;

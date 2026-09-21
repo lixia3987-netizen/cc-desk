@@ -1,5 +1,26 @@
 # v0.2 验证记录
 
+## v0.2.2 可靠性与重复回复修复
+
+- 本地 `npm run check`：128 项 Node 测试，127 通过、1 项 Windows 专用测试跳过；TypeScript、生产构建通过。Electron / Playwright 两项 E2E 通过，截图已复核。
+- 重复回复覆盖流式/完整 envelope/result 三路输出、多文本块、缺失或重复消息 ID、子任务、长正文截断，以及不同轮次相同文本应保留。旧数据迁移只移除日志明确证明的 synthetic result 回声，不改写原日志；没有来源依据的历史重复保留。
+- 可靠性回归覆盖磁盘写入失败仍停止进程、退出等待后代清理、恢复磁盘后重试退出、后台无进展计时及审批暂停、快照游标回放和部分 JSONL 尾行、外部历史的稳定身份锚点。
+- 5000 文件的历史测试证明未变化的连续翻页不再重新解析元数据；同时验证缓存有界及修改后的失效。附件测试覆盖原名/大小重启恢复、未发送副本回收、发送失败保留草稿及已引用文件保护。
+- Worktree 测试覆盖目录别名/子目录占用、衍生依赖、仓库串行操作；另验证重命名 diff、实际会话目录诊断、工作流容量回收、导出与持久化失败后的完整退出。
+- 桌面 E2E 覆盖真实 Shell，以及协议 fixture 的多轮回复数量、审批理由/回答切换保留、组合输入快捷键、模态焦点、归档/筛选下通知导航、附件重启和纯附件发送、工作流导出/删除。fixture 不访问真实模型，通知通过应用事件触发；不等于真实 OS 通知或实际中文输入法验收。
+
+新增 `npm run test:packaged`，直接运行最终包内程序并断言 `app.isPackaged`、ASAR、架构、独立数据目录，执行真实 PTY 输出、干净退出、旧 version-1 状态与终端记录重启、隐藏窗口后二次启动恢复：
+
+| 平台 | 发布载荷验证 |
+| --- | --- |
+| Windows x64 | NSIS 静默安装后的 EXE；ZIP 解压程序；完成后卸载 |
+| macOS arm64 | DMG 挂载并复制的 app；ZIP 解压 app |
+| Linux x64 | tar.gz 解压程序；AppImage 提取出的程序 |
+
+三平台实际结果以 [v0.2.2 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2) 附带的 Actions 记录为准；发布依赖这些门禁全部成功。CI 附件保存 `packaged-manifest.json`（包 SHA-256、源提交、架构、验证状态与范围）和测试结果。本地受执行环境 AF_UNIX 限制，无法完成 production singleton 启动验证；没有关闭单实例机制绕过验证。
+
+当前不包含签名/公证、系统安装权限弹窗或 SmartScreen/Gatekeeper 验收；Windows 便携 EXE 外层启动器、Linux FUSE 挂载、卸载时真实旧用户数据保留、实际账户与模型调用仍待实机验收。macOS/Windows 文件预览已补前后身份检查，但面对恶意反复替换目录的完整 ABA 防护仍需原生句柄能力。此前报告逐项处理与剩余边界见 [修复清单](FIXES-v0.2.2.md)。
+
 ## v0.2.1 Windows npm 兼容性补丁
 
 - 本地 `npm run check` 通过：70 项 Node 测试通过，1 项仅 Windows 执行的真实子进程测试跳过；TypeScript 和生产构建通过。

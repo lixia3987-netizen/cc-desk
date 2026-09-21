@@ -1,7 +1,7 @@
 {
   "name": "claude-workbench",
   "productName": "Claude Workbench",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "description": "Independent local desktop workspace for the Claude Code CLI",
   "author": "Claude Workbench contributors",
@@ -16,9 +16,10 @@
     "test:e2e": "playwright test",
     "check": "npm run typecheck && npm test && npm run build",
     "dist:win": "npm run build && electron-builder --win nsis portable zip --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --arm64 --publish never",
     "dist:linux": "npm run build && electron-builder --linux AppImage tar.gz --publish never",
-    "postinstall": "node scripts/prepare-native.mjs"
+    "postinstall": "node scripts/prepare-native.mjs",
+    "test:packaged": "node scripts/verify-packaged.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",
@@ -27,6 +28,9 @@
     "node-pty": "1.1.0",
     "react": "19.2.0",
     "react-dom": "19.2.0",
+    "react-markdown": "10.1.0",
+    "rehype-highlight": "7.0.2",
+    "remark-gfm": "4.0.1",
     "zod": "4.1.12"
   },
   "devDependencies": {
@@ -66,7 +70,11 @@
       "node_modules/node-pty/**/*"
     ],
     "win": {
-      "target": ["nsis", "portable", "zip"],
+      "target": [
+        "nsis",
+        "portable",
+        "zip"
+      ],
       "artifactName": "cc-desk-${version}-windows-${arch}-portable.${ext}",
       "signAndEditExecutable": false
     },
@@ -80,14 +88,20 @@
     },
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": ["dmg", "zip"],
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "artifactName": "cc-desk-${version}-macos-${arch}-portable.${ext}"
     },
     "dmg": {
       "artifactName": "cc-desk-${version}-macos-${arch}-setup.${ext}"
     },
     "linux": {
-      "target": ["AppImage", "tar.gz"],
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
       "artifactName": "cc-desk-${version}-linux-${arch}-portable.${ext}",
       "category": "Development"
     },

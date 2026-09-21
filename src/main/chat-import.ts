@@ -26,15 +26,17 @@ export async function readTranscriptPreview(file: string): Promise<{ messages: C
       const message = object(record.message);
       const content = message.content;
       const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : Array.isArray(content) ? content.map(object) : [];
-      const id = 'import:' + (string(record.uuid) || string(message.id) || String(start + recordIndex));
+      const sourceId = string(record.uuid) || (string(message.id) ? string(message.id) + ':record:' : '') + String(start + recordIndex);
+      const id = 'import:' + sourceId;
+      const parentToolUseId = string(record.parent_tool_use_id) || undefined;
       const createdAt = string(record.timestamp);
       const plain = blocks.filter(block => block.type === 'text').map(block => string(block.text)).join('\n');
-      if (plain) messages.push({ id, turnId: 'imported', role: record.type, text: plain.slice(-256 * 1024), createdAt });
+      if (plain) messages.push({ id, sourceId, turnId: 'imported', role: record.type, text: plain.slice(-256 * 1024), truncated: plain.length > 256 * 1024 || undefined, parentToolUseId, createdAt });
       for (const [index, block] of blocks.entries()) {
-        if (block.type === 'tool_use') messages.push({ id: id + ':tool:' + index, turnId: 'imported', role: 'tool', text: '', toolName: string(block.name), toolUseId: string(block.id), input: JSON.stringify(block.input ?? {}).length > 64 * 1024 ? { preview: JSON.stringify(block.input).slice(0, 64 * 1024), truncated: true } : object(block.input), createdAt });
+        if (block.type === 'tool_use') messages.push({ id: id + ':tool:' + index, sourceId: 'tool:' + string(block.id), parentToolUseId, turnId: 'imported', role: 'tool', text: '', toolName: string(block.name), toolUseId: string(block.id), input: JSON.stringify(block.input ?? {}).length > 64 * 1024 ? { preview: JSON.stringify(block.input).slice(0, 64 * 1024), truncated: true } : object(block.input), createdAt });
         if (block.type === 'tool_result') {
           const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? block.content.map(value => string(object(value).text)).join('\n') : '';
-          messages.push({ id: id + ':result:' + index, turnId: 'imported', role: 'tool', text: text.slice(-256 * 1024), toolUseId: string(block.tool_use_id), isError: block.is_error === true, createdAt });
+          messages.push({ id: id + ':result:' + index, sourceId: 'tool:' + string(block.tool_use_id), parentToolUseId, turnId: 'imported', role: 'tool', text: text.slice(-256 * 1024), truncated: text.length > 256 * 1024 || undefined, toolUseId: string(block.tool_use_id), isError: block.is_error === true, createdAt });
         }
       }
       while (messages.length > MESSAGE_LIMIT) { messages.shift(); truncated = true; }

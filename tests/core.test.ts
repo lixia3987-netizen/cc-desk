@@ -56,3 +56,61 @@ test('terminal buffer bounds retained output and assigns monotonically increasin
   assert.ok(buffer.chunks.length<=1024);assert.equal(buffer.chunks.at(-1)!.seq,1500);assert.ok(buffer.chunks[0].seq>1);
   buffer.push('id','z'.repeat(2*1024*1024));assert.equal(buffer.chunks.length,1);assert.equal(buffer.chunks[0].data.length,1024*1024);
 });
+
+test('unchanged state does not rewrite files or rotate the backup', () => {
+  const dir = temp();
+  try {
+    const store = new StateStore(dir); const initial = session();
+    store.change(state => state.sessions.push(initial));
+    store.change(state => { state.sessions[0].title = 'changed'; });
+    const before = fs.statSync(store.file); const backup = fs.readFileSync(store.file + '.bak', 'utf8');
+    const current = store.state;
+    assert.equal(store.change(state => { state.sessions[0].title = 'changed'; }), false);
+    assert.equal(store.state, current);
+    assert.equal(fs.statSync(store.file).mtimeMs, before.mtimeMs);
+    assert.equal(fs.readFileSync(store.file + '.bak', 'utf8'), backup);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('deferred observations batch into one snapshot and critical changes durably include them', () => {
+  const dir = temp(); const store = new StateStore(dir, { writeDelayMs: 10000 });
+  try {
+    store.change(state => state.sessions.push(session()));
+    for (let i = 0; i < 25; i++) store.change(state => { state.sessions[0].draft = `draft-${i}`; }, { defer: true });
+    assert.equal(store.state.sessions[0].draft, 'draft-24');
+    assert.equal(JSON.parse(fs.readFileSync(store.file, 'utf8')).sessions[0].draft, undefined);
+    assert.equal(fs.existsSync(store.file + '.bak'), false);
+    store.flush();
+    assert.equal(JSON.parse(fs.readFileSync(store.file, 'utf8')).sessions[0].draft, 'draft-24');
+    assert.equal(JSON.parse(fs.readFileSync(store.file + '.bak', 'utf8')).sessions[0].draft, undefined);
+    store.change(state => { state.sessions[0].draft = 'newest'; }, { defer: true });
+    store.change(state => { state.sessions[0].permissionMode = 'plan'; });
+    const persisted = JSON.parse(fs.readFileSync(store.file, 'utf8'));
+    assert.equal(persisted.sessions[0].draft, 'newest');
+    assert.equal(persisted.sessions[0].permissionMode, 'plan');
+    const backup = fs.readFileSync(store.file + '.bak', 'utf8');
+    store.flush();
+    assert.equal(fs.readFileSync(store.file + '.bak', 'utf8'), backup);
+  } finally { store.flush(); fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('failed deferred persistence reports the error and retains validated state for explicit retry', { timeout: 5000 }, async () => {
+  const dir = temp(); let failed!: (error: Error) => void;
+  const failure = new Promise<Error>(resolve => { failed = resolve; });
+  const store = new StateStore(dir, { writeDelayMs: 10, onError: failed });
+  try {
+    store.change(state => state.sessions.push(session()));
+    fs.mkdirSync(store.file + '.tmp');
+    store.change(state => { state.sessions[0].draft = 'recoverable'; }, { defer: true });
+    const error = await failure;
+    assert.equal(store.persistenceError, error);
+    assert.equal(store.state.sessions[0].draft, 'recoverable');
+    assert.equal(JSON.parse(fs.readFileSync(store.file, 'utf8')).sessions[0].draft, undefined);
+    assert.throws(() => store.change(state => { state.sessions[0].permissionMode = 'plan'; }));
+    assert.equal(store.state.sessions[0].permissionMode, 'default', 'critical failure does not commit in-memory state');
+    fs.rmdirSync(store.file + '.tmp');
+    store.flush();
+    assert.equal(store.persistenceError, undefined);
+    assert.equal(JSON.parse(fs.readFileSync(store.file, 'utf8')).sessions[0].draft, 'recoverable');
+  } finally { fs.rmSync(store.file + '.tmp', { recursive: true, force: true }); store.flush(); fs.rmSync(dir, { recursive: true, force: true }); }
+});

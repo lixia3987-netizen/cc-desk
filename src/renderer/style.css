@@ -138,3 +138,26 @@
 .chat-services{margin:0 22px;font-size:9px;line-height:1.8;color:#829f8d;flex-shrink:0;max-height:90px;overflow:auto}
 .chat-services summary{cursor:pointer}.chat-services>span{display:inline-block;margin-right:14px}
 .chat-model{font-size:9px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#acc9b6}
+
+/* CommonMark/GFM content uses the same constrained chat width as plain messages. */
+.message-markdown {overflow-wrap:anywhere;line-height:1.65}
+.message-markdown p {margin:.45em 0}
+.message-markdown ul,.message-markdown ol {padding-left:1.6em;margin:.55em 0}
+.message-markdown blockquote {margin:.8em 0;padding:.15em 1em;border-left:3px solid var(--accent,#68bba7);color:var(--muted,#9ca9a6)}
+.message-markdown a {color:var(--accent,#78cfb4);text-decoration:underline}
+.message-markdown table {display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:.8em 0}
+.message-markdown th,.message-markdown td {border:1px solid var(--border,#33403d);padding:6px 10px;text-align:left}
+.message-markdown th {background:rgba(255,255,255,.04)}
+.message-markdown input[type=checkbox] {width:auto;pointer-events:none}
+.message-code-heading {display:flex;align-items:center;justify-content:space-between;padding:4px 10px;border-bottom:1px solid var(--border,#33403d)}
+.message-code .message-code-heading span {padding:0;border:0}
+.message-code-heading .text-button {font-size:11px;gap:4px;padding:3px 5px}
+.message-code pre {margin:0;overflow:auto}
+.message-code pre code {display:block;color:#d5dcd9;background:transparent;padding:0}
+.hljs-keyword,.hljs-selector-tag,.hljs-literal {color:#c99ade}
+.hljs-string,.hljs-regexp,.hljs-attr {color:#9cd69c}
+.hljs-number,.hljs-symbol,.hljs-built_in {color:#edc38a}
+.hljs-comment,.hljs-quote {color:#86958d}
+.hljs-title,.hljs-function {color:#8bc4e3}
+.message-truncated {padding-top:8px;border-top:1px dashed var(--border,#33403d)}
+.modal:focus {outline:none}

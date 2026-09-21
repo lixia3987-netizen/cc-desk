@@ -34,3 +34,69 @@ test('project references find and preview bounded files while rejecting traversa
     }
   } finally { await fs.rm(dir, { recursive: true, force: true }); }
 });
+
+test('preview rejects an ancestor replaced by an outside symlink exactly before open', {skip:process.platform==='win32'}, async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-file-race-'));
+  const project=path.join(dir,'project'), source=path.join(project,'src'), outside=path.join(dir,'outside');
+  try {
+    await fs.mkdir(source,{recursive:true}); await fs.mkdir(outside);
+    await fs.writeFile(path.join(source,'file.txt'),'project data');
+    await fs.writeFile(path.join(outside,'file.txt'),'OUTSIDE PRIVATE MARKER');
+    const open=fs.open.bind(fs); let swapped=false;
+    t.mock.method(fs,'open',async (...args:Parameters<typeof fs.open>)=>{
+      if(!swapped) {
+        swapped=true;
+        await fs.rename(source,path.join(project,'original-src'));
+        await fs.symlink(outside,source,'dir');
+      }
+      return open(...args);
+    });
+    await assert.rejects(readProjectFile(project,'src/file.txt'));
+    assert.equal(swapped,true);
+  } finally { t.mock.restoreAll(); await fs.rm(dir,{recursive:true,force:true}); }
+});
+
+test('preview verifies opened-file identity when a regular ancestor is replaced before open', async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-file-identity-'));
+  const project=path.join(dir,'project'), source=path.join(project,'src'), replacement=path.join(dir,'replacement');
+  try {
+    await fs.mkdir(source,{recursive:true}); await fs.mkdir(replacement);
+    await fs.writeFile(path.join(source,'file.txt'),'project data');
+    await fs.writeFile(path.join(replacement,'file.txt'),'OUTSIDE PRIVATE MARKER');
+    const open=fs.open.bind(fs); let swapped=false;
+    t.mock.method(fs,'open',async (...args:Parameters<typeof fs.open>)=>{
+      if(!swapped) {
+        swapped=true;
+        await fs.rename(source,path.join(project,'original-src'));
+        await fs.rename(replacement,source);
+      }
+      return open(...args);
+    });
+    await assert.rejects(readProjectFile(project,'src/file.txt'),/发生变化/);
+    assert.equal(swapped,true);
+  } finally { t.mock.restoreAll(); await fs.rm(dir,{recursive:true,force:true}); }
+});
+
+test('preview withholds bytes when the opened ancestor moves outside the project during the read', {skip:process.platform==='win32'}, async t => {
+  const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-file-after-read-'));
+  const project=path.join(dir,'project'), source=path.join(project,'src');
+  try {
+    await fs.mkdir(source,{recursive:true}); await fs.writeFile(path.join(source,'file.txt'),'must be withheld after relocation');
+    const open=fs.open.bind(fs); let moved=false;
+    t.mock.method(fs,'open',async (...args:Parameters<typeof fs.open>)=>{
+      const handle=await open(...args);
+      if(String(args[0]).endsWith('/file.txt')) {
+        const read=handle.read.bind(handle);
+        t.mock.method(handle,'read',async (...readArgs:Parameters<typeof handle.read>)=>{
+          const result=await read(...readArgs);
+          await fs.rename(source,path.join(dir,'moved-outside'));
+          await fs.symlink(path.join(dir,'moved-outside'),source,'dir');
+          moved=true; return result;
+        });
+      }
+      return handle;
+    });
+    await assert.rejects(readProjectFile(project,'src/file.txt'),/发生变化/);
+    assert.equal(moved,true);
+  } finally { t.mock.restoreAll(); await fs.rm(dir,{recursive:true,force:true}); }
+});

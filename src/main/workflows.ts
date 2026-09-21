@@ -36,7 +36,8 @@ const runSchema = bindingSchema.extend({
   stages: z.array(stageSchema).min(1).max(12), pauseAfterEachStage: z.boolean(),
   createdAt: date, updatedAt: date, error: z.string().max(4000).optional(),
 }).strict();
-const stateSchema = z.object({ version: z.literal(1), runs: z.array(runSchema).max(500) }).strict();
+const MAX_STORED_RUNS = 500;
+const stateSchema = z.object({ version: z.literal(1), runs: z.array(runSchema).max(MAX_STORED_RUNS) }).strict();
 type WorkflowState = z.infer<typeof stateSchema>;
 
 interface ActiveRun { cancelled: boolean; completion: Promise<void> }
@@ -125,8 +126,32 @@ export class WorkflowEngine {
     return structuredClone(this.state.runs.filter(run => !sessionId || run.sessionId === sessionId));
   }
 
+  private inactive(id: string): WorkflowRun {
+    const run = this.get(id);
+    if (this.active.has(id) || run.status === 'running') throw new Error('工作流仍在运行或停止中，请等待完全停止后再导出或删除。');
+    return run;
+  }
+
+  /** Explicit history removal never cancels a task or modifies its output files. */
+  remove(id: string): void {
+    this.inactive(id);
+    this.commit(state => { state.runs = state.runs.filter(run => run.id !== id); });
+  }
+
+  exportRun(id: string): string {
+    return JSON.stringify({ version: 1, runs: [this.inactive(id)] }, null, 2) + '\n';
+  }
+
+  removeSession(sessionId: string): void {
+    if (this.isSessionBusy(sessionId)) throw new Error('会话仍有运行或停止中的工作流。');
+    if (!this.state.runs.some(run => run.sessionId === sessionId)) return;
+    for (const run of this.state.runs) if (run.sessionId === sessionId) this.inactive(run.id);
+    this.commit(state => { state.runs = state.runs.filter(run => run.sessionId !== sessionId); });
+  }
+
   create(input: NewWorkflow): WorkflowRun {
     if (this.closed) throw new Error('工作流引擎正在关闭');
+    if (this.state.runs.length >= MAX_STORED_RUNS) throw new Error(`已保留 ${MAX_STORED_RUNS} 条工作流记录，请在“全部记录”中导出并删除不再需要的已停止工作流，再创建新工作流。`);
     const parsed = newWorkflowSchema.parse(input);
     const binding = bindingSchema.parse(this.options.getSession(parsed.sessionId));
     if (binding.sessionId !== parsed.sessionId) throw new Error('工作流会话绑定不匹配');
@@ -211,15 +236,24 @@ export class WorkflowEngine {
   async shutdown(): Promise<void> {
     this.closed = true;
     const running = [...this.active.entries()];
-    for (const [id, token] of running) {
-      token.cancelled = true;
-      this.update(id, run => {
-        if (run.status !== 'running') return;
-        run.status = 'interrupted'; run.error = '应用退出导致工作流中断，请检查现有结果后手动继续。';
-        for (const stage of run.stages) if (stage.status === 'running') stage.status = 'interrupted';
-      });
+    // Invalidate every late result before any persistence operation can fail.
+    for (const [,token] of running) token.cancelled = true;
+    const errors:unknown[]=[];
+    // Include stale in-memory running records on a retry after a failed save;
+    // their runners may already have settled while storage was unavailable.
+    for (const id of new Set([...running.map(([id])=>id),...this.state.runs.filter(run=>run.status==='running').map(run=>run.id)])) {
+      try {
+        this.update(id, run => {
+          if (run.status !== 'running') return;
+          run.status = 'interrupted'; run.error = '应用退出导致工作流中断，请检查现有结果后手动继续。';
+          for (const stage of run.stages) if (stage.status === 'running') stage.status = 'interrupted';
+        });
+      } catch(error) { errors.push(error); }
     }
-    await Promise.allSettled(running.map(([id]) => this.options.cancelSession(this.get(id).sessionId)));
+    for(const result of await Promise.allSettled(running.map(([id])=>Promise.resolve().then(()=>this.options.cancelSession(this.get(id).sessionId))))) {
+      if(result.status==='rejected')errors.push(result.reason);
+    }
+    if(errors.length)throw new AggregateError(errors,`工作流停止或状态保存失败：${errors.map(errorText).join('\n')}`);
   }
 
   private get(id: string): WorkflowRun {

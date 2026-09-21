@@ -23,10 +23,13 @@ export class TerminalBuffer {
   }
 }
 
-interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; killTimer?: NodeJS.Timeout; hooks?: PtyHookBridge; released?: boolean }
+interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; hooks?: PtyHookBridge; hooksClose?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
+  private stopping = new Map<string, ProcessEntry>();
+  private cleanups = new Set<Promise<void>>();
   private starting = new Set<string>();
+  private startCompletions = new Map<string, Promise<void>>();
   private buffers = new Map<string, TerminalBuffer>();
   private logErrors = new Set<string>();
   private pending = new Map<string, string>();
@@ -34,12 +37,30 @@ export class Runtime {
   private shuttingDown = false;
   private sequence = 0;
   private cancelledStarts = new Set<string>();
-  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private options: { maxStoppedBuffers?: number } = {}) {
+  private shutdownPromise?: Promise<void>;
+  private lifecycleError?: Error;
+  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
     fs.mkdirSync(path.join(store.directory,'logs'), { recursive: true, mode: 0o700 });
   }
-  get activeCount() { return new Set([...this.running.keys(), ...this.starting]).size; }
+  get activeCount() { return new Set([...this.running.keys(), ...this.starting, ...this.stopping.keys()]).size; }
   get retainedBufferCount() { return this.buffers.size; }
-  has(id: string) { return this.running.has(id) || this.starting.has(id); }
+  get pendingCleanupCount() { return this.cleanups.size; }
+  get lastError() { return this.lifecycleError; }
+  has(id: string) { return this.running.has(id) || this.starting.has(id) || this.stopping.has(id); }
+  private reportError(error: unknown) {
+    this.lifecycleError = error instanceof Error ? error : new Error(String(error));
+    try { this.options.onError?.(this.lifecycleError); } catch { /* Error reporting must never prevent cleanup. */ }
+  }
+  private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
+  private trackCleanup(cleanup: Promise<void>) {
+    const tracked = cleanup.catch(error => this.reportError(error));
+    this.cleanups.add(tracked);
+    void tracked.then(() => this.cleanups.delete(tracked));
+    return tracked;
+  }
+  private closeHooks(entry: ProcessEntry) {
+    return entry.hooksClose ??= this.trackCleanup(Promise.resolve().then(() => entry.hooks?.close()));
+  }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
     const limit = Math.max(0, this.options.maxStoppedBuffers ?? 8);
@@ -57,8 +78,12 @@ export class Runtime {
     return session;
   }
   private update(id: string, patch: Partial<Session>) {
-    if (!this.store.state.sessions.some(session => session.id === id)) return;
-    this.store.change(state => Object.assign(state.sessions.find(s => s.id === id)!, patch, { updatedAt: new Date().toISOString() }));
+    const session = this.store.state.sessions.find(session => session.id === id);
+    if (!session) return;
+    const changed = (Object.keys(patch) as (keyof Session)[]).filter(key => !Object.is(session[key], patch[key]));
+    if (!changed.length) return;
+    const defer = changed.every(key => key === 'taskState' || key === 'terminalSync');
+    this.store.change(state => Object.assign(state.sessions.find(s => s.id === id)!, patch, { updatedAt: new Date().toISOString() }), { defer });
     this.onState();
   }
   logPath(id: string) { return path.join(this.store.directory, 'logs', `${id}.log`); }
@@ -79,7 +104,7 @@ export class Runtime {
       }
     } catch {
       this.logErrors.add(id);
-      this.update(id, { error: '终端日志写入失败。会话仍在运行，请检查磁盘空间与权限。' });
+      this.guard(() => this.update(id, { error: '终端日志写入失败。会话仍在运行，请检查磁盘空间与权限。' }));
     }
   }
   private emit(id: string, data: string) {
@@ -96,25 +121,29 @@ export class Runtime {
     this.pending.set(id, (this.pending.get(id) ?? '') + data);
     const entry = this.running.get(id);
     if (entry && !entry.paused && this.pending.get(id)!.length > 256 * 1024) { entry.process.pause(); entry.paused = true; }
-    if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flush(), 24);
+    if (!this.flushTimer) this.flushTimer = setTimeout(() => this.guard(() => this.flush()), 24);
   }
   private flush() {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = undefined;
-    for (const [id,data] of this.pending) this.emit(id,data);
+    const pending = [...this.pending];
     this.pending.clear();
-    for (const entry of this.running.values()) if (entry.paused) { entry.process.resume(); entry.paused = false; }
+    try { for (const [id,data] of pending) this.guard(() => this.emit(id,data)); }
+    finally { for (const entry of this.running.values()) if (entry.paused) { entry.paused = false; this.guard(() => entry.process.resume()); } }
   }
   async start(id: string, capabilities: Capabilities) {
     if (this.shuttingDown) throw new Error('工作台正在退出，无法启动新会话。');
     const session = this.getSession(id);
-    if (this.running.has(id) || this.starting.has(id)) return;
+    if (this.has(id)) return;
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
     if (session.identityPending) throw new Error('CLI 已切换会话，但新会话身份尚未确认。请从历史记录重新导入目标会话，避免恢复错误的对话。');
     if (session.kind === 'claude' && session.observedPermissionMode && !['default', 'plan', 'acceptEdits'].includes(session.observedPermissionMode)) throw new Error('上次 CLI 使用了客户端启动选项以外的权限模式。请先在会话设置中明确选择默认、计划或接受编辑，再恢复。');
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error(`已达到 ${this.store.state.settings.maxSessions} 个并发会话上限，请先停止一个会话。`);
     this.starting.add(id);
+    let finishStart!: () => void;
+    this.startCompletions.set(id, new Promise<void>(resolve => { finishStart = resolve; }));
     let hooks: PtyHookBridge | undefined;
+    let spawned: ProcessEntry | undefined;
     try {
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
       const env = environment();
@@ -127,7 +156,7 @@ export class Runtime {
         if (supportsPtyHooks(capabilities)) {
           hooks = await createPtyHookBridge(session.claudeId, patch => {
             const active = this.running.get(id);
-            if (active && active.hooks === hooks) this.update(id, active.ending ? { ...patch, taskState: 'interrupted' } : patch);
+            if (active && active.hooks === hooks) this.guard(() => this.update(id, active.ending ? { ...patch, taskState: 'interrupted' } : patch));
           });
           args.push('--settings', hooks.settings);
         }
@@ -135,26 +164,34 @@ export class Runtime {
       if (this.shuttingDown || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
       const child = pty.spawn(file, args, { name: 'xterm-256color', cwd: session.cwd, env, cols: 100, rows: 30 });
-      const entry: ProcessEntry = { process: child, ending: false, hooks };
+      const entry: ProcessEntry = spawned = { process: child, ending: false, hooks };
       this.running.set(id, entry);
-      child.onData(data => this.queue(id,data));
+      child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
         if (this.running.get(id) !== entry) return;
-        this.flush(); this.running.delete(id);
+        // Detach ownership before any fallible persistence, output, or UI callback.
+        this.running.delete(id);
         if (process.platform === 'win32') this.releasePty(entry);
-        void entry.hooks?.close();
-        this.emit(id, `\r\n\x1b[90m── 会话进程已退出 · code ${exitCode} ──\x1b[0m\r\n`);
-        this.update(id, { status: entry.ending || exitCode === 0 ? 'stopped' : 'error', exitCode,
-          taskState: entry.ending ? 'interrupted' : exitCode !== 0 ? 'error' : this.getSession(id).taskState,
-          error: !entry.ending && exitCode !== 0 ? `Claude / Shell 退出码 ${exitCode}，请查看终端中的错误。` : undefined });
+        void this.closeHooks(entry);
+        this.guard(() => this.flush());
+        this.guard(() => this.emit(id, `\r\n\x1b[90m── 会话进程已退出 · code ${exitCode} ──\x1b[0m\r\n`));
+        this.guard(() => this.update(id, { status: entry.ending || exitCode === 0 ? 'stopped' : 'error', exitCode,
+          taskState: entry.ending ? 'interrupted' : exitCode !== 0 ? 'error' : this.store.state.sessions.find(session => session.id === id)?.taskState,
+          error: !entry.ending && exitCode !== 0 ? `Claude / Shell 退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
+        this.trimBuffers();
       });
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
         terminalSync: session.kind === 'claude' ? hooks ? 'waiting' : 'unsupported' : undefined });
     } catch (error) {
-      await hooks?.close();
-      this.update(id,{ status: this.cancelledStarts.has(id) || this.shuttingDown ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) });
+      // A successful spawn followed by a failed state write still owns a real process.
+      if (spawned) await this.beginStop(id, spawned);
+      else { try { await hooks?.close(); } catch (closeError) { this.reportError(closeError); } }
+      this.guard(() => this.update(id,{ status: this.cancelledStarts.has(id) || this.shuttingDown ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
       throw error;
-    } finally { this.starting.delete(id); this.cancelledStarts.delete(id); this.trimBuffers(); }
+    } finally {
+      this.starting.delete(id); this.cancelledStarts.delete(id); this.startCompletions.delete(id);
+      finishStart(); this.trimBuffers();
+    }
   }
   write(id: string, data: string) {
     const entry = this.running.get(id);
@@ -165,19 +202,46 @@ export class Runtime {
   interrupt(id: string) { this.write(id,'\x03'); this.update(id, { taskState: 'interrupted' }); }
   stop(id: string) {
     if (this.starting.has(id)) this.cancelledStarts.add(id);
-    this.flush();
     const entry = this.running.get(id);
     if (!entry || entry.ending) return;
-    entry.ending = true;
+    // Start resource cleanup first: failed persistence must not make stop irreversible.
+    void this.beginStop(id, entry);
+    this.guard(() => this.flush());
     this.update(id,{ status: 'stopping' });
-    if (process.platform === 'win32') {
+  }
+  private beginStop(id: string, entry: ProcessEntry): Promise<void> {
+    if (entry.cleanup) return entry.cleanup;
+    entry.ending = true;
+    this.stopping.set(id, entry);
+    entry.cleanup = this.trackCleanup((async () => {
+      try {
+        if (process.platform === 'win32') await this.stopWindowsTree(entry);
+        else await this.stopPosixTree(entry);
+      } finally {
+        this.releasePty(entry);
+        await this.closeHooks(entry);
+        if (this.stopping.get(id) === entry) this.stopping.delete(id);
+        this.trimBuffers();
+      }
+    })());
+    return entry.cleanup;
+  }
+  private stopWindowsTree(entry: ProcessEntry): Promise<void> {
+    return new Promise((resolve, reject) => {
       const killer = spawnProcess('taskkill', ['/PID',String(entry.process.pid),'/T','/F'], { windowsHide:true, stdio:'ignore' });
-      const cleanup = () => { if (entry.killTimer) clearTimeout(entry.killTimer); this.releasePty(entry); };
-      killer.once('error', cleanup);
-      killer.once('close', cleanup);
-      entry.killTimer = setTimeout(() => { try { killer.kill(); } catch { /* Already exited. */ } cleanup(); }, 2500);
-      entry.killTimer.unref();
-    } else void this.stopPosixTree(entry);
+      let done = false;
+      const finish = (error?: Error) => {
+        if (done) return;
+        done = true; clearTimeout(timer);
+        if (error) reject(error); else resolve();
+      };
+      const timer = setTimeout(() => {
+        try { killer.kill(); } catch { /* Already exited. */ }
+        finish(new Error('等待会话进程树停止超时。'));
+      }, 2500);
+      killer.once('error', error => finish(error));
+      killer.once('close', code => finish(code === 0 ? undefined : new Error('无法确认会话进程树已完全停止。')));
+    });
   }
   private releasePty(entry: ProcessEntry) {
     if (entry.released) return;
@@ -194,13 +258,18 @@ export class Runtime {
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
     } catch { /* Fall back to the owned process group. */ }
     const signal = (name: NodeJS.Signals) => {
-      for (const pid of [...ids].reverse()) { try { process.kill(pid,name); } catch { /* Exited. */ } }
-      try { process.kill(-entry.process.pid,name); } catch { /* Group exited. */ }
+      for (const pid of [...ids].reverse()) {
+        try { process.kill(pid,name); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') this.reportError(error); }
+      }
+      try { process.kill(-entry.process.pid,name); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') this.reportError(error); }
     };
     signal('SIGTERM');
     // Keep this cleanup even when the root exits before an ignoring descendant.
-    entry.killTimer = setTimeout(() => signal('SIGKILL'),1500);
-    entry.killTimer.unref();
+    // This is a tracked Promise, independent of the root PTY's exit event.
+    await new Promise<void>(resolve => setTimeout(resolve,1500));
+    signal('SIGKILL');
   }
   snapshot(id: string): TerminalSnapshot {
     const session = this.getSession(id);
@@ -244,12 +313,24 @@ export class Runtime {
       fs.rmSync(this.logPath(id) + '.previous', { force: true });
     }
   }
-  async shutdown() {
+  async shutdown(): Promise<void> {
+    await (this.shutdownPromise ??= this.performShutdown());
+    // Resource cleanup is idempotent, but saving must be retried after a disk fault.
+    this.store.flush();
+  }
+  private async performShutdown() {
     this.shuttingDown = true;
-    for (const id of this.running.keys()) this.stop(id);
+    for (const id of this.starting) this.cancelledStarts.add(id);
+    for (const id of this.running.keys()) this.guard(() => this.stop(id));
+    await Promise.all([...this.startCompletions.values()]);
     const deadline = Date.now() + 3000;
     while ((this.running.size || this.starting.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve,50));
-    for (const entry of this.running.values()) { this.releasePty(entry); await entry.hooks?.close(); }
-    this.flush();
+    for (const [id, entry] of this.running) {
+      await this.beginStop(id, entry);
+      this.releasePty(entry);
+    }
+    // Root exit is not proof that descendants, taskkill, or hook servers have finished.
+    while (this.cleanups.size) await Promise.all([...this.cleanups]);
+    this.guard(() => this.flush());
   }
 }

@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage } from 'electron';
 import fs from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
@@ -8,12 +9,16 @@ import { StateStore } from './store';
 import { Runtime } from './runtime';
 import { SessionService } from './session-service';
 import { detectCLI } from './commands';
-import { createWorktree, gitInfo } from './git';
+import { cleanupWorktree, createWorktree, gitInfo } from './git';
 import { readHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project, Session } from '../shared/types';
 
-if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
+const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
+if(profileDirectory) {
+  if(!path.isAbsolute(profileDirectory)||profileDirectory.length>4096)throw new Error('自定义数据目录必须是有效的绝对路径。');
+  mkdirSync(profileDirectory,{recursive:true,mode:0o700});app.setPath('userData',path.resolve(profileDirectory));
+} else if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
 let window: BrowserWindow | null = null;
 let runtime: Runtime;
 let services: SessionService;
@@ -23,11 +28,24 @@ let closing = false;
 let allowQuit = false;
 let capabilities: Capabilities = { available:false, executable:'', version:'', flags:[], efforts:['default'] };
 let detectionEpoch=0;
+const projectCreations=new Map<string,number>();
 const rendererFile = path.join(__dirname, '../renderer/index.html');
 const devUrl = !app.isPackaged ? process.env.WORKBENCH_DEV_URL : undefined;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Invalid development origin');
 
-function notify() { if (window && !window.isDestroyed()) { window.webContents.send('workspace:state', store.state); window.webContents.send('workspace:capabilities',capabilities); } }
+let notifyTimer:NodeJS.Timeout|undefined;
+let sentCapabilities:Capabilities|undefined;
+function notify() {
+  if(notifyTimer)return;
+  notifyTimer=setTimeout(()=>{
+    notifyTimer=undefined;
+    if(window&&!window.isDestroyed()) {
+      window.webContents.send('workspace:state',store.state);
+      if(sentCapabilities!==capabilities){sentCapabilities=capabilities;window.webContents.send('workspace:capabilities',capabilities);}
+    }
+  },40);
+}
+function reportPersistenceError() { if(window&&!window.isDestroyed())window.webContents.send('workspace:error','工作区保存失败，请检查磁盘空间和目录权限；退出前请重试保存。'); }
 async function refreshCapabilities() { const epoch=++detectionEpoch; const value=await detectCLI(store.state.settings); if(epoch===detectionEpoch){capabilities=value;notify();}return capabilities; }
 function assertSender(event: Electron.IpcMainInvokeEvent) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted IPC sender');
@@ -54,6 +72,7 @@ function registerIPC() {
   });
   handle('project:add',z.string().min(1).max(4096),addProject);
   handle('project:remove',idSchema,id => {
+    if(projectCreations.has(id))throw new Error('项目正在创建会话，请稍后重试。');
     if (store.state.sessions.some(s => s.projectId === id)) throw new Error('项目包含会话，请保留项目以便恢复历史。');
     store.change(s => { s.projects = s.projects.filter(p => p.id !== id); }); notify();
   });
@@ -69,6 +88,8 @@ function registerIPC() {
     const id = randomUUID();
     const source = input.fork ? store.state.sessions.find(s => s.claudeId === input.resumeFrom && s.projectId === project.id) : undefined;
     const sourcePath = source?.cwd ?? project.path;
+    projectCreations.set(project.id,(projectCreations.get(project.id)??0)+1);
+    try { return await services.withSessionCreation(sourcePath,input.isolated,async()=>{
     const worktree = input.isolated ? await createWorktree(sourcePath,store.directory,id) : undefined;
     const now = new Date().toISOString();
     const session: Session = { id, projectId:project.id, title:input.title, cwd:worktree || sourcePath,
@@ -77,7 +98,19 @@ function registerIPC() {
       model:input.model, effort:input.effort, permissionMode:input.permissionMode,
       adapter:input.kind==='shell'?'terminal':input.adapter ?? 'terminal',taskState:'idle',draft:'',
       status:'idle',archived:false,createdAt:now,updatedAt:now,worktree,worktreeBase:worktree?sourcePath:undefined };
-    store.change(s => s.sessions.unshift(session)); notify(); return session;
+    try {store.change(s => s.sessions.unshift(session));}
+    catch(error) {
+      if(worktree) {
+        const cleanup=await cleanupWorktree(sourcePath,worktree,id,false).catch(()=>undefined);
+        if(!cleanup?.ok)throw new Error('会话保存失败；新建的工作目录已保留，请检查磁盘后处理：'+worktree);
+      }
+      throw error;
+    }
+    notify(); return session;
+    }); } finally {
+      const count=(projectCreations.get(project.id)??1)-1;
+      if(count)projectCreations.set(project.id,count);else projectCreations.delete(project.id);
+    }
   });
   services.register(handle);
   handle('session:start',idSchema,id => services.start(id));
@@ -104,7 +137,10 @@ function registerIPC() {
 function createWindow() {
   window = new BrowserWindow({ width:1460,height:920,minWidth:980,minHeight:680,backgroundColor:'#101313',title:'Claude Workbench',
     autoHideMenuBar:true,webPreferences:{ preload:path.join(__dirname,'../preload/index.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true } });
-  window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
+  window.webContents.setWindowOpenHandler(({url}) => {
+    try { const parsed=new URL(url);if(['https:','http:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)void shell.openExternal(parsed.href).catch(()=>{}); } catch { /* Ignore invalid links. */ }
+    return {action:'deny'};
+  });
   window.webContents.on('will-navigate',event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_webContents,_permission,callback) => callback(false));
   window.on('close',event => { if (!allowQuit) { event.preventDefault(); if(store.state.settings.closeToTray && tray) window?.hide(); else void requestQuit(); } });
@@ -115,10 +151,14 @@ function createWindow() {
       const pixels=Buffer.alloc(16*16*4); for(let y=3;y<13;y++) for(let x=3;x<13;x++) if(x<6||y<6||y>9){const p=(y*16+x)*4;pixels[p]=170;pixels[p+1]=200;pixels[p+2]=140;pixels[p+3]=255;}
       tray=new Tray(nativeImage.createFromBitmap(pixels,{width:16,height:16}));
       tray.setToolTip('Claude Workbench');
-      tray.setContextMenu(Menu.buildFromTemplate([{label:'打开工作台',click:()=>{window?.show();window?.focus();}},{label:'退出工作台',click:()=>void requestQuit()}]));
-      tray.on('click',()=>{window?.show();window?.focus();});
+      tray.setContextMenu(Menu.buildFromTemplate([{label:'打开工作台',click:showWindow},{label:'退出工作台',click:()=>void requestQuit()}]));
+      tray.on('click',showWindow);
     } catch { tray=undefined; }
   }
+}
+function showWindow() {
+  if(!window&&store&&app.isReady())createWindow();
+  if(window&&!window.isDestroyed()){if(window.isMinimized())window.restore();window.show();window.focus();}
 }
 async function requestQuit() {
   if (closing) return;
@@ -127,19 +167,27 @@ async function requestQuit() {
     const result = await dialog.showMessageBox(window,{type:'question',buttons:['保留窗口','停止会话并退出'],defaultId:0,cancelId:0,title:'退出工作台',message:`仍有 ${services.activeCount} 个会话进程运行。`,detail:'退出会停止这些进程。已保存的 Claude 对话可以在下次启动时恢复。'});
     if (result.response === 0) { closing=false; return; }
   }
-  await services?.shutdown();
-  allowQuit = true; app.quit();
+  try {
+    await services?.shutdown();
+    store?.flush();
+    allowQuit = true; app.quit();
+  } catch {
+    closing=false;showWindow();reportPersistenceError();
+    // Keep the app open so the user can fix storage and retry; resources have
+    // already been stopped independently of the failing persistence operation.
+  }
 }
 // Isolated E2E instances use a disposable data directory and do not acquire the OS singleton socket.
 const isolatedTest = !app.isPackaged && process.env.WORKBENCH_TEST_MODE === '1' && !!process.env.WORKBENCH_DATA_DIR;
 if (!isolatedTest && !app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance',() => { if(window?.isMinimized()) window.restore(); window?.focus(); });
+  app.on('second-instance',showWindow);
+  app.on('activate',showWindow);
   app.on('before-quit',event => { if (!allowQuit) {event.preventDefault();void requestQuit();} });
   app.whenReady().then(async () => {
     try {
-      store = new StateStore(app.getPath('userData'));
-      runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); });
+      store = new StateStore(app.getPath('userData'),{onError:reportPersistenceError});
+      runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); },{onError:reportPersistenceError});
       services = new SessionService(store,runtime,()=>capabilities,notify,()=>window);
       registerIPC(); createWindow();
       await refreshCapabilities();

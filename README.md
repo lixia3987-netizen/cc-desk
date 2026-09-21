@@ -2,21 +2,21 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
-**v0.2.1** 修复 Windows npm 安装的 Claude Code 检测和启动，兼容新版原生入口与旧版 Node.js 入口。
+**v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
 ## 下载安装包与便携包
 
-登录有仓库访问权限的 GitHub 账户，打开 [v0.2.1 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.1)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+登录有仓库访问权限的 GitHub 账户，打开 [v0.2.2 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.2.1-windows-x64-setup.exe` | `cc-desk-0.2.1-windows-x64-portable.exe`，或 `cc-desk-0.2.1-windows-x64-portable.zip` |
-| macOS | `cc-desk-0.2.1-macos-<arch>-setup.dmg` | `cc-desk-0.2.1-macos-<arch>-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.1-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.1-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.2.2-windows-x64-setup.exe` | `cc-desk-0.2.2-windows-x64-portable.exe`，或 `cc-desk-0.2.2-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-0.2.2-macos-arm64-setup.dmg` | `cc-desk-0.2.2-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.2-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.2-linux-x64-portable.tar.gz` |
 
-macOS 的 `<arch>` 以 Release 实际文件名为准：`arm64` 用于 Apple silicon，`x64` 用于 Intel；本次构建沿用 macOS runner 的架构。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
+macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 
 这里的“便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。Release 同时提供 `SHA256SUMS.txt`，可校验下载文件。
 
@@ -48,6 +48,7 @@ npm start           # 启动已有 dist
 npm run dist:win    # Windows 上构建 NSIS 安装包、单文件便携 EXE、ZIP
 npm run dist:mac    # macOS 上构建 DMG、免安装 ZIP
 npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
+npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面的 CI 使用 `xvfb-run -a npm run test:e2e`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
@@ -70,15 +71,15 @@ Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面�
 | 能力 | 行为 |
 | --- | --- |
 | 项目、会话 | 创建、切换、恢复、重命名、归档、删除；每个会话独立草稿，恢复最近选择 |
-| 结构化对话 | 单会话单运行器，消息/工具卡片、流式文本、明确失败；HTML 按文本显示 |
+| 结构化对话 | 单会话单运行器，流式/完整/最终结果按消息来源合并；标准 Markdown、代码复制/高亮、表格；HTML 按文本显示 |
 | 审批和提问 | 使用 CLI 的实际控制请求；保持原始工具参数，审批限当前请求，过期不可复用 |
 | 模型和权限 | 运行中的切换必须取得 CLI 确认；不启用权限绕过模式 |
-| 上下文 | 项目文件检索/预览与 @引用；原生文件选择器添加文本、图片、PDF；8 个附件、单个 8 MiB、合计 16 MiB |
+| 上下文 | 项目文件检索/预览与 @引用；附件原名/大小、重启恢复与移除回收、纯附件发送；8 个附件、单个 8 MiB、合计 16 MiB |
 | 历史 | 项目筛选后分页，全文搜索；只读原始 CLI 记录；不改写 Claude 历史 |
 | Git 审阅 | 文件级真实 diff、二进制提示、有界预览；不会隐式暂存或提交 |
 | Worktree | 创建并记录所有权；干净且可快进时合并；停止、干净、已合并且无忽略数据时清理；保留分支 |
 | MCP / Skills | 配置来源与元数据清单；结构化会话显示 CLI 报告的 MCP 状态；只读诊断不会启动服务器 |
-| 工作流 | 顺序依赖、摘要产物、有限手动重试、取消和崩溃恢复；沿用会话权限和工作目录 |
+| 工作流 | 顺序依赖、摘要产物、有限手动重试、取消和崩溃恢复；历史导出/删除；沿用会话权限和工作目录 |
 | 终端 | node-pty + xterm.js；中文、尺寸调整、输入、中断、进程树停止；停止缓存有界 |
 | 本地数据 | 原子状态文件和备份；结构化消息快照与事件日志；附件在应用数据目录保存副本 |
 
@@ -97,6 +98,8 @@ Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面�
 停止进程后恢复的是 Claude 保存的对话，不是原操作系统进程。已建立的对话缺少原始 transcript 时会报错，禁止静默新建替代上下文。归档不删除数据；删除工作台会话会清理自己的消息记录和附件，保留 CLI 原始历史。独立 worktree 必须先审阅和清理；清理后的会话归档，不自动换到另一个目录继续执行。
 
 结构化界面只保留有界消息投影，完整可用记录通过导出读取。终端日志是滚动保留的调试输出，导出包含上一段和当前段，不能视为完整对话备份。对话与工具输出可能含项目内容，存放在本机，请按自己的数据保留需求管理。
+
+v0.2.2 会回放快照之后的完整日志事件，并自动修正旧日志能够证明的重复结果。没有足够来源信息的旧重复文本会保留；不会按文本相同批量删除历史。CLI 原始记录不改写。
 
 默认数据目录为 Electron userData，准确路径显示在设置中：
 

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID, type Hash } from 'node:crypto';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
 import type { ChatApproval, ChatDecision, ChatMessage, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
@@ -12,11 +12,14 @@ import { chatArguments, JsonLineDecoder, object, string, userContent, type WireO
 
 interface ControlWaiter { resolve: (value: WireObject) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 interface Turn { id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean }
+interface TextBlock { id: string; index: number; length: number; digest: string; hash?: Hash; finalized?: boolean; envelopeId?: string }
+interface AssistantGroup { id: string; sourceId: string; parent?: string; blocks: Map<number, TextBlock>; completed: boolean; stopped?: boolean }
+
 interface Entry {
   child: ChildProcessWithoutNullStreams; ending: boolean; initialized: boolean;
   expectedId: string; enforceIdentity: boolean;
   turn?: Turn; controls: Map<string, ControlWaiter>; approvals: Map<string, ChatApproval>;
-  streams: Map<string, string>; tools: Set<string>; tasks: Set<string>;
+  streams: Map<string, string>; assistants: Map<string, AssistantGroup>; latestRoot?: AssistantGroup; resultIds: Set<string>; tools: Set<string>; tasks: Set<string>;
   stderr: string; decoder: JsonLineDecoder; killTimer?: NodeJS.Timeout; interruptTimer?: NodeJS.Timeout;
   waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
 }
@@ -48,6 +51,7 @@ export class ChatRuntime {
   private history: ChatHistory;
   private notifications = new Map<string, NodeJS.Timeout>();
   private hydrating = new Map<string, Promise<void>>();
+  private transcriptVersions = new Map<string, string>();
   constructor(private store: StateStore, private onState: () => void, private onEvents: (sessionId: string) => void, private options: ChatRuntimeOptions = {}) {
     this.history = new ChatHistory(store.directory, id => this.has(id), (id, error) => {
       const snapshot = this.history.get(id);
@@ -65,12 +69,15 @@ export class ChatRuntime {
   get activeCount() { return new Set([...this.entries.keys(), ...this.starting]).size; }
   has(id: string) { return this.entries.has(id) || this.starting.has(id); }
   isBusy(id: string) { return this.busy.has(id); }
+  taskState(id: string): TaskState { this.session(id); return this.history.get(id).taskState; }
   private session(id: string) {
     const session = this.store.state.sessions.find(item => item.id === id);
     if (!session) throw new Error('会话不存在。');
     return session;
   }
   private update(id: string, patch: Partial<Session>) {
+    const current = this.session(id);
+    if (Object.entries(patch).every(([key, value]) => current[key as keyof Session] === value)) return;
     this.store.change(state => {
       const session = state.sessions.find(item => item.id === id);
       if (session) Object.assign(session, patch, { updatedAt: now() });
@@ -100,16 +107,20 @@ export class ChatRuntime {
     this.history.get(id).pending = approvals;
     if (approvals.length) this.state(id, approvals.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval');
     else if (entry.turn) this.state(id, entry.tools.size ? 'tool_running' : 'thinking');
+    this.refreshBackgroundTimeout(id, entry);
     this.notify(id, true);
   }
   private message(id: string, message: ChatMessage, delta?: string) {
-    const snapshot = this.history.get(id);
-    // Journal first, then bound only the UI projection.
-    this.history.append(id, delta === undefined ? { type: 'message', message } : { type: 'text_delta', id: message.id, text: delta });
-    message.text = message.text.slice(-MAX_TEXT);
-    if (message.input && JSON.stringify(message.input).length > MAX_TEXT) message.input = { preview: JSON.stringify(message.input).slice(0, MAX_TEXT), truncated: true };
-    const existing = snapshot.messages.find(item => item.id === message.id);
-    if (existing) Object.assign(existing, message); else snapshot.messages.push(message);
+    // Journal the complete event before bounding the UI projection. A delta without
+    // a visible block needs its metadata as well, so recovery can recreate it.
+    const existing = this.history.getMessage(id, message.id);
+    this.history.append(id, delta === undefined || !existing ? { type: 'message', message } : { type: 'text_delta', id: message.id, text: delta });
+    if (message.text.length > MAX_TEXT) message = { ...message, text: message.text.slice(-MAX_TEXT), truncated: true };
+    if (message.input) {
+      const serialized = JSON.stringify(message.input);
+      if (serialized.length > MAX_TEXT) message = { ...message, input: { preview: serialized.slice(0, MAX_TEXT), truncated: true }, truncated: true };
+    }
+    this.history.upsertMessage(id, message);
     this.notify(id);
   }
   private system(id: string, text: string, isError = false) {
@@ -121,20 +132,49 @@ export class ChatRuntime {
   }
   async hydrate(id: string): Promise<void> {
     const session = this.session(id);
-    if (this.history.get(id).messages.length || this.entries.has(id) || !(session.imported || session.resumeFrom || session.started)) return;
+    if (this.entries.has(id) || !(session.imported || session.resumeFrom || session.started)) return;
     const pending = this.hydrating.get(id); if (pending) return pending;
+    const original = this.history.get(id).messages;
+    const last = original.at(-1); const length = original.length;
     const operation = (async () => {
       const sourceId = session.resumeFrom && !session.started ? session.resumeFrom : session.claudeId;
       const project = this.store.state.projects.find(item => item.id === session.projectId);
       const source = await findClaudeTranscript(session.cwd, sourceId) ?? (project && project.path !== session.cwd ? await findClaudeTranscript(project.path, sourceId) : undefined);
       if (!source) return;
+      const before = await fs.promises.stat(source);
+      const version = [source, before.dev, before.ino, before.size, before.mtimeMs].join(':');
+      if (this.transcriptVersions.get(id) === version) return;
       const preview = await readTranscriptPreview(source);
-      // A send/delete may have happened while the transcript was being read.
-      if (!this.store.state.sessions.some(item => item.id === id) || this.history.get(id).messages.length || this.entries.has(id)) return;
-      for (const message of preview.messages) this.message(id, message);
-      this.history.get(id).truncated = preview.truncated;
-      if (preview.messages.length || preview.truncated) this.system(id, preview.truncated ? '已载入原始对话的最近部分；Claude 恢复时使用原始会话记录。' : '已载入 Claude 原始对话记录。');
-      this.history.flush();
+      const after = await fs.promises.stat(source);
+      // Only merge a stable transcript into an idle, unchanged projection.
+      // The journal is authoritative while this runtime owns a live CLI process.
+      if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return;
+      if (!this.store.state.sessions.some(item => item.id === id) || this.entries.has(id)) return;
+      const snapshot = this.history.get(id);
+      if (snapshot.messages !== original || snapshot.messages.length !== length || snapshot.messages.at(-1) !== last) return;
+      this.transcriptVersions.set(id, version);
+      let additions = preview.messages;
+      if (length) {
+        // Older snapshots lack source identities. Do not guess from repeated text
+        // or replace valid local history with an unrelated/truncated source tail.
+        const identity = (message: ChatMessage) => JSON.stringify([message.parentToolUseId ?? null, message.sourceId ?? message.id.replace(/^import:/, '')]);
+        const known = new Set(original.map(identity));
+        const tail = [...original].reverse().find(message => message.role !== 'system');
+        if (!tail || tail.role === 'assistant' && tail.turnId !== 'imported' && !tail.sourceId) return;
+        const tailIdentity = identity(tail);
+        let anchor = -1;
+        for (let index = preview.messages.length - 1; index >= 0; index--) {
+          if (identity(preview.messages[index]) === tailIdentity) { anchor = index; break; }
+        }
+        if (anchor < 0) return;
+        additions = preview.messages.slice(anchor + 1).filter(message => !known.has(identity(message)));
+      }
+      for (const message of additions) this.message(id, message);
+      if (!length) {
+        snapshot.truncated = preview.truncated;
+        if (preview.messages.length || preview.truncated) this.system(id, preview.truncated ? '已载入原始对话的最近部分；Claude 恢复时使用原始会话记录。' : '已载入 Claude 原始对话记录。');
+      }
+      if (additions.length || !length && preview.truncated) this.history.flush();
     })();
     this.hydrating.set(id, operation);
     try { await operation; } finally { this.hydrating.delete(id); }
@@ -144,7 +184,7 @@ export class ChatRuntime {
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');
     const timer = this.notifications.get(id); if (timer) clearTimeout(timer);
-    this.notifications.delete(id); this.history.delete(id);
+    this.notifications.delete(id); this.transcriptVersions.delete(id); this.history.delete(id);
   }
 
   async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = []): Promise<ChatTurnResult> {
@@ -164,9 +204,9 @@ export class ChatRuntime {
       const entry = this.entries.get(id) ?? await this.start(id, capabilities);
       if (entry.ending || !entry.initialized) throw new Error('会话正在停止或尚未初始化。');
       const result = new Promise<ChatTurnResult>(resolve => { entry.turn = { id: randomUUID(), resolve, interrupted: false }; });
-      entry.tools.clear(); entry.streams.clear();
+      entry.tools.clear(); entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
       const userId = randomUUID();
-      this.message(id, { id: userId, turnId: entry.turn!.id, role: 'user', text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
+      this.message(id, { id: userId, sourceId: userId, turnId: entry.turn!.id, role: 'user', text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
       this.state(id, 'thinking');
       try {
         this.write(entry, { type: 'user', uuid: userId, message: { role: 'user', content }, parent_tool_use_id: null, session_id: this.session(id).claudeId });
@@ -196,7 +236,7 @@ export class ChatRuntime {
       })();
       this.state(id, 'starting');
       const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
-      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, controls: new Map(), approvals: new Map(), streams: new Map(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
+      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
       const current = entry;
       current.decoder = new JsonLineDecoder(value => this.receive(id, current, value));
       this.entries.set(id, current);
@@ -248,6 +288,7 @@ export class ChatRuntime {
   private receive(id: string, entry: Entry, frame: WireObject) {
     if (entry.ending || this.entries.get(id) !== entry) return;
     const type = string(frame.type);
+    this.refreshBackgroundTimeout(id, entry);
     if (type === 'control_response') {
       const response = object(frame.response); const requestId = string(response.request_id);
       const pending = entry.controls.get(requestId); if (!pending) return;
@@ -272,32 +313,44 @@ export class ChatRuntime {
     if (type === 'assistant' || type === 'user') {
       const payload = object(frame.message);
       const blocks = Array.isArray(payload.content) ? payload.content : [];
-      const messageId = string(payload.id) || string(frame.uuid) || randomUUID();
+      if (!entry.turn) return;
+      const group = type === 'assistant' ? this.assistantGroup(entry, payload, frame, parent) : undefined;
+      const used = new Set<number>();
       for (const [index, raw] of blocks.entries()) {
         const block = object(raw);
         if (block.type === 'text' && type === 'assistant') {
-          this.message(id, { id: this.blockId(entry, messageId, index, parent), turnId: entry.turn?.id ?? '', role: 'assistant', text: string(block.text), createdAt: now(), parentToolUseId: parent });
+          this.completeText(id, entry, group!, index, string(block.text), used, blocks.length === 1, string(frame.uuid));
         } else if (block.type === 'tool_use') {
           const toolId = string(block.id); if (!toolId) continue;
           if (!this.session(id).started) this.update(id, { started: true });
           entry.tools.add(toolId);
-          this.message(id, { id: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', text: '', createdAt: now(), toolName: string(block.name), toolUseId: toolId, input: object(block.input), parentToolUseId: parent });
+          this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', text: '', createdAt: now(), toolName: string(block.name), toolUseId: toolId, input: object(block.input), parentToolUseId: parent });
           this.activity(id, entry);
         } else if (block.type === 'tool_result') {
           const toolId = string(block.tool_use_id); entry.tools.delete(toolId);
-          const existing = this.history.get(id).messages.find(message => message.id === 'tool:' + toolId);
+          const existing = this.history.getMessage(id, 'tool:' + toolId);
           const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? block.content.map(value => {
             const item = object(value); return item.type === 'text' ? string(item.text) : '[' + string(item.type) + ']';
           }).join('\n') : '';
-          this.message(id, { id: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', createdAt: now(), ...existing, text, toolUseId: toolId, isError: block.is_error === true, parentToolUseId: parent });
+          this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', createdAt: now(), ...existing, text, toolUseId: toolId, isError: block.is_error === true, parentToolUseId: parent });
           this.activity(id, entry);
         } else if (block.type === 'text' && parent) {
           this.message(id, { id: string(frame.uuid) || randomUUID(), turnId: entry.turn?.id ?? '', role: 'user', text: string(block.text), parentToolUseId: parent, createdAt: now() });
         }
       }
+      if (group) {
+        group.completed = true;
+        if (!parent && group.blocks.size) entry.latestRoot = group;
+        if (group.stopped) entry.streams.delete(JSON.stringify(parent ?? null));
+        this.pruneAssistants(entry);
+      }
       return;
     }
     if (type === 'result' && !parent) {
+      if (!entry.turn) return;
+      const resultId = string(frame.uuid);
+      if (resultId && entry.resultIds.has(resultId)) return;
+      if (resultId) entry.resultIds.add(resultId);
       const snapshot = this.history.get(id); const usage = object(frame.usage);
       snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
@@ -305,7 +358,8 @@ export class ChatRuntime {
       const summary = string(frame.result);
       const error = failed ? (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : summary || string(frame.subtype) || 'Claude 执行失败。') : undefined;
       this.history.append(id, { type: 'result', success: !failed, summary, error, usage: snapshot.usage });
-      if (summary && !snapshot.messages.some(message => message.turnId === entry.turn?.id && message.role === 'assistant' && !message.parentToolUseId && message.text === summary)) this.message(id, { id: randomUUID(), turnId: entry.turn?.id ?? '', role: 'assistant', text: summary, createdAt: now(), isError: failed });
+      if (summary && !this.matchesSummary(entry.latestRoot, summary)) this.message(id, { id: randomUUID(), turnId: entry.turn?.id ?? '', role: 'assistant', text: summary, createdAt: now(), isError: failed });
+      entry.latestRoot = undefined;
       if (entry.tasks.size && !failed && !entry.turn?.interrupted) {
         entry.waitingBackgroundResult = true;
         this.system(id, '本轮输出已结束，后台子任务仍在运行。'); this.activity(id, entry); return;
@@ -316,25 +370,123 @@ export class ChatRuntime {
     }
     if (type === 'error') this.fail(id, entry, string(frame.error) || string(object(frame.error).message) || 'Claude 返回了错误。');
   }
-  private blockId(entry: Entry, messageId: string, index: number, parent?: string) { return (entry.turn?.id ?? '') + ':' + (parent ?? 'main') + ':' + messageId + ':' + index; }
+  private groupId(entry: Entry, sourceId: string, parent?: string) { return JSON.stringify([entry.turn?.id, parent ?? null, sourceId]); }
+  private group(entry: Entry, sourceId: string, parent?: string): AssistantGroup {
+    const id = this.groupId(entry, sourceId, parent);
+    let group = entry.assistants.get(id);
+    if (!group) { group = { id, sourceId, parent, blocks: new Map(), completed: false }; entry.assistants.set(id, group); }
+    return group;
+  }
+  private digest(text: string) { return createHash('sha256').update(text, 'utf16le').digest('hex'); }
+  private compatible(block: TextBlock, text: string) {
+    return text.length >= block.length && this.digest(text.slice(0, block.length)) === block.digest;
+  }
+  private assistantGroup(entry: Entry, payload: WireObject, frame: WireObject, parent?: string) {
+    const sourceId = string(payload.id);
+    const envelopeId = string(frame.uuid);
+    const knownEnvelope = envelopeId ? entry.assistants.get(this.groupId(entry, envelopeId, parent)) : undefined;
+    if (knownEnvelope) return knownEnvelope;
+    if (sourceId) {
+      const group = this.group(entry, sourceId, parent);
+      if (envelopeId) entry.assistants.set(this.groupId(entry, envelopeId, parent), group);
+      return group;
+    }
+    const streamed = entry.assistants.get(entry.streams.get(JSON.stringify(parent ?? null)) ?? '');
+    const texts = (Array.isArray(payload.content) ? payload.content : []).map(object).filter(block => block.type === 'text');
+    // An envelope without an API message id can only reconcile against the
+    // pending stream in this exact parent/turn scope.
+    if (streamed && !streamed.completed && texts.length && texts.every(block => [...streamed.blocks.values()].some(candidate => this.compatible(candidate, string(block.text))))) {
+      if (envelopeId) entry.assistants.set(this.groupId(entry, envelopeId, parent), streamed);
+      return streamed;
+    }
+    return this.group(entry, string(frame.uuid) || randomUUID(), parent);
+  }
+  private completeText(id: string, entry: Entry, group: AssistantGroup, index: number, text: string, used: Set<number>, singleBlock: boolean, envelopeId: string) {
+    const indexed = group.blocks.get(index);
+    // A completed envelope can contain one block at a time, with indexes relative
+    // to that envelope. Match it to the stream's block before trusting the index.
+    const digest = this.digest(text);
+    const candidates = [...group.blocks.values()].filter(block => !used.has(block.index) && (!block.finalized || !envelopeId || block.envelopeId === envelopeId));
+    const exact = (block: TextBlock) => block.length === text.length && block.digest === digest;
+    const eligibleIndex = indexed && candidates.includes(indexed) ? indexed : undefined;
+    const match = candidates.find(block => !block.finalized && exact(block)) ?? (eligibleIndex && exact(eligibleIndex) ? eligibleIndex : candidates.find(exact))
+      ?? (eligibleIndex && this.compatible(eligibleIndex, text) ? eligibleIndex : candidates.find(block => this.compatible(block, text)));
+    const blockIndex = match?.index ?? (indexed?.finalized && (singleBlock || envelopeId && indexed.envelopeId !== envelopeId) ? Math.max(...group.blocks.keys()) + 1 : index);
+    used.add(blockIndex);
+    const messageId = group.id + ':' + blockIndex;
+    const existing = this.history.getMessage(id, messageId);
+    if (existing && match?.finalized && match.length === text.length && match.digest === digest && (!envelopeId || existing.sourceId === envelopeId)) return;
+    group.blocks.set(blockIndex, { id: messageId, index: blockIndex, length: text.length, digest, finalized: true, envelopeId: envelopeId || undefined });
+    this.message(id, { id: messageId, sourceId: envelopeId || group.sourceId, turnId: entry.turn!.id, role: 'assistant', text, createdAt: existing?.createdAt ?? now(), parentToolUseId: group.parent });
+  }
+  private matchesSummary(group: AssistantGroup | undefined, summary: string) {
+    if (!group) return false;
+    const blocks = [...group.blocks.values()].sort((a, b) => a.index - b.index).filter(block => block.length);
+    if (!blocks.length) return false;
+    // Result text describes the latest root reply, not a new assistant message.
+    // Compare full-content fingerprints, independent of the bounded UI text.
+    const last = blocks[blocks.length - 1];
+    if (last.length === summary.length && last.digest === this.digest(summary)) return true;
+    return ['', '\n', '\n\n'].some(separator => {
+      if (blocks.reduce((length, block) => length + block.length, separator.length * (blocks.length - 1)) !== summary.length) return false;
+      let offset = 0;
+      return blocks.every((block, index) => {
+        if (index) { if (summary.slice(offset, offset + separator.length) !== separator) return false; offset += separator.length; }
+        const part = summary.slice(offset, offset + block.length); offset += block.length;
+        return block.digest === this.digest(part);
+      });
+    });
+  }
   private stream(id: string, entry: Entry, event: WireObject, parent?: string) {
-    const key = parent ?? 'main';
+    if (!entry.turn) return;
+    const key = JSON.stringify(parent ?? null);
     if (event.type === 'message_start') {
-      const message = object(event.message); entry.streams.set(key, string(message.id) || randomUUID());
-      if (!parent && typeof message.model === 'string') { this.history.get(id).model = message.model; this.notify(id); }
+      const message = object(event.message); const group = this.group(entry, string(message.id) || randomUUID(), parent);
+      entry.streams.set(key, group.id);
+      if (!parent) { entry.latestRoot = group; if (typeof message.model === 'string') { this.history.get(id).model = message.model; this.notify(id); } }
       return;
     }
     const index = typeof event.index === 'number' ? event.index : 0;
-    const messageId = entry.streams.get(key); if (!messageId) return;
-    const block = object(event.content_block); const delta = object(event.delta);
-    if (event.type === 'content_block_start' && block.type === 'text') {
-      this.message(id, { id: this.blockId(entry, messageId, index, parent), turnId: entry.turn?.id ?? '', role: 'assistant', text: string(block.text), createdAt: now(), parentToolUseId: parent });
+    const group = entry.assistants.get(entry.streams.get(key) ?? ''); if (!group) return;
+    if (event.type === 'message_stop') { group.stopped = true; for (const block of group.blocks.values()) block.hash = undefined; return; }
+    if (event.type === 'content_block_stop') { const block = group.blocks.get(index); if (block) block.hash = undefined; return; }
+    const content = object(event.content_block); const delta = object(event.delta);
+    const messageId = group.id + ':' + index;
+    if (event.type === 'content_block_start' && content.type === 'text') {
+      const text = string(content.text); const hash = createHash('sha256').update(text, 'utf16le');
+      group.completed = false;
+      group.blocks.set(index, { id: messageId, index, length: text.length, digest: hash.copy().digest('hex'), hash });
+      this.message(id, { id: messageId, sourceId: group.sourceId, turnId: entry.turn.id, role: 'assistant', text, createdAt: now(), parentToolUseId: parent });
     } else if (event.type === 'content_block_delta' && delta.type === 'text_delta') {
-      const idOfMessage = this.blockId(entry, messageId, index, parent);
-      const existing = this.history.get(id).messages.find(message => message.id === idOfMessage);
-      this.message(id, { id: idOfMessage, turnId: entry.turn?.id ?? '', role: 'assistant', createdAt: now(), parentToolUseId: parent, ...existing, text: (existing?.text ?? '') + string(delta.text) }, string(delta.text));
+      const text = string(delta.text);
+      const block = group.blocks.get(index) ?? { id: messageId, index, length: 0, digest: this.digest(''), hash: createHash('sha256') };
+      if (!block.hash) return;
+      block.hash.update(text, 'utf16le'); block.length += text.length; block.digest = block.hash.copy().digest('hex'); group.blocks.set(index, block);
+      const existing = this.history.getMessage(id, messageId);
+      this.message(id, { id: messageId, sourceId: group.sourceId, turnId: entry.turn.id, role: 'assistant', createdAt: now(), parentToolUseId: parent, ...existing, text: (existing?.text ?? '') + text }, text);
     }
-    // Thinking content is not persisted; status is sufficient for progress feedback.
+    // Thinking content is not persisted; its events still reset the idle watchdog.
+  }
+  private pruneAssistants(entry: Entry) {
+    // Retain a bounded identity window for replayed complete envelopes. Active
+    // streams and the root reply needed for result reconciliation stay protected.
+    if (entry.assistants.size <= 1024) return;
+    const active = new Set(entry.streams.values());
+    for (const [key, group] of entry.assistants) {
+      if (entry.assistants.size <= 1024) break;
+      if (group !== entry.latestRoot && !active.has(group.id)) entry.assistants.delete(key);
+    }
+  }
+  private refreshBackgroundTimeout(id: string, entry: Entry) {
+    if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
+    entry.backgroundTimer = undefined;
+    if (!entry.waitingBackgroundResult || !entry.turn || entry.turn.interrupted || entry.tasks.size || entry.approvals.size || entry.ending) return;
+    // This is an inactivity deadline. Progress restarts it and human approval
+    // pauses it, so a long healthy continuation cannot be stopped by wall time.
+    entry.backgroundTimer = setTimeout(() => {
+      entry.backgroundTimer = undefined;
+      if (entry.turn && entry.waitingBackgroundResult && !entry.tasks.size && !entry.approvals.size) this.fail(id, entry, '后台子任务已结束，但 CLI 未返回最终结果。会话已停止，可恢复后继续；工作流没有自动进入下一阶段。');
+    }, this.options.backgroundResultTimeoutMs ?? 120_000);
   }
   private systemEvent(id: string, entry: Entry, frame: WireObject) {
     const subtype = string(frame.subtype); const snapshot = this.history.get(id);
@@ -347,20 +499,13 @@ export class ChatRuntime {
       for (const field of ['plugin_errors', 'mcp_server_errors']) if (Array.isArray(frame[field]) && frame[field].length) this.system(id, field + ': ' + JSON.stringify(frame[field]), true);
       this.notify(id, true);
     } else if (subtype === 'task_started') {
-      if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
-      entry.backgroundTimer = undefined;
       const taskId = string(frame.task_id); if (taskId) entry.tasks.add(taskId);
       this.system(id, '子任务开始：' + (string(frame.description) || taskId));
+      this.refreshBackgroundTimeout(id, entry);
     } else if (subtype === 'task_notification') {
       entry.tasks.delete(string(frame.task_id));
       this.system(id, '子任务 ' + string(frame.status) + '：' + (string(frame.summary) || string(frame.task_id)), frame.status === 'failed');
-      if (!entry.tasks.size && entry.waitingBackgroundResult && !entry.backgroundTimer) {
-        // The official CLI wakes the parent for a follow-up turn after task completion.
-        // Do not advance a workflow while that response is still being generated.
-        entry.backgroundTimer = setTimeout(() => {
-          if (entry.turn && entry.waitingBackgroundResult) this.fail(id, entry, '后台子任务已结束，但 CLI 未返回最终结果。会话已停止，可恢复后继续；工作流没有自动进入下一阶段。');
-        }, this.options.backgroundResultTimeoutMs ?? 120_000);
-      }
+      this.refreshBackgroundTimeout(id, entry);
     } else if (subtype === 'api_retry') this.system(id, '模型请求重试 ' + String(frame.attempt ?? '') + '/' + String(frame.max_retries ?? '') + '：' + string(frame.error), true);
     else if (subtype === 'permission_denied') this.system(id, 'CLI 权限规则拒绝了操作：' + JSON.stringify(frame), true);
     else if (subtype === 'status' && frame.status === 'compacting') this.system(id, '正在压缩上下文…');
@@ -450,6 +595,7 @@ export class ChatRuntime {
     entry.interruptTimer = undefined;
     entry.backgroundTimer = undefined; entry.waitingBackgroundResult = false;
     const turn = entry.turn; entry.turn = undefined; entry.tools.clear(); entry.tasks.clear(); entry.approvals.clear();
+    entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
     this.history.get(id).pending = [];
     try {
       this.state(id, result.interrupted ? 'interrupted' : result.success ? 'completed' : 'error', result.error);
@@ -516,11 +662,14 @@ export class ChatRuntime {
   async shutdown() {
     this.shuttingDown = true;
     for (const id of this.starting) this.starting.delete(id);
-    for (const id of this.entries.keys()) this.stop(id);
+    const errors: unknown[] = [];
+    for (const id of this.entries.keys()) { try { this.stop(id); } catch (error) { errors.push(error); } }
     const deadline = Date.now() + 2500;
     while (this.entries.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     for (const entry of this.entries.values()) { try { entry.child.kill('SIGKILL'); } catch { /* Exited. */ } }
     for (const timer of this.notifications.values()) clearTimeout(timer);
-    this.notifications.clear(); this.history.flush();
+    this.notifications.clear();
+    try { this.history.flush(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, '聊天会话退出时部分记录未能保存：' + errors.map(messageOf).join('；'));
   }
 }

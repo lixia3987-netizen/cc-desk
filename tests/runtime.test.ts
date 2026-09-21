@@ -102,3 +102,115 @@ test('a pending CLI identity or unsupported observed permission cannot silently 
     assert.equal(store.state.sessions[0].permissionMode, 'default');
   } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
+
+function lifecycleFixture(shellPath = '') {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-lifecycle-'));
+  const store = new StateStore(path.join(root, 'data')); const now = new Date().toISOString();
+  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'cleanup fixture', kind: 'shell', cwd: root, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+  store.change(state => { state.sessions.push(session); state.settings.shellPath = shellPath; });
+  const errors: Error[] = [];
+  const runtime = new Runtime(store, () => {}, () => {}, { onError: error => errors.push(error) });
+  const capabilities = { available: false, executable: '', version: '', flags: [], efforts: ['default' as const] };
+  return { root, store, session, runtime, errors, capabilities };
+}
+
+test('stop and exit release a real PTY even when every state write fails', { timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  try {
+    await f.runtime.start(f.session.id, f.capabilities);
+    fs.mkdirSync(f.store.file + '.tmp');
+    assert.throws(() => f.runtime.stop(f.session.id));
+    assert.doesNotThrow(() => f.runtime.stop(f.session.id), 'repeated stop cannot strand an ending process');
+    await until(() => !f.runtime.has(f.session.id), 'failed-persistence cleanup');
+    assert.equal(f.runtime.activeCount, 0);
+    assert.equal(f.runtime.pendingCleanupCount, 0);
+    assert.ok(f.errors.length > 0, 'exit persistence errors are reported without escaping the native callback');
+    assert.ok(f.runtime.lastError);
+  } finally {
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('state failure after spawn terminates the process before start rejects', { timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  try {
+    fs.mkdirSync(f.store.file + '.tmp');
+    await assert.rejects(f.runtime.start(f.session.id, f.capabilities));
+    await until(() => f.runtime.activeCount === 0, 'failed-start cleanup');
+    assert.equal(f.runtime.pendingCleanupCount, 0);
+  } finally {
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('shutdown waits for an ignoring descendant after its root PTY has exited', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
+  const f = lifecycleFixture(); let childPid = 0; let rootPid = 0;
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const processRunning = async (pid: number) => {
+    try { const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]); return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z'); }
+    catch { return false; }
+  };
+  try {
+    const rootFile = path.join(f.root, 'root-pid'); const childFile = path.join(f.root, 'child-pid'); const heartbeat = path.join(f.root, 'heartbeat');
+    const script = path.join(f.root, 'fixture-shell');
+    const childCode = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); process.on('SIGHUP', () => {}); fs.writeFileSync(${JSON.stringify(childFile)}, String(process.pid)); setInterval(() => fs.writeFileSync(${JSON.stringify(heartbeat)}, String(Date.now())), 20);`;
+    fs.writeFileSync(script, `#!${process.execPath}\nconst fs = require('node:fs'); const {spawn} = require('node:child_process'); process.on('SIGTERM', () => process.exit(0)); fs.writeFileSync(${JSON.stringify(rootFile)}, String(process.pid)); spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], {stdio:'ignore'}); setInterval(() => {}, 1000);\n`, { mode: 0o755 });
+    f.store.change(state => { state.settings.shellPath = script; });
+    await f.runtime.start(f.session.id, f.capabilities);
+    await until(() => fs.existsSync(childFile) && fs.existsSync(heartbeat), 'descendant ready');
+    rootPid = Number(fs.readFileSync(rootFile, 'utf8')); childPid = Number(fs.readFileSync(childFile, 'utf8'));
+    let finished = false;
+    const shutdown = f.runtime.shutdown().then(() => { finished = true; });
+    await until(() => !alive(rootPid), 'root exit');
+    assert.equal(await processRunning(childPid), true, 'descendant ignores graceful termination');
+    assert.equal(finished, false, 'root exit must not resolve shutdown');
+    assert.ok(f.runtime.pendingCleanupCount > 0);
+    assert.equal(f.runtime.has(f.session.id), true, 'session ownership persists through descendant cleanup');
+    await shutdown;
+    let childRunning = await processRunning(childPid);
+    for (let attempts = 0; childRunning && attempts < 40; attempts++) {
+      await new Promise(resolve => setTimeout(resolve, 25)); childRunning = await processRunning(childPid);
+    }
+    assert.equal(childRunning, false, 'escalation terminates the descendant before shutdown completes');
+    assert.equal(f.runtime.pendingCleanupCount, 0);
+    assert.equal(f.runtime.activeCount, 0);
+  } finally {
+    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('shutdown cancels and awaits a CLI start that is still resolving transcript and hook state', { timeout: 10000 }, async () => {
+  const f = lifecycleFixture();
+  try {
+    f.store.change(state => { state.sessions[0].kind = 'claude'; state.settings.claudePath = process.execPath; });
+    const pending = f.runtime.start(f.session.id, { available: true, executable: process.execPath, version: '2.1.278', flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
+    const rejected = assert.rejects(pending, /已取消启动会话/);
+    await f.runtime.shutdown();
+    await rejected;
+    assert.equal(f.runtime.activeCount, 0);
+    assert.equal(f.runtime.pendingCleanupCount, 0);
+    assert.equal(f.store.state.sessions[0].status, 'stopped');
+    assert.equal(f.store.state.sessions[0].started, false);
+  } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+});
+
+test('shutdown retries deferred persistence after cleanup has completed and storage recovers', { timeout: 5000 }, async () => {
+  const f = lifecycleFixture();
+  try {
+    f.store.change(state => { state.sessions[0].draft = 'save after repair'; }, { defer: true });
+    fs.mkdirSync(f.store.file + '.tmp');
+    await assert.rejects(f.runtime.shutdown());
+    assert.equal(f.runtime.activeCount, 0);
+    assert.equal(f.runtime.pendingCleanupCount, 0);
+    fs.rmdirSync(f.store.file + '.tmp');
+    await f.runtime.shutdown();
+    assert.equal(f.store.persistenceError, undefined);
+    assert.equal(JSON.parse(fs.readFileSync(f.store.file, 'utf8')).sessions[0].draft, 'save after repair');
+  } finally {
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});

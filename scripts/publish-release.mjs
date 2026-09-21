@@ -22,10 +22,9 @@ const expected = [
   // AppImage expands ${arch} using Linux's x86_64 name; archive targets use x64.
   `${prefix}linux-x86_64-portable.AppImage`,
   `${prefix}linux-x64-portable.tar.gz`,
+  `${prefix}macos-arm64-setup.dmg`,
+  `${prefix}macos-arm64-portable.zip`,
 ];
-const macArchitectures = ['arm64', 'x64'].filter(arch => names.includes(`${prefix}macos-${arch}-setup.dmg`));
-if (macArchitectures.length !== 1) throw new Error('Expected one matching macOS architecture.');
-expected.push(`${prefix}macos-${macArchitectures[0]}-setup.dmg`, `${prefix}macos-${macArchitectures[0]}-portable.zip`);
 if (JSON.stringify([...expected].sort()) !== JSON.stringify(names)) throw new Error(`Unexpected or missing release packages: ${names.join(', ')}`);
 const checksums = [];
 for (const name of names) {

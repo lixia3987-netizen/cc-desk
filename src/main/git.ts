@@ -16,10 +16,25 @@ async function git(cwd: string, args: string[], maxBuffer = 2 * 1024 * 1024): Pr
 async function gitDirectory(cwd: string): Promise<string> {
   return (await git(cwd, ['rev-parse', '--absolute-git-dir'])).trim();
 }
+export async function gitWorktreeRoot(cwd: string): Promise<string> {
+  return fs.realpath((await git(cwd, ['rev-parse', '--show-toplevel'])).trim());
+}
 function errorMessage(error: unknown): string { return String((error as Error).message).slice(0, 1000); }
+
+const mutations = new Set<string>();
+async function withGitMutation<T>(cwd: string, action: () => Promise<T>): Promise<T> {
+  // Serialize shared refs/registration across all linked worktrees, while allowing
+  // ordinary sessions in independent worktrees to continue using their files.
+  const common = await fs.realpath((await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
+  const key = process.platform === 'win32' ? common.toLowerCase() : common;
+  if (mutations.has(key)) throw new Error('此项目正在执行另一个 Git 操作。');
+  mutations.add(key);
+  try { return await action(); } finally { mutations.delete(key); }
+}
 
 export async function createWorktree(cwd: string, root: string, id: string): Promise<string> {
   if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('无效的会话标识。');
+  return withGitMutation(cwd, async () => {
   await git(cwd, ['rev-parse', '--verify', 'HEAD']);
   const basePath = await fs.realpath(cwd);
   const baseBranch = (await git(cwd, ['branch', '--show-current'])).trim();
@@ -35,6 +50,7 @@ export async function createWorktree(cwd: string, root: string, id: string): Pro
     throw error;
   }
   return destination;
+  });
 }
 export async function gitInfo(cwd: string): Promise<GitInfo> {
   try {
@@ -83,8 +99,15 @@ export async function gitDiff(cwd: string, relative: string, staged = false): Pr
     const text = file.binary ? '二进制新文件（不显示内容）' : `diff --git a/${relative} b/${relative}\nnew file\n--- /dev/null\n+++ b/${relative}\n${file.content.split('\n').map(line => `+${line}`).join('\n')}`;
     return { path: relative, staged, text: text.slice(0, MAX_DIFF), binary: file.binary, truncated: file.truncated || text.length > MAX_DIFF };
   }
+  const paths = [relative];
+  // Both sides are required for rename detection. Never trust an old path merely
+  // because it came from Git: a session can be scoped to a repository subdirectory.
+  if (staged && change?.originalPath && /[RC]/.test(change.indexStatus)) {
+    await resolveProjectFile(cwd, change.originalPath, true);
+    paths.push(change.originalPath);
+  }
   let text: string; let truncated = false;
-  try { text = await git(cwd, ['diff', ...(staged ? ['--cached'] : []), '--no-ext-diff', '--no-textconv', '--no-color', '--', relative], MAX_DIFF); }
+  try { text = await git(cwd, ['diff', ...(staged ? ['--cached'] : []), '--no-ext-diff', '--no-textconv', '--no-color', '--find-renames', '--', ...paths], MAX_DIFF); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw error;
     text = String((error as { stdout?: string }).stdout ?? ''); truncated = true;
@@ -136,12 +159,9 @@ export async function worktreeInfo(basePath: string, worktreePath: string, sessi
   return result;
 }
 
-const mutations = new Set<string>();
 async function mutate(basePath: string, action: () => Promise<WorktreeActionResult>): Promise<WorktreeActionResult> {
-  const key = await fs.realpath(basePath);
-  if (mutations.has(key)) return { ok: false, status: 'blocked', message: '此项目正在执行另一个 Git 操作。' };
-  mutations.add(key);
-  try { return await action(); } finally { mutations.delete(key); }
+  try { return await withGitMutation(basePath, action); }
+  catch (error) { return { ok: false, status: 'blocked', message: errorMessage(error) }; }
 }
 
 export async function mergeWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {

@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { constants } from 'node:fs';
+import { constants, type BigIntStats } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import { environment, execFileAsync } from './commands';
 import type { ProjectFile, ProjectFiles } from '../shared/git';
 
@@ -39,20 +40,75 @@ export async function resolveProjectFile(root: string, relative: string, allowMi
   }
 }
 
+const changedPath = () => new Error('文件或上级目录在读取期间发生变化，已拒绝预览，请重试。');
+const sameFile = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino;
+
+async function identities(root: string, target: string): Promise<{ path: string; stat: BigIntStats }[]> {
+  if (await fs.realpath(root) !== root || await fs.realpath(target) !== target) throw changedPath();
+  const result: { path: string; stat: BigIntStats }[] = [];
+  let current = root;
+  const parts = path.relative(root,target).split(path.sep);
+  for (let i = -1; i < parts.length; i++) {
+    if (i >= 0) current = path.join(current,parts[i]);
+    const stat = await fs.lstat(current,{bigint:true});
+    if (stat.isSymbolicLink() || (i < parts.length - 1 ? !stat.isDirectory() : !stat.isFile())) throw changedPath();
+    result.push({path:current,stat});
+  }
+  return result;
+}
+
+/**
+ * Linux opens each canonical component relative to an already opened directory
+ * via procfs, refusing replacement symlinks at every step. Before returning bytes
+ * it also checks the kernel-reported handle location. On macOS/Windows Node has
+ * no openat / handle-final-path API: matching pre/open/post file and ancestor IDs
+ * detects ordinary replacement races, but is not a native atomic sandbox against
+ * a hostile process coordinating repeated ABA renames. Such a sandbox needs native
+ * openat/F_GETPATH or CreateFile/GetFinalPathNameByHandle support.
+ */
 export async function readProjectFile(root: string, relative: string): Promise<ProjectFile> {
-  const resolved = await resolveProjectFile(root, relative);
-  if (!(await fs.stat(resolved)).isFile()) throw new Error('只能读取普通文件。');
+  const canonicalRoot = await fs.realpath(root);
+  const resolved = await resolveProjectFile(canonicalRoot, relative);
+  const expected = await identities(canonicalRoot,resolved);
   const safetyFlags = process.platform === 'win32' ? 0 : ((constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
-  const handle = await fs.open(resolved, constants.O_RDONLY | safetyFlags);
+  const handles: FileHandle[] = [];
   try {
-    const stat = await handle.stat();
+    let handle: FileHandle;
+    if (process.platform === 'linux') {
+      let directory = await fs.open(canonicalRoot,constants.O_RDONLY | constants.O_DIRECTORY | safetyFlags);
+      handles.push(directory);
+      if (!sameFile(await directory.stat({bigint:true}),expected[0].stat)) throw changedPath();
+      for (let i = 1; i < expected.length; i++) {
+        const last = i === expected.length - 1;
+        const opened = await fs.open(`/proc/self/fd/${directory.fd}/${path.basename(expected[i].path)}`,
+          constants.O_RDONLY | safetyFlags | (last ? 0 : constants.O_DIRECTORY));
+        handles.push(opened);
+        if (!sameFile(await opened.stat({bigint:true}),expected[i].stat)) throw changedPath();
+        directory = opened;
+      }
+      handle = directory;
+    } else {
+      handle = await fs.open(resolved, constants.O_RDONLY | safetyFlags);
+      handles.push(handle);
+    }
+    const stat = await handle.stat({bigint:true});
     if (!stat.isFile()) throw new Error('只能读取普通文件。');
-    const buffer = Buffer.alloc(Math.min(stat.size, MAX_FILE_BYTES));
+    if (!sameFile(stat,expected.at(-1)!.stat)) throw changedPath();
+    const verify = async () => {
+      if (process.platform === 'linux' && await fs.realpath(`/proc/self/fd/${handle.fd}`) !== resolved) throw changedPath();
+      const current = await identities(canonicalRoot,resolved);
+      if (current.length !== expected.length || current.some((item,i) => !sameFile(item.stat,expected[i].stat))) throw changedPath();
+    };
+    await verify();
+    const size = Number(stat.size);
+    const buffer = Buffer.alloc(Math.min(size, MAX_FILE_BYTES));
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    // Never return data until the opened object and its ancestry are revalidated.
+    await verify();
     const bytes = buffer.subarray(0, bytesRead);
     const binary = bytes.includes(0);
-    return { path: relative, content: binary ? '' : bytes.toString('utf8'), bytes: stat.size, binary, truncated: stat.size > MAX_FILE_BYTES };
-  } finally { await handle.close(); }
+    return { path: relative, content: binary ? '' : bytes.toString('utf8'), bytes: size, binary, truncated: size > MAX_FILE_BYTES };
+  } finally { await Promise.all(handles.map(handle => handle.close())); }
 }
 
 export async function listProjectFiles(root: string, query = ''): Promise<ProjectFiles> {

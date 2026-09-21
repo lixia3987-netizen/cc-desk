@@ -41,9 +41,76 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   if(current==='child-init')output({type:'system',subtype:'init',session_id:'11111111-1111-4111-8111-111111111111',parent_tool_use_id:'parent',model:'child-model',permissionMode:'acceptEdits'});
   if(current==='malformed'){process.stdout.write('not-json\n');return;}
   if(current==='crash'){output({type:'result',subtype:'error_during_execution',is_error:true,errors:['fixture auth failure'],session_id:session});process.exitCode=1;process.stdin.destroy();return;}
+  if(current==='multi-block'||current==='partial-blocks'){
+   output({type:'stream_event',event:{type:'message_start',message:{id:'msg-'+turn}}});
+   for(const [index,text] of [[1,'第一段'],[3,'第二段']]){
+    output({type:'stream_event',event:{type:'content_block_start',index,content_block:{type:'text',text:''}}});
+    output({type:'stream_event',event:{type:'content_block_delta',index,delta:{type:'text_delta',text}}});
+   }
+   if(current==='partial-blocks')for(const text of ['第一段','第二段'])output({type:'assistant',message:{id:'msg-'+turn,content:[{type:'text',text}]}});
+   else output({type:'assistant',message:{id:'msg-'+turn,content:[{type:'text',text:'第一段'},{type:'text',text:'第二段'}]}});
+   output({type:'result',subtype:'success',result:'第一段\n第二段',session_id:session});return;
+  }
+  if(current==='interleaved-blocks'||current==='envelope-blocks'||current==='equal-blocks'){
+   if(current==='interleaved-blocks')output({type:'stream_event',event:{type:'message_start',message:{id:'msg-'+turn}}});
+   for(const [index,text] of [[0,'first block'],[1,current==='equal-blocks'?'first block':'second block']]){
+    if(current==='interleaved-blocks'){
+     output({type:'stream_event',event:{type:'content_block_start',index,content_block:{type:'text',text:''}}});
+     output({type:'stream_event',event:{type:'content_block_delta',index,delta:{type:'text_delta',text}}});
+     output({type:'stream_event',event:{type:'content_block_stop',index}});
+    }
+    output({type:'assistant',uuid:'partial-'+turn+'-'+index,message:{id:'msg-'+turn,content:[{type:'text',text}]}});
+   }
+   output({type:'stream_event',event:{type:'message_stop'}});
+   output({type:'result',subtype:'success',result:current==='equal-blocks'?'first block\nfirst block':'first block\nsecond block',session_id:session});return;
+  }
+  if(current==='long-reply'){
+   const text='你'.repeat(270000);
+   output({type:'stream_event',event:{type:'message_start',message:{id:'msg-'+turn}}});
+   output({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+   for(let i=0;i<text.length;i+=18000)output({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:text.slice(i,i+18000)}}});
+   done(text);return;
+  }
+  if(current==='repeated-valid'){
+   for(const id of ['first','second'])output({type:'assistant',message:{id,content:[{type:'text',text:'same reply'}]}});
+   output({type:'result',subtype:'success',result:'same reply',session_id:session});return;
+  }
+  if(current==='child-scope'){
+   for(const parent of ['parent',null]){
+    output({type:'stream_event',parent_tool_use_id:parent,event:{type:'message_start',message:{id:'same-api-id'}}});
+    output({type:'stream_event',parent_tool_use_id:parent,event:{type:'content_block_start',index:0,content_block:{type:'text',text:'same reply'}}});
+    output({type:'assistant',parent_tool_use_id:parent,message:{id:'same-api-id',content:[{type:'text',text:'same reply'}]}});
+   }
+   output({type:'result',subtype:'success',parent_tool_use_id:'parent',result:'child-only summary',session_id:session});
+   output({type:'result',subtype:'success',result:'same reply',session_id:session});return;
+  }
+  if(current==='missing-message-id'){
+   output({type:'stream_event',event:{type:'message_start',message:{id:'stream-'+turn}}});
+   output({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:'ordinary reply'}}});
+   for(let i=0;i<2;i++)output({type:'assistant',uuid:'envelope-'+turn,message:{content:[{type:'text',text:'ordinary reply'}]}});
+   output({type:'result',subtype:'success',result:'ordinary reply',session_id:session});return;
+  }
+  if(current==='background-progress'||current==='background-approve'||current==='background-question'){
+   output({type:'system',subtype:'task_started',task_id:'child',description:'background fixture'});
+   const intermediate={type:'result',uuid:'background-result-'+turn,subtype:'success',result:'parent waiting',session_id:session};
+   output(intermediate);output(intermediate);
+   output({type:'system',subtype:'task_notification',task_id:'child',status:'completed',summary:'child done'});
+   if(current==='background-approve'||current==='background-question'){
+    const question=current==='background-question';
+    pending={id:'permission-'+turn,question,input:question?{questions:[{question:'Which database?',options:[{label:'SQLite'}]}]}:{command:'fixture only'}};
+    output({type:'control_request',request_id:pending.id,request:{subtype:'can_use_tool',tool_name:question?'AskUserQuestion':'Bash',input:pending.input}});return;
+   }
+   output({type:'stream_event',event:{type:'message_start',message:{id:'msg-'+turn}}});
+   output({type:'stream_event',event:{type:'content_block_start',index:0,content_block:{type:'text',text:''}}});
+   let ticks=0;const timer=setInterval(()=>{
+    output({type:'stream_event',event:{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'x'}}});
+    if(++ticks===6){clearInterval(timer);done('xxxxxx');}
+   },30);return;
+  }
   if(current==='background-no-final'){
    output({type:'system',subtype:'task_started',task_id:'child',description:'background fixture'});
-   output({type:'result',subtype:'success',result:'parent waiting',session_id:session});
+   const intermediate={type:'result',uuid:'background-result-'+turn,subtype:'success',result:'parent waiting',session_id:session};
+   output(intermediate);output(intermediate);
    output({type:'system',subtype:'task_notification',task_id:'child',status:'completed',summary:'child done'});return;
   }
   if(current==='approve'||current==='question'||current==='cancel'){
@@ -307,4 +374,136 @@ test('imported conversation hydrates readonly text/tool history once, with bound
     fs.writeFileSync(file, Array.from({ length: 240 }, (_, i) => JSON.stringify({ type: 'user', uuid: String(i), message: { content: 'entry' + i } })).join('\n'));
     const preview = await readTranscriptPreview(file); assert.equal(preview.messages.length, 200); assert.equal(preview.truncated, true);
   } finally { if (originalConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = originalConfig; await s.cleanup(); }
+});
+
+
+test('ordinary missing-id completion and repeated envelope reconcile with the pending stream', async () => {
+  const s = setup();
+  try {
+    await s.runtime.send(s.session.id, 'missing-message-id', capabilities);
+    const replies = s.runtime.snapshot(s.session.id).messages.filter(message => message.role === 'assistant');
+    assert.equal(replies.length, 1); assert.equal(replies[0].text, 'ordinary reply');
+  } finally { await s.cleanup(); }
+});
+
+test('multi-block and partial-block complete envelopes reconcile stream indexes and result summaries', async () => {
+  const s = setup();
+  try {
+    for (const prompt of ['multi-block', 'partial-blocks', 'interleaved-blocks', 'envelope-blocks', 'equal-blocks']) {
+      await s.runtime.send(s.session.id, prompt, capabilities);
+      const snapshot = s.runtime.snapshot(s.session.id);
+      const turnId = snapshot.messages.filter(message => message.role === 'user').at(-1)!.turnId;
+      assert.deepEqual(snapshot.messages.filter(message => message.role === 'assistant' && message.turnId === turnId).map(message => message.text), prompt === 'equal-blocks' ? ['first block', 'first block'] : prompt.endsWith('blocks') && !prompt.startsWith('partial') ? ['first block', 'second block'] : ['第一段', '第二段']);
+    }
+  } finally { await s.cleanup(); }
+});
+
+test('equal text from distinct message ids, turns and child scopes remains visible', async () => {
+  const s = setup();
+  try {
+    await s.runtime.send(s.session.id, 'repeated-valid', capabilities);
+    await s.runtime.send(s.session.id, 'repeated-valid', capabilities);
+    await s.runtime.send(s.session.id, 'child-scope', capabilities);
+    const replies = s.runtime.snapshot(s.session.id).messages.filter(message => message.role === 'assistant');
+    assert.equal(replies.length, 6); assert.ok(replies.every(message => message.text === 'same reply'));
+    assert.equal(replies.filter(message => message.parentToolUseId === 'parent').length, 1);
+    assert.equal(new Set(replies.map(message => message.id)).size, 6);
+  } finally { await s.cleanup(); }
+});
+
+test('long streamed completion has one marked bounded reply and retains full journal content', async () => {
+  const s = setup();
+  try {
+    const result = await s.runtime.send(s.session.id, 'long-reply', capabilities);
+    assert.equal(result.summary.length, 270000);
+    const replies = s.runtime.snapshot(s.session.id).messages.filter(message => message.role === 'assistant');
+    assert.equal(replies.length, 1); assert.equal(replies[0].text.length, 256 * 1024); assert.equal(replies[0].truncated, true);
+    const journal = fs.readFileSync(s.runtime.exportPath(s.session.id), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.ok(journal.some(event => event.type === 'message' && event.message.text.length === 270000));
+    assert.equal(s.runtime.taskState(s.session.id), 'completed');
+  } finally { await s.cleanup(); }
+});
+
+test('background completion deadline pauses for approval and resumes after the response', async () => {
+  const s = setup();
+  try {
+    for (const prompt of ['background-approve', 'background-question']) {
+      const pending = s.runtime.send(s.session.id, prompt, capabilities);
+      await until(() => s.runtime.snapshot(s.session.id).pending.length === 1);
+      const request = s.runtime.snapshot(s.session.id).pending[0];
+      await new Promise(resolve => setTimeout(resolve, 180));
+      assert.equal(s.runtime.taskState(s.session.id), prompt === 'background-question' ? 'waiting_input' : 'waiting_approval');
+      assert.equal(s.runtime.has(s.session.id), true);
+      s.runtime.respond(s.session.id, request.requestId, { behavior: 'allow', answers: { 'Which database?': 'SQLite' } });
+      assert.equal((await pending).success, true);
+    }
+  } finally { await s.cleanup(); }
+});
+
+test('continued background output resets inactivity deadline until the final result', async () => {
+  const s = setup();
+  try {
+    const result = await s.runtime.send(s.session.id, 'background-progress', capabilities);
+    assert.equal(result.success, true); assert.equal(result.summary, 'xxxxxx');
+    assert.equal(s.runtime.snapshot(s.session.id).messages.filter(message => message.role === 'assistant' && message.text === 'parent waiting').length, 1);
+    assert.equal(s.runtime.taskState(s.session.id), 'completed');
+  } finally { await s.cleanup(); }
+});
+
+
+test('idle transcript refresh appends only new source identities after a shared anchor', async () => {
+  const s = setup(); const originalConfig = process.env.CLAUDE_CONFIG_DIR;
+  try {
+    process.env.CLAUDE_CONFIG_DIR = path.join(s.directory, 'claude-config');
+    const transcripts = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'test-project'); fs.mkdirSync(transcripts, { recursive: true });
+    const file = path.join(transcripts, s.session.claudeId + '.jsonl');
+    const record = (type: string, uuid: string, text: string) => JSON.stringify({ type, uuid, cwd: s.directory, message: { content: text } }) + '\n';
+    fs.writeFileSync(file, record('user', 'u1', 'original') + record('assistant', 'a1', 'same reply'));
+    s.store.change(state => { state.sessions[0].imported = true; });
+    await s.runtime.hydrate(s.session.id);
+    fs.appendFileSync(file, record('user', 'u2', 'external continuation') + record('assistant', 'a2', 'same reply'));
+    await s.runtime.hydrate(s.session.id);
+    let snapshot = s.runtime.snapshot(s.session.id);
+    assert.deepEqual(snapshot.messages.filter(message => message.role === 'assistant').map(message => message.text), ['same reply', 'same reply']);
+    const count = snapshot.messages.length;
+    await s.runtime.hydrate(s.session.id); assert.equal(s.runtime.snapshot(s.session.id).messages.length, count);
+    // A truncated or replaced transcript without a shared identity cannot safely
+    // be merged. Keep the local projection instead of guessing by text equality.
+    fs.writeFileSync(file, record('user', 'u1', 'original') + record('assistant', 'unrelated', 'same reply'));
+    await s.runtime.hydrate(s.session.id); snapshot = s.runtime.snapshot(s.session.id);
+    assert.equal(snapshot.messages.length, count); assert.deepEqual(snapshot.pending, []);
+  } finally { if (originalConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = originalConfig; await s.cleanup(); }
+});
+
+
+test('transcript records with one shared API id retain distinct partial blocks by record identity', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-chat-import-'));
+  try {
+    const file = path.join(directory, 'transcript.jsonl');
+    const records = ['first', 'second'].map((text, index) => ({ type: 'assistant', uuid: 'record-' + index, message: { id: 'shared-api-message', content: [{ type: 'text', text }] } }));
+    fs.writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n');
+    const preview = await readTranscriptPreview(file);
+    assert.deepEqual(preview.messages.map(message => message.text), ['first', 'second']);
+    assert.equal(new Set(preview.messages.map(message => message.id)).size, 2);
+    assert.deepEqual(preview.messages.map(message => message.sourceId), ['record-0', 'record-1']);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+
+test('shutdown stops every chat subprocess even when saving the first turn fails', async () => {
+  const s = setup();
+  const history = (s.runtime as unknown as { history: ChatHistory }).history;
+  const flush = history.flush.bind(history);
+  const second = { ...s.session, id: randomUUID(), claudeId: randomUUID() };
+  s.store.change(state => state.sessions.push(second));
+  try {
+    const firstTurn = s.runtime.send(s.session.id, 'hang', capabilities);
+    const secondTurn = s.runtime.send(second.id, 'hang', capabilities);
+    await until(() => s.runtime.taskState(s.session.id) === 'thinking' && s.runtime.taskState(second.id) === 'thinking');
+    let calls = 0;
+    history.flush = () => { if (++calls === 1) throw new Error('injected shutdown disk failure'); flush(); };
+    await assert.rejects(s.runtime.shutdown(), /injected shutdown disk failure/);
+    assert.equal(s.runtime.has(s.session.id), false); assert.equal(s.runtime.has(second.id), false);
+    assert.equal((await firstTurn).success, false); assert.equal((await secondTurn).interrupted, true);
+  } finally { history.flush = flush; await s.cleanup(); }
 });

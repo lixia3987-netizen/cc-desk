@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import path from 'node:path';
 import { dialog, Notification, type BrowserWindow } from 'electron';
 import { stripVTControlCharacters } from 'node:util';
@@ -11,7 +12,7 @@ import { ChatRuntime } from './chat-runtime';
 import { Attachments } from './attachments';
 import { WorkflowEngine, newWorkflowSchema } from './workflows';
 import { queryHistory, exportClaudeTranscript, findClaudeTranscript } from './history';
-import { gitChanges, gitDiff, worktreeInfo, mergeWorktree, cleanupWorktree } from './git';
+import { gitChanges, gitDiff, gitWorktreeRoot, worktreeInfo, mergeWorktree, cleanupWorktree } from './git';
 import { listProjectFiles, readProjectFile } from './files';
 import { diagnoseEnvironment } from './diagnostics';
 
@@ -34,13 +35,13 @@ export class SessionService {
     this.attachments = new Attachments(store.directory);
     this.chat = new ChatRuntime(store,onState,id => {
       this.getWindow()?.webContents.send('chat:changed',id);
-      const state = this.chat.snapshot(id).taskState;
+      const state = this.chat.taskState(id);
       const old = this.notified.get(id); this.notified.set(id,state);
       if (old !== state && store.state.settings.notifications && ['waiting_approval','waiting_input','completed','error'].includes(state) && Notification.isSupported()) {
         const session = store.state.sessions.find(s => s.id === id);
         const labels: Record<string,string> = {waiting_approval:'需要批准工具操作',waiting_input:'需要你的回答',completed:'本轮任务已完成',error:'任务遇到错误'};
         const notification = new Notification({title:session?.title ?? 'Claude Workbench',body:labels[state]});
-        notification.on('click',() => { if (session && this.store.state.sessions.some(s=>s.id===session.id)) this.select(session.id); this.getWindow()?.show(); this.getWindow()?.focus(); });
+        notification.on('click',() => this.navigateFromNotification(id));
         notification.show();
       }
     });
@@ -50,6 +51,17 @@ export class SessionService {
       cancelSession:id => this.chat.interrupt(id),
       onChange:() => this.getWindow()?.webContents.send('workflow:changed')
     });
+  }
+  private navigateFromNotification(id:string) {
+    const exists=this.store.state.sessions.some(session=>session.id===id);
+    if(exists)this.select(id);
+    const window=this.getWindow();
+    if(!window || window.isDestroyed())return;
+    // Selection may already equal id. A separate navigation event still clears
+    // renderer filters and reveals the requested conversation on every click.
+    if(exists && !window.webContents.isDestroyed())window.webContents.send('session:navigate',id);
+    if(window.isMinimized())window.restore();
+    window.show();window.focus();
   }
   get activeCount() { return this.runtime.activeCount + this.chat.activeCount; }
   private session(id: string) { return this.runtime.getSession(id); }
@@ -63,9 +75,32 @@ export class SessionService {
     if(!p) throw new Error('项目不存在。'); return p;
   }
   private occupied(id: string) { return this.runtime.has(id) || this.chat.has(id) || this.admissions.has(id); }
-  private pathKey(value: string) { const key=path.resolve(value); return process.platform==='win32'?key.toLowerCase():key; }
+  private pathKey(value: string): string {
+    let current = path.resolve(value);
+    const missing: string[] = [];
+    for (;;) {
+      try {
+        const key = path.join(realpathSync.native(current), ...missing);
+        return process.platform === 'win32' ? key.toLowerCase() : key;
+      } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+        const parent = path.dirname(current);
+        if (parent === current) throw error;
+        missing.unshift(path.basename(current)); current = parent;
+      }
+    }
+  }
+  private contains(root: string, target: string) {
+    const relative = path.relative(root, target);
+    return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+  }
+  private overlaps(a: string, b: string) { return this.contains(a,b) || this.contains(b,a); }
+  private assertDirectoriesUnlocked(keys: string[]) {
+    if (keys.some(key => [...this.directoryLocks].some(lock => this.overlaps(key,lock)))) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
+  }
   private assertUnlocked(session: Session) {
-    if(this.lifecycle.has(session.id) || this.directoryLocks.has(this.pathKey(session.cwd))) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
+    if(this.lifecycle.has(session.id)) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
+    this.assertDirectoriesUnlocked([this.pathKey(session.cwd)]);
   }
   private async manage<T>(id: string, action: () => T | Promise<T>): Promise<T> {
     this.assertUnlocked(this.session(id));
@@ -74,16 +109,31 @@ export class SessionService {
     try { return await action(); } finally { this.lifecycle.delete(id); }
   }
   private worktreeBase(s: Session) { return s.worktreeBase ?? this.project(s.projectId).path; }
-  private worktreeBusy(s: Session) {
-    const paths=new Set([this.pathKey(this.worktreeBase(s)),this.pathKey(s.cwd)]);
-    return this.store.state.sessions.some(x=>paths.has(this.pathKey(x.cwd))&&(this.occupied(x.id)||this.workflows.isSessionBusy(x.id)));
+  private directoriesBusy(keys: string[]) {
+    return this.store.state.sessions.some(s => (this.occupied(s.id) || this.workflows.isSessionBusy(s.id)) && keys.some(key => this.overlaps(key,this.pathKey(s.cwd))));
+  }
+  private async worktreeDirectories(s: Session) {
+    return [...new Set((await Promise.all([gitWorktreeRoot(this.worktreeBase(s)),gitWorktreeRoot(s.worktree ?? s.cwd)])).map(dir => this.pathKey(dir)))];
+  }
+  private cleanupDependencies(s: Session) {
+    const target = this.pathKey(s.worktree ?? s.cwd);
+    return this.store.state.sessions.some(other => other.id !== s.id &&
+      (this.contains(target,this.pathKey(other.cwd)) || (other.worktree && other.worktreeBase && this.contains(target,this.pathKey(other.worktreeBase)))));
+  }
+  /** Keep the source locked until index.ts records the new dependent session. */
+  async withSessionCreation<T>(cwd: string, isolated: boolean, action: () => Promise<T>): Promise<T> {
+    const keys = [this.pathKey(isolated ? await gitWorktreeRoot(cwd) : cwd)];
+    this.assertDirectoriesUnlocked(keys);
+    if (isolated && this.directoriesBusy(keys)) throw new Error('请先停止来源工作目录中的全部会话，再创建独立 worktree。');
+    keys.forEach(key => this.directoryLocks.add(key));
+    try { return await action(); } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
   }
   private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>) {
     return this.manage(id,async()=>{
       const s=this.session(id); if(!s.worktree)throw new Error('此会话没有独立 worktree。');
-      if(this.worktreeBusy(s))throw new Error('请先停止此 worktree 和来源目录中的全部会话。');
-      const keys=[this.pathKey(s.cwd),this.pathKey(this.worktreeBase(s))];
-      if(keys.some(k=>this.directoryLocks.has(k)))throw new Error('相关目录正在执行其他操作。');
+      const keys = await this.worktreeDirectories(s);
+      this.assertDirectoriesUnlocked(keys);
+      if(this.directoriesBusy(keys))throw new Error('请先停止此 worktree 和来源目录中的全部会话。');
       keys.forEach(k=>this.directoryLocks.add(k));
       try{return await action(s);}finally{keys.forEach(k=>this.directoryLocks.delete(k));}
     });
@@ -122,15 +172,24 @@ export class SessionService {
     const s = this.structured(id);
     if(s.archived) throw new Error('请先取消会话归档。');
     if(this.runtime.has(id)) throw new Error('此会话已有终端进程。');
-    if(BUSY.has(this.chat.snapshot(id).taskState)) throw new Error('请等待当前回合完成，或先中断。');
+    if(BUSY.has(this.chat.taskState(id))) throw new Error('请等待当前回合完成，或先中断。');
     this.reserve(id);
-    try { return await this.chat.send(id,text,this.capabilities(),attachments); }
+    try {
+      await this.attachments.retain(id,attachments);
+      const result=await this.chat.send(id,text,this.capabilities(),attachments);
+      if(result.success) {
+        try { await this.attachments.markSent(id,attachments); }
+        catch (error) { throw new Error(`本轮任务已完成，但附件草稿状态保存失败；附件副本仍保留，请勿重复执行本轮任务。${error instanceof Error?error.message:String(error)}`); }
+      }
+      return result;
+    }
     finally { this.admissions.delete(id); }
   }
   select(id: string) { if(id) this.session(id); this.store.change(s => {s.selectedSessionId=id;}); this.onState(); }
   register(handle: Register) {
     handle('session:draft',z.object({id:idSchema,text:z.string().max(128*1024)}),({id,text}) => {
-      this.session(id); this.store.change(s => {s.sessions.find(s => s.id===id)!.draft=text;}); this.onState();
+      if(this.session(id).draft===text)return;
+      this.store.change(s => {s.sessions.find(s => s.id===id)!.draft=text;},{defer:true}); this.onState();
     });
     handle('session:select',z.union([idSchema,z.literal('')]),id => this.select(id));
     handle('session:update',z.object({id:idSchema,title:z.string().trim().min(1).max(120).optional(),archived:z.boolean().optional(),model:sessionInputSchema.shape.model.optional(),effort:sessionInputSchema.shape.effort.optional(),permissionMode:sessionInputSchema.shape.permissionMode.optional()}),async input => {
@@ -152,6 +211,7 @@ export class SessionService {
       const s = this.session(id);
       if(this.occupied(id) || this.workflows.isSessionBusy(id)) throw new Error('请先停止会话及工作流，再删除。');
       if(s.worktree) throw new Error('请先在 Git 面板检查并清理独立 worktree。');
+      this.workflows.removeSession(id);
       this.runtime.forget(id,{deleteLogs:true}); this.chat.forget(id); await this.attachments.remove(id);
       this.store.change(state => {state.sessions=state.sessions.filter(s=>s.id!==id);if(state.selectedSessionId===id)state.selectedSessionId='';}); this.onState();
     }));
@@ -170,27 +230,45 @@ export class SessionService {
       const result=await dialog.showOpenDialog(this.getWindow()!,{title:'添加上下文附件',properties:['openFile','multiSelections'],filters:[{name:'文本、图片与 PDF',extensions:['png','jpg','jpeg','gif','webp','pdf','txt','md','json','csv','ts','tsx','js','py','yaml','yml','html','css','xml','log']}]});
       return result.canceled ? [] : this.attachments.add(id,result.filePaths);
     });
+    handle('files:attachments',idSchema,id => { this.structured(id); return this.attachments.list(id); });
+    handle('files:remove-attachment',z.object({id:idSchema,path:z.string().min(1).max(4096)}),({id,path}) => { this.structured(id); return this.attachments.removeFile(id,path); });
     handle('history:query',z.object({projectId:idSchema,query:z.string().max(500).optional(),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}),({projectId,...options}) => queryHistory(this.project(projectId).path,options));
     handle('git:changes',idSchema,id => gitChanges(this.session(id).cwd));
     handle('git:diff',z.object({id:idSchema,path:relativePath,staged:z.boolean()}),({id,path,staged}) => gitDiff(this.session(id).cwd,path,staged));
     handle('files:list',z.object({id:idSchema,query:z.string().max(500)}),({id,query}) => listProjectFiles(this.session(id).cwd,query));
     handle('files:read',z.object({id:idSchema,path:relativePath}),({id,path}) => readProjectFile(this.session(id).cwd,path));
-    handle('worktree:info',idSchema,id => {const s=this.session(id);return worktreeInfo(this.worktreeBase(s),s.worktree ?? s.cwd,id,this.worktreeBusy(s));});
+    handle('worktree:info',idSchema,async id => {
+      const s=this.session(id);
+      const info=await worktreeInfo(this.worktreeBase(s),s.worktree ?? s.cwd,id,this.directoriesBusy(await this.worktreeDirectories(s)));
+      if(this.cleanupDependencies(s)) { info.canCleanup=false; info.reasons.push('其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。'); }
+      return info;
+    });
     handle('worktree:merge',idSchema,id => this.manageWorktree(id,s=>mergeWorktree(this.worktreeBase(s),s.worktree!,id,false)));
     handle('worktree:cleanup',idSchema,id => this.manageWorktree(id,async s => {
-      if(this.store.state.sessions.some(x=>x.id!==id&&this.pathKey(x.cwd)===this.pathKey(s.cwd)))throw new Error('还有其他会话使用此目录，请先删除这些会话记录。');
+      if(this.cleanupDependencies(s))throw new Error('其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。');
       const result=await cleanupWorktree(this.worktreeBase(s),s.worktree!,id,false);
       if(result.ok) { this.store.change(state => {const item=state.sessions.find(x=>x.id===id)!;item.worktree=undefined;item.archived=true;item.error='工作目录已清理，此记录仅保留历史。请在来源项目中创建新会话。';}); this.onState(); }
       return result;
     }));
-    handle('cli:diagnostics',idSchema.optional(),id => diagnoseEnvironment(id?this.project(id).path:undefined,this.store.state.settings.claudePath));
+    handle('cli:diagnostics',idSchema.optional(),async id => {
+      const cwd=id?this.session(id).cwd:undefined;
+      return { ...await diagnoseEnvironment(cwd,this.store.state.settings.claudePath),cwd };
+    });
     handle('workflow:list',idSchema.optional(),id => this.workflows.list(id));
     handle('workflow:create',newWorkflowSchema,input => {if(this.structured(input.sessionId).permissionMode==='plan'&&!input.stages)throw new Error('默认工作流包含实现阶段，请先手动将权限切换为默认审批，或创建仅规划的自定义阶段。');return this.workflows.create(input);});
-    const workflowReady=(id:string) => {const run=this.workflows.list().find(r=>r.id===id);if(!run)throw new Error('工作流不存在。');const s=this.structured(run.sessionId);this.assertUnlocked(s);if(this.admissions.has(s.id)||BUSY.has(this.chat.snapshot(s.id).taskState))throw new Error('当前会话仍有任务，请等待完成后再开始工作流。');};
+    const workflowReady=(id:string) => {const run=this.workflows.list().find(r=>r.id===id);if(!run)throw new Error('工作流不存在。');const s=this.structured(run.sessionId);this.assertUnlocked(s);if(this.admissions.has(s.id)||BUSY.has(this.chat.taskState(s.id)))throw new Error('当前会话仍有任务，请等待完成后再开始工作流。');};
     handle('workflow:start',idSchema,id => {workflowReady(id);return this.workflows.start(id);});
     handle('workflow:continue',idSchema,id => {workflowReady(id);return this.workflows.continue(id);});
     handle('workflow:retry',idSchema,id => {workflowReady(id);return this.workflows.retry(id);});
     handle('workflow:cancel',idSchema,id => this.workflows.cancel(id));
+    handle('workflow:delete',idSchema,id => this.workflows.remove(id));
+    handle('workflow:export',idSchema,async id => {
+      // Capture a stable, inactive record before showing a modal save dialog.
+      const content=this.workflows.exportRun(id);
+      const target=await dialog.showSaveDialog(this.getWindow()!,{title:'导出工作流记录',defaultPath:`workflow-${id.slice(0,8)}.json`,filters:[{name:'工作流记录 JSON',extensions:['json']}]});
+      if(target.canceled || !target.filePath)return null;
+      await fs.writeFile(target.filePath,content,{mode:0o600}); return target.filePath;
+    });
     handle('workflow:revise',z.object({id:idSchema,stageId:shortId,instruction:z.string().min(1).max(20000)}),({id,stageId,instruction}) => this.workflows.reviseStage(id,stageId,instruction));
     handle('session:export',idSchema,id => this.export(id));
   }
@@ -208,5 +286,15 @@ export class SessionService {
     } else await fs.writeFile(target.filePath,stripVTControlCharacters(this.runtime.exportLogs(id)),{mode:0o600});
     return target.filePath;
   }
-  async shutdown() { this.stopping=true; await this.workflows.shutdown(); await Promise.all([this.chat.shutdown(),this.runtime.shutdown()]); }
+  async shutdown() {
+    this.stopping=true;
+    const errors:unknown[]=[];
+    try { await this.workflows.shutdown(); } catch(error) { errors.push(error); }
+    // A persistence failure must not prevent another runtime from terminating.
+    // Keep retries live: a later quit attempt must be able to flush after recovery.
+    for(const result of await Promise.allSettled([this.chat.shutdown(),this.runtime.shutdown()])) {
+      if(result.status==='rejected')errors.push(result.reason);
+    }
+    if(errors.length)throw new AggregateError(errors,errors.map(error=>error instanceof Error?error.message:String(error)).join('\n'));
+  }
 }

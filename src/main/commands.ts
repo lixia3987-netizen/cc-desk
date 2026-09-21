@@ -83,10 +83,37 @@ export function resolveNpmLauncher(file: string, env = environment(), platform: 
   return { file: node, prefix: [target] };
 }
 
+/** Recognize npm's plain env-node shebang without interpreting arbitrary launcher scripts. */
+function usesEnvNode(file: string): boolean {
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(file, 'r');
+    const header = Buffer.alloc(512);
+    const length = fs.readSync(descriptor, header, 0, header.length, 0);
+    const text = header.toString('utf8', 0, length);
+    const newline = text.indexOf('\n');
+    if (newline < 0 && length === header.length) return false;
+    return /^#![\t ]*\/usr\/bin\/env[\t ]+node[\t ]*\r?$/.test(newline < 0 ? text : text.slice(0, newline));
+  } catch { return false; }
+  finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
+}
+
+/** The supplied environment is enriched with the selected POSIX Node's directory.
+ * Pass this same object to the child process so CLI tools inherit the resolved Node.
+ */
 export function cliInvocation(settings: Settings, env = environment()): { file: string; prefix: string[] } {
   const file = findExecutable(settings.claudePath || 'claude', env);
   if (!file) throw new CLIResolutionError('找不到 Claude Code。请先安装 CLI，或在设置中填写 claude 可执行文件的完整路径。');
   if (/\.(cmd|bat)$/i.test(file)) return resolveNpmLauncher(file, env);
+  if (process.platform !== 'win32' && usesEnvNode(file)) {
+    // Keep the selected bin directory: npm/nvm's claude is usually a symlink into
+    // lib/node_modules, while the matching Node remains beside that symlink.
+    const node = findExecutable(path.join(path.dirname(file), 'node'), env) ?? findExecutable('node', env);
+    if (!node) throw new CLIResolutionError('此 Claude Code 启动文件需要 Node.js。请在 claude 所在目录安装 node，或将 Node.js 加入 PATH 并完全退出后重开客户端。');
+    const directory = path.dirname(node);
+    env.PATH = [directory, ...(env.PATH ?? '').split(path.delimiter).filter(entry => entry && unquote(entry) !== directory)].join(path.delimiter);
+    return { file: node, prefix: [file] };
+  }
   return { file, prefix: [] };
 }
 

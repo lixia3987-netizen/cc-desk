@@ -238,3 +238,68 @@ test('shutdown preserves an interrupted stage and prevents late success from adv
     assert.throws(() => engine.continue(run.id), /关闭/);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test('full workflow history can be exported and explicitly deleted to recover capacity', () => {
+  const directory=temporary();
+  try {
+    const binding=makeBinding();
+    const options={getSession:()=>binding,cancelSession:()=>{},runStage:async()=>({success:true,summary:''})};
+    const initial=new WorkflowEngine(directory,options);
+    const seed=initial.create({sessionId:binding.sessionId,goal:'Kept history',stages:[steps[0]]});
+    const runs=Array.from({length:500},()=>({...seed,id:randomUUID()}));
+    fs.writeFileSync(initial.file,JSON.stringify({version:1,runs}));
+    const engine=new WorkflowEngine(directory,options);
+    assert.throws(()=>engine.create({sessionId:binding.sessionId,goal:'One too many'}),/全部记录.*导出并删除/);
+    assert.equal(engine.list().length,500);
+    const exported=JSON.parse(engine.exportRun(runs[0].id));
+    assert.deepEqual(exported.runs,[runs[0]]);
+    engine.remove(runs[0].id);
+    engine.create({sessionId:binding.sessionId,goal:'Capacity recovered',stages:[steps[0]]});
+    assert.equal(new WorkflowEngine(directory,options).list().length,500);
+    engine.removeSession(binding.sessionId);
+    assert.equal(new WorkflowEngine(directory,options).list().length,0);
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test('running and stopping workflows cannot be exported or deleted, including session deletion', async () => {
+  const directory=temporary();
+  try {
+    const binding=makeBinding(), pending=deferred<WorkflowStageResult>();
+    const engine=new WorkflowEngine(directory,{getSession:()=>binding,cancelSession:()=>{},runStage:async()=>pending.promise});
+    const run=engine.create({sessionId:binding.sessionId,goal:'Slow task',stages:[steps[0]]});
+    engine.start(run.id); await tick();
+    for(const operation of [()=>engine.remove(run.id),()=>engine.exportRun(run.id),()=>engine.removeSession(binding.sessionId)]) assert.throws(operation,/运行或停止/);
+    await engine.cancel(run.id);
+    assert.throws(()=>engine.remove(run.id),/运行或停止/);
+    assert.throws(()=>engine.exportRun(run.id),/运行或停止/);
+    pending.resolve({success:true,summary:'Late result'}); await engine.wait(run.id);
+    assert.equal(JSON.parse(engine.exportRun(run.id)).runs[0].status,'cancelled');
+    engine.remove(run.id); assert.equal(engine.list().length,0);
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+});
+
+test('shutdown cancels all runners despite disk failure and retries saving after runners have settled', async t=>{
+  const directory=temporary();
+  try {
+    const bindings=[makeBinding(),makeBinding()], pending=deferred<WorkflowStageResult>();
+    const cancelled:string[]=[];
+    const engine=new WorkflowEngine(directory,{
+      getSession:id=>bindings.find(binding=>binding.sessionId===id)!,
+      cancelSession:id=>{cancelled.push(id);},runStage:async()=>pending.promise,
+    });
+    const runs=bindings.map(binding=>engine.create({sessionId:binding.sessionId,goal:'Shutdown with disk fault',stages:steps}));
+    for(const run of runs)engine.start(run.id);
+    await tick();
+    t.mock.method(fs,'fsyncSync',()=>{throw new Error('disk full');});
+    await assert.rejects(engine.shutdown(),/disk full/);
+    assert.deepEqual(cancelled.sort(),bindings.map(binding=>binding.sessionId).sort());
+    pending.resolve({success:true,summary:'Late success'});
+    await Promise.all(runs.map(run=>engine.wait(run.id)));
+    assert.ok(bindings.every(binding=>!engine.isSessionBusy(binding.sessionId)));
+    t.mock.restoreAll();
+    await engine.shutdown();
+    const saved=JSON.parse(fs.readFileSync(engine.file,'utf8'));
+    assert.ok(saved.runs.every((run:{status:string;stages:{attempts:number;status:string}[]})=>
+      run.status==='interrupted'&&run.stages[0].status==='interrupted'&&run.stages[1].attempts===0));
+  }finally{t.mock.restoreAll();fs.rmSync(directory,{recursive:true,force:true});}
+});

@@ -3,6 +3,7 @@ export type DiagnosticScope = 'user' | 'project' | 'local';
 /** Read-only discovery. Configured credentials and endpoints are never proof of connectivity. */
 export interface EnvironmentDiagnostics {
   checkedAt: number;
+  cwd?: string;
   cli: { installed: boolean; binary: string; version?: string; runnable?: boolean };
   auth: {
     state: 'authenticated' | 'unauthenticated' | 'unknown' | 'unsupported' | 'unavailable';
