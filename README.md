@@ -4,15 +4,19 @@
 
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
-## 下载安装包
+## 下载安装包与便携包
 
-登录有仓库访问权限的 GitHub 账户，打开 [v0.2 验证与打包记录](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35617425289)，在页面底部 Artifacts 下载对应系统的压缩包，解压后使用 `release/` 内的安装文件。
+登录有仓库访问权限的 GitHub 账户，打开 [v0.2.0 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.0)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
-| Artifact | 安装文件 |
-| --- | --- |
-| `claude-workbench-Windows` | `.exe`，Windows x64 安装程序 |
-| `claude-workbench-macOS` | `.dmg`，架构以文件名为准 |
-| `claude-workbench-Linux` | `.AppImage`，Linux x64 |
+| 系统 | 安装包 | 便携包（免安装） |
+| --- | --- | --- |
+| Windows x64 | `cc-desk-0.2.0-windows-x64-setup.exe` | `cc-desk-0.2.0-windows-x64-portable.exe`，或 `cc-desk-0.2.0-windows-x64-portable.zip` |
+| macOS | `cc-desk-0.2.0-macos-<arch>-setup.dmg` | `cc-desk-0.2.0-macos-<arch>-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.0-linux-x64-portable.AppImage`，或 `cc-desk-0.2.0-linux-x64-portable.tar.gz` |
+
+macOS 的 `<arch>` 以 Release 实际文件名为准：`arm64` 用于 Apple silicon，`x64` 用于 Intel；本次构建沿用 macOS runner 的架构。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
+
+这里的“便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。Release 同时提供 `SHA256SUMS.txt`，可校验下载文件。
 
 安装包尚未签名或公证，当前没有自动更新；更新时下载新版本。使用前先安装并登录本机 Claude Code CLI，再在“设置与连接”中检测或指定 CLI 路径。安装桌面包本身不需要执行下面的源码构建命令。
 
@@ -31,12 +35,14 @@ npm run dev
 npm run check        # TypeScript、单元/集成测试、生产构建
 npm run test:e2e     # Electron UI + 真实 Shell / Claude 协议测试进程
 npm start           # 启动已有 dist
-npm run dist:win    # Windows 上构建 NSIS 安装包
-npm run dist:mac    # macOS 上构建 DMG
-npm run dist:linux  # Linux 上构建 AppImage
+npm run dist:win    # Windows 上构建 NSIS 安装包、单文件便携 EXE、ZIP
+npm run dist:mac    # macOS 上构建 DMG、免安装 ZIP
+npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 ```
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面的 CI 使用 `xvfb-run -a npm run test:e2e`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
+
+维护者发布版本时，先更新 `package.json` / 锁文件版本及对应的 `docs/releases/v<版本>.md`。随后在 main 分支手动运行构建工作流并勾选 `publish_release`，或将以 `release:` 开头的发布提交推送到 main。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 
 ## 主要流程
 

@@ -15,9 +15,9 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:e2e": "playwright test",
     "check": "npm run typecheck && npm test && npm run build",
-    "dist:win": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "dist:mac": "npm run build && electron-builder --mac dmg --publish never",
-    "dist:linux": "npm run build && electron-builder --linux AppImage --publish never",
+    "dist:win": "npm run build && electron-builder --win nsis portable zip --x64 --publish never",
+    "dist:mac": "npm run build && electron-builder --mac dmg zip --publish never",
+    "dist:linux": "npm run build && electron-builder --linux AppImage tar.gz --publish never",
     "postinstall": "node scripts/prepare-native.mjs"
   },
   "dependencies": {
@@ -66,20 +66,33 @@
       "node_modules/node-pty/**/*"
     ],
     "win": {
-      "target": "nsis",
+      "target": ["nsis", "portable", "zip"],
+      "artifactName": "cc-desk-${version}-windows-${arch}-portable.${ext}",
       "signAndEditExecutable": false
     },
     "nsis": {
+      "artifactName": "cc-desk-${version}-windows-${arch}-setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
     },
+    "portable": {
+      "artifactName": "cc-desk-${version}-windows-${arch}-portable.${ext}"
+    },
     "mac": {
       "category": "public.app-category.developer-tools",
-      "target": "dmg"
+      "target": ["dmg", "zip"],
+      "artifactName": "cc-desk-${version}-macos-${arch}-portable.${ext}"
+    },
+    "dmg": {
+      "artifactName": "cc-desk-${version}-macos-${arch}-setup.${ext}"
     },
     "linux": {
-      "target": "AppImage",
+      "target": ["AppImage", "tar.gz"],
+      "artifactName": "cc-desk-${version}-linux-${arch}-portable.${ext}",
       "category": "Development"
+    },
+    "appImage": {
+      "artifactName": "cc-desk-${version}-linux-${arch}-portable.${ext}"
     }
   }
 }
