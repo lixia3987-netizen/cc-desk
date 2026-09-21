@@ -4,6 +4,18 @@
 
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
+## 下载安装包
+
+登录有仓库访问权限的 GitHub 账户，打开 [v0.2 验证与打包记录](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35617425289)，在页面底部 Artifacts 下载对应系统的压缩包，解压后使用 `release/` 内的安装文件。
+
+| Artifact | 安装文件 |
+| --- | --- |
+| `claude-workbench-Windows` | `.exe`，Windows x64 安装程序 |
+| `claude-workbench-macOS` | `.dmg`，架构以文件名为准 |
+| `claude-workbench-Linux` | `.AppImage`，Linux x64 |
+
+安装包尚未签名或公证，当前没有自动更新；更新时下载新版本。使用前先安装并登录本机 Claude Code CLI，再在“设置与连接”中检测或指定 CLI 路径。安装桌面包本身不需要执行下面的源码构建命令。
+
 ## 运行与打包
 
 需要 Node.js 22.12+、npm、Git；使用 Claude 会话还需要安装并登录 Claude Code CLI。推荐原生 CLI 安装。

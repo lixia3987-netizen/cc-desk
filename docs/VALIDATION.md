@@ -39,7 +39,19 @@ Electron E2E 的第一项运行真实 Shell；第二项通过应用配置一个�
 - macOS node-pty spawn-helper 缺执行位：增加 postinstall 修复。
 - Linux electron-builder 在 CI 隐式发布导致缺GH_TOKEN：三个打包脚本增加 `--publish never`。
 
-同时修复 Windows taskkill 后 ConPTY worker 的原生释放，并为CI设置20分钟上限。v0.2 的远程结果以对应提交的 GitHub Actions 记录为准；本地通过不等于三个系统均已验收。
+同时修复 Windows taskkill 后 ConPTY worker 的原生释放，并为 CI 设置 20 分钟上限。跨平台测试还修正了 macOS `/var` 真实路径断言、Windows Git 临时目录短暂占用的有限清理重试，以及 Windows 8.3 短路径与长路径显示不同的问题。真实 Shell 会读取工作目录中的随机标识文件验证目录身份，保留中文输入和启动后立即停止的验证。
+
+验收代码提交为 `a9cca833f40eba495eba594f1eccace9cc18466f`，详见 [GitHub Actions 记录](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35617425289)：
+
+| 平台 | TypeScript / 生产构建 | Node 测试 | Electron E2E | 安装包构建 |
+| --- | --- | --- | --- | --- |
+| Windows | 通过 | 60 通过，1 跳过 | 1 通过，1 跳过 | NSIS `.exe` 通过 |
+| macOS | 通过 | 61 通过 | 2 通过 | `.dmg` 通过 |
+| Linux | 通过 | 61 通过 | 2 通过 | `.AppImage` 通过 |
+
+Windows 跳过附件符号链接替换测试和依赖 POSIX 可执行 fixture 的结构化 E2E；这些测试在 macOS/Linux 执行。Windows 仍执行结构化运行器的真实子进程协议测试，以及真实 PowerShell 的输入、Unicode/空格目录、停止、桌面交互和重启持久化测试。上述通过不等于真实账号与模型调用验收。
+
+三平台作业均成功完成，安装包可在上述 Actions 页的 Artifacts 下载。安装包尚未签名、公证；CI 运行的是构建后应用，未做安装向导、系统权限弹窗或升级验收。最后的交付提交仅补充 README 下载指引和本验证记录，没有改动上述已验证的程序与测试代码。
 
 ## 尚未验证
 
