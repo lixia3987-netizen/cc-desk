@@ -20,6 +20,7 @@ async function until(check:()=>boolean, phase: string, diagnostics: () => string
 }
 test('real PTY supports Unicode/spaces, isolated output, input, resize, concurrency and stopping', { timeout: 40000 }, async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-pty-'));const cwd=path.join(root,'项目 space & quote');fs.mkdirSync(cwd);
+  const cwdProof = randomUUID(); fs.writeFileSync(path.join(cwd, 'cwd-proof.txt'), cwdProof + '\n', 'utf8');
   const store=new StateStore(path.join(root,'data'));const projectId=randomUUID();
   const create=():Session=>({id:randomUUID(),projectId,title:'shell',kind:'shell',cwd,claudeId:randomUUID(),started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   const a=create(),b=create();store.change(s=>{s.sessions=[a,b];s.settings.maxSessions=1;});
@@ -33,12 +34,12 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
     await assert.rejects(runtime.start(b.id,cap),/并发会话上限/);
     runtime.resize(a.id,120,40);
     // Construct the marker from separate arguments: command echo alone must never satisfy the test.
-    const command=process.platform==='win32'?"Write-Output ('中文' + '输入完成'); (Get-Location).Path\r":"printf '\\n%s%s\\n' '中文' '输入完成'; pwd\r";
+    const command=process.platform==='win32'?"Write-Output ('中文' + '输入完成'); Get-Content -LiteralPath './cwd-proof.txt'; (Get-Location).Path\r":"printf '\\n%s%s\\n' '中文' '输入完成'; cat ./cwd-proof.txt; pwd\r";
     runtime.write(a.id,command);
     const plain = () => stripVTControlCharacters(output.get(a.id) ?? '');
-    const normalize = (text: string) => { const line = text.replace(/[\r\n]/g, ''); return process.platform === 'win32' ? line.toLowerCase() : line; };
-    await until(() => [cwd, fs.realpathSync(cwd)].some(value => normalize(plain()).includes(normalize(value))) && plain().includes('中文输入完成'),
-      'command output', () => JSON.stringify({ expected: cwd, canonical: fs.realpathSync(cwd), tail: plain().slice(-4000), status: store.state.sessions[0].status }), 15000);
+    // A relative file read proves cwd identity across Windows 8.3 aliases without trusting prompt text.
+    await until(() => plain().includes(cwdProof) && plain().includes('中文输入完成'),
+      'command output', () => JSON.stringify({ expected: cwd, canonical: fs.realpathSync.native(cwd), tail: plain().slice(-4000), status: store.state.sessions[0].status }), 15000);
     assert.equal(output.has(b.id),false);
     const snapshot=runtime.snapshot(a.id);assert.ok(snapshot.chunks.length>0);
     const exported=runtime.exportLogs(a.id);assert.match(exported,/retained-before-rotation/);assert.match(stripVTControlCharacters(exported),/中文输入完成/);
