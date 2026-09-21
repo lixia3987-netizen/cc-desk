@@ -68,12 +68,14 @@ export async function detectCLI(settings: Settings): Promise<Capabilities> {
       execFileAsync(file, [...prefix, '--version'], options), execFileAsync(file, [...prefix, '--help'], options)
     ]);
     return parseCapabilities(help.stdout, file, version.stdout);
-  } catch (error) {
-    return { available: false, executable: '', version: '', flags: [], efforts: ['default'], error: String((error as Error).message).slice(0, 1000) };
+  } catch {
+    // A failed process can echo configuration/credentials through stderr. Do not forward it over IPC.
+    return { available: false, executable: '', version: '', flags: [], efforts: ['default'], error: 'Claude Code 检测失败。请检查 CLI 安装、可执行路径和权限，然后重新检测。' };
   }
 }
 
 export function claudeArguments(session: Session, capabilities: Capabilities, hasTranscript: boolean): string[] {
+  if (session.started && !hasTranscript) throw new Error('无法恢复会话：未找到原会话记录。请检查 Claude 配置目录或从历史记录重新导入；不会自动创建空白会话。');
   const args: string[] = [];
   const add = (flag: string, ...values: string[]) => {
     if (!capabilities.flags.includes(flag)) throw new Error(`当前 CLI 不支持 ${flag}，请更新 Claude Code 后重新检测。`);

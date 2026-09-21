@@ -1,12 +1,12 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
-import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import { StateStore } from './store';
 import { Runtime } from './runtime';
+import { SessionService } from './session-service';
 import { detectCLI } from './commands';
 import { createWorktree, gitInfo } from './git';
 import { readHistory } from './history';
@@ -16,15 +16,19 @@ import type { Capabilities, Project, Session } from '../shared/types';
 if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
 let window: BrowserWindow | null = null;
 let runtime: Runtime;
+let services: SessionService;
+let tray: Tray | undefined;
 let store: StateStore;
 let closing = false;
 let allowQuit = false;
 let capabilities: Capabilities = { available:false, executable:'', version:'', flags:[], efforts:['default'] };
+let detectionEpoch=0;
 const rendererFile = path.join(__dirname, '../renderer/index.html');
 const devUrl = !app.isPackaged ? process.env.WORKBENCH_DEV_URL : undefined;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Invalid development origin');
 
-function notify() { if (window && !window.isDestroyed()) window.webContents.send('workspace:state', store.state); }
+function notify() { if (window && !window.isDestroyed()) { window.webContents.send('workspace:state', store.state); window.webContents.send('workspace:capabilities',capabilities); } }
+async function refreshCapabilities() { const epoch=++detectionEpoch; const value=await detectCLI(store.state.settings); if(epoch===detectionEpoch){capabilities=value;notify();}return capabilities; }
 function assertSender(event: Electron.IpcMainInvokeEvent) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted IPC sender');
   const url = event.senderFrame.url;
@@ -71,38 +75,25 @@ function registerIPC() {
       kind:input.kind, claudeId:input.resumeFrom && !input.fork ? input.resumeFrom : randomUUID(),
       resumeFrom:input.fork ? input.resumeFrom : undefined, imported:!!input.resumeFrom && !input.fork, started:!!input.resumeFrom && !input.fork,
       model:input.model, effort:input.effort, permissionMode:input.permissionMode,
-      status:'idle',archived:false,createdAt:now,updatedAt:now,worktree };
+      adapter:input.kind==='shell'?'terminal':input.adapter ?? 'terminal',taskState:'idle',draft:'',
+      status:'idle',archived:false,createdAt:now,updatedAt:now,worktree,worktreeBase:worktree?sourcePath:undefined };
     store.change(s => s.sessions.unshift(session)); notify(); return session;
   });
-  handle('session:update',z.object({ id:idSchema,title:z.string().trim().min(1).max(120).optional(),archived:z.boolean().optional() }),input => {
-    const current = runtime.getSession(input.id);
-    if (input.archived && ['running','stopping'].includes(current.status)) throw new Error('请先停止会话，再归档。');
-    store.change(s => Object.assign(s.sessions.find(x => x.id === input.id)!,input,{updatedAt:new Date().toISOString()})); notify();
-  });
-  handle('session:start',idSchema,id => runtime.start(id,capabilities));
-  handle('session:stop',idSchema,id => runtime.stop(id));
-  handle('session:interrupt',idSchema,id => runtime.interrupt(id));
+  services.register(handle);
+  handle('session:start',idSchema,id => services.start(id));
+  handle('session:stop',idSchema,id => services.stop(id));
+  handle('session:interrupt',idSchema,id => services.interrupt(id));
   handle('terminal:snapshot',idSchema,id => runtime.snapshot(id));
   handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => runtime.write(id,data));
   handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
-  handle('settings:save',settingsSchema,async settings => { store.change(s => { s.settings = settings; }); notify(); capabilities = await detectCLI(settings); return undefined; });
-  handle('cli:detect',z.undefined(),async () => { capabilities = await detectCLI(store.state.settings); return capabilities; });
+  handle('settings:save',settingsSchema,async settings => { store.change(s => { s.settings = settings; }); notify(); await refreshCapabilities(); return undefined; });
+  handle('cli:detect',z.undefined(),refreshCapabilities);
   handle('history:list',idSchema,async id => {
     const project = store.state.projects.find(p => p.id === id);
     if (!project) throw new Error('项目不存在。');
     return readHistory(project.path);
   });
   handle('git:info',idSchema,id => gitInfo(runtime.getSession(id).cwd));
-  handle('session:export',idSchema,async id => {
-    runtime.getSession(id);
-    const target = await dialog.showSaveDialog(window!,{defaultPath:`session-${id.slice(0,8)}.txt`,filters:[{name:'Text',extensions:['txt']}]});
-    if (target.canceled || !target.filePath) return null;
-    runtime.snapshot(id);
-    let text = '';
-    try { text = await fs.readFile(runtime.logPath(id),'utf8'); } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    await fs.writeFile(target.filePath,stripVTControlCharacters(text),{mode:0o600});
-    return target.filePath;
-  });
   handle('folder:open',idSchema,async id => {
     const cwd = store.state.projects.find(p => p.id === id)?.path ?? runtime.getSession(id).cwd;
     const error = await shell.openPath(cwd);
@@ -116,18 +107,27 @@ function createWindow() {
   window.webContents.setWindowOpenHandler(() => ({action:'deny'}));
   window.webContents.on('will-navigate',event => event.preventDefault());
   window.webContents.session.setPermissionRequestHandler((_webContents,_permission,callback) => callback(false));
-  window.on('close',event => { if (!allowQuit) { event.preventDefault(); void requestQuit(); } });
+  window.on('close',event => { if (!allowQuit) { event.preventDefault(); if(store.state.settings.closeToTray && tray) window?.hide(); else void requestQuit(); } });
   window.on('closed',() => {window=null;});
   if (devUrl) void window.loadURL(devUrl); else void window.loadFile(rendererFile);
+  if(!isolatedTest && !tray) {
+    try {
+      const pixels=Buffer.alloc(16*16*4); for(let y=3;y<13;y++) for(let x=3;x<13;x++) if(x<6||y<6||y>9){const p=(y*16+x)*4;pixels[p]=170;pixels[p+1]=200;pixels[p+2]=140;pixels[p+3]=255;}
+      tray=new Tray(nativeImage.createFromBitmap(pixels,{width:16,height:16}));
+      tray.setToolTip('Claude Workbench');
+      tray.setContextMenu(Menu.buildFromTemplate([{label:'打开工作台',click:()=>{window?.show();window?.focus();}},{label:'退出工作台',click:()=>void requestQuit()}]));
+      tray.on('click',()=>{window?.show();window?.focus();});
+    } catch { tray=undefined; }
+  }
 }
 async function requestQuit() {
   if (closing) return;
   closing = true;
-  if (runtime?.activeCount && window) {
-    const result = await dialog.showMessageBox(window,{type:'question',buttons:['保留窗口','停止会话并退出'],defaultId:0,cancelId:0,title:'退出工作台',message:`仍有 ${runtime.activeCount} 个会话进程运行。`,detail:'退出会停止这些进程。已保存的 Claude 对话可以在下次启动时恢复。'});
+  if (services?.activeCount && window) {
+    const result = await dialog.showMessageBox(window,{type:'question',buttons:['保留窗口','停止会话并退出'],defaultId:0,cancelId:0,title:'退出工作台',message:`仍有 ${services.activeCount} 个会话进程运行。`,detail:'退出会停止这些进程。已保存的 Claude 对话可以在下次启动时恢复。'});
     if (result.response === 0) { closing=false; return; }
   }
-  await runtime?.shutdown();
+  await services?.shutdown();
   allowQuit = true; app.quit();
 }
 // Isolated E2E instances use a disposable data directory and do not acquire the OS singleton socket.
@@ -140,9 +140,9 @@ else {
     try {
       store = new StateStore(app.getPath('userData'));
       runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); });
+      services = new SessionService(store,runtime,()=>capabilities,notify,()=>window);
       registerIPC(); createWindow();
-      capabilities = await detectCLI(store.state.settings);
-      notify();
+      await refreshCapabilities();
     } catch (error) { dialog.showErrorBox('启动失败',String((error as Error).message));allowQuit=true;app.quit(); }
   });
 }

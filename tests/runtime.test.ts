@@ -19,14 +19,18 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
   const output=new Map<string,string>();const runtime=new Runtime(store,()=>{},chunk=>output.set(chunk.sessionId,(output.get(chunk.sessionId)||'')+chunk.data));
   const cap={available:false,executable:'',version:'',flags:[],efforts:['default' as const]};
   try {
+    fs.writeFileSync(runtime.logPath(a.id), 'retained-before-rotation\n' + 'x'.repeat(5 * 1024 * 1024 - 25));
     await runtime.start(a.id,cap);
+    assert.throws(() => runtime.forget(a.id), /请先停止/);
+    assert.equal(fs.statSync(runtime.logPath(a.id) + '.previous').size, 5 * 1024 * 1024);
     await assert.rejects(runtime.start(b.id,cap),/并发会话上限/);
     runtime.resize(a.id,120,40);
     const command=process.platform==='win32'?"Write-Output '中文输入完成'; (Get-Location).Path\r":"printf '\\n中文输入完成\\n'; pwd\r";
     runtime.write(a.id,command);
-    await until(()=>output.get(a.id)?.includes(cwd)===true && output.get(a.id)?.includes('中文输入完成')===true);
+    await until(()=>(output.get(a.id)?.includes(cwd)===true || output.get(a.id)?.includes(fs.realpathSync(cwd))===true) && output.get(a.id)?.includes('中文输入完成')===true);
     assert.equal(output.has(b.id),false);
     const snapshot=runtime.snapshot(a.id);assert.ok(snapshot.chunks.length>0);
+    const exported=runtime.exportLogs(a.id);assert.match(exported,/retained-before-rotation/);assert.match(exported,/中文输入完成/);
     runtime.stop(a.id);await until(()=>runtime.activeCount===0);
     assert.equal(store.state.sessions[0].status,'stopped');
     await runtime.start(b.id,cap);assert.equal(store.state.sessions[1].status,'running');
@@ -44,4 +48,45 @@ test('worktree creates an independent branch and preserves the original working 
     assert.equal(fs.readFileSync(path.join(cwd,'code.txt'),'utf8'),'uncommitted');
     const info=await gitInfo(worktree);assert.match(info.branch,/^workbench\//);assert.equal(info.status,'');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
+});
+
+test('stopped terminal caches are bounded, evicted output reloads, and exports retain both log segments', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-cache-'));
+  const store = new StateStore(root); const now = new Date().toISOString();
+  const sessions: Session[] = Array.from({ length: 12 }, () => ({ id: randomUUID(), projectId: randomUUID(), title: 'stopped', kind: 'shell', cwd: root, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now }));
+  store.change(state => { state.sessions = sessions; });
+  const runtime = new Runtime(store, () => {}, () => {}, { maxStoppedBuffers: 2 });
+  try {
+    let firstSequence = 0;
+    for (const [index, session] of sessions.entries()) {
+      fs.writeFileSync(runtime.logPath(session.id), `output-${index}`);
+      const snapshot = runtime.snapshot(session.id);
+      if (index === 0) firstSequence = snapshot.chunks[0].seq;
+      assert.ok(runtime.retainedBufferCount <= 2);
+    }
+    const restored = runtime.snapshot(sessions[0].id);
+    assert.equal(restored.chunks[0].data, 'output-0'); assert.ok(restored.chunks[0].seq > firstSequence);
+    fs.writeFileSync(runtime.logPath(sessions[0].id) + '.previous', 'earlier-output\n');
+    const exported = runtime.exportLogs(sessions[0].id);
+    assert.match(exported, /retained terminal output only/); assert.match(exported, /earlier-output\noutput-0/);
+    runtime.forget(sessions[0].id, { deleteLogs: true });
+    assert.equal(fs.existsSync(runtime.logPath(sessions[0].id)), false);
+    assert.equal(fs.existsSync(runtime.logPath(sessions[0].id) + '.previous'), false);
+    assert.equal(runtime.has(sessions[0].id), false);
+  } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a pending CLI identity or unsupported observed permission cannot silently resume with stale settings', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-runtime-guard-'));
+  const store = new StateStore(root); const now = new Date().toISOString(); const id = randomUUID();
+  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'guard', kind: 'claude', cwd: root, claudeId: randomUUID(), started: true, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now, identityPending: true }));
+  const runtime = new Runtime(store, () => {}, () => {});
+  const cap = { available: false, executable: '', version: '', flags: [], efforts: ['default' as const] };
+  try {
+    await assert.rejects(runtime.start(id, cap), /新会话身份尚未确认/);
+    store.change(state => { state.sessions[0].identityPending = false; state.sessions[0].observedPermissionMode = 'bypassPermissions'; });
+    await assert.rejects(runtime.start(id, cap), /明确选择/);
+    assert.equal(runtime.activeCount, 0);
+    assert.equal(store.state.sessions[0].permissionMode, 'default');
+  } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true }); }
 });

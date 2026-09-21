@@ -1,44 +1,36 @@
-# 架构
+# 架构与边界（v0.2）
 
-## 数据流
+## 主进程与隔离
 
-```mermaid
-flowchart TD
-  UI[React 工作台] --> Bridge[类型化 preload 桥接]
-  Bridge --> IPC[主进程来源与参数验证]
-  IPC --> Runtime[会话 Runtime]
-  IPC --> Store[原子状态存储]
-  IPC --> Git[Git 与历史读取]
-  Runtime --> PTY[node-pty]
-  PTY --> CLI[本机 Claude Code / Shell]
-  PTY --> Buffer[序列化事件与有界回放]
-  Buffer --> UI
-```
+Electron main 是文件、进程、设置和 IPC 的唯一入口。renderer 无 Node 权限；preload 只暴露类型化方法；每次调用校验发送窗口、主 frame、来源与 Zod 输入。拒绝任意导航、窗口弹出和网页权限。
 
-## 边界
+SessionService 统一仲裁终端与结构化运行器，管理全局并发、生命周期锁、目录锁、配置、附件、导出和工作流。启动、删除、改配置和 Worktree 操作的锁跨越 await，避免检查后状态改变。共享同一目录的全部运行会话都会阻止自动合并/清理。
 
-- UI 只处理视图、设置、终端和用户事件，不直接访问文件系统或执行命令。
-- preload 暴露明确方法，不暴露 ipcRenderer、通配 invoke 或 Node 模块。
-- main 验证 sender、主 frame、本地页面 URL、Zod 参数、会话 ID。窗口不接受外部导航和弹窗。
-- Runtime 是 PTY 唯一拥有者，负责启动互斥、并发计数、输入、输出、尺寸、退出、重放。
-- 参数数组直接传给可执行文件；Windows 的标准 npm CMD shim 解析成 node.exe + 固定 cli.js，不通过 cmd.exe 插值。
-- Windows 停止使用 taskkill /T /F；POSIX 收集子进程 PID 并发送 TERM，随后 KILL 清理。独立于父进程自行 daemonize 的外部服务不在客户端拥有的会话进程树范围内。
-- Claude 对话持久化由 CLI 管理。工作台只保存恢复该对话所需 UUID 与非秘密元数据，不写入 Claude JSONL。
-- 状态使用 clone → validate → 临时文件写入/fsync → backup → rename。写失败不提交内存状态。损坏文件阻止启动而不是自动覆盖。
-- PTY 输出每 24ms 合并一次，每会话内存约 1 Mi 字符，磁盘当前/前一份日志各约 5 MiB。xterm 每会话滚动行数可配置。
-- 终端先订阅再获取快照，以单调递增序号去重，解决切换时的回放与实时输出竞态。
-- 启动期间有独立计数，防止并发点击突破限制；退出期间拒绝新启动。
+## 两种会话适配器
 
-## 适配 CLI 版本
+- Runtime：node-pty + xterm.js，保留 CLI 原生登录和交互。进程状态与观察到的任务状态分开。PTY 输出批量转发，内存与磁盘滚动保留，停止缓存使用有界淘汰。
+- ChatRuntime：通过参数数组启动本机 CLI，stdin/stdout 使用 NDJSON；以 initialize 建立控制通路，使用 can_use_tool 请求、control_response、interrupt、set_model 和 set_permission_mode。解析器处理拆包、粘包、异常 JSON 和大小限制。没有 shell 拼接，没有权限跳过开关。
 
-主要使用官方公开参数 `--session-id`、`--resume`、`--fork-session`、`--model`、`--permission-mode`、`--effort`。检测缺少必要 flag 时显示错误，不偷偷降级为新会话。CLI 帮助支持某个 effort 不代表当前所选模型支持，该部分由 CLI 返回最终错误。
+协议实现依据 Anthropic 官方 Agent SDK 的控制消息结构；没有引入 SDK 认证页面或改写用户凭据。真实 CLI 的控制握手与协议 fixture 测试分别记录。模型账号验收属于另一层。
 
-终端模式无需维护 stream-json 的内部审批协议，也不需要客户端代理登录。代价是界面无法可靠知道模型回合结束、当前 token 计数或 TUI 内切换的会话 ID；界面不通过启发式猜测这些状态。
+每个结构化会话只允许一个进行中的用户回合。工具、主回复、子任务分别追踪；以 result 判定回合结束，后台任务未完成时不直接推进工作流。进程退出、协议错误和控制超时均显示明确失败。审批由进程和 request_id 共同拥有，保持原始工具输入，取消/退出后立即失效。
 
-## 数据与凭据
+## 数据与恢复
 
-workspace.json 不接收 API Key。继承运行环境与本机 Claude 配置，提供 CLI 路径配置以应对 GUI PATH 不完整。日志是本地原始终端内容，请按本地开发日志管理。
+设置和会话元数据仍使用版本 1 JSON，新增字段可选，兼容 v0.1。StateStore 深拷贝、校验、写临时文件、fsync、备份、rename；损坏数据不会被空状态覆盖。重启把活动进程和回合标为停止/中断。
 
-## 测试
+ChatHistory 保存有界 UI 快照和追加式完整工作台事件日志。权限请求不跨进程恢复。CLI 原始 JSONL 仍归 CLI 所有。历史索引按项目过滤后分页，元数据缓存以 mtime/size 失效；全文搜索流式读取匹配项目的文件，不额外复制原始全文数据库。
 
-测试使用临时目录与临时 Git 仓库。桌面 E2E 只在非打包程序中显式启用临时测试目录时跳过系统单例套接字；发行版本始终启用单例。Linux 容器测试所需 `--no-sandbox` 仅出现在测试启动参数中，不在应用代码或正式启动脚本中。
+工作流保存在独立 JSON 文件中，包含固定会话/目录绑定、依赖、状态、次数和摘要产物。取消优先于迟到成功；取消后直到执行器结束仍保留会话独占。重启不自动重放可能有副作用的步骤。
+
+## 文件、Git 与配置
+
+项目文件接口拒绝绝对路径、穿越、Git 内部文件和指向项目外部的符号链接；Git 路径使用 literal pathspec。预览和 diff 有大小上限，二进制不当作文本展开。原生选定附件复制到私有目录，通过每会话 allowlist 校验后才能发送；不允许 renderer 传任意宿主路径。
+
+Worktree 所有权记录写入该 worktree 的 Git 私有目录。只允许快进合并；自动清理要求记录有效、无使用中的会话、已合并且目录干净，包含忽略数据检查。不 reset、不 force、不自动删分支。
+
+诊断仅提供配置存在性、来源、MCP/Skills 元数据和公开认证状态。密钥值、HTTP headers、命令参数、账户标识和原始错误不会经过诊断 IPC。配置存在、认证成功、MCP 运行和模型服务可达分别表达。
+
+## 后续演进
+
+SQLite 持久化全文索引、MCP 配置编辑/验证、后台服务、签名更新、远程环境属于后续工作。当前托盘只维持本机 Electron 进程；机器休眠、断电或退出应用不能继续运行任务。

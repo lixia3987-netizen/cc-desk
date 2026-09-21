@@ -31,12 +31,13 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
       for(const chunk of snapshot.chunks)consume(chunk);
       for(const chunk of waiting)consume(chunk);
       hydrating=false;
-    }).catch(error => errorHandler.current(error));
+    }).catch(error => {if(disposed)return;hydrating=false;for(const chunk of waiting)consume(chunk);waiting.length=0;errorHandler.current(error);});
     const input=term.onData(data => {
       if(status.current !== 'running') return;
       void window.desktop.writeTerminal(session.id,data).catch(error => errorHandler.current(error));
     });
     term.attachCustomKeyEventHandler(event => {
+      if((event.ctrlKey || event.metaKey) && event.code === 'KeyK')return false;
       if((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === 'KeyC' && term.hasSelection()) {
         if(event.type === 'keydown') void navigator.clipboard.writeText(term.getSelection()).catch(error => errorHandler.current(error));
         return false;
@@ -55,7 +56,8 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
   },[session.id]);
   useEffect(() => {
     if(terminal.current){terminal.current.options.fontSize=settings.fontSize;terminal.current.options.scrollback=settings.scrollback;}
-    if(active)requestAnimationFrame(() => {fit.current?.fit();terminal.current?.focus();if(terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});
+    if(active)requestAnimationFrame(() => {fit.current?.fit();if(terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});
   },[active,settings.fontSize,settings.scrollback,session.status,session.id,onError]);
+  useEffect(()=>{if(active)requestAnimationFrame(()=>terminal.current?.focus());},[active]);
   return <div className="terminal-host" ref={host} aria-label={`${session.title}终端`}/>;
 });

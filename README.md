@@ -1,103 +1,93 @@
-# Claude Workbench
+# Claude Workbench / cc-desk
 
-封装本机 **Claude Code CLI** 的独立桌面客户端。中文界面，支持 Windows、macOS 和 Linux。桌面层使用 Electron + React + TypeScript；交互层使用 node-pty + xterm.js。
+封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
-这是一个可运行的 v0.1 客户端，不需要 Claude Desktop。需要另外安装并登录 Claude Code CLI；模型、账户权限、计费以及 MCP 都由 CLI 处理。
+**v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
-## Windows 便携版
+## 运行与打包
 
-1. 解压 `Claude-Workbench-0.1.0-Windows-x64.zip` 到本地目录。
-2. 运行目录中的 `Claude Workbench.exe`。**不要只提取 exe，其他文件必须保留。**
-3. 点击「设置与连接」。通常会自动检测 `claude`；如未找到，填写官方原生安装的 `claude.exe` 完整路径，例如 `C:\Users\你的用户名\.local\bin\claude.exe`。
-4. 添加项目文件夹 → 新建会话 → 启动会话。
-5. 在内嵌终端内完成 CLI 的登录、目录信任确认和工具审批。
+需要 Node.js 22.12+、npm、Git；使用 Claude 会话还需要安装并登录 Claude Code CLI。推荐原生 CLI 安装。
 
-便携包已在 Linux 上交叉打包并检查所需 Windows ConPTY 文件；没有在真实 Windows 机器上启动验收，属于预览构建。当前未做代码签名。
-
-## 从源码运行
-
-需要 Node.js 22.12+（建议 22 LTS 或 24 LTS）、npm、Git，以及你安装的 Claude Code。
-
-```powershell
+```sh
 npm ci
 npm run dev
 ```
 
-或者在 PowerShell 执行 `./scripts/start.ps1`，在 macOS/Linux 执行 `bash scripts/start.sh`。脚本首次运行安装依赖并执行生产构建，后续直接启动；修改源码后请重新 `npm run build`。
+也可运行 PowerShell 的 `./scripts/start.ps1`，或 macOS/Linux 的 `bash scripts/start.sh`。首次运行会安装依赖和构建；修改代码后重新构建。
 
 ```sh
-npm run check       # TypeScript、单元/集成测试、生产构建
-npm run test:e2e    # 桌面 UI + 真实终端自动化
-npm start          # 运行已有 dist 构建
-npm run dist:win    # 在 Windows 生成 NSIS 安装包
-npm run dist:mac    # 在 macOS 生成 DMG
-npm run dist:linux  # 在 Linux 生成 AppImage
+npm run check        # TypeScript、单元/集成测试、生产构建
+npm run test:e2e     # Electron UI + 真实 Shell / Claude 协议测试进程
+npm start           # 启动已有 dist
+npm run dist:win    # Windows 上构建 NSIS 安装包
+npm run dist:mac    # macOS 上构建 DMG
+npm run dist:linux  # Linux 上构建 AppImage
 ```
 
-node-pty 1.1 使用 Node-API。Windows/macOS 包提供预编译模块；Linux 从源码编译，需要 Python 3、make 和 C++ 编译器。若 Windows 预编译不可用，需安装 Visual Studio Build Tools 的 C++ 工具链和 Python。无需为 Electron 重复重编译 Node-API 模块。
+Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面的 CI 使用 `xvfb-run -a npm run test:e2e`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
 
-## 已实现
+## 主要流程
+
+1. 添加项目目录，创建 Claude 会话，选择“结构化对话”或“原生终端”。Shell 始终使用终端模式。
+2. 结构化模式直接发送消息，查看流式文本、工具输入/结果和真实任务状态。CLI 请求人工决定时，会显示批准/拒绝卡片或问题选项。
+3. “上下文”面板修改模型、权限和推理强度。结构化模式在空闲回合间可修改模型/权限；修改强度需先停止进程。终端模式的启动配置也在停止后修改。
+4. “变更”面板查看暂存、未暂存和未跟踪文件的 diff，将审阅意见放入当前会话草稿。
+5. “工作流”面板创建目标和阶段，按依赖顺序执行；阶段由真实 CLI 回合结果推进，支持逐阶段确认、取消、手动重试及恢复。
+6. “诊断”面板检查 CLI、认证状态及用户/项目配置，浏览 MCP 和 Skills 清单。
+
+`Ctrl/⌘ + K` 打开命令面板。设置可开启任务通知和关闭窗口后保留到托盘；只有实际退出程序才会停止全部进程。
+
+## 功能与边界
 
 | 能力 | 行为 |
 | --- | --- |
-| 项目管理 | 原生文件夹选择器添加项目、按项目筛选、搜索会话 |
-| 会话生命周期 | 创建、启动、切换、重命名、中断当前任务、停止进程、恢复、归档及取消归档 |
-| CLI 会话恢复 | 新建时指定 UUID；真实 transcript 存在时使用 `--resume`；导入始终恢复指定 ID |
-| 真实交互终端 | ANSI、中文输入、滚动、尺寸自适应；审批、登录、斜杠命令交给 Claude Code |
-| Shell | Windows 默认 PowerShell，macOS/Linux 默认登录 Shell；可以指定完整路径 |
-| CLI 能力检测 | 读取本机 `--version` 与 `--help`；仅展示帮助中声明的 effort |
-| 模型与权限 | 模型别名或完整 ID；default、plan、acceptEdits；不自动跳过审批 |
-| 多会话 | 默认最多 4 个进程，可设置 1–12 个；切换标签不结束后台会话 |
-| 历史导入 | 只读扫描本地 CLI transcript；也支持输入会话 UUID |
-| 会话分支 | `--resume` + `--fork-session` + 新 UUID；再次恢复沿用分支 UUID |
-| Worktree | 基于所选源目录 HEAD 创建独立 Git 分支和目录 |
-| Git 查看 | 当前分支、改动文件、暂存与未暂存变更统计 |
-| 工作流提示词 | 开发、审查、修复模板放入编辑器，由用户确认后粘贴到终端 |
-| 本地持久化 | 原子替换、上一版备份、崩溃后将运行状态还原为已停止 |
-| 终端日志 | 每会话日志滚动、重开回放、文本导出；内存缓冲有大小上限 |
+| 项目、会话 | 创建、切换、恢复、重命名、归档、删除；每个会话独立草稿，恢复最近选择 |
+| 结构化对话 | 单会话单运行器，消息/工具卡片、流式文本、明确失败；HTML 按文本显示 |
+| 审批和提问 | 使用 CLI 的实际控制请求；保持原始工具参数，审批限当前请求，过期不可复用 |
+| 模型和权限 | 运行中的切换必须取得 CLI 确认；不启用权限绕过模式 |
+| 上下文 | 项目文件检索/预览与 @引用；原生文件选择器添加文本、图片、PDF；8 个附件、单个 8 MiB、合计 16 MiB |
+| 历史 | 项目筛选后分页，全文搜索；只读原始 CLI 记录；不改写 Claude 历史 |
+| Git 审阅 | 文件级真实 diff、二进制提示、有界预览；不会隐式暂存或提交 |
+| Worktree | 创建并记录所有权；干净且可快进时合并；停止、干净、已合并且无忽略数据时清理；保留分支 |
+| MCP / Skills | 配置来源与元数据清单；结构化会话显示 CLI 报告的 MCP 状态；只读诊断不会启动服务器 |
+| 工作流 | 顺序依赖、摘要产物、有限手动重试、取消和崩溃恢复；沿用会话权限和工作目录 |
+| 终端 | node-pty + xterm.js；中文、尺寸调整、输入、中断、进程树停止；停止缓存有界 |
+| 本地数据 | 原子状态文件和备份；结构化消息快照与事件日志；附件在应用数据目录保存副本 |
 
-## 需要知道的行为
+“CLI 已检测到”不等于模型服务可达；登录状态也不等于 provider 请求已成功。诊断不会发出收费的模型测试请求，不展示密钥、请求头、命令参数或完整认证错误。
 
-- **运行中**表示 CLI 进程仍在运行，不表示模型正在生成。这一版不解析 TUI 文本来猜测任务完成状态。
-- **中断任务**发送 Ctrl+C；**停止**终止整个会话进程树。再次恢复的是 Claude 保存的对话，不是原操作系统进程、Shell 作业或尚未保存的编辑器状态。
-- 提示词编辑器用于准备长文本。点击「粘贴到终端」后，请检查当前是 Claude 的输入框，再按 Enter 发送。不要在权限选择器、登录交互或 Shell 提示符中粘贴任务提示词。
-- 归档只修改工作台列表，不删除 `.claude` 历史、worktree、分支或项目文件。不会自动合并、清理 worktree。
-- 同一目录的多个会话可能同时改文件；希望隔离时创建 worktree。新 worktree 不带入未提交改动，不自动安装项目依赖。
-- `max`、`xhigh`、`ultracode` 各自传给 CLI；可用强度取决于本机帮助信息与模型，不将 `ultracode` 替换为 `max`，不声称提示词模板等于官方多 Agent 编排。
-- 客户端沿用 CLI 的用户/项目配置以及从父进程继承的环境变量，不复制认证文件，不存储 API Key，不修改 ccSwitch 的配置。若 provider 仅在某个 Shell profile 中设置环境变量，请从该 Shell 启动本客户端，或者放到 Claude Code 支持的配置中。
-- 历史扫描是对本机 JSONL 的尽力兼容：最多检查 300 个项目目录、每目录 1,000 个条目、最近 500 个候选、每文件头部 128 KiB，最多显示 100 条。CLI 历史格式不是工作台拥有的稳定接口；找不到记录时可使用 UUID 导入，或在 Claude 终端内使用 `/resume`。
-- 在终端里使用 `/resume` 切换到另一个会话、`/clear` 创建新会话等操作时，客户端不会解析 TUI 来重新绑定 UUID。需要管理另一个 ID 时，请通过「导入 CLI 历史」创建对应条目。正常对话和 `/compact` 不影响本客户端的 ID 管理。
-- 终端输出按原样保存在本机，可能包含代码、命令输出或敏感内容。每个日志达到约 5 MiB 后滚动为 `.previous`，导出的是当前日志；这不是完整 Claude 对话的备份。
-- Windows 原生 PowerShell 与 Git Bash 可通过路径配置。此版没有 WSL 路径转换和发行版管理；不要直接填入 `wsl.exe` 期待自动映射项目路径。
+### 会话与权限
 
-## 数据位置
+终端模式的“运行中”表示进程存活；可用时，客户端额外使用会话专用 HTTP hooks 展示观察到的任务状态与身份。hooks 需要支持的 CLI 版本和用户/组织设置允许。无法获得事件时会明确显示等待/未支持，而不会猜测终端文字。原生终端内清空或切换会话后，身份可能需等下一条可观察事件才能确认；未确认身份不会被用于恢复。
 
-在「设置与连接」中显示实际路径，默认由 Electron 的 userData 规则决定：Windows `%APPDATA%/claude-workbench`，macOS `~/Library/Application Support/claude-workbench`，Linux `~/.config/claude-workbench`。实际显示的路径为准。
+结构化模式要求 CLI 支持 stream-json 及双向权限控制。启动握手不兼容会明确失败，可创建终端模式会话继续使用。底层接口随 CLI 版本变化，应查阅 [验证记录](docs/VALIDATION.md)。客户端不是 Anthropic 官方产品，不提供第三方账户登录服务。
+
+审批仍遵循 CLI 自身权限规则：已由本地规则允许的工具可能不会向 GUI 请求审批。默认、Plan、acceptEdits 三种启动权限不会被客户端自动放宽。工作流阶段的自然语言目标并非额外沙箱；“阶段完成”表示 CLI 回合完成，文件和测试结果仍需审阅。
+
+### 恢复与数据
+
+停止进程后恢复的是 Claude 保存的对话，不是原操作系统进程。已建立的对话缺少原始 transcript 时会报错，禁止静默新建替代上下文。归档不删除数据；删除工作台会话会清理自己的消息记录和附件，保留 CLI 原始历史。独立 worktree 必须先审阅和清理；清理后的会话归档，不自动换到另一个目录继续执行。
+
+结构化界面只保留有界消息投影，完整可用记录通过导出读取。终端日志是滚动保留的调试输出，导出包含上一段和当前段，不能视为完整对话备份。对话与工具输出可能含项目内容，存放在本机，请按自己的数据保留需求管理。
+
+默认数据目录为 Electron userData，准确路径显示在设置中：
 
 ```text
-workspace.json       项目、会话元数据和非秘密设置
-workspace.json.bak   上次保存的副本
-logs/                有界终端日志
-worktrees/           客户端创建的独立 Git 工作目录
+workspace.json / workspace.json.bak  项目、会话、草稿、非秘密设置
+chat/                               结构化快照和事件日志
+workflows.json                      工作流阶段与摘要产物
+attachments/                        用户选定附件的副本
+logs/                               滚动终端日志
+worktrees/                          客户端创建的 Git 工作目录
 ```
 
-如果状态文件损坏，应用会明确报错并保留原文件。关闭应用后，保留损坏文件副本，再用 `workspace.json.bak` 恢复。卸载、迁移或清理数据目录前应检查其中的 worktree 未提交改动。
+状态损坏时保留原文件并报错。恢复备份前先关闭应用并保留损坏文件副本。新版的自动 worktree 管理只处理具有可信所有权记录的目录，旧版目录保守保留。
 
-## 项目文件
+## 规划与验证
 
-- `src/main/`：受验证的 IPC、PTY 生命周期、存储、CLI 参数、Git、历史扫描。
-- `src/preload/`：最小类型化桥接，不暴露任意 IPC 通道。
-- `src/renderer/`：React 工作台和 xterm.js 终端。
-- `src/shared/`：跨层类型和输入验证。
-- `tests/`：恢复、存储、注入防护、PTY、Git worktree、桌面 UI 测试。
-- `docs/REQUEST_AND_PROMPT.md`：找回的需求与本次重建的开发提示词，明确区别于历史原文。
-- `docs/ARCHITECTURE.md`：架构与边界。
-- `docs/VALIDATION.md`：实际验证记录与未验证范围。
+- [架构与权限边界](docs/ARCHITECTURE.md)
+- [实际验证记录](docs/VALIDATION.md)
+- [迭代状态与剩余工作](docs/ROADMAP.md)
+- [最初需求与开发提示词](docs/REQUEST_AND_PROMPT.md)
 
-## 官方接口依据
-
-- [Claude Code CLI reference](https://code.claude.com/docs/en/cli-reference)
-- [node-pty](https://github.com/microsoft/node-pty)
-- [Electron security](https://www.electronjs.org/docs/latest/tutorial/security)
-
-这是个人本地客户端项目，与 Anthropic 官方桌面产品没有隶属关系。
+签名安装包、自动更新、WSL/SSH、开发服务器预览、PR/CI 管理和远程调度仍属于后续迭代。当前构建不包含签名证书，也不宣称真实 Claude 账号及所有桌面系统已验收。
