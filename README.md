@@ -12,7 +12,7 @@
 | --- | --- | --- |
 | Windows x64 | `cc-desk-0.2.0-windows-x64-setup.exe` | `cc-desk-0.2.0-windows-x64-portable.exe`，或 `cc-desk-0.2.0-windows-x64-portable.zip` |
 | macOS | `cc-desk-0.2.0-macos-<arch>-setup.dmg` | `cc-desk-0.2.0-macos-<arch>-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.0-linux-x64-portable.AppImage`，或 `cc-desk-0.2.0-linux-x64-portable.tar.gz` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.0-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.0-linux-x64-portable.tar.gz` |
 
 macOS 的 `<arch>` 以 Release 实际文件名为准：`arm64` 用于 Apple silicon，`x64` 用于 Intel；本次构建沿用 macOS runner 的架构。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 

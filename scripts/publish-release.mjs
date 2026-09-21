@@ -19,7 +19,8 @@ const expected = [
   `${prefix}windows-x64-setup.exe`,
   `${prefix}windows-x64-portable.exe`,
   `${prefix}windows-x64-portable.zip`,
-  `${prefix}linux-x64-portable.AppImage`,
+  // AppImage expands ${arch} using Linux's x86_64 name; archive targets use x64.
+  `${prefix}linux-x86_64-portable.AppImage`,
   `${prefix}linux-x64-portable.tar.gz`,
 ];
 const macArchitectures = ['arm64', 'x64'].filter(arch => names.includes(`${prefix}macos-${arch}-setup.dmg`));
