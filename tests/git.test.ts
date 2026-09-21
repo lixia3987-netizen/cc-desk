@@ -15,7 +15,10 @@ async function fixture() {
   await fs.writeFile(path.join(repo, 'file.txt'), 'initial\n');
   await fs.writeFile(path.join(repo, '.gitignore'), 'ignored.txt\n');
   await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'Initial');
-  return { dir, repo, dispose: () => fs.rm(dir, { recursive: true, force: true }) };
+  // Windows may retain a just-exited Git process's cwd handle briefly, especially
+  // after execFile terminates a diff at maxBuffer. Retry only filesystem cleanup;
+  // a persistent lock still fails the test and every product assertion stays intact.
+  return { dir, repo, dispose: () => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 test('Git review separates staged, unstaged, untracked and binary changes without executing pathspecs', async () => {

@@ -43,7 +43,8 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     await app.close();app=await launch();page=await app.firstWindow();
     await expect(page.getByRole('button',{name:/已验证的项目终端.*已停止/})).toBeVisible();
     const state=await page.evaluate(async()=>(await window.desktop.snapshot()).state);
-    expect(state.projects[0].path).toBe(project);expect(state.sessions).toHaveLength(2);
+    // Project identity uses the canonical filesystem path (macOS /var is a symlink to /private/var).
+    expect(state.projects[0].path).toBe(await fs.realpath(project));expect(state.sessions).toHaveLength(2);
     await expect(page.evaluate(()=>window.desktop.createSession({projectId:'invalid',title:'x',kind:'shell',model:'',effort:'default',permissionMode:'default',isolated:false}))).rejects.toThrow();
   }finally{
     const page=await app.firstWindow().catch(()=>null);
