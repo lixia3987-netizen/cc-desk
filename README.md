@@ -2,11 +2,11 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
-**v0.2.3 源码已完成，安装包待发布。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。本地验证通过；[远程构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35676911960) 在分配 Runner 前失败，GitHub 提示账号付款或支出限制，尚未生成本版安装包。
+**v0.2.3 三平台构建与验证已通过，安装包已生成。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。[本次构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224) 基于 `83f3fe9`，Windows x64、macOS arm64、Linux x64 均完成检查、桌面测试、打包和实际包启动验证；下载见下方工作流附件。
 
 **v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
-v0.2.3 源码还完成了 [第一轮体验修复](docs/UX-FIXES-round1.md)：工作流与审阅草稿跨切换/重启保存、模板追加、正确选择新建项目、长对话阅读位置、CLI 路径检测和 Git 自动刷新等九项改进。本地六项桌面回归通过，仍需完成原生发布验收后提供新安装包。
+v0.2.3 还包含 [第一轮体验修复](docs/UX-FIXES-round1.md)：工作流与审阅草稿跨切换/重启保存、模板追加、正确选择新建项目、长对话阅读位置、CLI 路径检测和 Git 自动刷新等九项改进。最新三平台测试结果见 [验证记录](docs/VALIDATION.md)。
 
 本轮新增 [对话检索与待处理入口](docs/UX-FIXES-round2.md)：Ctrl / ⌘ + F 查找本地消息并定位工具卡片，按页查看更早记录，跨会话恢复阅读，顶栏集中处理各项目的审批与提问。
 
@@ -16,7 +16,9 @@ v0.2.3 源码还完成了 [第一轮体验修复](docs/UX-FIXES-round1.md)：工
 
 ## 下载安装包与便携包
 
-当前已发布安装包为 [v0.2.2 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，不包含本次主题及两轮体验改进。登录有仓库访问权限的 GitHub 账户，在 Assets 下载对应系统和架构的文件；v0.2.3 待三平台构建恢复并通过后发布。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+v0.2.3 安装包与便携包保存在本次工作流的 Artifacts： [Windows x64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10694005447)、[macOS arm64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10693093630)、[Linux x64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10692668154)。登录有仓库访问权限的 GitHub 账户下载并解压附件，再选择其中的安装包或便携包。工作流附件会按保留期限过期；本次没有发布新的 GitHub Release。
+
+当前已发布的 Release 仍为 [v0.2.2](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，不包含本次主题、体验修复和项目分组布局；下表列出该 Release 的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
