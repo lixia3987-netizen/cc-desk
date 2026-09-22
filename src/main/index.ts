@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme } from 'electron';
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -67,6 +67,8 @@ async function addProject(value: string): Promise<Project> {
 }
 function registerIPC() {
   handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, platform:process.platform, dataPath:store.directory }));
+  // Explicit write-only bridge; web permission requests remain denied.
+  handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
     const result = await dialog.showOpenDialog(window!,{ properties:['openDirectory'],title:'添加项目文件夹' });
     return result.canceled ? null : addProject(result.filePaths[0]);

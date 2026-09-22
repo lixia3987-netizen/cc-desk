@@ -33,6 +33,7 @@ export interface HistoryEntry { id: string; title: string; cwd: string; modified
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
   snapshot(): Promise<Snapshot>;
+  copyText(text: string): Promise<void>;
   chooseProject(): Promise<Project | null>;
   addProject(path: string): Promise<Project>;
   removeProject(id: string): Promise<void>;

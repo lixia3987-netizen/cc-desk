@@ -3,6 +3,7 @@ import type { DesktopAPI } from '../shared/types';
 import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
+  copyText:text => ipcRenderer.invoke('clipboard:write-text',text),
   chooseProject:() => ipcRenderer.invoke('project:choose'),
   addProject:path => ipcRenderer.invoke('project:add',path),
   removeProject:id => ipcRenderer.invoke('project:remove',id),

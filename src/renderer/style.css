@@ -364,6 +364,19 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .message-code-heading .text-button {font-size:11px;gap:4px;padding:3px 5px}
 .message-code pre {margin:0;overflow:auto}
 .message-code pre code {display:block;color:var(--text);background:transparent;padding:0}
+.mermaid-block {min-width:0;max-width:100%}
+.mermaid-block .message-code-heading {flex-wrap:wrap;gap:6px;background:var(--code-header)}
+.mermaid-actions,.mermaid-mode {display:flex;align-items:center;gap:5px}
+.mermaid-actions {margin-left:auto;flex-wrap:wrap}
+.mermaid-mode {border:1px solid var(--border);border-radius:5px;padding:2px}
+.mermaid-mode button {border-radius:3px;min-width:38px}
+.mermaid-mode button[aria-pressed=true] {background:var(--selected);color:var(--text-strong)}
+.mermaid-preview {overflow:auto;max-height:480px;min-height:100px;padding:14px;background:var(--code-bg)}
+.mermaid-svg {width:max-content;min-width:100%}
+.mermaid-svg svg {display:block;max-width:none;margin:0 auto}
+.mermaid-loading {display:flex;align-items:center;justify-content:center;gap:7px;min-height:72px;color:var(--text-muted);font-size:11px}
+.mermaid-error {font-size:11px;color:var(--text-secondary)}
+.mermaid-error pre {padding:8px 0;max-height:140px;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text-muted);font-size:10px}
 .hljs-keyword,.hljs-selector-tag,.hljs-literal {color:var(--syntax-keyword)}
 .hljs-string,.hljs-regexp,.hljs-attr {color:var(--syntax-string)}
 .hljs-number,.hljs-symbol,.hljs-built_in {color:var(--syntax-number)}
