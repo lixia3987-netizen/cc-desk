@@ -1,0 +1,317 @@
+/* Palette values mirror THEMES in themes.ts; tests keep the two in sync. */
+
+:root, :root[data-theme="forest"], .theme-preview[data-theme="forest"] {
+  color-scheme: dark;
+  --background: #111515;
+  --sidebar: #181e1b;
+  --panel: #161d18;
+  --surface: #1d2921;
+  --elevated: #202c24;
+  --input-bg: #121a15;
+  --code-bg: #0d1510;
+  --code-header: #203127;
+  --inline-code-bg: #293d30;
+  --hover: #293a2e;
+  --selected: #2e4535;
+  --selected-border: #91b69d;
+  --user-bg: #1d3024;
+  --user-border: #65816d;
+  --text: #e0eae3;
+  --text-strong: #f3faf5;
+  --text-secondary: #c7d8cc;
+  --text-muted: #aebfb3;
+  --accent: #b9ebcf;
+  --accent-hover: #cff5dd;
+  --on-accent: #17281d;
+  --border: #354b3b;
+  --control-border: #859b8c;
+  --focus: #c5f4d8;
+  --scrollbar: #819b89;
+  --scrollbar-hover: #a4c2ae;
+  --overlay: #030905bd;
+  --shadow: #00000066;
+  --success: #abe1b7;
+  --success-bg: #203d2a;
+  --success-border: #789f7f;
+  --warning: #eed49b;
+  --warning-bg: #392f1c;
+  --warning-border: #b69b65;
+  --danger: #ffb5aa;
+  --danger-bg: #422b29;
+  --danger-border: #bb8279;
+  --info: #a9d9ed;
+  --info-bg: #203642;
+  --info-border: #789faf;
+  --syntax-keyword: #dfb4ef;
+  --syntax-string: #b8e5aa;
+  --syntax-number: #f0ce9e;
+  --syntax-comment: #a9bab0;
+  --syntax-title: #a8d6f0;
+  --diff-added-bg: #203d2a;
+  --diff-added-text: #abe1b7;
+  --diff-removed-bg: #422b29;
+  --diff-removed-text: #ffb5aa;
+  --diff-hunk-bg: #203642;
+  --diff-hunk-text: #a9d9ed;
+  --selection-bg: #2e4535;
+  --selection-text: #f3faf5;
+}
+
+:root[data-theme="cloud"], .theme-preview[data-theme="cloud"] {
+  color-scheme: light;
+  --background: #f7f9fe;
+  --sidebar: #eaf0fa;
+  --panel: #eef3fc;
+  --surface: #ffffff;
+  --elevated: #ffffff;
+  --input-bg: #ffffff;
+  --code-bg: #edf2fb;
+  --code-header: #dfe7f5;
+  --inline-code-bg: #e1e8f6;
+  --hover: #dce5f6;
+  --selected: #d7e2fa;
+  --selected-border: #536dab;
+  --user-bg: #e8eefc;
+  --user-border: #8b9bc1;
+  --text: #26334c;
+  --text-strong: #182541;
+  --text-secondary: #3f4e69;
+  --text-muted: #536079;
+  --accent: #344da9;
+  --accent-hover: #293d8c;
+  --on-accent: #ffffff;
+  --border: #c1cde1;
+  --control-border: #71809b;
+  --focus: #2948b0;
+  --scrollbar: #7a8aa5;
+  --scrollbar-hover: #576985;
+  --overlay: #1b294466;
+  --shadow: #15284b26;
+  --success: #23613f;
+  --success-bg: #e1f1e7;
+  --success-border: #669679;
+  --warning: #795008;
+  --warning-bg: #fff0cd;
+  --warning-border: #a18245;
+  --danger: #a12e39;
+  --danger-bg: #fce5e8;
+  --danger-border: #b7747c;
+  --info: #205d8b;
+  --info-bg: #e1f0fb;
+  --info-border: #6a92b2;
+  --syntax-keyword: #723a96;
+  --syntax-string: #256139;
+  --syntax-number: #88531c;
+  --syntax-comment: #57647c;
+  --syntax-title: #245d93;
+  --diff-added-bg: #e1f1e7;
+  --diff-added-text: #23613f;
+  --diff-removed-bg: #fce5e8;
+  --diff-removed-text: #a12e39;
+  --diff-hunk-bg: #e1f0fb;
+  --diff-hunk-text: #205d8b;
+  --selection-bg: #d7e2fa;
+  --selection-text: #182541;
+}
+
+:root[data-theme="sand"], .theme-preview[data-theme="sand"] {
+  color-scheme: light;
+  --background: #fbf5eb;
+  --sidebar: #eee2d1;
+  --panel: #f4eadb;
+  --surface: #fffaf2;
+  --elevated: #fffcf7;
+  --input-bg: #fffaf2;
+  --code-bg: #f3e8d8;
+  --code-header: #e7d8c2;
+  --inline-code-bg: #eee0cc;
+  --hover: #eaddc8;
+  --selected: #e8d4bd;
+  --selected-border: #9a6f50;
+  --user-bg: #f3e3d0;
+  --user-border: #af8c6e;
+  --text: #433326;
+  --text-strong: #322419;
+  --text-secondary: #5c4737;
+  --text-muted: #6d5846;
+  --accent: #934320;
+  --accent-hover: #783718;
+  --on-accent: #fffaf3;
+  --border: #ceb99c;
+  --control-border: #8d7358;
+  --focus: #8a3c1c;
+  --scrollbar: #917757;
+  --scrollbar-hover: #765d43;
+  --overlay: #38241366;
+  --shadow: #4a2a1429;
+  --success: #34602d;
+  --success-bg: #e7efdb;
+  --success-border: #729262;
+  --warning: #80500d;
+  --warning-bg: #fbecc5;
+  --warning-border: #a27f3a;
+  --danger: #a12f29;
+  --danger-bg: #f9dfd8;
+  --danger-border: #b57062;
+  --info: #2b5d79;
+  --info-bg: #e3edf2;
+  --info-border: #7195a5;
+  --syntax-keyword: #813e6b;
+  --syntax-string: #3f642b;
+  --syntax-number: #885006;
+  --syntax-comment: #786046;
+  --syntax-title: #2d6178;
+  --diff-added-bg: #e7efdb;
+  --diff-added-text: #34602d;
+  --diff-removed-bg: #f9dfd8;
+  --diff-removed-text: #a12f29;
+  --diff-hunk-bg: #e3edf2;
+  --diff-hunk-text: #2b5d79;
+  --selection-bg: #e8d4bd;
+  --selection-text: #322419;
+}
+
+:root[data-theme="midnight"], .theme-preview[data-theme="midnight"] {
+  color-scheme: dark;
+  --background: #091421;
+  --sidebar: #0d1e32;
+  --panel: #0d1c2d;
+  --surface: #12273d;
+  --elevated: #152d45;
+  --input-bg: #081827;
+  --code-bg: #07121e;
+  --code-header: #142d45;
+  --inline-code-bg: #1c3852;
+  --hover: #1b3851;
+  --selected: #1b3d58;
+  --selected-border: #70a7c5;
+  --user-bg: #102d46;
+  --user-border: #4a799b;
+  --text: #e0ebf8;
+  --text-strong: #f2f8ff;
+  --text-secondary: #c5d8eb;
+  --text-muted: #b1c5db;
+  --accent: #80d9f5;
+  --accent-hover: #a5e8fb;
+  --on-accent: #072233;
+  --border: #2d4b66;
+  --control-border: #789ab8;
+  --focus: #9be8ff;
+  --scrollbar: #799bb7;
+  --scrollbar-hover: #a3c5df;
+  --overlay: #020815c7;
+  --shadow: #0008177a;
+  --success: #9fe0bd;
+  --success-bg: #123c35;
+  --success-border: #6aa58e;
+  --warning: #f5d19a;
+  --warning-bg: #3b3020;
+  --warning-border: #b49a6c;
+  --danger: #ffb5b5;
+  --danger-bg: #442b38;
+  --danger-border: #b78090;
+  --info: #a2d7ff;
+  --info-bg: #123852;
+  --info-border: #6d9dc0;
+  --syntax-keyword: #ddb8ff;
+  --syntax-string: #a6e0bc;
+  --syntax-number: #f4ca9e;
+  --syntax-comment: #a6bdd4;
+  --syntax-title: #9ad8fc;
+  --diff-added-bg: #123c35;
+  --diff-added-text: #9fe0bd;
+  --diff-removed-bg: #442b38;
+  --diff-removed-text: #ffb5b5;
+  --diff-hunk-bg: #123852;
+  --diff-hunk-text: #a2d7ff;
+  --selection-bg: #1b3d58;
+  --selection-text: #f2f8ff;
+}
+
+:root[data-theme="amber"], .theme-preview[data-theme="amber"] {
+  color-scheme: dark;
+  --background: #161513;
+  --sidebar: #1e1c19;
+  --panel: #1b1916;
+  --surface: #27231e;
+  --elevated: #2d2720;
+  --input-bg: #161410;
+  --code-bg: #11100e;
+  --code-header: #302a21;
+  --inline-code-bg: #3b3123;
+  --hover: #383024;
+  --selected: #473a25;
+  --selected-border: #bf9859;
+  --user-bg: #302718;
+  --user-border: #8b744e;
+  --text: #eee7dc;
+  --text-strong: #fff9ef;
+  --text-secondary: #dfd1bc;
+  --text-muted: #c5b8a3;
+  --accent: #edbd69;
+  --accent-hover: #f7d293;
+  --on-accent: #261a07;
+  --border: #514535;
+  --control-border: #a18c6d;
+  --focus: #f5cc85;
+  --scrollbar: #a18b69;
+  --scrollbar-hover: #c8ad82;
+  --overlay: #100c06c2;
+  --shadow: #00000070;
+  --success: #b9dca4;
+  --success-bg: #2d3a24;
+  --success-border: #8caa72;
+  --warning: #f3d08b;
+  --warning-bg: #40321b;
+  --warning-border: #bea16c;
+  --danger: #ffb6a1;
+  --danger-bg: #462e27;
+  --danger-border: #c18c78;
+  --info: #b1d6ef;
+  --info-bg: #263744;
+  --info-border: #85a6bd;
+  --syntax-keyword: #ddc0ec;
+  --syntax-string: #c4dba9;
+  --syntax-number: #f1ca87;
+  --syntax-comment: #bfae96;
+  --syntax-title: #acd6ed;
+  --diff-added-bg: #2d3a24;
+  --diff-added-text: #b9dca4;
+  --diff-removed-bg: #462e27;
+  --diff-removed-text: #ffb6a1;
+  --diff-hunk-bg: #263744;
+  --diff-hunk-text: #b1d6ef;
+  --selection-bg: #473a25;
+  --selection-text: #fff9ef;
+}
+
+
+/* Existing components use these aliases; palette meanings remain explicit. */
+:root { --mint: var(--accent); --muted: var(--text-muted); --line: var(--border); }
+::selection { background: var(--selection-bg); color: var(--selection-text); }
+:where(a, summary, [tabindex]):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+.composer:focus-within { border-color: var(--focus); }
+::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-hover); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); }
+
+.theme-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin: 10px 0 20px; }
+.modal .theme-card { position: relative; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; gap: 9px; padding: 11px; margin: 0; text-align: left; cursor: pointer; border: 1px solid var(--control-border); border-radius: 9px; background: var(--surface); color: var(--text); min-width: 0; }
+.theme-card:has(input:not(:disabled)):hover { background: var(--hover); color: var(--text-strong); }
+.theme-card:has(input:checked) { border-color: var(--accent); outline: 1px solid var(--accent); background: var(--selected); }
+.theme-card:has(input:focus-visible) { outline: 2px solid var(--focus); outline-offset: 3px; }
+.theme-card:has(input:disabled) { cursor: not-allowed; }
+.modal .theme-card > input { grid-column: 1; grid-row: 2; width: 14px; height: 14px; padding: 0; margin: 0; accent-color: var(--accent); }
+.theme-preview { grid-column: 1 / -1; grid-row: 1; display: flex; height: 58px; overflow: hidden; border-radius: 5px; border: 1px solid var(--control-border); background: var(--background); pointer-events: none; }
+.theme-preview-sidebar { width: 31%; padding: 10px 6px; background: var(--sidebar); border-right: 1px solid var(--border); }
+.theme-preview-content { flex: 1; padding: 10px 9px; background: var(--background); }
+.theme-preview-line { display: block; height: 3px; width: 88%; border-radius: 2px; background: var(--text-muted); margin: 0 0 5px; }
+.theme-preview-line:nth-child(2) { width: 67%; }
+.theme-preview-accent { display: block; height: 7px; width: 72%; border-radius: 2px; background: var(--accent); margin-bottom: 7px; }
+.theme-preview-content > .theme-preview-accent { width: 26px; height: 5px; margin-top: 2px; margin-left: auto; }
+.theme-card-title { grid-column: 2; grid-row: 2; display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.theme-card-title strong { font-weight: 600; }
+.theme-card-description { grid-column: 1 / -1; font-size: 10px; line-height: 1.6; color: var(--text-muted); }
+.theme-card-mode { margin-left: auto; font-size: 9px; color: var(--text-muted); font-weight: 400; }
+.theme-selected { color: var(--accent); flex-shrink: 0; }
+@media (max-width: 560px) { .theme-grid { grid-template-columns: 1fr; } }

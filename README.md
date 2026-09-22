@@ -2,19 +2,21 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
+**v0.2.3** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。
+
 **v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
 ## 下载安装包与便携包
 
-登录有仓库访问权限的 GitHub 账户，打开 [v0.2.2 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+登录有仓库访问权限的 GitHub 账户，打开 [v0.2.3 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.3)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.2.2-windows-x64-setup.exe` | `cc-desk-0.2.2-windows-x64-portable.exe`，或 `cc-desk-0.2.2-windows-x64-portable.zip` |
-| macOS arm64 | `cc-desk-0.2.2-macos-arm64-setup.dmg` | `cc-desk-0.2.2-macos-arm64-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.2-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.2-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.2.3-windows-x64-setup.exe` | `cc-desk-0.2.3-windows-x64-portable.exe`，或 `cc-desk-0.2.3-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-0.2.3-macos-arm64-setup.dmg` | `cc-desk-0.2.3-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.3-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.3-linux-x64-portable.tar.gz` |
 
 macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 
@@ -70,6 +72,7 @@ Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面�
 
 | 能力 | 行为 |
 | --- | --- |
+| 外观主题 | 两套浅色、三套深色，覆盖对话、代码、终端与弹窗；预览、保存、取消与重启恢复 |
 | 项目、会话 | 创建、切换、恢复、重命名、归档、删除；每个会话独立草稿，恢复最近选择 |
 | 结构化对话 | 单会话单运行器，流式/完整/最终结果按消息来源合并；标准 Markdown、代码复制/高亮、表格；HTML 按文本显示 |
 | 审批和提问 | 使用 CLI 的实际控制请求；保持原始工具参数，审批限当前请求，过期不可复用 |

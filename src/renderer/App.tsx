@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
 import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X, Zap } from 'lucide-react';
 import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, PermissionMode, Session, Settings } from '../shared/types';
@@ -10,6 +10,10 @@ import { SessionConfig } from './SessionConfig';
 import { Dialog } from './Dialog';
 import { SessionSelection } from './selection';
 import { ApprovalDrafts } from './approval-drafts';
+import { ThemePicker } from './ThemePicker';
+import { applyTheme } from './themes';
+import { normalizeThemeId } from '../shared/theme';
+import { cacheSavedTheme, readCachedTheme } from './theme-preferences';
 
 const statusLabel = {idle:'待启动',running:'运行中',stopping:'停止中',stopped:'已停止',error:'需处理'};
 const sessionLabel=(session:Session)=>session.adapter==='structured'?(taskLabels[session.taskState??'idle']??statusLabel[session.status]):session.kind==='claude'&&session.status==='running'?(session.terminalSync==='synced'?taskLabels[session.taskState??'idle']??'进程运行中':'进程运行中'):statusLabel[session.status];
@@ -50,6 +54,11 @@ export function App() {
   const [dataPath,setDataPath]=useState('');
   const [platform,setPlatform]=useState('');
   const [draftSettings,setDraftSettings]=useState<Settings>();
+  const [startupTheme]=useState(readCachedTheme);
+  const savedTheme=state?normalizeThemeId(state.settings.theme):startupTheme;
+  const themeId=modal==='settings'&&draftSettings?normalizeThemeId(draftSettings.theme):savedTheme;
+  useLayoutEffect(()=>{applyTheme(themeId);},[themeId]);
+  useEffect(()=>{if(state)cacheSavedTheme(normalizeThemeId(state.settings.theme));},[state?.settings.theme,!!state]);
   const [rename,setRename]=useState('');
   const [draft,setDraft]=useState<NewSession>({projectId:'',title:'',kind:'claude',model:'',effort:'default',permissionMode:'default',isolated:false,adapter:'structured'});
   const handles=useRef(new Map<string,TerminalHandle>());
@@ -193,7 +202,7 @@ export function App() {
         {active.error&&<div className="inline-warning">{active.error}</div>}
         <div className="session-content"><section className="terminal-section"><div className="terminal-toolbar"><span><TerminalSquare size={14}/>{structured?'结构化对话':'交互终端'}</span><span title={active.cwd}>{active.cwd}</span><button className="icon-button" title="打开工作目录" onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={14}/></button></div>
           {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
-          <div className="terminals" style={{display:structured?'none':undefined}}>{mounted.map(id=>{const session=state.sessions.find(s=>s.id===id);return session?<div className="terminal-slot" key={id} style={{display:id===activeId?'block':'none'}}><TerminalPane session={session} settings={state.settings} active={id===activeId} onError={report} ref={handle=>{if(handle)handles.current.set(id,handle);else handles.current.delete(id);}}/></div>:null;})}
+          <div className="terminals" style={{display:structured?'none':undefined}}>{mounted.map(id=>{const session=state.sessions.find(s=>s.id===id);return session?<div className="terminal-slot" key={id} style={{display:id===activeId?'block':'none'}}><TerminalPane session={session} themeId={themeId} settings={state.settings} active={id===activeId} onError={report} ref={handle=>{if(handle)handles.current.set(id,handle);else handles.current.delete(id);}}/></div>:null;})}
             {!active.started&&<div className="terminal-empty"><TerminalSquare size={30}/><h3>会话准备就绪</h3><p>启动后，在这里与 {active.kind==='shell'?'Shell':'Claude Code'} 直接交互。</p>{active.kind==='claude'&&<small>登录、信任目录与工具审批均在终端内完成</small>}</div>}
           </div>
           {active.kind==='claude'&&!structured&&<div className="composer"><textarea aria-label="提示词编辑器" placeholder="在这里准备提示词，或直接在终端输入…" value={composer} onChange={e=>setComposer(e.target.value)}/><div><span>粘贴后，请在终端确认并按 Enter 发送。</span><button className="secondary compact" disabled={active.status!=='running'||!composer.trim()} onClick={()=>{if(composer.length>60000){setError('单次提示词请控制在 60,000 个字符以内。');return;}const handle=handles.current.get(active.id);if(!handle){setError('终端尚未就绪，请稍后再试。');return;}handle.paste(composer);handle.focus();setComposer('');}}><Copy size={13}/>粘贴到终端</button></div></div>}
@@ -212,7 +221,7 @@ export function App() {
       <footer className="statusbar"><span><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?cap.version:'未检测到 Claude Code'}</span><span>{platform==='win32'?'Windows':platform==='darwin'?'macOS':'Linux'}<span>UTF-8</span><span>v{appVersion}</span></span></footer>
     </main>
     {filePicker&&<FilePicker key={filePicker} sessionId={filePicker} selected={[]} onClose={()=>setFilePicker('')} onError={report} onPick={paths=>{const id=filePicker;const value=drafts[id]??state.sessions.find(s=>s.id===id)?.draft??'';saveDraftFor(id,value+(value?'\n\n':'')+'请参考以下项目文件：\n'+paths.map(p=>'@'+JSON.stringify(p)).join('\n'));setFilePicker('');}}/>}
-    {modal&&<Dialog className={modal==='settings'?'wide':''} onClose={()=>setModal(null)} closeDisabled={busy} label={modal==='new'?'新建会话':modal==='settings'?'设置与连接':modal==='rename'?'重命名会话':modal==='palette'?'命令面板':'导入 CLI 历史'}><button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={()=>setModal(null)}><X size={20}/></button>
+    {modal&&<Dialog className={modal==='settings'?'preferences':''} onClose={()=>setModal(null)} closeDisabled={busy} label={modal==='new'?'新建会话':modal==='settings'?'设置与连接':modal==='rename'?'重命名会话':modal==='palette'?'命令面板':'导入 CLI 历史'}><button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={()=>setModal(null)}><X size={20}/></button>
       {modal==='palette'&&<><div className="eyebrow">COMMAND PALETTE</div><h2>快速切换</h2><input aria-label="查找命令与会话" autoFocus placeholder="查找会话或操作…" value={paletteQuery} onChange={e=>setPaletteQuery(e.target.value)}/><div className="palette-results">{['新建会话','导入 CLI 历史','设置与连接'].filter(name=>name.includes(paletteQuery)).map(name=><button key={name} onClick={()=>{if(name==='新建会话')openNew();else if(name==='导入 CLI 历史')void openHistory();else{setDraftSettings({...state.settings});setModal('settings');}}}>{name}<ChevronRight size={14}/></button>)}{state.sessions.filter(s=>(s.title+' '+s.cwd).toLowerCase().includes(paletteQuery.toLowerCase())).map(s=><button key={s.id} onClick={()=>{setProjectId('all');setArchived(s.archived);selectSession(s.id);setModal(null);}}><span>{s.title}<small>{s.cwd}</small></span><ChevronRight size={14}/></button>)}</div></>}
       {modal==='new'&&<><div className="eyebrow">NEW SESSION</div><h2>{draft.fork?'创建会话分支':'开始新的工作'}</h2><p>为这次任务选择项目和运行方式。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{const session=await window.desktop.createSession({...draft,title:draft.title.trim()||(draft.kind==='shell'?'项目终端':'新的开发会话')});selectSession(session.id);setArchived(false);setModal(null);});}}>
         <label>项目<select aria-label="项目" value={draft.projectId} onChange={e=>setDraft({...draft,projectId:e.target.value})}>{state.projects.map(p=><option key={p.id} value={p.id}>{p.name} — {p.path}</option>)}</select></label>
@@ -223,7 +232,8 @@ export function App() {
         {!cap.available&&draft.kind==='claude'&&<p className="hint">可以先创建会话；启动前请在设置中连接 Claude Code。</p>}
         <button className="primary full" disabled={busy||!draft.projectId}>{busy?<Loader2 size={16} className="spin"/>:<Plus size={16}/>}创建会话</button>
       </form></>}
-      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>检测已安装的 Claude Code，使用本机账户与配置。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.saveSettings(draftSettings);await refresh();setNotice('设置已保存并重新检测');});}}>
+      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，管理本机 Claude Code 连接。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.saveSettings(draftSettings);await refresh();setNotice('设置已保存');});}}>
+        <ThemePicker value={normalizeThemeId(draftSettings.theme)} disabled={busy} onChange={theme=>setDraftSettings({...draftSettings,theme})}/>
         <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
         <label>Shell 可执行文件<input value={draftSettings.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={e=>setDraftSettings({...draftSettings,shellPath:e.target.value})}/></label>
         <div className="form-grid"><label>最大并发会话<input type="number" min={1} max={12} value={draftSettings.maxSessions} onChange={e=>setDraftSettings({...draftSettings,maxSessions:Number(e.target.value)})}/></label><label>终端字号<input type="number" min={11} max={24} value={draftSettings.fontSize} onChange={e=>setDraftSettings({...draftSettings,fontSize:Number(e.target.value)})}/></label></div>

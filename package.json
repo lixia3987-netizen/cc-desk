@@ -1,7 +1,7 @@
 {
   "name": "claude-workbench",
   "productName": "Claude Workbench",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Independent local desktop workspace for the Claude Code CLI",
   "author": "Claude Workbench contributors",

@@ -2,6 +2,7 @@ import type { ChatSnapshot, ChatDecision, ChatTurnResult, TaskState } from './ch
 import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
+import type { ThemeId } from './theme';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
@@ -16,7 +17,7 @@ export interface Session {
   terminalSync?: 'waiting' | 'synced' | 'unsupported'; identityPending?: boolean;
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
 }
-export interface Settings { claudePath: string; shellPath: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean }
+export interface Settings { claudePath: string; shellPath: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
 export interface Snapshot { state: AppState; capabilities: Capabilities; platform: string; dataPath: string }

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme } from 'electron';
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -13,6 +13,7 @@ import { cleanupWorktree, createWorktree, gitInfo } from './git';
 import { readHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project, Session } from '../shared/types';
+import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
 
 const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
 if(profileDirectory) {
@@ -119,7 +120,13 @@ function registerIPC() {
   handle('terminal:snapshot',idSchema,id => runtime.snapshot(id));
   handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => runtime.write(id,data));
   handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
-  handle('settings:save',settingsSchema,async settings => { store.change(s => { s.settings = settings; }); notify(); await refreshCapabilities(); return undefined; });
+  handle('settings:save',settingsSchema,async settings => {
+    const cliChanged=settings.claudePath!==store.state.settings.claudePath;
+    store.change(s => { s.settings = settings; });
+    const appearance=THEME_APPEARANCE[normalizeThemeId(settings.theme)];nativeTheme.themeSource=appearance.scheme;
+    if(window&&!window.isDestroyed())window.setBackgroundColor(appearance.background);
+    notify();if(cliChanged)await refreshCapabilities();return undefined;
+  });
   handle('cli:detect',z.undefined(),refreshCapabilities);
   handle('history:list',idSchema,async id => {
     const project = store.state.projects.find(p => p.id === id);
@@ -135,7 +142,8 @@ function registerIPC() {
 }
 
 function createWindow() {
-  window = new BrowserWindow({ width:1460,height:920,minWidth:980,minHeight:680,backgroundColor:'#101313',title:'Claude Workbench',
+  nativeTheme.themeSource=THEME_APPEARANCE[normalizeThemeId(store.state.settings.theme)].scheme;
+  window = new BrowserWindow({ width:1460,height:920,minWidth:980,minHeight:680,backgroundColor:THEME_APPEARANCE[normalizeThemeId(store.state.settings.theme)].background,title:'Claude Workbench',
     autoHideMenuBar:true,webPreferences:{ preload:path.join(__dirname,'../preload/index.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true } });
   window.webContents.setWindowOpenHandler(({url}) => {
     try { const parsed=new URL(url);if(['https:','http:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)void shell.openExternal(parsed.href).catch(()=>{}); } catch { /* Ignore invalid links. */ }

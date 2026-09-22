@@ -3,9 +3,11 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import type { Session, Settings, TerminalChunk } from '../shared/types';
+import type { ThemeId } from '../shared/theme';
+import { getTerminalTheme } from './themes';
 export interface TerminalHandle { paste: (text: string) => void; focus: () => void }
 
-export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:Settings;active:boolean;onError:(error:unknown)=>void}>(function TerminalPane({session,settings,active,onError},ref) {
+export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:Settings;themeId:ThemeId;active:boolean;onError:(error:unknown)=>void}>(function TerminalPane({session,settings,themeId,active,onError},ref) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
@@ -15,8 +17,8 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
   useImperativeHandle(ref,() => ({paste:text => terminal.current?.paste(text),focus:() => terminal.current?.focus()}),[]);
   useEffect(() => {
     const term = new Terminal({ fontFamily:'"Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:settings.fontSize,
-      lineHeight:1.35,scrollback:settings.scrollback,cursorBlink:true,allowProposedApi:false,convertEol:false,
-      theme:{background:'#111515',foreground:'#dce3df',cursor:'#b5e8ca',selectionBackground:'#354e43',black:'#242c29',red:'#ec9291',green:'#ace0ba',yellow:'#e4d09a',blue:'#9fbde8',magenta:'#cbb0db',cyan:'#9accc9',white:'#e1e8e4',brightBlack:'#76827a'} });
+      lineHeight:1.35,scrollback:settings.scrollback,cursorBlink:true,allowProposedApi:false,convertEol:false,minimumContrastRatio:4.5,
+      theme:getTerminalTheme(themeId) });
     const addon = new FitAddon(); term.loadAddon(addon);term.open(host.current!);
     terminal.current=term;fit.current=addon;
     let disposed=false;let hydrating=true;let lastSeq=0;const waiting:TerminalChunk[]=[];
@@ -54,6 +56,11 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     // A live terminal is owned by the session, not by a render or settings update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[session.id]);
+  useEffect(() => {
+    // xterm repaints its existing buffer when its palette changes. Keep the live
+    // instance (and therefore scroll position, selection and PTY subscription).
+    if(terminal.current)terminal.current.options.theme=getTerminalTheme(themeId);
+  },[themeId]);
   useEffect(() => {
     if(terminal.current){terminal.current.options.fontSize=settings.fontSize;terminal.current.options.scrollback=settings.scrollback;}
     if(active)requestAnimationFrame(() => {fit.current?.fit();if(terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});

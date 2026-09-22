@@ -1,11 +1,12 @@
 import { z } from 'zod';
+import { THEME_IDS } from './theme';
 export const idSchema = z.uuid();
 export const settingsSchema = z.object({
   claudePath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   shellPath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   maxSessions: z.number().int().min(1).max(12), fontSize: z.number().int().min(11).max(24),
   scrollback: z.number().int().min(1000).max(50000),
-  notifications: z.boolean().optional(), closeToTray: z.boolean().optional()
+  notifications: z.boolean().optional(), closeToTray: z.boolean().optional(), theme: z.enum(THEME_IDS).optional()
 });
 export const sessionInputSchema = z.object({
   projectId: idSchema, title: z.string().trim().min(1).max(120), kind: z.enum(['claude', 'shell']),

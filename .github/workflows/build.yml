@@ -82,6 +82,7 @@ jobs:
           name: claude-workbench-${{ runner.os }}-${{ matrix.arch }}
           path: |
             docs/screenshots/*.png
+            docs/themes/*.png
             test-results/**
   publish:
     needs: build
