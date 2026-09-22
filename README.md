@@ -2,7 +2,7 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
-**v0.2.3 源码已完成，安装包待发布。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。本地验证通过；[远程构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35676911960) 两次均在分配 Runner 前失败，尚未生成本版安装包。
+**v0.2.3 源码已完成，安装包待发布。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。本地验证通过；[远程构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35676911960) 在分配 Runner 前失败，GitHub 提示账号付款或支出限制，尚未生成本版安装包。
 
 **v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
@@ -28,7 +28,7 @@ macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Wi
 
 新版 npm 包声明的入口是 `bin/claude.exe`，旧版是 `cli.js`；工作台读取实际包信息，分别直接启动原生程序或使用 Node.js。无需把 npm 的 `claude.cmd` 改名为 `.exe`。
 
-自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，再重新检测。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
+自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，点击“保存设置”以保存新路径并触发检测；当前“重新检测”使用已保存的路径。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
 
 若提示 npm 启动文件缺失，先在终端确认 `claude --version` 能运行，再修复 npm 安装；工作台不会执行任意 CMD/BAT 内容，也不会自动改写 Claude 配置。
 
