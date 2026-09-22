@@ -15,6 +15,7 @@ import { execFileAsync } from '../src/main/commands';
 import type { Capabilities, Session } from '../src/shared/types';
 import type { WorktreeInfo } from '../src/shared/git';
 import type { EnvironmentDiagnostics } from '../src/shared/diagnostics';
+import { emptyGitReviewDraft, emptyWorkflowDraft } from '../src/shared/panel-drafts';
 
 async function fixture(window:BrowserWindow|null=null) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-service-'));
@@ -44,6 +45,40 @@ async function fixture(window:BrowserWindow|null=null) {
   };
   return {dir,repo,store,service,runtime,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
+
+test('panel drafts merge independent sections, survive restart and disappear with the owning session',async()=>{
+  const f=await fixture();try{
+    const a=f.add(f.repo,{kind:'claude',adapter:'structured',draft:'main draft'}),b=f.add(f.repo);
+    const workflow={...emptyWorkflowDraft(),goal:'next task',editing:'run:plan',instructions:{'run:plan':'unsaved instruction'},maxAttempts:3};
+    const git={...emptyGitReviewDraft(),selected:'one.txt',staged:true,feedback:{'one.txt':'first review','two.txt':'second review'}};
+    await f.call('session:panel-drafts',{id:a.id,patch:{workflow}});
+    await f.call('session:panel-drafts',{id:a.id,patch:{git}});
+    await f.call('session:panel-drafts',{id:b.id,patch:{workflow:{...emptyWorkflowDraft(),goal:'other session'}}});
+    await f.call('session:panel-drafts',{id:a.id,patch:{workflow:{...workflow,goal:'newest goal'}}});
+    f.store.flush();
+    const restored=new StateStore(f.store.directory).state;
+    assert.deepEqual(restored.sessions.find(session=>session.id===a.id)!.panelDrafts,{workflow:{...workflow,goal:'newest goal'},git});
+    assert.equal(restored.sessions.find(session=>session.id===a.id)!.draft,'main draft');
+    assert.equal(restored.sessions.find(session=>session.id===b.id)!.panelDrafts?.workflow?.goal,'other session');
+    await f.call('session:delete',a.id);
+    await assert.rejects(f.call('session:panel-drafts',{id:a.id,patch:{git}}),/Session missing/);
+    assert.equal(new StateStore(f.store.directory).state.sessions.some(session=>session.id===a.id),false);
+  }finally{await f.dispose();}
+});
+
+test('invalid panel drafts are rejected without replacing the last valid user input',async()=>{
+  const f=await fixture();try{
+    const session=f.add(f.repo),workflow={...emptyWorkflowDraft(),goal:'keep me'};
+    await f.call('session:panel-drafts',{id:session.id,patch:{workflow}});
+    const before=structuredClone(f.store.state);
+    for(const patch of [{workflow:{...workflow,goal:'x'.repeat(20001)}},{workflow:{...workflow,maxAttempts:4}},
+      {git:{...emptyGitReviewDraft(),feedback:{'one.txt':'x'.repeat(60001)}}},
+      {git:{...emptyGitReviewDraft(),feedback:Object.fromEntries(Array.from({length:201},(_,i)=>[String(i),'draft']))}}]){
+      await assert.rejects(f.call('session:panel-drafts',{id:session.id,patch}));
+      assert.deepEqual(f.store.state,before);
+    }
+  }finally{await f.dispose();}
+});
 
 test('cleanup preserves a worktree referenced as another worktree source', async()=>{
   const f=await fixture();try {

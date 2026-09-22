@@ -232,7 +232,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .diagnostic-item p{font-size:10px;color:var(--text-muted);line-height:1.7;margin:7px 0}
 .diagnostic-item small,.diagnostic-item>span{font-size:9px;display:block;color:var(--text-muted);margin-top:7px}
 .chat-pane{display:flex;flex-direction:column;flex:1;min-height:0;position:relative}
-.chat-scroll{overflow:auto;flex:1;min-height:100px;padding:22px 25px 30px;scroll-behavior:smooth}
+.chat-scroll{overflow:auto;flex:1;min-height:100px;padding:22px 25px 30px;scroll-behavior:auto}
 .chat-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;min-height:230px;height:100%;padding:25px;color:var(--text-muted)}
 .chat-empty h3{color:var(--text-secondary);font-size:17px;font-weight:400;margin:19px 0 8px}
 .chat-empty p{font-size:11px;line-height:1.9}
@@ -385,3 +385,6 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .preferences .theme-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .preferences form > .modal-actions { position:sticky; bottom:-32px; z-index:2; margin:23px -32px -32px; padding:14px 32px; border-top:1px solid var(--border); background:var(--elevated); }
 @media(max-width:700px) { .preferences .theme-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+.chat-scroll-content{display:flow-root}
+.review-file{display:block;overflow-wrap:anywhere;margin:12px 0 8px;font-size:12px}

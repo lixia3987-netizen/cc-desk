@@ -4,19 +4,58 @@ import type { Session } from '../shared/types';
 import type { GitChanges, GitDiff, ProjectFile, ProjectFiles, WorktreeInfo } from '../shared/git';
 import type { EnvironmentDiagnostics } from '../shared/diagnostics';
 import { Dialog } from './Dialog';
+import type { GitReviewDraft, UpdateDraft } from '../shared/panel-drafts';
 
-export function GitPanel({session,onError,onReview}:{session:Session;onError:(error:unknown)=>void;onReview:(text:string)=>void}) {
-  const [changes,setChanges]=useState<GitChanges>(),[diff,setDiff]=useState<GitDiff>(),[selected,setSelected]=useState(''),[staged,setStaged]=useState(false),[tree,setTree]=useState<WorktreeInfo>(),[busy,setBusy]=useState(false),[feedback,setFeedback]=useState(''),[confirm,setConfirm]=useState<'merge'|'cleanup'>(),[notice,setNotice]=useState('');
-  const seq=useRef(0),mounted=useRef(true);
-  const refresh=useCallback(async()=>{const [result,worktree]=await Promise.all([window.desktop.gitChanges(session.id),window.desktop.worktreeInfo(session.id)]);if(mounted.current){setChanges(result);setTree(worktree);}},[session.id]);
-  useEffect(()=>{mounted.current=true;void refresh().catch(onError);return()=>{mounted.current=false;seq.current++;};},[refresh,onError]);
-  useEffect(()=>{setDiff(undefined);if(!selected)return;const request=++seq.current;void window.desktop.gitDiff(session.id,selected,staged).then(value=>{if(mounted.current&&request===seq.current)setDiff(value);}).catch(onError);},[selected,staged,session.id,onError,changes]);
+export function GitPanel({session,onError,onReview,draft,onDraft}:{session:Session;onError:(error:unknown)=>void;onReview:(text:string)=>boolean;draft:GitReviewDraft;onDraft:UpdateDraft<GitReviewDraft>}) {
+  const [changes,setChanges]=useState<GitChanges>(),[diff,setDiff]=useState<GitDiff>(),[tree,setTree]=useState<WorktreeInfo>(),[busy,setBusy]=useState(false),[refreshing,setRefreshing]=useState(false),[checkedAt,setCheckedAt]=useState(''),[confirm,setConfirm]=useState<'merge'|'cleanup'>(),[notice,setNotice]=useState('');
+  const {selected,staged}=draft;
+  const feedback=draft.feedback[selected]??'';
+  const setStaged=(staged:boolean)=>onDraft(current=>({...current,staged}));
+  const setFeedback=(text:string)=>onDraft(current=>{
+    const feedback={...current.feedback};
+    if(text)feedback[selected]=text;else delete feedback[selected];
+    return {...current,feedback};
+  });
+  const seq=useRef(0),refreshSeq=useRef(0),mounted=useRef(true);
+  const refreshTimer=useRef<ReturnType<typeof setTimeout>|undefined>(undefined);
+  const lastTask=useRef({state:session.taskState,status:session.status});
+  const refresh=useCallback(async()=>{
+    const request=++refreshSeq.current;setRefreshing(true);
+    try {
+      const [result,worktree]=await Promise.all([window.desktop.gitChanges(session.id),window.desktop.worktreeInfo(session.id)]);
+      if(mounted.current&&request===refreshSeq.current){setChanges(result);setTree(worktree);setCheckedAt(new Date().toLocaleTimeString());}
+    }catch(error){if(mounted.current&&request===refreshSeq.current)onError(error);}
+    finally{if(mounted.current&&request===refreshSeq.current)setRefreshing(false);}
+  },[session.id,onError]);
+  const scheduleRefresh=useCallback(()=>{clearTimeout(refreshTimer.current);refreshTimer.current=setTimeout(()=>void refresh(),120);},[refresh]);
+  useEffect(()=>{
+    mounted.current=true;void refresh();
+    // A fast turn can start and finish between two batched workspace snapshots.
+    // Use the task state carried by the immediate chat event, not only React props.
+    const off=window.desktop.onChat((id,state)=>{if(id===session.id&&['completed','interrupted','error'].includes(state??''))scheduleRefresh();});
+    window.addEventListener('focus',scheduleRefresh);
+    return()=>{mounted.current=false;seq.current++;refreshSeq.current++;clearTimeout(refreshTimer.current);off();window.removeEventListener('focus',scheduleRefresh);};
+  },[refresh,scheduleRefresh,session.id]);
+  useEffect(()=>{
+    const previous=lastTask.current;lastTask.current={state:session.taskState,status:session.status};
+    const finished=previous.state!==session.taskState&&['completed','interrupted','error'].includes(session.taskState??'');
+    const stopped=previous.status!==session.status&&['running','stopping'].includes(previous.status)&&!['running','stopping'].includes(session.status);
+    if((finished&&session.adapter!=='structured')||stopped)scheduleRefresh();
+  },[session.taskState,session.status,session.adapter,scheduleRefresh]);
+  const missing=!!selected&&!!changes?.available&&!changes.truncated&&!changes.changes.some(change=>change.path===selected);
+  useEffect(()=>{
+    setDiff(undefined);const request=++seq.current;
+    if(!selected||missing||!changes?.available)return;
+    void window.desktop.gitDiff(session.id,selected,staged).then(value=>{if(mounted.current&&request===seq.current)setDiff(value);}).catch(error=>{if(mounted.current&&request===seq.current)onError(error);});
+    return()=>{seq.current++;};
+  },[selected,staged,session.id,onError,changes,missing]);
   const act=async()=>{setBusy(true);try{const result=confirm==='merge'?await window.desktop.mergeWorktree(session.id):await window.desktop.cleanupWorktree(session.id);setNotice(result.message);setConfirm(undefined);await refresh();}catch(error){onError(error);}finally{setBusy(false);}};
-  return <div className="panel-content"><div className="panel-heading"><strong><GitBranch size={14}/> {changes?.branch||'Git 变更'}</strong><button className="icon-button" title="刷新 Git 状态" onClick={()=>void refresh().catch(onError)}><RefreshCw size={14}/></button></div>
+  return <div className="panel-content"><div className="panel-heading"><strong><GitBranch size={14}/> {changes?.branch||'Git 变更'}</strong><button className="icon-button" title="刷新 Git 状态" disabled={refreshing} onClick={()=>void refresh()}><RefreshCw size={14} className={refreshing?'spin':''}/></button></div>
+    <p className="panel-note" role="status">{refreshing?'正在刷新 Git 状态…':checkedAt?'更新于 '+checkedAt:''}</p>
     {changes?.error&&<p className="panel-note">{changes.error}</p>}
     {!changes&&<p className="panel-note">正在读取 Git 状态…</p>}
-    {changes?.available&&<><div className="changed-files">{changes.changes.map(change=><button key={change.path} title={change.path} className={selected===change.path?'selected':''} onClick={()=>{setSelected(change.path);setStaged(change.staged&&!change.unstaged);}}><span className={change.conflicted?'danger':''}>{change.conflicted?'!':change.untracked?'U':change.indexStatus+change.worktreeStatus}</span><span>{change.path}</span></button>)}{!changes.changes.length&&<p className="panel-note">工作区干净</p>}</div>{changes.truncated&&<p className="panel-note">文件数量较多，仅展示部分结果。</p>}
-    {selected&&<><div className="segmented small"><button className={!staged?'chosen':''} onClick={()=>setStaged(false)}>未暂存</button><button className={staged?'chosen':''} onClick={()=>setStaged(true)}>已暂存</button></div><div className="diff-view" aria-label="代码差异">{diff?.binary?<p>二进制文件，无法显示文本差异。</p>:diff?<pre>{diff.text.split('\n').map((line,index)=><div key={index} className={line.startsWith('+')&&!line.startsWith('+++')?'added':line.startsWith('-')&&!line.startsWith('---')?'removed':line.startsWith('@@')?'hunk':''}>{line||' '}</div>)}</pre>:<p>正在读取差异…</p>}</div>{diff?.truncated&&<p className="panel-note">差异过长，当前显示内容已截断。</p>}<textarea aria-label="代码审阅反馈" placeholder="对所选文件的审阅意见…" value={feedback} onChange={e=>setFeedback(e.target.value)}/><button className="secondary compact full" disabled={!feedback.trim()} onClick={()=>{onReview('请根据以下代码审阅意见检查并修复 '+selected+'：\n\n'+feedback);setFeedback('');}}>将审阅意见加入草稿</button></>}
+    {changes?.available&&<><div className="changed-files">{changes.changes.map(change=><button key={change.path} title={change.path} className={selected===change.path?'selected':''} onClick={()=>onDraft(current=>({...current,selected:change.path,staged:change.staged&&!change.unstaged}))}><span className={change.conflicted?'danger':''}>{change.conflicted?'!':change.untracked?'U':change.indexStatus+change.worktreeStatus}</span><span>{change.path}</span></button>)}{!changes.changes.length&&<p className="panel-note">工作区干净</p>}</div>{changes.truncated&&<p className="panel-note">文件数量较多，仅展示部分结果。</p>}
+    {selected&&<><strong className="review-file">{selected}</strong>{missing&&<p className="panel-note">该文件已不在变更列表中，审阅草稿已保留。</p>}<div className="segmented small"><button className={!staged?'chosen':''} onClick={()=>setStaged(false)}>未暂存</button><button className={staged?'chosen':''} onClick={()=>setStaged(true)}>已暂存</button></div><div className="diff-view" aria-label="代码差异">{missing?<p>当前没有可显示的变更。</p>:diff?.binary?<p>二进制文件，无法显示文本差异。</p>:diff?<pre>{diff.text.split('\n').map((line,index)=><div key={index} className={line.startsWith('+')&&!line.startsWith('+++')?'added':line.startsWith('-')&&!line.startsWith('---')?'removed':line.startsWith('@@')?'hunk':''}>{line||' '}</div>)}</pre>:<p>正在读取差异…</p>}</div>{diff?.truncated&&<p className="panel-note">差异过长，当前显示内容已截断。</p>}<textarea aria-label="代码审阅反馈" maxLength={60000} placeholder="对所选文件的审阅意见…" value={feedback} onChange={e=>setFeedback(e.target.value)}/><button className="secondary compact full" disabled={!feedback.trim()} onClick={()=>{if(onReview('请根据以下代码审阅意见检查并修复 '+selected+'：\n\n'+feedback))setFeedback('');}}>将审阅意见加入草稿</button></>}
     </>}
     {session.worktree&&tree&&!tree.owned&&<div className="worktree-panel"><h4>隔离目录</h4>{tree.reasons.map((reason,i)=><p className="panel-note" key={i}>{reason}</p>)}</div>}
     {tree?.owned&&<div className="worktree-panel"><h4>隔离工作区</h4><p className="panel-note">{tree.branch} → {tree.baseBranch??'原项目分支'}</p><p>{tree.clean?'工作区干净':'存在未提交改动'} · {tree.merged?'已合入基础分支':'尚未合入'}</p>{tree.reasons.map((reason,i)=><p className="panel-note" key={i}>{reason}</p>)}<div className="panel-actions"><button className="secondary compact" disabled={busy||!tree.canMerge} onClick={()=>setConfirm('merge')}>合并到原项目</button><button className="secondary compact danger" disabled={busy||!tree.canCleanup} onClick={()=>setConfirm('cleanup')}>清理隔离目录</button></div>{confirm&&<div className="action-confirm"><p>{confirm==='merge'?'将已提交变更快进合并到原项目。请确认这是你要交付的变更。':'将移除这个已合并且干净的隔离目录，保留 Git 分支。'}</p><button className="secondary compact" disabled={busy} onClick={()=>setConfirm(undefined)}>取消</button><button className="primary compact" disabled={busy} onClick={()=>void act()}>{busy?<Loader2 size={13} className="spin"/>:<Check size={13}/>}确认{confirm==='merge'?'合并':'清理'}</button></div>}</div>}

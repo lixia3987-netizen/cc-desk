@@ -6,6 +6,8 @@
 
 **v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
+v0.2.3 源码还完成了 [第一轮体验修复](docs/UX-FIXES-round1.md)：工作流与审阅草稿跨切换/重启保存、模板追加、正确选择新建项目、长对话阅读位置、CLI 路径检测和 Git 自动刷新等九项改进。本地六项桌面回归通过，仍需完成原生发布验收后提供新安装包。
+
 **v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
 
 ## 下载安装包与便携包
@@ -28,7 +30,7 @@ macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Wi
 
 新版 npm 包声明的入口是 `bin/claude.exe`，旧版是 `cli.js`；工作台读取实际包信息，分别直接启动原生程序或使用 Node.js。无需把 npm 的 `claude.cmd` 改名为 `.exe`。
 
-自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，点击“保存设置”以保存新路径并触发检测；当前“重新检测”使用已保存的路径。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
+自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，点击“保存并检测”（v0.2.3），按当前输入检查 CLI。v0.2.2 及更早版本需先点击“保存设置”，其“重新检测”使用已保存的路径。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
 
 若提示 npm 启动文件缺失，先在终端确认 `claude --version` 能运行，再修复 npm 安装；工作台不会执行任意 CMD/BAT 内容，也不会自动改写 Claude 配置。
 

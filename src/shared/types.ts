@@ -3,6 +3,7 @@ import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, Work
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
 import type { ThemeId } from './theme';
+import type { PanelDrafts } from './panel-drafts';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type PermissionMode = 'default' | 'plan' | 'acceptEdits';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
@@ -16,6 +17,7 @@ export interface Session {
   adapter?: 'terminal' | 'structured'; taskState?: TaskState; draft?: string;
   terminalSync?: 'waiting' | 'synced' | 'unsupported'; identityPending?: boolean;
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
+  panelDrafts?: PanelDrafts;
 }
 export interface Settings { claudePath: string; shellPath: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
@@ -36,6 +38,7 @@ export interface DesktopAPI {
   createSession(input: NewSession): Promise<Session>;
   updateSession(input: { id: string; title?: string; archived?: boolean; model?: string; effort?: Effort; permissionMode?: PermissionMode }): Promise<void>;
   saveDraft(id: string, text: string): Promise<void>;
+  savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;
   setSelection(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   chatSnapshot(id: string): Promise<ChatSnapshot>;
@@ -44,7 +47,7 @@ export interface DesktopAPI {
   pickAttachments(id: string): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
-  onChat(callback: (sessionId: string) => void): () => void;
+  onChat(callback: (sessionId: string, taskState?: TaskState) => void): () => void;
   queryHistory(projectId: string, options?: {query?: string; offset?: number; limit?: number}): Promise<HistoryPage>;
   gitChanges(id: string): Promise<GitChanges>;
   gitDiff(id: string, path: string, staged: boolean): Promise<GitDiff>;

@@ -4,6 +4,7 @@ import type { Attachment, Session } from '../shared/types';
 import type { ChatApproval, ChatMessage, ChatSnapshot } from '../shared/chat';
 import { MessageText } from './MessageText';
 import { ApprovalDrafts, type ApprovalDraft } from './approval-drafts';
+import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
@@ -41,14 +42,15 @@ function sameMessage(left:ChatMessage,right:ChatMessage) {
 }
 const ChatMessageRow=memo(function ChatMessageRow({message}:{message:ChatMessage}) {
   const content=<><MessageText text={message.text}/>{message.truncated&&<p className="panel-note message-truncated">此消息过长，已省略开头部分。可导出会话查看完整记录。</p>}</>;
-  return message.role==='tool'?<details className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?'Claude':'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
+  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?'Claude':'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
 },(previous,next)=>sameMessage(previous.message,next.message));
 
-export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjectFiles,attachments,onRemoveAttachment,onAttachmentsSent,approvalDrafts}:{
-  session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(paths:string[])=>void;approvalDrafts:ApprovalDrafts;
+export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjectFiles,attachments,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions}:{
+  session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(paths:string[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;
 }) {
-  const [snapshot,setSnapshot]=useState<ChatSnapshot>(), [sending,setSending]=useState(false), [follow,setFollow]=useState(true);
-  const scroll=useRef<HTMLDivElement>(null), request=useRef(0), mounted=useRef(true);
+  const [snapshot,setSnapshot]=useState<ChatSnapshot>(), [sending,setSending]=useState(false);
+  const request=useRef(0), mounted=useRef(true);
+  const {scroll,content,follow,onScroll,jumpToLatest}=useChatScroll(session.id,snapshot,readingPositions);
   const load=useCallback(async()=>{const seq=++request.current;const value=await window.desktop.chatSnapshot(session.id);if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}},[session.id,approvalDrafts]);
   useEffect(()=>{
     mounted.current=true;let timer:ReturnType<typeof setTimeout>|undefined;
@@ -56,12 +58,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
     const off=window.desktop.onChat(id=>{if(id===session.id&&!timer)timer=setTimeout(()=>{timer=undefined;if(mounted.current)void load().catch(onError);},80);});
     return ()=>{mounted.current=false;request.current++;clearTimeout(timer);off();};
   },[load,onError,session.id]);
-  useEffect(()=>{if(follow&&scroll.current)scroll.current.scrollTop=scroll.current.scrollHeight;},[snapshot,follow]);
 const task=snapshot?.taskState??session.taskState??'idle', running=sending||busyTask(task);
   const send=async()=>{
     if((!draft.trim()&&!attachments.length)||running||session.archived)return;
     if(draft.length>60000){onError(new Error('单次提示词请控制在 60,000 个字符以内。'));return;}
-    setSending(true);setFollow(true);
+    setSending(true);jumpToLatest();
     try{
       const result=await window.desktop.sendChat(session.id,draft.trim(),attachments.map(file=>file.path));
       if(result.success)onSent(draft);
@@ -71,15 +72,15 @@ const task=snapshot?.taskState??session.taskState??'idle', running=sending||busy
     finally{if(mounted.current){setSending(false);void load().catch(onError);}}
   };
   return <div className="chat-pane">
-    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={e=>{const el=e.currentTarget;setFollow(el.scrollHeight-el.scrollTop-el.clientHeight<70);}}>
+    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={onScroll}><div className="chat-scroll-content" ref={content}>
       {!snapshot?.messages.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>从一个明确的任务开始</h3><p>描述目标、引用项目文件，在这里查看 Claude 的执行过程。</p><small>需要确认的工具请求会显示审批卡片。</small></div>}
       {snapshot?.truncated&&<p className="panel-note">较早消息已折叠，可导出会话查看保留的完整记录。</p>}
       {snapshot?.messages.map(message=><ChatMessageRow key={message.id} message={message}/>)}
       {snapshot?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts}/>)}
       {snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{taskLabels[task]??task}</div>}
-    </div>
-    {!follow&&<button className="jump-latest secondary compact" onClick={()=>setFollow(true)}>跳到最新消息</button>}
+    </div></div>
+    {!follow&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{taskLabels[task]??task}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
     <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={running} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}

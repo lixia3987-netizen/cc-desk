@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { DesktopAPI } from '../shared/types';
+import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
   chooseProject:() => ipcRenderer.invoke('project:choose'),
@@ -8,6 +9,7 @@ const api: DesktopAPI = {
   createSession:input => ipcRenderer.invoke('session:create',input),
   updateSession:input => ipcRenderer.invoke('session:update',input),
   saveDraft:(id,text) => ipcRenderer.invoke('session:draft',{id,text}),
+  savePanelDrafts:(id,patch) => ipcRenderer.invoke('session:panel-drafts',{id,patch}),
   setSelection:id => ipcRenderer.invoke('session:select',id),
   deleteSession:id => ipcRenderer.invoke('session:delete',id),
   chatSnapshot:id => ipcRenderer.invoke('chat:snapshot',id),
@@ -35,7 +37,7 @@ const api: DesktopAPI = {
   exportWorkflow:id => ipcRenderer.invoke('workflow:export',id),
   reviseWorkflowStage:(id,stageId,instruction) => ipcRenderer.invoke('workflow:revise',{id,stageId,instruction}),
   onWorkflows:callback => { const listener = () => callback(); ipcRenderer.on('workflow:changed',listener); return () => ipcRenderer.removeListener('workflow:changed',listener); },
-  onChat:callback => { const listener = (_event:Electron.IpcRendererEvent,id:string) => callback(id); ipcRenderer.on('chat:changed',listener); return () => ipcRenderer.removeListener('chat:changed',listener); },
+  onChat:callback => { const listener = (_event:Electron.IpcRendererEvent,id:string,state?:TaskState) => callback(id,state); ipcRenderer.on('chat:changed',listener); return () => ipcRenderer.removeListener('chat:changed',listener); },
   startSession:id => ipcRenderer.invoke('session:start',id),
   stopSession:id => ipcRenderer.invoke('session:stop',id),
   interruptSession:id => ipcRenderer.invoke('session:interrupt',id),

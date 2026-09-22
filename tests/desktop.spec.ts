@@ -85,6 +85,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
       output({type:'assistant',message:{id:'tools-'+turn,content:[{type:'tool_use',id:'tool-'+turn,name,input}]}});
       output({type:'control_request',request_id:pending.id,request:{subtype:'can_use_tool',tool_name:name,input,tool_use_id:'tool-'+turn}});return;
     }
+    if(text==='edit-refresh')require('node:fs').writeFileSync(require('node:path').join(process.cwd(),'example.ts'),'export const value = 3;\n');
     done(text==='html'?'<img src=x onerror="alert(1)">':'执行结果');return;
   }
   if(m.type==='control_response'&&pending&&m.response.request_id===pending.id){const response=m.response.response;const text=response.behavior==='deny'?'已拒绝':pending.question?'选择：'+response.updatedInput.answers['使用哪个数据库？']:'已批准';pending=undefined;done(text);}
@@ -121,6 +122,11 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.getByRole('button',{name:'发送任务',exact:true})).toBeVisible();await page.getByLabel('提示词编辑器').fill('输入法组合中的草稿');await page.getByLabel('提示词编辑器').evaluate(element=>element.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,isComposing:true,bubbles:true,cancelable:true})));await expect(page.getByLabel('提示词编辑器')).toHaveValue('输入法组合中的草稿');expect(await page.evaluate(async()=>{const state=(await window.desktop.snapshot()).state;return (await window.desktop.chatSnapshot(state.selectedSessionId!)).messages.filter(message=>message.role==='user').length;})).toBe(4);
     await page.getByRole('tab',{name:'变更',exact:true}).click();await page.locator('.changed-files button').filter({hasText:'example.ts'}).click();await expect(page.getByLabel('代码差异')).toContainText('+export const value = 2;');await page.getByLabel('代码审阅反馈').fill('改成命名常量');await page.getByRole('button',{name:'将审阅意见加入草稿'}).click();await expect(page.getByLabel('提示词编辑器')).toHaveValue(/example\.ts/);await expect(page.getByLabel('提示词编辑器')).toHaveValue(/改成命名常量/);
     await page.getByRole('button',{name:'引用项目文件',exact:true}).click();await expect(page.getByLabel('搜索项目文件')).toBeFocused();await expect(page.locator('#root')).toHaveJSProperty('inert',true);await page.getByLabel('选择 example.ts',{exact:true}).check();await page.getByRole('button',{name:'添加到上下文',exact:true}).click();await expect(page.getByLabel('提示词编辑器')).toHaveValue(/@"example\.ts"/);await expect(page.getByRole('button',{name:'引用项目文件',exact:true})).toBeFocused();await expect(page.locator('#root')).toHaveJSProperty('inert',false);
+    await page.getByLabel('代码审阅反馈').fill('回合结束刷新时保留我的审阅');
+    await page.getByLabel('提示词编辑器').fill('edit-refresh');await page.getByRole('button',{name:'发送任务',exact:true}).click();
+    await expect(page.getByLabel('代码差异')).toContainText('+export const value = 3;');
+    await expect(page.getByLabel('代码审阅反馈')).toHaveValue('回合结束刷新时保留我的审阅');
+    await expect(page.locator('.changed-files .selected')).toContainText('example.ts');
     await page.screenshot({path:'docs/screenshots/structured-chat.png'});
     await page.getByRole('tab',{name:'工作流',exact:true}).click();await page.getByLabel('工作流目标').fill('验证阶段执行与人工继续');await page.getByRole('button',{name:'创建工作流',exact:true}).click();await page.getByRole('button',{name:'开始',exact:true}).click();
     await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('等待继续');await expect(page.locator('.workflow-stage.completed')).toHaveCount(1);await page.getByRole('button',{name:'继续',exact:true}).click();

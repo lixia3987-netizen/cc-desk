@@ -14,6 +14,8 @@ import { ThemePicker } from './ThemePicker';
 import { applyTheme } from './themes';
 import { normalizeThemeId } from '../shared/theme';
 import { cacheSavedTheme, readCachedTheme } from './theme-preferences';
+import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../shared/panel-drafts';
+import type { ChatReadingPosition } from './chat-scroll';
 
 const statusLabel = {idle:'待启动',running:'运行中',stopping:'停止中',stopped:'已停止',error:'需处理'};
 const sessionLabel=(session:Session)=>session.adapter==='structured'?(taskLabels[session.taskState??'idle']??statusLabel[session.status]):session.kind==='claude'&&session.status==='running'?(session.terminalSync==='synced'?taskLabels[session.taskState??'idle']??'进程运行中':'进程运行中'):statusLabel[session.status];
@@ -40,6 +42,9 @@ export function App() {
   const selection=useRef(new SessionSelection());
   const stateEvents=useRef(0);
   const approvalDrafts=useRef(new ApprovalDrafts());
+  const panelDrafts=useRef(new Map<string,PanelDrafts>());
+  const [,setPanelRevision]=useState(0);
+  const readingPositions=useRef(new Map<string,ChatReadingPosition>());
   const latestActiveId=useRef(activeId);latestActiveId.current=activeId;
   const [inspectorTab,setInspectorTab]=useState<'context'|'git'|'workflows'|'diagnostics'>('context');
   const [filePicker,setFilePicker]=useState('');
@@ -70,6 +75,9 @@ export function App() {
   const report=useCallback((error:unknown) => setError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,'') : String(error)),[]);
   const applyState=useCallback((value:AppState)=>{
     latestState.current=value;setState(value);approvalDrafts.current.retainSessions(value.sessions.map(session=>session.id));
+    const ids=new Set(value.sessions.map(session=>session.id));
+    for(const id of panelDrafts.current.keys())if(!ids.has(id))panelDrafts.current.delete(id);
+    for(const id of readingPositions.current.keys())if(!ids.has(id))readingPositions.current.delete(id);
     const id=selection.current.receive(value.selectedSessionId);
     if(id!==undefined){const selected=value.sessions.find(session=>session.id===id);setActiveId(selected?.id??'');setDeleteConfirm('');if(selected){setProjectId('all');setArchived(selected.archived);setSearch('');}}
   },[]);
@@ -114,6 +122,17 @@ export function App() {
   },[report]);
   const selectSession=(id:string)=>{flushDrafts();selection.current.request(id);setActiveId(id);setDeleteConfirm('');void window.desktop.setSelection(id).catch(report);};
   const setComposer=(value:string)=>{if(active)saveDraftFor(active.id,value);};
+  const updatePanel=<K extends keyof PanelDrafts>(id:string,key:K,update:(current:NonNullable<PanelDrafts[K]>)=>NonNullable<PanelDrafts[K]>)=>{
+    const session=latestState.current?.sessions.find(session=>session.id===id);
+    if(!session)return;
+    const current=panelDrafts.current.get(id)??session.panelDrafts??{};
+    const initial=current[key]??(key==='workflow'?emptyWorkflowDraft():emptyGitReviewDraft());
+    const value=update(initial as NonNullable<PanelDrafts[K]>);
+    if(value===initial)return;
+    panelDrafts.current.set(id,{...current,[key]:value});setPanelRevision(revision=>revision+1);
+    // Send edits immediately; the main store batches disk writes and flushes on exit.
+    void window.desktop.savePanelDrafts(id,{[key]:value}).catch(report);
+  };
   useEffect(()=>{window.addEventListener('beforeunload',flushDrafts);return()=>{window.removeEventListener('beforeunload',flushDrafts);flushDrafts();};},[flushDrafts]);
   useEffect(()=>{
     if(modal!=='history'||!draft.projectId)return;
@@ -130,17 +149,26 @@ export function App() {
   useEffect(() => {if(!notice)return;const timer=setTimeout(()=>setNotice(''),3500);return ()=>clearTimeout(timer);},[notice]);
 
   useEffect(()=>{
-    if(!activeId)return;let cancelled=false;
-    void window.desktop.listAttachments(activeId).then(files=>{if(!cancelled)setAttachments(old=>({...old,[activeId]:files}));}).catch(report);
+    if(!activeId||!structured)return;let cancelled=false;
+    void window.desktop.listAttachments(activeId).then(files=>{if(!cancelled)setAttachments(old=>({...old,[activeId]:files}));}).catch(error=>{if(!cancelled)report(error);});
     return()=>{cancelled=true;};
-  },[activeId,report]);
+  },[activeId,structured,report]);
   const openNew=(kind:'claude'|'shell'='claude',fork?:Session) => {
-    const selected=fork?.projectId ?? (projectId==='all'?state?.projects[0]?.id:projectId) ?? '';
+    const candidates=fork?[fork.projectId]:[projectId,active?.projectId,state?.projects[0]?.id];
+    const selected=candidates
+      .find(id=>state?.projects.some(project=>project.id===id))??'';
     setDraft({projectId:selected,title:fork?`${fork.title} · 分支`:'',kind,model:fork?.model??'',effort:fork?.effort??'default',permissionMode:fork?.permissionMode??'default',isolated:false,adapter:kind==='shell'?'terminal':fork?.adapter??'structured',resumeFrom:fork?.claudeId,fork:!!fork});
     setModal('new');
   };
   const chooseProject=() => perform(async () => {const p=await window.desktop.chooseProject();if(p)setProjectId(p.id);});
   const start=(session:Session) => perform(async () => {await window.desktop.startSession(session.id);});
+  const savePreferences=(detect:boolean)=>perform(async()=>{
+    if(!draftSettings)return;
+    const cliChanged=draftSettings.claudePath!==latestState.current?.settings.claudePath;
+    await window.desktop.saveSettings(draftSettings);
+    if(detect&&!cliChanged)await window.desktop.detect();
+    await refresh();setNotice(detect?'设置已保存并完成检测':'设置已保存');
+  });
   const openHistory=() => perform(async () => {
     const id=projectId==='all'?(active?.projectId??state?.projects[0]?.id):projectId;
     if(!id)throw new Error('请先添加一个项目。');
@@ -161,7 +189,14 @@ export function App() {
     const files=await window.desktop.pickAttachments(id);
     setAttachments(old=>({...old,[id]:[...new Map([...(old[id]??[]),...files].map(file=>[file.path,file])).values()]}));
   });
-  const appendReview=(text:string)=>{if(active)saveDraftFor(active.id,(composer?composer+'\n\n':'')+text);};
+  const appendReview=(text:string)=>{
+    if(!active)return false;
+    const current=currentDrafts.current[active.id]??active.draft??'';
+    const next=(current?current+'\n\n':'')+text;
+    if(next.length>128*1024){report(new Error('草稿过长，请先整理现有内容后再添加。原草稿已保留。'));return false;}
+    saveDraftFor(active.id,next);return true;
+  };
+  const activePanels=active?(panelDrafts.current.get(active.id)??active.panelDrafts??{}):{};
   const sessions=state.sessions.filter(s => s.archived===archived && (projectId==='all'||s.projectId===projectId) && `${s.title} ${s.cwd}`.toLowerCase().includes(search.toLowerCase()));
   const liveCount=state.sessions.filter(s => s.status==='running'||s.status==='stopping').length;
 
@@ -196,12 +231,12 @@ export function App() {
         <div className="welcome-foot"><ShieldCheck size={15}/>凭据和模型连接由本机 Claude Code 管理。<span>WORKBENCH / v{appVersion}</span></div>
       </div>:<>
         <div className="session-header"><div><div className="eyebrow">{active.kind==='shell'?'SHELL SESSION':'CLAUDE CODE SESSION'}</div><h1>{active.title}<button className="icon-button" title="重命名" onClick={()=>{setRename(active.title);setModal('rename');}}><MoreHorizontal size={20}/></button></h1><div className="session-tags"><span className={`status-tag ${active.status}`}><span className={`dot ${active.status}`}/>{sessionLabel(active)}</span><span>{active.kind==='shell'?'Shell':active.model||'CLI 默认模型'}</span>{active.kind==='claude'&&<span><Zap size={12}/>{active.effort==='default'?'默认强度':active.effort}</span>}{active.worktree&&<span><GitBranch size={12}/>隔离目录</span>}</div></div>
-          <div className="session-actions"><button className="secondary compact" title="导出会话记录" onClick={()=>void perform(async()=>{const file=await window.desktop.exportTranscript(active.id);if(file)setNotice('会话记录已导出');})}><ArrowDownToLine size={16}/></button>{active.status==='running'?<><button className="secondary compact" onClick={()=>void perform(()=>window.desktop.interruptSession(active.id))}>中断任务</button><button className="secondary compact danger" onClick={()=>void perform(()=>window.desktop.stopSession(active.id))}><Square size={13}/>停止</button></>:<button className="primary compact" disabled={busy||active.archived||active.status==='stopping'} onClick={()=>void start(active)}><Play size={14}/>{structured?'准备会话':active.started?'恢复会话':'启动会话'}</button>}</div>
+          <div className="session-actions"><button className="secondary compact" title="导出会话记录" onClick={()=>void perform(async()=>{const file=await window.desktop.exportTranscript(active.id);if(file)setNotice('会话记录已导出');})}><ArrowDownToLine size={16}/></button>{active.status==='running'?<><button className="secondary compact" onClick={()=>void perform(()=>window.desktop.interruptSession(active.id))}>中断任务</button><button className="secondary compact danger" onClick={()=>void perform(()=>window.desktop.stopSession(active.id))}><Square size={13}/>停止</button></>:<button className="primary compact" disabled={busy||active.archived||active.status==='stopping'} onClick={()=>{if(structured){document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus();setNotice('输入任务并发送后，将启动 Claude 会话。');}else void start(active);}}><Play size={14}/>{structured?'开始输入':active.started?'恢复会话':'启动会话'}</button>}</div>
         </div>
         {active.kind==='claude'&&!structured&&active.status==='running'&&active.terminalSync!=='synced'&&<div className="sync-note">{active.terminalSync==='unsupported'?'当前 CLI 不支持状态同步，任务状态请查看终端。':'等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
         {active.error&&<div className="inline-warning">{active.error}</div>}
         <div className="session-content"><section className="terminal-section"><div className="terminal-toolbar"><span><TerminalSquare size={14}/>{structured?'结构化对话':'交互终端'}</span><span title={active.cwd}>{active.cwd}</span><button className="icon-button" title="打开工作目录" onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={14}/></button></div>
-          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
+          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
           <div className="terminals" style={{display:structured?'none':undefined}}>{mounted.map(id=>{const session=state.sessions.find(s=>s.id===id);return session?<div className="terminal-slot" key={id} style={{display:id===activeId?'block':'none'}}><TerminalPane session={session} themeId={themeId} settings={state.settings} active={id===activeId} onError={report} ref={handle=>{if(handle)handles.current.set(id,handle);else handles.current.delete(id);}}/></div>:null;})}
             {!active.started&&<div className="terminal-empty"><TerminalSquare size={30}/><h3>会话准备就绪</h3><p>启动后，在这里与 {active.kind==='shell'?'Shell':'Claude Code'} 直接交互。</p>{active.kind==='claude'&&<small>登录、信任目录与工具审批均在终端内完成</small>}</div>}
           </div>
@@ -213,9 +248,9 @@ export function App() {
           <button className="text-button archive-button" disabled={['running','stopping'].includes(active.status)} onClick={()=>void perform(async()=>{await window.desktop.updateSession({id:active.id,archived:!active.archived});selectSession('');})}><Archive size={14}/>{active.archived?'取消归档':'归档会话'}</button>
           <button className="text-button danger archive-button" disabled={['running','stopping'].includes(active.status)} onClick={()=>setDeleteConfirm(active.id)}>删除会话</button>
           {deleteConfirm===active.id&&<div className="action-confirm"><p>删除工作台中的会话记录。原始 CLI 历史会保留；隔离目录需要先清理。</p><button className="secondary compact" onClick={()=>setDeleteConfirm('')}>取消</button><button className="secondary compact danger" disabled={busy} onClick={()=>void perform(async()=>{flushDrafts();await window.desktop.deleteSession(active.id);selectSession('');})}>确认删除会话</button></div>}</div>}
-          {inspectorTab==='git'&&<GitPanel key={active.id} session={active} onError={report} onReview={appendReview}/>}
+          {inspectorTab==='git'&&<GitPanel key={active.id} session={active} onError={report} onReview={appendReview} draft={activePanels.git??emptyGitReviewDraft()} onDraft={update=>updatePanel(active.id,'git',update)}/>}
           {inspectorTab==='diagnostics'&&<DiagnosticsPanel key={active.id+active.cwd} sessionId={active.id} onError={report}/>}
-          {inspectorTab==='workflows'&&<WorkflowPanel key={active.id} session={active} onError={report} onTemplate={setComposer}/>}
+          {inspectorTab==='workflows'&&<WorkflowPanel key={active.id} session={active} onError={report} onTemplate={appendReview} draft={activePanels.workflow??emptyWorkflowDraft()} onDraft={update=>updatePanel(active.id,'workflow',update)}/>}
         </aside></div>
       </>}
       <footer className="statusbar"><span><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?cap.version:'未检测到 Claude Code'}</span><span>{platform==='win32'?'Windows':platform==='darwin'?'macOS':'Linux'}<span>UTF-8</span><span>v{appVersion}</span></span></footer>
@@ -232,16 +267,17 @@ export function App() {
         {!cap.available&&draft.kind==='claude'&&<p className="hint">可以先创建会话；启动前请在设置中连接 Claude Code。</p>}
         <button className="primary full" disabled={busy||!draft.projectId}>{busy?<Loader2 size={16} className="spin"/>:<Plus size={16}/>}创建会话</button>
       </form></>}
-      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，管理本机 Claude Code 连接。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.saveSettings(draftSettings);await refresh();setNotice('设置已保存');});}}>
+      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，管理本机 Claude Code 连接。</p><form onSubmit={event=>{event.preventDefault();void savePreferences(false);}}>
         <ThemePicker value={normalizeThemeId(draftSettings.theme)} disabled={busy} onChange={theme=>setDraftSettings({...draftSettings,theme})}/>
-        <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
+        <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
         <label>Shell 可执行文件<input value={draftSettings.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={e=>setDraftSettings({...draftSettings,shellPath:e.target.value})}/></label>
         <div className="form-grid"><label>最大并发会话<input type="number" min={1} max={12} value={draftSettings.maxSessions} onChange={e=>setDraftSettings({...draftSettings,maxSessions:Number(e.target.value)})}/></label><label>终端字号<input type="number" min={11} max={24} value={draftSettings.fontSize} onChange={e=>setDraftSettings({...draftSettings,fontSize:Number(e.target.value)})}/></label></div>
-        <div className={`connection-box ${cap.available?'connected':''}`}><div><span className={`dot ${cap.available?'running':'error'}`}/><strong>{cap.available?cap.version:'未检测到 CLI'}</strong></div><p>{cap.available?cap.executable:cap.error||'保存设置后自动检测 CLI。'}</p>{cap.available&&<small>可用强度：{cap.efforts.filter(x=>x!=='default').join(' / ')||'跟随 CLI'}</small>}</div>
+        <p className="hint">{draftSettings.claudePath!==state.settings.claudePath?'路径尚未保存；点击“保存并检测”以检查当前输入。':'检测路径：'+(state.settings.claudePath||'自动查找')}</p>
+        <div className={`connection-box ${cap.available?'connected':''}`}><div><span className={`dot ${cap.available?'running':'error'}`}/><strong>{busy?'正在保存并检查设置…':cap.available?cap.version:'未检测到 CLI'}</strong></div><p>{busy?'请稍候…':cap.available?cap.executable:cap.error||'保存设置后自动检测 CLI。'}</p>{cap.available&&<small>可用强度：{cap.efforts.filter(x=>x!=='default').join(' / ')||'跟随 CLI'}</small>}</div>
         <p className="hint">在终端完成 Claude 登录。API Key、MCP 与 provider 继续使用 Claude Code 自身的配置；客户端不保存凭据。设置变更用于后续启动的进程。</p>
         <label className="checkbox"><input type="checkbox" checked={draftSettings.notifications??false} onChange={e=>setDraftSettings({...draftSettings,notifications:e.target.checked})}/><span>任务完成与等待审批时显示通知</span></label><label className="checkbox"><input type="checkbox" checked={draftSettings.closeToTray??false} onChange={e=>setDraftSettings({...draftSettings,closeToTray:e.target.checked})}/><span>关闭窗口后保留到系统托盘<small>任务继续运行，可从托盘重新打开。</small></span></label>
         <label>工作台数据目录<code className="data-path">{dataPath}</code></label>
-        <div className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>void perform(async()=>setCap(await window.desktop.detect()))}><RefreshCw size={14}/>重新检测</button><button className="primary" disabled={busy}>{busy?<Loader2 className="spin" size={15}/>:<Check size={15}/>}保存设置</button></div>
+        <div className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>void savePreferences(true)}><RefreshCw size={14}/>保存并检测</button><button className="primary" disabled={busy}>{busy?<Loader2 className="spin" size={15}/>:<Check size={15}/>}保存设置</button></div>
       </form></>}
       {modal==='history'&&<><div className="eyebrow">CONTINUE YOUR WORK</div><h2>导入 CLI 历史</h2><p>{state.projects.find(p=>p.id===draft.projectId)?.name} · 最近的本地会话</p><input aria-label="搜索历史全文" placeholder="搜索标题和对话内容…" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/><div className="history-list">{historyBusy?<p>正在读取 Claude 历史…</p>:history.length?history.map(h=><button key={h.id} disabled={busy} onClick={()=>void importHistory(h.id,h.title)}><div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0,8)}</small></div><ArrowUpRight size={16}/></button>):<p>没有找到可导入的记录。也可以使用会话 UUID。</p>}</div>{historyNext!==null&&!historyBusy&&<button className="secondary compact full" disabled={busy} onClick={()=>void moreHistory()}>加载更多历史</button>}<form onSubmit={event=>{event.preventDefault();void importHistory(draft.resumeFrom||'',`导入会话 · ${(draft.resumeFrom||'').slice(0,8)}`);}}><label>通过 UUID 导入<input aria-label="历史会话 UUID" placeholder="00000000-0000-0000-0000-000000000000" value={draft.resumeFrom||''} onChange={e=>setDraft({...draft,resumeFrom:e.target.value})}/></label><button className="primary full" disabled={busy||!draft.resumeFrom}><History size={15}/>导入会话</button></form><p className="hint">只读扫描 CLI 记录。导入不会修改原始历史；首次恢复时会由 Claude Code 校验。</p></>}
       {modal==='rename'&&active&&<><h2>重命名会话</h2><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.updateSession({id:active.id,title:rename});setModal(null);});}}><label>名称<input aria-label="新的会话名称" autoFocus maxLength={120} value={rename} onChange={e=>setRename(e.target.value)}/></label><button className="primary full" disabled={busy||!rename.trim()}>保存</button></form></>}

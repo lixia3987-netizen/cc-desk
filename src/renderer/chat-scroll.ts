@@ -1,0 +1,67 @@
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import type { ChatSnapshot } from '../shared/chat';
+
+export interface ChatReadingPosition {
+  follow: boolean;
+  top: number;
+  messageId?: string;
+  offset?: number;
+}
+
+/** Keep an anchor within the visible message, so wrapping and streamed text above it do not move the reader. */
+export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefined, positions: Map<string, ChatReadingPosition>) {
+  const position=useRef<ChatReadingPosition>(positions.get(sessionId)??{follow:true,top:0});
+  const [follow,setFollow]=useState(position.current.follow);
+  const following=useRef(follow);following.current=follow;
+  const scroll=useRef<HTMLDivElement>(null),content=useRef<HTMLDivElement>(null);
+  const ready=useRef(false),adjusting=useRef(false),frame=useRef(0);
+
+  const remember=useCallback(()=>{
+    const element=scroll.current;
+    if(!ready.current||!element||!element.clientHeight)return;
+    const next:ChatReadingPosition={follow:following.current,top:element.scrollTop};
+    if(!next.follow){
+      const top=element.getBoundingClientRect().top;
+      const messages=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]'));
+      // Message rows are in document order. Avoid measuring every row on each scroll event.
+      let low=0,high=messages.length;
+      while(low<high){const middle=(low+high)>>>1;if(messages[middle].getBoundingClientRect().bottom<=top)low=middle+1;else high=middle;}
+      const anchor=messages[low];
+      if(anchor){next.messageId=anchor.dataset.messageId;next.offset=anchor.getBoundingClientRect().top-top;}
+    }
+    position.current=next;positions.set(sessionId,next);
+  },[positions,sessionId]);
+
+  const restore=useCallback(()=>{
+    const element=scroll.current;
+    if(!ready.current||!element)return;
+    adjusting.current=true;
+    if(following.current)element.scrollTop=element.scrollHeight;
+    else{
+      const saved=position.current;
+      const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(message=>message.dataset.messageId===saved.messageId);
+      element.scrollTop=anchor&&saved.offset!==undefined
+        ?element.scrollTop+anchor.getBoundingClientRect().top-element.getBoundingClientRect().top-saved.offset
+        :saved.top;
+    }
+    cancelAnimationFrame(frame.current);
+    frame.current=requestAnimationFrame(()=>{adjusting.current=false;remember();});
+  },[remember]);
+
+  useLayoutEffect(()=>{if(snapshot){ready.current=true;restore();}},[snapshot,follow,restore]);
+  useLayoutEffect(()=>{
+    const observer=new ResizeObserver(restore);
+    if(content.current)observer.observe(content.current);
+    if(scroll.current)observer.observe(scroll.current);
+    return()=>{observer.disconnect();cancelAnimationFrame(frame.current);remember();};
+  },[remember,restore]);
+
+  const onScroll=()=>{
+    const element=scroll.current;
+    if(adjusting.current||!ready.current||!element)return;
+    const next=element.scrollHeight-element.scrollTop-element.clientHeight<70;
+    following.current=next;remember();setFollow(next);
+  };
+  const jumpToLatest=()=>{following.current=true;setFollow(true);restore();};
+  return {scroll,content,follow,onScroll,jumpToLatest};
+}

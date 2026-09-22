@@ -5,7 +5,7 @@ import { dialog, Notification, type BrowserWindow } from 'electron';
 import { stripVTControlCharacters } from 'node:util';
 import { z } from 'zod';
 import type { Capabilities, Session } from '../shared/types';
-import { idSchema, sessionInputSchema } from '../shared/schema';
+import { idSchema, panelDraftsSchema, sessionInputSchema } from '../shared/schema';
 import { StateStore } from './store';
 import { Runtime } from './runtime';
 import { ChatRuntime } from './chat-runtime';
@@ -34,8 +34,8 @@ export class SessionService {
     private onState: () => void, private getWindow: () => BrowserWindow | null) {
     this.attachments = new Attachments(store.directory);
     this.chat = new ChatRuntime(store,onState,id => {
-      this.getWindow()?.webContents.send('chat:changed',id);
       const state = this.chat.taskState(id);
+      this.getWindow()?.webContents.send('chat:changed',id,state);
       const old = this.notified.get(id); this.notified.set(id,state);
       if (old !== state && store.state.settings.notifications && ['waiting_approval','waiting_input','completed','error'].includes(state) && Notification.isSupported()) {
         const session = store.state.sessions.find(s => s.id === id);
@@ -187,6 +187,14 @@ export class SessionService {
   }
   select(id: string) { if(id) this.session(id); this.store.change(s => {s.selectedSessionId=id;}); this.onState(); }
   register(handle: Register) {
+    handle('session:panel-drafts',z.object({id:idSchema,patch:panelDraftsSchema}),({id,patch}) => {
+      this.session(id);
+      const changed=this.store.change(state=>{
+        const session=state.sessions.find(session=>session.id===id)!;
+        session.panelDrafts={...session.panelDrafts,...patch};
+      },{defer:true});
+      if(changed)this.onState();
+    });
     handle('session:draft',z.object({id:idSchema,text:z.string().max(128*1024)}),({id,text}) => {
       if(this.session(id).draft===text)return;
       this.store.change(s => {s.sessions.find(s => s.id===id)!.draft=text;},{defer:true}); this.onState();
