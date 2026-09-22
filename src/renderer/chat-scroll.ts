@@ -16,10 +16,11 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
   const following=useRef(follow);following.current=follow;
   const scroll=useRef<HTMLDivElement>(null),content=useRef<HTMLDivElement>(null);
   const ready=useRef(false),adjusting=useRef(false),frame=useRef(0);
+  const pendingJump=useRef(false);
 
   const remember=useCallback(()=>{
     const element=scroll.current;
-    if(!ready.current||!element||!element.clientHeight)return;
+    if(!ready.current||pendingJump.current||!element||!element.clientHeight)return;
     const next:ChatReadingPosition={follow:following.current,top:element.scrollTop};
     if(!next.follow){
       const top=element.getBoundingClientRect().top;
@@ -36,15 +37,19 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
   const restore=useCallback(()=>{
     const element=scroll.current;
     if(!ready.current||!element)return;
-    adjusting.current=true;
     if(following.current)element.scrollTop=element.scrollHeight;
     else{
       const saved=position.current;
       const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]')).find(message=>saved.messageId?message.dataset.messageId===saved.messageId:!!saved.requestId&&message.dataset.requestId===saved.requestId);
+      // A page request can resolve before React commits its messages. Keep the explicit
+      // destination until it exists, rather than remembering the previous page's first row.
+      if(pendingJump.current&&!anchor)return;
+      pendingJump.current=false;
       element.scrollTop=anchor&&saved.offset!==undefined
         ?element.scrollTop+anchor.getBoundingClientRect().top-element.getBoundingClientRect().top-saved.offset
         :saved.top;
     }
+    adjusting.current=true;
     cancelAnimationFrame(frame.current);
     frame.current=requestAnimationFrame(()=>{adjusting.current=false;remember();});
   },[remember]);
@@ -59,13 +64,14 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
 
   const onScroll=()=>{
     const element=scroll.current;
-    if(adjusting.current||!ready.current||!element)return;
+    if(adjusting.current||pendingJump.current||!ready.current||!element)return;
     const next=element.scrollHeight-element.scrollTop-element.clientHeight<70;
     following.current=next;remember();setFollow(next);
   };
-  const jumpToLatest=()=>{following.current=true;setFollow(true);restore();};
+  const jumpToLatest=()=>{pendingJump.current=false;following.current=true;setFollow(true);restore();};
   const jumpToItem=useCallback((id:string,kind:'message'|'request'='message',offset=8)=>{
     following.current=false;
+    pendingJump.current=true;
     position.current={follow:false,top:0,offset,...(kind==='message'?{messageId:id}:{requestId:id})};
     positions.set(sessionId,position.current);setFollow(false);restore();
   },[positions,sessionId,restore]);
