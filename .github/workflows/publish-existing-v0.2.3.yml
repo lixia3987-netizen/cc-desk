@@ -1,0 +1,25 @@
+name: Publish existing v0.2.3 packages
+on:
+  push:
+    branches:
+      - publish/v0.2.3-existing-35725728224
+permissions:
+  actions: read
+  contents: write
+concurrency:
+  group: publish-existing-v0.2.3
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'lixia3987-netizen/cc-desk'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Verify and publish existing artifacts without rebuilding
+        run: python .github/scripts/publish-existing-v0.2.3.py
+        env:
+          GH_TOKEN: ${{ github.token }}
