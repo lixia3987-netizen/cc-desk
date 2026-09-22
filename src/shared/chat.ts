@@ -37,5 +37,19 @@ export interface ChatSnapshot {
   usage?: ChatUsage; model?: string; permissionMode?: string;
   mcpServers?: { name: string; status: string }[];
   error?: string; truncated?: boolean;
+  /** The CLI transcript was imported only in part; the local journal cannot supply that missing prefix. */
+  sourceIncomplete?: boolean;
 }
 export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean }
+
+export interface ChatPageOptions { before?: string; after?: string; around?: string; query?: string }
+export interface ChatPage {
+  messages: ChatMessage[]; before: string | null; after: string | null;
+  /** Some source content is unavailable or exceeded a safe reading limit. */
+  incomplete: boolean;
+}
+export interface ChatSearchHit { id: string; role: ChatMessage['role']; toolName?: string; excerpt: string; createdAt: string }
+export interface ChatSearchPage { hits: ChatSearchHit[]; nextBefore: string | null; incomplete: boolean }
+export interface ChatAttention {
+  sessionId: string; requestId: string; kind: ChatApproval['kind']; toolName: string; createdAt: string;
+}

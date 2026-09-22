@@ -1,4 +1,4 @@
-import type { ChatSnapshot, ChatDecision, ChatTurnResult, TaskState } from './chat';
+import type { ChatSnapshot, ChatDecision, ChatTurnResult, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
 import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
@@ -42,6 +42,9 @@ export interface DesktopAPI {
   setSelection(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   chatSnapshot(id: string): Promise<ChatSnapshot>;
+  chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;
+  searchChat(id: string, query: string, before?: string): Promise<ChatSearchPage>;
+  chatAttention(): Promise<ChatAttention[]>;
   sendChat(id: string, text: string, attachments?: string[]): Promise<ChatTurnResult>;
   respondChat(id: string, requestId: string, decision: ChatDecision): Promise<void>;
   pickAttachments(id: string): Promise<Attachment[]>;

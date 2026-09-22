@@ -4,6 +4,7 @@ import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, 
 import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, PermissionMode, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, busyTask, taskLabels } from './ChatPane';
+import { AttentionCenter } from './AttentionCenter';
 import { DiagnosticsPanel, FilePicker, GitPanel } from './ProjectPanels';
 import { WorkflowPanel } from './WorkflowPanel';
 import { SessionConfig } from './SessionConfig';
@@ -28,6 +29,8 @@ export function App() {
   const [cap,setCap]=useState<Capabilities>({available:false,executable:'',version:'',flags:[],efforts:['default']});
   const [projectId,setProjectId]=useState('all');
   const [activeId,setActiveId]=useState('');
+  const [attentionTarget,setAttentionTarget]=useState<{sessionId:string;requestId:string;nonce:number}>();
+  const attentionNonce=useRef(0);
   const [search,setSearch]=useState('');
   const [archived,setArchived]=useState(false);
   const [modal,setModal]=useState<Modal>(null);
@@ -220,7 +223,7 @@ export function App() {
       <div className="sidebar-bottom"><button onClick={()=>void openHistory()}><History size={16}/>导入 CLI 历史<ChevronRight size={14}/></button><button onClick={()=>{setDraftSettings({...state.settings});setModal('settings');}}><Settings2 size={16}/>设置与连接<ChevronRight size={14}/></button><div className="local-status"><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?'Claude Code 已安装':'未检测到 Claude Code'}<span>本地</span></div></div>
     </aside>
     <main className="workspace">
-      <header className="topbar"><div className="breadcrumb"><FolderOpen size={15}/>{project?.name??'工作空间'}<ChevronRight size={13}/><strong>{active?.title??'概览'}</strong></div><div className="top-meta"><button className="text-button" title="命令面板 Ctrl / ⌘ + K" onClick={()=>{setPaletteQuery('');setModal('palette');}}><Command size={13}/>命令</button><span className="dot running"/>{liveCount} / {state.settings.maxSessions} 运行中<span className="divider"/><ShieldCheck size={14}/>本地 CLI</div></header>
+      <header className="topbar"><div className="breadcrumb"><FolderOpen size={15}/>{project?.name??'工作空间'}<ChevronRight size={13}/><strong>{active?.title??'概览'}</strong></div><div className="top-meta"><AttentionCenter sessions={state.sessions} projects={state.projects} onOpen={item=>{const target=state.sessions.find(session=>session.id===item.sessionId);if(!target)return;setProjectId('all');setArchived(target.archived);setSearch('');selectSession(item.sessionId);setAttentionTarget({...item,nonce:++attentionNonce.current});}}/><button className="text-button" title="命令面板 Ctrl / ⌘ + K" onClick={()=>{setPaletteQuery('');setModal('palette');}}><Command size={13}/>命令</button><span className="dot running"/>{liveCount} / {state.settings.maxSessions} 运行中<span className="divider"/><ShieldCheck size={14}/>本地 CLI</div></header>
       {error&&<div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
       {notice&&<div className="notice"><Check size={14}/>{notice}</div>}
       {!active?<div className="welcome">
@@ -236,7 +239,7 @@ export function App() {
         {active.kind==='claude'&&!structured&&active.status==='running'&&active.terminalSync!=='synced'&&<div className="sync-note">{active.terminalSync==='unsupported'?'当前 CLI 不支持状态同步，任务状态请查看终端。':'等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
         {active.error&&<div className="inline-warning">{active.error}</div>}
         <div className="session-content"><section className="terminal-section"><div className="terminal-toolbar"><span><TerminalSquare size={14}/>{structured?'结构化对话':'交互终端'}</span><span title={active.cwd}>{active.cwd}</span><button className="icon-button" title="打开工作目录" onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={14}/></button></div>
-          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
+          {structured&&<ChatPane key={active.id} session={active} draft={composer} onDraft={value=>saveDraftFor(active.id,value)} onSent={expected=>clearSentDraft(active.id,expected)} onError={report} attachments={attachments[active.id]??[]} onAttach={()=>void addAttachments(active.id)} onProjectFiles={()=>setFilePicker(active.id)} approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current} attentionTarget={attentionTarget?.sessionId===active.id?attentionTarget:undefined} onAttentionHandled={()=>setAttentionTarget(undefined)} onRemoveAttachment={path=>void perform(async()=>{await window.desktop.removeAttachment(active.id,path);setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>file.path!==path)}));})} onAttachmentsSent={paths=>setAttachments(old=>({...old,[active.id]:(old[active.id]??[]).filter(file=>!paths.includes(file.path))}))}/>}
           <div className="terminals" style={{display:structured?'none':undefined}}>{mounted.map(id=>{const session=state.sessions.find(s=>s.id===id);return session?<div className="terminal-slot" key={id} style={{display:id===activeId?'block':'none'}}><TerminalPane session={session} themeId={themeId} settings={state.settings} active={id===activeId} onError={report} ref={handle=>{if(handle)handles.current.set(id,handle);else handles.current.delete(id);}}/></div>:null;})}
             {!active.started&&<div className="terminal-empty"><TerminalSquare size={30}/><h3>会话准备就绪</h3><p>启动后，在这里与 {active.kind==='shell'?'Shell':'Claude Code'} 直接交互。</p>{active.kind==='claude'&&<small>登录、信任目录与工具审批均在终端内完成</small>}</div>}
           </div>

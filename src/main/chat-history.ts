@@ -18,7 +18,7 @@ interface CachedHistory {
   journalCursor: number; journalEnd: number; checkJournal: boolean;
 }
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
-const isMessage = (value: unknown): value is ChatMessage => {
+export const isMessage = (value: unknown): value is ChatMessage => {
   const message = object(value);
   return !!message && typeof message.id === 'string' && typeof message.turnId === 'string' && typeof message.text === 'string' && typeof message.createdAt === 'string' && ['user', 'assistant', 'tool', 'system'].includes(String(message.role));
 };
@@ -43,7 +43,7 @@ function rootBlock(message: ChatMessage): { group: string; index: number } | und
 }
 
 /** Repairs only result echoes with explicit journal provenance, never repeated text. */
-class ResultEchoRecovery {
+export class ResultEchoRecovery {
   private latest?: { id: string; turnId: string; blocks: Map<number, TextFingerprint>; exhausted: boolean };
   private previousComplete = false;
   private pending?: TextFingerprint & { turnId: string };

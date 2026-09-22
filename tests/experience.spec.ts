@@ -7,7 +7,7 @@ import { execFileSync } from 'node:child_process';
 import type { AppState, Session } from '../src/shared/types';
 import type { ChatSnapshot } from '../src/shared/chat';
 
-async function workspace() {
+async function workspace(historyCount=90) {
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'cc-desk-experience-'));
   const data=path.join(directory,'data'),now=new Date().toISOString();
   const projects=['项目 A','项目 B'].map(name=>({id:randomUUID(),name,path:path.join(directory,name),createdAt:now}));
@@ -29,10 +29,16 @@ async function workspace() {
   await fs.mkdir(path.join(data,'chat'),{recursive:true});
   await fs.writeFile(path.join(data,'workspace.json'),JSON.stringify(state));
   for(let index=0;index<2;index++){
-    const snapshot:ChatSnapshot={sessionId:sessions[index].id,taskState:'idle',pending:[],messages:Array.from({length:index===0?90:2},(_,i)=>({
+    const snapshot:ChatSnapshot={sessionId:sessions[index].id,taskState:'idle',pending:[],messages:Array.from({length:index===0?historyCount:2},(_,i)=>({
       id:'message-'+i,turnId:'turn-'+i,role:i%2?'assistant':'user',createdAt:now,
       text:`第 ${i+1} 条消息\n\n用于验证切换会话时的阅读位置。\n\n\`\`\`typescript\nconst value = ${i};\n\`\`\``,
     }))};
+    if(snapshot.messages.length>400){
+      snapshot.messages[20]={...snapshot.messages[20],role:'tool',toolName:'Read',input:{file_path:'example.ts'}};
+      await fs.writeFile(path.join(data,'chat',sessions[index].id+'.jsonl'),snapshot.messages.map(message=>JSON.stringify({type:'message',message})+'\n').join(''));
+      snapshot.messages=snapshot.messages.slice(-400);snapshot.truncated=true;
+    }
+    if(index===1&&historyCount>400)snapshot.truncated=true;
     await fs.writeFile(path.join(data,'chat',sessions[index].id+'.json'),JSON.stringify(snapshot));
   }
   const launch=()=>electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],
@@ -180,5 +186,42 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
     await page.getByRole('button',{name:'新建会话',exact:false}).click();
     await expect(page.getByLabel('项目',{exact:true})).toHaveValue(f.projects[1].id);await page.keyboard.press('Escape');
     await expect(page.locator('.error-banner')).toHaveCount(0);
+  }finally{await app.close();await f.dispose();}
+});
+
+
+test('experience: archive pagination, conversation search and historic reading position survive session switches',async()=>{
+  const f=await workspace(525),app=await f.launch();
+  try{
+    const page=await app.firstWindow();const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
+    await expect(page.locator('[data-message-id]')).toHaveCount(400);
+    await page.getByLabel('提示词编辑器').fill('查找时保留的草稿');
+    await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
+    await expect(page.locator('[data-message-id]')).toHaveCount(50);await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-75');
+    await page.getByRole('button',{name:'查看更早消息',exact:true}).click();await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-25');
+    await page.getByRole('button',{name:'查看较新消息',exact:true}).click();await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-75');
+    await page.keyboard.press(process.platform==='darwin'?'Meta+f':'Control+f');
+    await expect(page.getByLabel('查找消息内容')).toBeFocused();
+    await page.getByLabel('查找消息内容').fill('不存在的旧查询');await page.getByLabel('查找消息内容').fill('第 21 条消息');
+    await expect(page.locator('.chat-search-results button')).toHaveCount(1);await expect(page.locator('.chat-search-results mark')).toHaveText('第 21 条消息');
+    await page.screenshot({path:'docs/screenshots/conversation-search.png'});
+    await page.locator('.chat-search-results button').click();await expect(page.getByRole('dialog',{name:'会话内查找'})).toHaveCount(0);
+    await expect(page.locator('.search-target')).toHaveAttribute('data-message-id','message-20');await expect(page.locator('.search-target')).toHaveJSProperty('open',true);await settleReading(page);
+    const offset=()=>page.locator('[data-message-id="message-20"]').evaluate(element=>element.getBoundingClientRect().top-element.closest('.chat-scroll')!.getBoundingClientRect().top);
+    await expect.poll(offset).toBeGreaterThanOrEqual(0);await expect.poll(offset).toBeLessThan(20);
+    await expect(page.getByLabel('提示词编辑器')).toHaveValue('查找时保留的草稿');
+    await page.screenshot({path:'docs/screenshots/conversation-history.png'});
+    await select(page,'短对话 B');await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
+    await expect(page.getByText('没有更早的本地记录；部分原始内容需导出查看。',{exact:true})).toBeVisible();
+    await expect(page.locator('[data-message-id]')).toHaveCount(2);await expect(page.locator('.chat-empty')).toHaveCount(0);
+    await expect(page.getByRole('button',{name:'查看更早消息',exact:true})).toBeDisabled();
+    await select(page,'长对话 B');await expect(page.locator('[data-message-id]')).toHaveCount(50);await settleReading(page);
+    await expect.poll(offset).toBeGreaterThanOrEqual(0);await expect.poll(offset).toBeLessThan(20);
+    await page.getByRole('button',{name:'返回最新对话',exact:true}).click();await expect(page.locator('[data-message-id]')).toHaveCount(400);await settleReading(page);
+    expect(await page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(5);
+    await page.getByRole('button',{name:'查找消息',exact:true}).click();await page.getByLabel('查找消息内容').fill('不存在');await expect(page.getByText('没有匹配的消息。',{exact:true})).toBeVisible();
+    await page.keyboard.press('Escape');await expect(page.getByRole('button',{name:'查找消息',exact:true})).toBeFocused();
+    expect(errors).toEqual([]);
   }finally{await app.close();await f.dispose();}
 });

@@ -224,6 +224,10 @@ export class SessionService {
       this.store.change(state => {state.sessions=state.sessions.filter(s=>s.id!==id);if(state.selectedSessionId===id)state.selectedSessionId='';}); this.onState();
     }));
     handle('chat:snapshot',idSchema,async id => {this.structured(id);await this.chat.hydrate(id);return this.chat.snapshot(id);});
+    const messageId=z.string().min(1).max(4096);
+    handle('chat:page',z.object({id:idSchema,before:messageId.optional(),after:messageId.optional(),around:messageId.optional(),query:z.string().max(500).optional()}).refine(value=>[value.before,value.after,value.around].filter(Boolean).length<=1),({id,...options})=>{this.structured(id);return this.chat.page(id,options);});
+    handle('chat:search',z.object({id:idSchema,query:z.string().trim().min(1).max(500),before:messageId.optional()}),({id,query,before})=>{this.structured(id);return this.chat.search(id,query,before);});
+    handle('chat:attention',z.undefined(),()=>this.chat.attention());
     handle('chat:send',z.object({id:idSchema,text:z.string().max(128*1024),attachments:z.array(z.string().max(4096)).max(8).optional()}),async ({id,text,attachments}) => {
       this.structured(id);
       if(!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');

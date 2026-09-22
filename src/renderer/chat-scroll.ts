@@ -5,6 +5,7 @@ export interface ChatReadingPosition {
   follow: boolean;
   top: number;
   messageId?: string;
+  requestId?: string;
   offset?: number;
 }
 
@@ -22,12 +23,12 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     const next:ChatReadingPosition={follow:following.current,top:element.scrollTop};
     if(!next.follow){
       const top=element.getBoundingClientRect().top;
-      const messages=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]'));
+      const messages=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]'));
       // Message rows are in document order. Avoid measuring every row on each scroll event.
       let low=0,high=messages.length;
       while(low<high){const middle=(low+high)>>>1;if(messages[middle].getBoundingClientRect().bottom<=top)low=middle+1;else high=middle;}
       const anchor=messages[low];
-      if(anchor){next.messageId=anchor.dataset.messageId;next.offset=anchor.getBoundingClientRect().top-top;}
+      if(anchor){next.messageId=anchor.dataset.messageId;next.requestId=anchor.dataset.requestId;next.offset=anchor.getBoundingClientRect().top-top;}
     }
     position.current=next;positions.set(sessionId,next);
   },[positions,sessionId]);
@@ -39,7 +40,7 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     if(following.current)element.scrollTop=element.scrollHeight;
     else{
       const saved=position.current;
-      const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(message=>message.dataset.messageId===saved.messageId);
+      const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]')).find(message=>saved.messageId?message.dataset.messageId===saved.messageId:!!saved.requestId&&message.dataset.requestId===saved.requestId);
       element.scrollTop=anchor&&saved.offset!==undefined
         ?element.scrollTop+anchor.getBoundingClientRect().top-element.getBoundingClientRect().top-saved.offset
         :saved.top;
@@ -63,5 +64,10 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     following.current=next;remember();setFollow(next);
   };
   const jumpToLatest=()=>{following.current=true;setFollow(true);restore();};
-  return {scroll,content,follow,onScroll,jumpToLatest};
+  const jumpToItem=useCallback((id:string,kind:'message'|'request'='message',offset=8)=>{
+    following.current=false;
+    position.current={follow:false,top:0,offset,...(kind==='message'?{messageId:id}:{requestId:id})};
+    positions.set(sessionId,position.current);setFollow(false);restore();
+  },[positions,sessionId,restore]);
+  return {scroll,content,follow,onScroll,jumpToLatest,jumpToItem};
 }

@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID, type Hash } from 'node:crypto';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
-import type { ChatApproval, ChatDecision, ChatMessage, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
+import type { ChatApproval, ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
 import { findClaudeTranscript, transcriptExists } from './history';
 import { StateStore } from './store';
 import { ChatHistory } from './chat-history';
+import { ChatArchive } from './chat-archive';
 import { readTranscriptPreview } from './chat-import';
 import { chatArguments, JsonLineDecoder, object, string, userContent, type WireObject } from './chat-protocol';
 
@@ -49,6 +50,7 @@ export class ChatRuntime {
   private cancelled = new Set<string>();
   private shuttingDown = false;
   private history: ChatHistory;
+  private archive: ChatArchive;
   private notifications = new Map<string, NodeJS.Timeout>();
   private hydrating = new Map<string, Promise<void>>();
   private transcriptVersions = new Map<string, string>();
@@ -65,6 +67,7 @@ export class ChatRuntime {
       try { this.update(id, { status: 'error', taskState: 'error', error: snapshot.error }); } catch { /* The disk may also reject workspace writes. */ }
       this.onEvents(id);
     });
+    this.archive = new ChatArchive(this.history.directory);
   }
   get activeCount() { return new Set([...this.entries.keys(), ...this.starting]).size; }
   has(id: string) { return this.entries.has(id) || this.starting.has(id); }
@@ -130,6 +133,24 @@ export class ChatRuntime {
     this.session(id);
     return structuredClone(this.history.get(id));
   }
+  async page(id:string,options:ChatPageOptions={}) {
+    this.session(id);await this.hydrate(id);
+    return this.archive.page(id,this.snapshot(id),options);
+  }
+  async search(id:string,query:string,before?:string) {
+    this.session(id);await this.hydrate(id);
+    return this.archive.search(id,this.snapshot(id),query,before);
+  }
+  attention():ChatAttention[] {
+    const requests:ChatAttention[]=[];
+    for(const [sessionId,entry] of this.entries){
+      if(entry.ending)continue;
+      for(const approval of this.history.get(sessionId).pending){
+        if(entry.approvals.has(approval.requestId))requests.push({sessionId,requestId:approval.requestId,kind:approval.kind,toolName:approval.toolName,createdAt:approval.createdAt});
+      }
+    }
+    return requests.sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+  }
   async hydrate(id: string): Promise<void> {
     const session = this.session(id);
     if (this.entries.has(id) || !(session.imported || session.resumeFrom || session.started)) return;
@@ -172,6 +193,7 @@ export class ChatRuntime {
       for (const message of additions) this.message(id, message);
       if (!length) {
         snapshot.truncated = preview.truncated;
+        snapshot.sourceIncomplete = preview.truncated || undefined;
         if (preview.messages.length || preview.truncated) this.system(id, preview.truncated ? '已载入原始对话的最近部分；Claude 恢复时使用原始会话记录。' : '已载入 Claude 原始对话记录。');
       }
       if (additions.length || !length && preview.truncated) this.history.flush();
@@ -184,7 +206,7 @@ export class ChatRuntime {
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');
     const timer = this.notifications.get(id); if (timer) clearTimeout(timer);
-    this.notifications.delete(id); this.transcriptVersions.delete(id); this.history.delete(id);
+    this.notifications.delete(id); this.transcriptVersions.delete(id); this.history.delete(id); this.archive.forget(id);
   }
 
   async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = []): Promise<ChatTurnResult> {

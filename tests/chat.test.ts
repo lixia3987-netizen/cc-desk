@@ -507,3 +507,16 @@ test('shutdown stops every chat subprocess even when saving the first turn fails
     assert.equal((await firstTurn).success, false); assert.equal((await secondTurn).interrupted, true);
   } finally { history.flush = flush; await s.cleanup(); }
 });
+
+test('attention summaries expose only live requests and remove resolved, cancelled and stopped approvals',async()=>{
+  const s=setup();try{
+    const turn=s.runtime.send(s.session.id,'approve',capabilities);await until(()=>s.runtime.attention().length===1);
+    const [pending]=s.runtime.attention();assert.equal(pending.sessionId,s.session.id);assert.equal(pending.kind,'permission');assert.equal('input' in pending,false);
+    s.runtime.respond(s.session.id,pending.requestId,{behavior:'deny'});assert.deepEqual(s.runtime.attention(),[]);await turn;
+    const question=s.runtime.send(s.session.id,'question',capabilities);await until(()=>s.runtime.attention()[0]?.kind==='question');
+    s.runtime.interrupt(s.session.id);await question;assert.deepEqual(s.runtime.attention(),[]);
+    const cancelled=s.runtime.send(s.session.id,'cancel',capabilities);await cancelled;assert.deepEqual(s.runtime.attention(),[]);
+    const stopping=s.runtime.send(s.session.id,'approve',capabilities);await until(()=>s.runtime.attention().length===1);s.runtime.stop(s.session.id);
+    assert.deepEqual(s.runtime.attention(),[]);await stopping;
+  }finally{await s.cleanup();}
+});

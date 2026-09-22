@@ -114,7 +114,24 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.getByRole('region',{name:'工具审批'})).toBeVisible();await expect(page.locator('.status-tag').first()).toContainText('等待审批');
     await page.getByLabel('审批说明').fill('只允许这一次，保留我的说明');
     await page.locator('.session-row').filter({hasText:'会话 B'}).click();await expect(page.getByRole('region',{name:'工具审批'})).toHaveCount(0);await expect(page.getByLabel('提示词编辑器')).toHaveValue('B 的独立草稿');
+    // Requests from another project remain discoverable even when sidebar filters hide both sessions.
+    const attentionProject=path.join(directory,'审批项目');await fs.mkdir(attentionProject);
+    const attentionSession=await page.evaluate(async folder=>{const project=await window.desktop.addProject(folder);const session=await window.desktop.createSession({projectId:project.id,title:'跨项目提问 C',kind:'claude',model:'',effort:'default',permissionMode:'default',isolated:false,adapter:'structured'});await window.desktop.setSelection(session.id);return session.id;},attentionProject);
+    await expect(page.getByRole('heading',{name:'跨项目提问 C',exact:true})).toBeVisible();
+    await page.getByLabel('提示词编辑器').fill('question');await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.getByLabel('回答：使用哪个数据库？')).toBeVisible();
+    await page.locator('.session-row').filter({hasText:'会话 B'}).click();await page.locator('.project-row').filter({hasText:'审批项目'}).click();await page.getByLabel('搜索会话').fill('隐藏所有会话');
+    await expect(page.locator('.attention-button')).toContainText('2');await page.locator('.attention-button').click();
+    await expect(page.locator('.attention-list>button')).toHaveCount(2);await page.screenshot({path:'docs/screenshots/attention-center.png'});
+    await page.locator('.attention-list>button').filter({hasText:'会话 A'}).click();
+    await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByRole('region',{name:'工具审批'})).toBeFocused();
+    await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.locator('.project-row.selected')).toContainText('全部项目');
     await page.locator('.session-row').filter({hasText:'会话 A'}).click();await expect(page.getByLabel('审批说明')).toHaveValue('只允许这一次，保留我的说明');await page.getByLabel('提示词编辑器').fill('审批期间写的新草稿');await page.screenshot({path:'docs/screenshots/approval.png'});await page.getByRole('button',{name:'允许本次',exact:true}).click();await expect(page.locator('.chat-message.assistant')).toContainText('已批准');await expect(page.getByLabel('提示词编辑器')).toHaveValue('审批期间写的新草稿');
+    await expect(page.locator('.attention-button')).toContainText('1');await page.locator('.attention-button').click();
+    await page.locator('.attention-list>button').filter({hasText:'跨项目提问 C'}).click();await expect(page.getByRole('region',{name:'等待回答'})).toBeFocused();
+    await page.getByRole('button',{name:/SQLite/}).click();await page.getByRole('button',{name:'提交回答',exact:true}).click();await expect(page.locator('.attention-button')).toContainText('0');
+    expect(await page.evaluate(async id=>(await window.desktop.chatSnapshot(id)).pending.length,attentionSession)).toBe(0);
+    await page.locator('.attention-button').click();await expect(page.getByText('暂无待处理请求。',{exact:true})).toBeVisible();await page.keyboard.press('Escape');
+    await page.locator('.session-row').filter({hasText:'会话 A'}).click();
     await page.getByLabel('提示词编辑器').fill('question');await page.getByRole('button',{name:'发送任务',exact:true}).click();await page.getByRole('button',{name:/SQLite/}).click();await page.getByLabel('审批说明').fill('回答草稿仍应保留');
     await page.locator('.session-row').filter({hasText:'会话 B'}).click();await page.locator('.session-row').filter({hasText:'会话 A'}).click();await expect(page.getByLabel('回答：使用哪个数据库？')).toHaveValue('SQLite');await expect(page.getByLabel('审批说明')).toHaveValue('回答草稿仍应保留');await page.getByRole('button',{name:'提交回答',exact:true}).click();await expect(page.locator('.chat-message.assistant').last()).toContainText('选择：SQLite');
     await expect(page.getByRole('button',{name:'发送任务',exact:true})).toBeVisible();await page.getByLabel('提示词编辑器').fill('deny');await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.getByLabel('审批说明')).toHaveValue('');await page.getByRole('button',{name:'拒绝',exact:true}).click();await expect(page.locator('.chat-message.assistant').last()).toContainText('已拒绝');

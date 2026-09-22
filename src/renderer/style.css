@@ -349,7 +349,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .message-markdown {overflow-wrap:anywhere;line-height:1.65}
 .message-markdown p {margin:.45em 0}
 .message-markdown ul,.message-markdown ol {padding-left:1.6em;margin:.55em 0}
-.message-markdown blockquote {margin:.8em 0;padding:.15em 1em;border-left:3px solid var(--accent);color:var(--muted)}
+.message-markdown blockquote {margin:.8em 0;padding:.15em 1em;border-left:3px solid var(--accent);color:var(--text-muted)}
 .message-markdown a {color:var(--accent);text-decoration:underline}
 .message-markdown table {display:block;max-width:100%;overflow-x:auto;border-collapse:collapse;margin:.8em 0}
 .message-markdown th,.message-markdown td {border:1px solid var(--border);padding:6px 10px;text-align:left}
@@ -388,3 +388,24 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 
 .chat-scroll-content{display:flow-root}
 .review-file{display:block;overflow-wrap:anywhere;margin:12px 0 8px;font-size:12px}
+
+/* History and attention controls use theme tokens to keep all five palettes readable. */
+.chat-reading-toolbar{display:flex;align-items:center;gap:12px;min-height:36px;padding:5px 18px;border-bottom:1px solid var(--border);flex-shrink:0;font-size:11px;color:var(--text-muted)}
+.chat-reading-toolbar>span{margin-left:auto}
+.history-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 16px;font-size:11px;color:var(--text-muted)}
+.chat-search-dialog{width:min(720px,calc(100vw - 48px))}
+.modal-title{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.chat-search-results,.attention-list{max-height:45vh;overflow:auto;margin:14px 0;display:flex;flex-direction:column;gap:8px}
+.chat-search-results>button,.attention-list>button{display:block;text-align:left;width:100%;padding:12px;border:1px solid var(--border);background:var(--surface);color:var(--text);border-radius:8px;overflow-wrap:anywhere}
+.chat-search-results>button:hover,.attention-list>button:hover{border-color:var(--accent)}
+.chat-search-results>button>span,.attention-list>button>span:first-child{display:flex;align-items:center;justify-content:space-between;gap:16px}
+.chat-search-results small,.attention-list small{color:var(--text-muted);font-size:10px}
+.chat-search-results p{white-space:pre-wrap;font-size:12px;line-height:1.7;margin:8px 0 0}
+.chat-search-results mark{background:var(--accent);color:var(--on-accent);border-radius:2px}
+.attention-list>button>span:last-child{display:block;margin-top:8px;font-size:12px}
+.attention-button>span{min-width:18px;border:1px solid var(--border);border-radius:5px;padding:0 4px;text-align:center}
+.attention-button.has-pending{color:var(--accent)}
+.search-target,.approval-card:focus{outline:2px solid var(--accent);outline-offset:3px}
+.chat-page-controls{margin:0;padding:6px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+
+.history-reading-note{margin:6px 18px;flex-shrink:0}

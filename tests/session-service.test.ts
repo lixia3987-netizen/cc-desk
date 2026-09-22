@@ -222,3 +222,15 @@ test('notification navigation emits intent even for the selected session and ign
     assert.equal(events.length,2);
   }finally{await f.dispose();}
 });
+
+test('conversation history IPC validates message cursors and restricts reads to structured sessions',async()=>{
+  const f=await fixture();try{
+    const structured=f.add(f.repo,{kind:'claude',adapter:'structured'}),terminal=f.add(f.repo);
+    await assert.rejects(f.call('chat:page',{id:terminal.id}),/图形化/);
+    await assert.rejects(f.call('chat:search',{id:terminal.id,query:'test'}),/图形化/);
+    for(const options of [{before:'one',after:'two'},{around:'x'.repeat(4097)},{query:'x'.repeat(501)}])await assert.rejects(f.call('chat:page',{id:structured.id,...options}));
+    await assert.rejects(f.call('chat:search',{id:structured.id,query:' '}));
+    const page=await f.call<{messages:unknown[]}>('chat:page',{id:structured.id});assert.deepEqual(page.messages,[]);
+    assert.deepEqual(await f.call('chat:attention',undefined),[]);
+  }finally{await f.dispose();}
+});
