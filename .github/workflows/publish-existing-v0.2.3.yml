@@ -23,3 +23,4 @@ jobs:
         run: python .github/scripts/publish-existing-v0.2.3.py
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}

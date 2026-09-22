@@ -43,6 +43,8 @@ def digest(file):
 
 require(os.environ.get('GITHUB_REPOSITORY') == REPOSITORY, 'Unexpected repository')
 require(os.environ.get('GITHUB_REF') == f'refs/heads/{BRANCH}', 'Unexpected publication branch')
+release_token = os.environ.get('RELEASE_TOKEN')
+require(bool(release_token), 'Configure the repository RELEASE_TOKEN secret with Contents and Workflows write permission to publish this historical build.')
 run = api(f'actions/runs/{RUN}')
 require(run['status'] == 'completed' and run['conclusion'] == 'success', 'Source build is not successful')
 require(run['head_sha'] == SOURCE and run['head_branch'] == 'main', 'Source build commit mismatch')
@@ -98,7 +100,7 @@ require(set(manifests) == set(PLATFORMS) and len(verified_names) == 6, 'Missing 
 print('Six tested payload checksums match; the portable EXE is covered by the verified Windows artifact archive.', flush=True)
 
 # The existing publisher must tag and cite the original verified build, not this upload-only job.
-publish_environment = dict(os.environ, GITHUB_SHA=SOURCE, GITHUB_RUN_ID=str(RUN))
+publish_environment = dict(os.environ, GH_TOKEN=release_token, GITHUB_SHA=SOURCE, GITHUB_RUN_ID=str(RUN))
 subprocess.run(['node', 'scripts/publish-release.mjs'], env=publish_environment, check=True)
 release = api(f'releases/tags/v{VERSION}')
 require(not release['draft'], 'Release is still a draft')
