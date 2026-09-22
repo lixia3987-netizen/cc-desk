@@ -61,6 +61,62 @@ async function settleReading(page:Page){
   });
 }
 
+test('experience: project groups preserve navigation and drafts with a compact header at desktop and narrow widths',async()=>{
+  const f=await workspace(12),file=path.join(f.data,'workspace.json');
+  const state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
+  const inA=(title:string,updatedAt:string,archived=false):Session=>({...f.sessions[1],id:randomUUID(),claudeId:randomUUID(),projectId:f.projects[0].id,cwd:f.projects[0].path,title,updatedAt,archived});
+  state.sessions.push(inA('较早的 A 对话','2025-01-01T00:00:00.000Z'),inA('最近的 A 对话','2025-02-01T00:00:00.000Z'),inA('已归档的 A 对话','2025-03-01T00:00:00.000Z',true));
+  const orphan={...inA('保留的旧项目对话','2025-01-01T00:00:00.000Z'),projectId:randomUUID()};state.sessions.push(orphan);
+  await fs.writeFile(file,JSON.stringify(state));const app=await f.launch();
+  try{
+    const page=await app.firstWindow(),errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+    const groupA=page.locator(`[data-project-id="${f.projects[0].id}"]`),groupB=page.locator(`[data-project-id="${f.projects[1].id}"]`);
+    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
+    await expect(groupA.locator('.session-row strong')).toHaveText(['最近的 A 对话','较早的 A 对话']);
+    await expect(groupB.locator('.session-row')).toHaveCount(4);
+    await expect(page.locator(`[data-project-id="${orphan.projectId}"]`)).toContainText('保留的旧项目对话');
+    await page.getByLabel('提示词编辑器').fill('折叠和跨项目切换后仍保留');
+    await groupB.locator('.project-group-toggle').click();await expect(groupB.locator('.session-row').first()).toBeHidden();
+    await expect(page.getByLabel('提示词编辑器')).toHaveValue('折叠和跨项目切换后仍保留');
+    await page.getByLabel('搜索会话').fill('短对话');await expect(groupB.locator('.project-group-toggle')).toHaveAttribute('aria-expanded','true');
+    await expect(page.locator('.session-group')).toHaveCount(1);await expect(groupB.locator('.session-row:visible')).toHaveCount(1);
+    await page.getByLabel('搜索会话').fill('项目 A');await expect(groupA.locator('.session-row:visible')).toHaveCount(2);
+    await page.getByLabel('搜索会话').fill('');
+    await page.getByRole('button',{name:'在「项目 A」中创建会话',exact:true}).click();
+    await expect(page.getByLabel('项目',{exact:true})).toHaveValue(f.projects[0].id);
+    await page.getByLabel('会话名称').fill('直接创建的 A 对话');await page.getByRole('button',{name:'创建会话',exact:true}).click();
+    await expect(groupA.locator('.session-row.active')).toContainText('直接创建的 A 对话');
+    await select(page,'长对话 B');await expect(page.getByLabel('提示词编辑器')).toHaveValue('折叠和跨项目切换后仍保留');
+    await page.getByRole('button',{name:'查看归档',exact:true}).click();
+    await expect(page.locator('.session-group')).toHaveCount(1);await expect(groupA.locator('.session-row')).toHaveText(/已归档的 A 对话/);
+    await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},f.sessions[0].id);
+    await expect(groupB.locator('.session-row.active')).toBeVisible();
+    await groupB.locator('.project-group-toggle').click();
+    // The selected ID is unchanged: notification navigation must still reveal its project.
+    await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},f.sessions[0].id);
+    await expect(groupB.locator('.project-group-toggle')).toHaveAttribute('aria-expanded','true');
+    await page.getByLabel('工作空间筛选').selectOption(f.projects[0].id);await page.getByLabel('搜索会话').fill('隐藏全部');
+    await page.getByRole('button',{name:'命令面板',exact:true}).click();await page.getByLabel('查找命令与会话').fill('长对话 B');
+    await page.locator('.palette-results button').filter({hasText:'长对话 B'}).click();
+    await expect(page.getByLabel('工作空间筛选')).toHaveValue('all');await expect(page.getByLabel('搜索会话')).toHaveValue('');
+    await expect(groupB.locator('.session-row.active')).toBeVisible();
+    const title='用于验证窄窗口中标题省略和操作按钮可用性的长对话名称'.repeat(3);
+    await page.evaluate(({id,title})=>window.desktop.updateSession({id,title}),{id:f.sessions[0].id,title});
+    for(const size of [[1600,1000],[980,680]]){
+      await app.evaluate(({BrowserWindow},[width,height])=>BrowserWindow.getAllWindows()[0].setSize(width,height),size);await settleReading(page);
+      await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible();
+      const layout=await page.evaluate(()=>({top:document.querySelector('.chat-scroll')!.getBoundingClientRect().top,header:document.querySelector('.session-header')!.getBoundingClientRect().height,width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth}));
+      expect(layout.header).toBeLessThanOrEqual(76);expect(layout.top).toBeLessThanOrEqual(112);expect(layout.overflow).toBe(false);
+      for(const name of ['打开工作目录','导出会话记录','开始输入','命令面板']){
+        const button=page.getByRole('button',{name,exact:true});await expect(button).toBeVisible();
+        const bounds=(await button.boundingBox())!;expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(layout.width);
+      }
+    }
+    await page.getByRole('button',{name:'开始输入',exact:true}).click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
+    await expect(page.getByLabel('提示词编辑器')).toHaveValue('折叠和跨项目切换后仍保留');expect(errors).toEqual([]);
+  }finally{await app.close();await f.dispose();}
+});
+
 test('experience: panel drafts keep session/file identity, tab state and unsaved edits across restart',async()=>{
   const f=await workspace();let app=await f.launch();
   try{
@@ -111,9 +167,9 @@ test('experience: new-session project, template append, terminal selection and r
     let page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'新建会话',exact:false}).click();await expect(page.getByLabel('项目',{exact:true})).toHaveValue(f.projects[1].id);await page.keyboard.press('Escape');
-    await page.locator('.project-row').filter({hasText:'项目 A'}).click();
+    await page.getByLabel('工作空间筛选').selectOption({label:'项目 A'});
     await page.getByRole('button',{name:'新建会话',exact:false}).click();await expect(page.getByLabel('项目',{exact:true})).toHaveValue(f.projects[0].id);await page.keyboard.press('Escape');
-    await page.locator('.project-row').filter({hasText:'全部项目'}).click();
+    await page.getByLabel('工作空间筛选').selectOption({label:'全部项目'});
     await page.getByRole('button',{name:'开始输入',exact:true}).click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.sessions.some(session=>session.started)).toBe(false);
     await expect(page.locator('.chat-message')).toHaveCount(90);await settleReading(page);
@@ -179,7 +235,7 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
     await expect(page.getByRole('button',{name:'保存并检测',exact:true})).toBeEnabled();
     await page.getByLabel('Claude Code 路径').fill(a.cli);await page.keyboard.press('Escape');
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.claudePath).toBe(b.cli);
-    await page.locator('.project-row').filter({hasText:'项目 A'}).click();
+    await page.getByLabel('工作空间筛选').selectOption({label:'项目 A'});
     await page.getByRole('button',{name:'从此会话创建分支',exact:true}).click();
     await expect(page.getByLabel('项目',{exact:true})).toHaveValue(f.projects[1].id);await page.keyboard.press('Escape');
     await page.evaluate(id=>window.desktop.removeProject(id),f.projects[0].id);

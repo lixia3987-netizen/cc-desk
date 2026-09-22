@@ -131,7 +131,10 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  if(m.type==='control_response'&&pending&&m.response.request_id===pending.id){
   const response=m.response.response;
   const text=response.behavior==='deny'?'denied':pending.question?'answer:'+response.updatedInput.answers['Which database?']:'approved';
-  output({type:'user',message:{content:[{type:'tool_result',tool_use_id:'tool-'+turn,content:text,is_error:response.behavior==='deny'}]}});pending=undefined;done(text);
+  output({type:'user',message:{content:[{type:'tool_result',tool_use_id:'tool-'+turn,content:text,is_error:response.behavior==='deny'}]}});pending=undefined;
+  // An interrupting denial is followed by the interrupt control request, which ends the turn.
+  // Emitting a result here too races a second result into the next test turn.
+  if(!response.interrupt)done(text);
  }
 });
 `;
@@ -514,7 +517,7 @@ test('attention summaries expose only live requests and remove resolved, cancell
     const [pending]=s.runtime.attention();assert.equal(pending.sessionId,s.session.id);assert.equal(pending.kind,'permission');assert.equal('input' in pending,false);
     s.runtime.respond(s.session.id,pending.requestId,{behavior:'deny'});assert.deepEqual(s.runtime.attention(),[]);await turn;
     const question=s.runtime.send(s.session.id,'question',capabilities);await until(()=>s.runtime.attention()[0]?.kind==='question');
-    s.runtime.interrupt(s.session.id);await question;assert.deepEqual(s.runtime.attention(),[]);
+    await s.runtime.interrupt(s.session.id);await question;assert.deepEqual(s.runtime.attention(),[]);
     const cancelled=s.runtime.send(s.session.id,'cancel',capabilities);await cancelled;assert.deepEqual(s.runtime.attention(),[]);
     const stopping=s.runtime.send(s.session.id,'approve',capabilities);await until(()=>s.runtime.attention().length===1);s.runtime.stop(s.session.id);
     assert.deepEqual(s.runtime.attention(),[]);await stopping;
