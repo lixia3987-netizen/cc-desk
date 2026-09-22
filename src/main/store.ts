@@ -22,7 +22,7 @@ export class StateStore {
         if (session.taskState && !['idle','completed','interrupted','error'].includes(session.taskState)) session.taskState = 'interrupted';
       }
     } else {
-      this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 } };
+      this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default' } };
     }
   }
   get persistenceError() { return this.writeError; }

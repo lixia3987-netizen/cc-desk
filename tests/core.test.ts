@@ -47,9 +47,39 @@ test('unsupported effort and flags fail explicitly; ultracode is never rewritten
   assert.deepEqual(parseCapabilities('--effort <level> low medium high','cli','1').efforts,['default','low','medium','high']);
   assert.deepEqual(parseCapabilities('--effort <level> Effort level for the current session\n    (low, medium, high, xhigh, max)\n  --model <id>','cli','2.1.278').efforts,['default','low','medium','high','xhigh','max']);
 });
-test('IPC validators reject path injection, invalid IDs, unsupported permission bypass and oversized limits',()=>{
+test('IPC validators reject path injection, invalid IDs and unsupported permission modes',()=>{
   assert.equal(settingsSchema.safeParse({claudePath:'claude\nwhoami',shellPath:'',maxSessions:1,fontSize:14,scrollback:1000}).success,false);
   assert.equal(sessionInputSchema.safeParse({projectId:'../evil',title:'test',kind:'claude',model:'',effort:'max',permissionMode:'bypassPermissions',isolated:false}).success,false);
+  const input={projectId:randomUUID(),title:'test',kind:'claude',model:'',effort:'default',isolated:false};
+  assert.equal(sessionInputSchema.safeParse({...input,permissionMode:'bypassPermissions'}).success,true);
+  assert.equal(sessionInputSchema.safeParse(input).success,true);
+  for(const permissionMode of ['auto','unknown','bypassPermissions --model injected']) {
+    assert.equal(sessionInputSchema.safeParse({...input,permissionMode}).success,false);
+    assert.equal(settingsSchema.safeParse({claudePath:'',shellPath:'',maxSessions:1,fontSize:14,scrollback:1000,defaultPermissionMode:permissionMode}).success,false);
+  }
+});
+test('old settings retain manual approval and explicit bypass defaults and sessions survive restart',()=>{
+  const dir=temp();try{
+    const oldSettings={claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000};
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[session()],settings:oldSettings}));
+    const store=new StateStore(dir);
+    assert.equal(store.state.settings.defaultPermissionMode,'default');
+    store.change(state=>{state.settings.defaultPermissionMode='bypassPermissions';});
+    let restored=new StateStore(dir);
+    assert.equal(restored.state.settings.defaultPermissionMode,'bypassPermissions');
+    assert.equal(restored.state.sessions[0].permissionMode,'default');
+    restored.change(state=>{state.sessions[0].permissionMode='bypassPermissions';state.settings.defaultPermissionMode='plan';});
+    restored=new StateStore(dir);
+    assert.equal(restored.state.settings.defaultPermissionMode,'plan');
+    assert.equal(restored.state.sessions[0].permissionMode,'bypassPermissions');
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('launch and resume pass only the explicitly selected permission mode to the CLI',()=>{
+  for(const permissionMode of ['default','plan','acceptEdits','bypassPermissions'] as const){
+    const s={...session(),permissionMode};
+    assert.deepEqual(claudeArguments(s,cap,false),['--session-id',s.claudeId,'--permission-mode',permissionMode]);
+    assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.claudeId,'--permission-mode',permissionMode]);
+  }
 });
 test('terminal buffer bounds retained output and assigns monotonically increasing sequence IDs',()=>{
   const buffer=new TerminalBuffer();for(let i=0;i<1500;i++)buffer.push('id','x'.repeat(1024));

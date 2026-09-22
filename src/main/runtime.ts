@@ -1,3 +1,4 @@
+import { isPermissionMode } from '../shared/permissions';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn as spawnProcess } from 'node:child_process';
@@ -137,7 +138,7 @@ export class Runtime {
     if (this.has(id)) return;
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
     if (session.identityPending) throw new Error('CLI 已切换会话，但新会话身份尚未确认。请从历史记录重新导入目标会话，避免恢复错误的对话。');
-    if (session.kind === 'claude' && session.observedPermissionMode && !['default', 'plan', 'acceptEdits'].includes(session.observedPermissionMode)) throw new Error('上次 CLI 使用了客户端启动选项以外的权限模式。请先在会话设置中明确选择默认、计划或接受编辑，再恢复。');
+    if (session.kind === 'claude' && session.observedPermissionMode && !isPermissionMode(session.observedPermissionMode)) throw new Error('上次 CLI 使用了客户端启动选项以外的权限模式。请先在会话设置中明确选择受支持的权限模式，再恢复。');
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error(`已达到 ${this.store.state.settings.maxSessions} 个并发会话上限，请先停止一个会话。`);
     this.starting.add(id);
     let finishStart!: () => void;

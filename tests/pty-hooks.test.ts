@@ -31,15 +31,17 @@ test('main-session hook states distinguish approval, question, parallel tool wor
   assert.equal(observer.accept(input(id, 'Stop', { agent_id: 'child' })), null);
 });
 
-test('permissions without tool IDs resolve, and model/config observations do not enable bypass launch modes', () => {
+test('permissions without tool IDs resolve, supported modes synchronize and unknown launch modes remain observations', () => {
   const id = randomUUID(); const observer = new PtyHookObserver(id);
   observer.accept(input(id, 'PreToolUse', { tool_name: 'Bash', tool_use_id: 'one' }));
   observer.accept(input(id, 'PermissionRequest', { tool_name: 'Bash' }));
   assert.equal(observer.accept(input(id, 'PostToolUse', { tool_name: 'Bash', tool_use_id: 'one' }))?.taskState, 'thinking');
   const supported = observer.accept(input(id, 'PostModelSwitch', { to_model: 'claude-model', permission_mode: 'plan' }));
   assert.equal(supported?.model, 'claude-model'); assert.equal(supported?.permissionMode, 'plan');
-  const unsupported = observer.accept(input(id, 'UserPromptSubmit', { permission_mode: 'bypassPermissions' }));
-  assert.equal(unsupported?.permissionMode, undefined); assert.equal(unsupported?.observedPermissionMode, 'bypassPermissions');
+  const bypass = observer.accept(input(id, 'UserPromptSubmit', { permission_mode: 'bypassPermissions' }));
+  assert.equal(bypass?.permissionMode, 'bypassPermissions'); assert.equal(bypass?.observedPermissionMode, 'bypassPermissions');
+  const unsupported = observer.accept(input(id, 'UserPromptSubmit', { permission_mode: 'auto' }));
+  assert.equal(unsupported?.permissionMode, undefined); assert.equal(unsupported?.observedPermissionMode, 'auto');
 });
 
 test('clear/resume await a fresh identity, ignore late old events and allow intentional return to an earlier session', () => {

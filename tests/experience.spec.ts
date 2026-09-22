@@ -203,6 +203,63 @@ test('experience: new-session project, template append, terminal selection and r
   }finally{await app.close();await f.dispose();}
 });
 
+
+test('experience: permission defaults persist while sessions, forks and import overrides keep their own modes',async()=>{
+  const f=await workspace(2),probe=await cliProbe(f.directory,'permission-fixture');
+  const file=path.join(f.data,'workspace.json'),initial=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
+  initial.settings.claudePath=probe.cli;initial.sessions[0].started=true;await fs.writeFile(file,JSON.stringify(initial));
+  let app=await f.launch();
+  try{
+    let page=await app.firstWindow();
+    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
+    await page.getByRole('button',{name:'设置与连接',exact:false}).click();
+    await expect(page.getByLabel('默认权限模式',{exact:true})).toHaveValue('default');
+    await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
+    await page.keyboard.press('Escape');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('default');
+    await page.getByRole('button',{name:'设置与连接',exact:false}).click();
+    await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
+    await page.getByRole('button',{name:'保存设置',exact:true}).click();
+    await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('bypassPermissions');
+    await page.keyboard.press('Escape');
+    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('default');
+    await app.close();app=await f.launch();page=await app.firstWindow();
+    await page.getByRole('button',{name:'新建会话',exact:false}).click();
+    await expect(page.getByLabel('权限模式',{exact:true})).toHaveValue('bypassPermissions');
+    await page.getByLabel('权限模式',{exact:true}).selectOption('plan');
+    await page.getByRole('button',{name:'创建会话',exact:true}).click();
+    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('plan');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('bypassPermissions');
+    await page.getByLabel('会话权限模式',{exact:true}).selectOption('bypassPermissions');
+    await page.getByRole('button',{name:'保存配置',exact:true}).click();
+    await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.permissionMode;}).toBe('bypassPermissions');
+    await select(page,'长对话 B');
+    // The source is manual even though the global default is bypass.
+    await page.evaluate(id=>window.desktop.updateSession({id,permissionMode:'default'}),f.sessions[0].id);
+    await page.getByRole('button',{name:'从此会话创建分支',exact:true}).click();
+    await expect(page.getByLabel('权限模式',{exact:true})).toHaveValue('default');
+    await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:'导入 CLI 历史',exact:false}).click();
+    await expect(page.getByLabel('导入会话权限模式',{exact:true})).toHaveValue('bypassPermissions');
+    await page.getByLabel('导入会话权限模式',{exact:true}).selectOption('acceptEdits');
+    await page.getByLabel('历史会话 UUID').fill(randomUUID());
+    await page.getByRole('button',{name:'导入会话',exact:true}).click();
+    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('acceptEdits');
+    const modes=await page.evaluate(async({projectId,sourceId})=>{
+      const input={projectId,title:'IPC permission test',kind:'claude' as const,model:'',effort:'default' as const,isolated:false};
+      const implicit=await window.desktop.createSession(input);
+      const terminal=await window.desktop.createSession({...input,adapter:'terminal'});
+      const explicit=await window.desktop.createSession({...input,permissionMode:'plan'});
+      const fork=await window.desktop.createSession({...input,resumeFrom:sourceId,fork:true});
+      const shell=await window.desktop.createSession({...input,kind:'shell'});
+      const duplicate=await window.desktop.createSession({...input,resumeFrom:sourceId,permissionMode:'bypassPermissions'});
+      return [implicit,terminal,explicit,fork,shell,duplicate].map(s=>s.permissionMode);
+    },{projectId:f.projects[1].id,sourceId:f.sessions[0].claudeId});
+    expect(modes).toEqual(['bypassPermissions','bypassPermissions','plan','default','default','default']);
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  }finally{await app.close();await f.dispose();}
+});
+
 async function cliProbe(directory:string,version:string){
   const prefix=path.join(directory,'npm '+version),pkg=path.join(prefix,'node_modules','@anthropic-ai','claude-code');
   await fs.mkdir(pkg,{recursive:true});

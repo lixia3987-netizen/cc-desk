@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID, type Hash } from 'node:crypto';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
+import { isPermissionMode } from '../shared/permissions';
 import type { ChatApproval, ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
 import { findClaudeTranscript, transcriptExists } from './history';
@@ -18,7 +19,7 @@ interface AssistantGroup { id: string; sourceId: string; parent?: string; blocks
 
 interface Entry {
   child: ChildProcessWithoutNullStreams; ending: boolean; initialized: boolean;
-  expectedId: string; enforceIdentity: boolean;
+  expectedId: string; enforceIdentity: boolean; bypassEnabled: boolean;
   turn?: Turn; controls: Map<string, ControlWaiter>; approvals: Map<string, ChatApproval>;
   streams: Map<string, string>; assistants: Map<string, AssistantGroup>; latestRoot?: AssistantGroup; resultIds: Set<string>; tools: Set<string>; tasks: Set<string>;
   stderr: string; decoder: JsonLineDecoder; killTimer?: NodeJS.Timeout; interruptTimer?: NodeJS.Timeout;
@@ -258,7 +259,7 @@ export class ChatRuntime {
       })();
       this.state(id, 'starting');
       const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
-      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
+      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, bypassEnabled: session.permissionMode==='bypassPermissions', controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
       const current = entry;
       current.decoder = new JsonLineDecoder(value => this.receive(id, current, value));
       this.entries.set(id, current);
@@ -516,7 +517,7 @@ export class ChatRuntime {
       snapshot.model = string(frame.model) || undefined;
       snapshot.permissionMode = string(frame.permissionMode) || this.session(id).permissionMode;
       snapshot.mcpServers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers.map(value => { const item = object(value); return { name: string(item.name), status: string(item.status) }; }) : [];
-      if (['default', 'plan', 'acceptEdits'].includes(snapshot.permissionMode)) this.update(id, { permissionMode: snapshot.permissionMode as PermissionMode });
+      if (isPermissionMode(snapshot.permissionMode)) this.update(id, { permissionMode: snapshot.permissionMode, observedPermissionMode: snapshot.permissionMode });
       this.history.append(id, { type: 'metadata', model: snapshot.model, permissionMode: snapshot.permissionMode, mcpServers: snapshot.mcpServers });
       for (const field of ['plugin_errors', 'mcp_server_errors']) if (Array.isArray(frame[field]) && frame[field].length) this.system(id, field + ': ' + JSON.stringify(frame[field]), true);
       this.notify(id, true);
@@ -588,22 +589,41 @@ export class ChatRuntime {
     catch (error) { if (this.entries.get(id) === entry && entry.turn) { this.system(id, messageOf(error), true); this.stop(id); } }
   }
   async updateConfig(id: string, patch: { model?: string; permissionMode?: PermissionMode; effort?: Effort }) {
-    const session = this.session(id); const entry = this.entries.get(id);
+    const session = this.session(id); let entry = this.entries.get(id);
     if (this.busy.has(id) || this.starting.has(id) || entry?.approvals.size) throw new Error('请等待当前任务完成后修改模型或权限。');
     if (patch.effort !== undefined && patch.effort !== session.effort && entry) throw new Error('修改推理强度前请先停止会话，然后重新发送以恢复。');
     if (entry?.ending) throw new Error('请等待会话停止。');
     this.busy.add(id);
-    try { if (entry) {
-      if (patch.model !== undefined) {
-        await this.control(entry, { subtype: 'set_model', model: patch.model || null });
-        this.update(id, { model: patch.model }); this.history.get(id).model = patch.model || undefined;
+    try {
+      // Bypass must be enabled when the CLI starts. Restart an idle process when
+      // entering or leaving it so other modes never inherit a bypass launch flag.
+      if (entry && patch.permissionMode !== undefined && entry.bypassEnabled !== (patch.permissionMode === 'bypassPermissions')) {
+        this.update(id, { status: 'stopping' });
+        this.terminate(entry);
+        const deadline = Date.now() + 5000;
+        while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+        if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，权限配置未保存。请等待停止后重试。');
+        entry = undefined;
       }
-      if (patch.permissionMode !== undefined) {
-        await this.control(entry, { subtype: 'set_permission_mode', mode: patch.permissionMode });
-        this.update(id, { permissionMode: patch.permissionMode }); this.history.get(id).permissionMode = patch.permissionMode;
+      if (entry) {
+        if (patch.model !== undefined) {
+          await this.control(entry, { subtype: 'set_model', model: patch.model || null });
+          this.update(id, { model: patch.model }); this.history.get(id).model = patch.model || undefined;
+        }
+        if (patch.permissionMode !== undefined) {
+          await this.control(entry, { subtype: 'set_permission_mode', mode: patch.permissionMode });
+          this.update(id, { permissionMode: patch.permissionMode, observedPermissionMode: patch.permissionMode }); this.history.get(id).permissionMode = patch.permissionMode;
+        }
+      } else {
+        this.update(id, {
+          ...(patch.model !== undefined ? { model: patch.model } : {}),
+          ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+          ...(patch.permissionMode !== undefined ? { permissionMode: patch.permissionMode, observedPermissionMode: patch.permissionMode } : {}),
+        });
+        if (patch.permissionMode !== undefined) this.history.get(id).permissionMode = patch.permissionMode;
+        if (patch.model !== undefined) this.history.get(id).model = patch.model || undefined;
       }
-    } else this.update(id, patch);
-    this.notify(id, true);
+      this.notify(id, true);
     } catch (error) {
       if (entry && (error instanceof Error && error.name === 'ChatControlTimeoutError' || /控制响应格式不兼容/.test(messageOf(error)))) {
         this.fail(id, entry, '配置变更未获 CLI 确认，已停止会话以避免界面与实际权限不一致：' + messageOf(error));

@@ -96,7 +96,7 @@ function registerIPC() {
     const session: Session = { id, projectId:project.id, title:input.title, cwd:worktree || sourcePath,
       kind:input.kind, claudeId:input.resumeFrom && !input.fork ? input.resumeFrom : randomUUID(),
       resumeFrom:input.fork ? input.resumeFrom : undefined, imported:!!input.resumeFrom && !input.fork, started:!!input.resumeFrom && !input.fork,
-      model:input.model, effort:input.effort, permissionMode:input.permissionMode,
+      model:input.model, effort:input.effort, permissionMode:input.permissionMode ?? source?.permissionMode ?? (input.kind==='claude'?store.state.settings.defaultPermissionMode ?? 'default':'default'),
       adapter:input.kind==='shell'?'terminal':input.adapter ?? 'terminal',taskState:'idle',draft:'',
       status:'idle',archived:false,createdAt:now,updatedAt:now,worktree,worktreeBase:worktree?sourcePath:undefined };
     try {store.change(s => s.sessions.unshift(session));}

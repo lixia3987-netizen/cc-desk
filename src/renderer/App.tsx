@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
 import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
-import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, PermissionMode, Session, Settings } from '../shared/types';
+import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, busyTask, taskLabels } from './ChatPane';
 import { AttentionCenter } from './AttentionCenter';
 import { DiagnosticsPanel, FilePicker, GitPanel } from './ProjectPanels';
 import { WorkflowPanel } from './WorkflowPanel';
 import { SessionConfig } from './SessionConfig';
+import { PermissionModeField } from './PermissionModeField';
 import { Dialog } from './Dialog';
 import { SessionSelection } from './selection';
 import { ApprovalDrafts } from './approval-drafts';
@@ -164,7 +165,7 @@ export function App() {
     const candidates=fork?[fork.projectId]:[targetProjectId,projectId,active?.projectId,state?.projects[0]?.id];
     const selected=candidates
       .find(id=>state?.projects.some(project=>project.id===id))??'';
-    setDraft({projectId:selected,title:fork?`${fork.title} · 分支`:'',kind,model:fork?.model??'',effort:fork?.effort??'default',permissionMode:fork?.permissionMode??'default',isolated:false,adapter:kind==='shell'?'terminal':fork?.adapter??'structured',resumeFrom:fork?.claudeId,fork:!!fork});
+    setDraft({projectId:selected,title:fork?`${fork.title} · 分支`:'',kind,model:fork?.model??'',effort:fork?.effort??'default',permissionMode:fork?.permissionMode??(kind==='claude'?state?.settings.defaultPermissionMode??'default':'default'),isolated:false,adapter:kind==='shell'?'terminal':fork?.adapter??'structured',resumeFrom:fork?.claudeId,fork:!!fork});
     setModal('new');
   };
   const chooseProject=() => perform(async () => {const p=await window.desktop.chooseProject();if(p)setProjectId(p.id);});
@@ -179,7 +180,7 @@ export function App() {
   const openHistory=() => perform(async () => {
     const id=projectId==='all'?(active?.projectId??state?.projects[0]?.id):projectId;
     if(!id)throw new Error('请先添加一个项目。');
-    setDraft(d=>({...d,projectId:id,resumeFrom:undefined}));setHistory([]);setHistoryQuery('');setModal('history');
+    setDraft(d=>({...d,projectId:id,resumeFrom:undefined,permissionMode:state?.settings.defaultPermissionMode??'default'}));setHistory([]);setHistoryQuery('');setModal('history');
   });
   const moreHistory=()=>perform(async()=>{
     if(historyNext===null)return;
@@ -188,7 +189,7 @@ export function App() {
     if(request===historySeq.current){setHistory(items=>[...items,...page.entries]);setHistoryNext(page.nextOffset);}
   });
   const importHistory=(id:string,title:string) => perform(async () => {
-    const session=await window.desktop.createSession({projectId:draft.projectId,title,kind:'claude',model:'',effort:'default',permissionMode:'default',isolated:false,adapter:'structured',resumeFrom:id});
+    const session=await window.desktop.createSession({projectId:draft.projectId,title,kind:'claude',model:'',effort:'default',permissionMode:draft.permissionMode,isolated:false,adapter:'structured',resumeFrom:id});
     setArchived(false);selectSession(session.id);setModal(null);
   });
   if(!state)return <main className="boot"><Command size={36}/><h2>Claude Workbench</h2><p>{error||'正在打开你的工作台…'}</p></main>;
@@ -285,13 +286,15 @@ export function App() {
         <label>项目<select aria-label="项目" value={draft.projectId} onChange={e=>setDraft({...draft,projectId:e.target.value})}>{state.projects.map(p=><option key={p.id} value={p.id}>{p.name} — {p.path}</option>)}</select></label>
         <label>会话名称<input autoFocus maxLength={120} aria-label="会话名称" placeholder="例如：重构记忆检索模块" value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
         <div className="segmented"><button type="button" className={draft.kind==='claude'?'chosen':''} onClick={()=>setDraft({...draft,kind:'claude',adapter:'structured'})}><Sparkles size={16}/>Claude Code</button><button type="button" disabled={!!draft.fork} className={draft.kind==='shell'?'chosen':''} onClick={()=>setDraft({...draft,kind:'shell',adapter:'terminal'})}><TerminalSquare size={16}/>Shell 终端</button></div>
-        {draft.kind==='claude'&&<><label>交互方式<select aria-label="交互方式" value={draft.adapter??'structured'} onChange={e=>setDraft({...draft,adapter:e.target.value as 'structured'|'terminal'})}><option value="structured">结构化对话 · 消息、工具与审批</option><option value="terminal">原生终端 · 完整 CLI 交互</option></select></label><div className="form-grid"><label>模型<input aria-label="模型" value={draft.model} placeholder="默认 / opus / sonnet" onChange={e=>setDraft({...draft,model:e.target.value})}/></label><label>推理强度<select aria-label="推理强度" value={draft.effort} onChange={e=>setDraft({...draft,effort:e.target.value as Effort})}>{cap.efforts.map(e=><option key={e} value={e}>{e==='default'?'跟随 CLI 设置':e}</option>)}</select></label></div><label>权限模式<select value={draft.permissionMode} onChange={e=>setDraft({...draft,permissionMode:e.target.value as PermissionMode})}><option value="default">默认 · 按需审批</option><option value="plan">Plan · 只做规划</option><option value="acceptEdits">自动接受文件编辑</option></select></label>{draft.effort==='ultracode'&&<p className="hint">ultracode 由 CLI 定义，不会被替换成 max。模型是否支持仍由 CLI 校验。</p>}</>}
+        {draft.kind==='claude'&&<><label>交互方式<select aria-label="交互方式" value={draft.adapter??'structured'} onChange={e=>setDraft({...draft,adapter:e.target.value as 'structured'|'terminal'})}><option value="structured">结构化对话 · 消息、工具与审批</option><option value="terminal">原生终端 · 完整 CLI 交互</option></select></label><div className="form-grid"><label>模型<input aria-label="模型" value={draft.model} placeholder="默认 / opus / sonnet" onChange={e=>setDraft({...draft,model:e.target.value})}/></label><label>推理强度<select aria-label="推理强度" value={draft.effort} onChange={e=>setDraft({...draft,effort:e.target.value as Effort})}>{cap.efforts.map(e=><option key={e} value={e}>{e==='default'?'跟随 CLI 设置':e}</option>)}</select></label></div><PermissionModeField label="权限模式" value={draft.permissionMode??'default'} disabled={busy} onChange={permissionMode=>setDraft({...draft,permissionMode})}/>{draft.effort==='ultracode'&&<p className="hint">ultracode 由 CLI 定义，不会被替换成 max。模型是否支持仍由 CLI 校验。</p>}</>}
         <label className="checkbox"><input type="checkbox" checked={draft.isolated} onChange={e=>setDraft({...draft,isolated:e.target.checked})}/><span>创建独立 Git worktree<small>从当前 HEAD 创建新分支；不带入未提交改动。</small></span></label>
         {!cap.available&&draft.kind==='claude'&&<p className="hint">可以先创建会话；启动前请在设置中连接 Claude Code。</p>}
         <button className="primary full" disabled={busy||!draft.projectId}>{busy?<Loader2 size={16} className="spin"/>:<Plus size={16}/>}创建会话</button>
       </form></>}
       {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，管理本机 Claude Code 连接。</p><form onSubmit={event=>{event.preventDefault();void savePreferences(false);}}>
         <ThemePicker value={normalizeThemeId(draftSettings.theme)} disabled={busy} onChange={theme=>setDraftSettings({...draftSettings,theme})}/>
+        <PermissionModeField label="默认权限模式" value={draftSettings.defaultPermissionMode??'default'} disabled={busy} onChange={defaultPermissionMode=>setDraftSettings({...draftSettings,defaultPermissionMode})}/>
+        <p className="hint">用于新建和首次导入的 Claude 会话，可在创建时调整。已有会话保留自己的模式，创建分支时继承原会话模式。</p>
         <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
         <label>Shell 可执行文件<input value={draftSettings.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={e=>setDraftSettings({...draftSettings,shellPath:e.target.value})}/></label>
         <div className="form-grid"><label>最大并发会话<input type="number" min={1} max={12} value={draftSettings.maxSessions} onChange={e=>setDraftSettings({...draftSettings,maxSessions:Number(e.target.value)})}/></label><label>终端字号<input type="number" min={11} max={24} value={draftSettings.fontSize} onChange={e=>setDraftSettings({...draftSettings,fontSize:Number(e.target.value)})}/></label></div>
@@ -302,7 +305,7 @@ export function App() {
         <label>工作台数据目录<code className="data-path">{dataPath}</code></label>
         <div className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>void savePreferences(true)}><RefreshCw size={14}/>保存并检测</button><button className="primary" disabled={busy}>{busy?<Loader2 className="spin" size={15}/>:<Check size={15}/>}保存设置</button></div>
       </form></>}
-      {modal==='history'&&<><div className="eyebrow">CONTINUE YOUR WORK</div><h2>导入 CLI 历史</h2><p>{state.projects.find(p=>p.id===draft.projectId)?.name} · 最近的本地会话</p><input aria-label="搜索历史全文" placeholder="搜索标题和对话内容…" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/><div className="history-list">{historyBusy?<p>正在读取 Claude 历史…</p>:history.length?history.map(h=><button key={h.id} disabled={busy} onClick={()=>void importHistory(h.id,h.title)}><div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0,8)}</small></div><ArrowUpRight size={16}/></button>):<p>没有找到可导入的记录。也可以使用会话 UUID。</p>}</div>{historyNext!==null&&!historyBusy&&<button className="secondary compact full" disabled={busy} onClick={()=>void moreHistory()}>加载更多历史</button>}<form onSubmit={event=>{event.preventDefault();void importHistory(draft.resumeFrom||'',`导入会话 · ${(draft.resumeFrom||'').slice(0,8)}`);}}><label>通过 UUID 导入<input aria-label="历史会话 UUID" placeholder="00000000-0000-0000-0000-000000000000" value={draft.resumeFrom||''} onChange={e=>setDraft({...draft,resumeFrom:e.target.value})}/></label><button className="primary full" disabled={busy||!draft.resumeFrom}><History size={15}/>导入会话</button></form><p className="hint">只读扫描 CLI 记录。导入不会修改原始历史；首次恢复时会由 Claude Code 校验。</p></>}
+      {modal==='history'&&<><div className="eyebrow">CONTINUE YOUR WORK</div><h2>导入 CLI 历史</h2><p>{state.projects.find(p=>p.id===draft.projectId)?.name} · 最近的本地会话</p><PermissionModeField label="导入会话权限模式" value={draft.permissionMode??'default'} disabled={busy} onChange={permissionMode=>setDraft({...draft,permissionMode})}/><input aria-label="搜索历史全文" placeholder="搜索标题和对话内容…" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/><div className="history-list">{historyBusy?<p>正在读取 Claude 历史…</p>:history.length?history.map(h=><button key={h.id} disabled={busy} onClick={()=>void importHistory(h.id,h.title)}><div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0,8)}</small></div><ArrowUpRight size={16}/></button>):<p>没有找到可导入的记录。也可以使用会话 UUID。</p>}</div>{historyNext!==null&&!historyBusy&&<button className="secondary compact full" disabled={busy} onClick={()=>void moreHistory()}>加载更多历史</button>}<form onSubmit={event=>{event.preventDefault();void importHistory(draft.resumeFrom||'',`导入会话 · ${(draft.resumeFrom||'').slice(0,8)}`);}}><label>通过 UUID 导入<input aria-label="历史会话 UUID" placeholder="00000000-0000-0000-0000-000000000000" value={draft.resumeFrom||''} onChange={e=>setDraft({...draft,resumeFrom:e.target.value})}/></label><button className="primary full" disabled={busy||!draft.resumeFrom}><History size={15}/>导入会话</button></form><p className="hint">只读扫描 CLI 记录。导入不会修改原始历史；首次恢复时会由 Claude Code 校验。</p></>}
       {modal==='rename'&&active&&<><h2>重命名会话</h2><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.updateSession({id:active.id,title:rename});setModal(null);});}}><label>名称<input aria-label="新的会话名称" autoFocus maxLength={120} value={rename} onChange={e=>setRename(e.target.value)}/></label><button className="primary full" disabled={busy||!rename.trim()}>保存</button></form></>}
       {error&&<div className="modal-error" role="alert">{error}</div>}
     </Dialog>}

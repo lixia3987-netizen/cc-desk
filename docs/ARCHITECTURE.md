@@ -9,7 +9,7 @@ SessionService 统一仲裁终端与结构化运行器，管理全局并发、�
 ## 两种会话适配器
 
 - Runtime：node-pty + xterm.js，保留 CLI 原生登录和交互。进程状态与观察到的任务状态分开。PTY 输出批量转发，内存与磁盘滚动保留，停止缓存使用有界淘汰。
-- ChatRuntime：通过参数数组启动本机 CLI，stdin/stdout 使用 NDJSON；以 initialize 建立控制通路，使用 can_use_tool 请求、control_response、interrupt、set_model 和 set_permission_mode。解析器处理拆包、粘包、异常 JSON 和大小限制。没有 shell 拼接，没有权限跳过开关。
+- ChatRuntime：通过参数数组启动本机 CLI，stdin/stdout 使用 NDJSON；以 initialize 建立控制通路，使用 can_use_tool 请求、control_response、interrupt、set_model 和 set_permission_mode。解析器处理拆包、粘包、异常 JSON 和大小限制，不拼接 shell 命令。会话显式选择 Bypass 时以 `--permission-mode bypassPermissions` 启动；空闲进程切入或退出 Bypass 时停止进程并在下一轮恢复，其他模式不会预先启用 Bypass。审批和交互提问继续交由用户处理。
 
 协议实现依据 Anthropic 官方 Agent SDK 的控制消息结构；没有引入 SDK 认证页面或改写用户凭据。真实 CLI 的控制握手与协议 fixture 测试分别记录。模型账号验收属于另一层。
 

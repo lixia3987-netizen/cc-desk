@@ -1,3 +1,4 @@
+import { isPermissionMode } from '../shared/permissions';
 import { createServer, type Server } from 'node:http';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
@@ -62,7 +63,7 @@ export class PtyHookObserver {
     const patch: Partial<Session> = { claudeId: input.session_id, terminalSync: 'synced', identityPending: false };
     if (input.permission_mode) {
       patch.observedPermissionMode = input.permission_mode;
-      if (input.permission_mode === 'default' || input.permission_mode === 'plan' || input.permission_mode === 'acceptEdits') patch.permissionMode = input.permission_mode;
+      if (isPermissionMode(input.permission_mode)) patch.permissionMode = input.permission_mode;
     }
     if (input.hook_event_name === 'PostModelSwitch' && input.to_model) patch.model = input.to_model;
     if (input.hook_event_name === 'SessionEnd') {

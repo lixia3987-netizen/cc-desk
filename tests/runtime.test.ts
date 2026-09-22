@@ -96,7 +96,7 @@ test('a pending CLI identity or unsupported observed permission cannot silently 
   const cap = { available: false, executable: '', version: '', flags: [], efforts: ['default' as const] };
   try {
     await assert.rejects(runtime.start(id, cap), /新会话身份尚未确认/);
-    store.change(state => { state.sessions[0].identityPending = false; state.sessions[0].observedPermissionMode = 'bypassPermissions'; });
+    store.change(state => { state.sessions[0].identityPending = false; state.sessions[0].observedPermissionMode = 'auto'; });
     await assert.rejects(runtime.start(id, cap), /明确选择/);
     assert.equal(runtime.activeCount, 0);
     assert.equal(store.state.sessions[0].permissionMode, 'default');
