@@ -2,7 +2,7 @@
 
 封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
 
-**v0.2.3** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。
+**v0.2.3 源码已完成，安装包待发布。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。本地验证通过；[远程构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35676911960) 两次均在分配 Runner 前失败，尚未生成本版安装包。
 
 **v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
 
@@ -10,13 +10,13 @@
 
 ## 下载安装包与便携包
 
-登录有仓库访问权限的 GitHub 账户，打开 [v0.2.3 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.3)，在 Assets 直接下载对应系统和架构的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+当前已发布安装包为 [v0.2.2 Release](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，不包含本次五套主题。登录有仓库访问权限的 GitHub 账户，在 Assets 下载对应系统和架构的文件；v0.2.3 待三平台构建恢复并通过后发布。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.2.3-windows-x64-setup.exe` | `cc-desk-0.2.3-windows-x64-portable.exe`，或 `cc-desk-0.2.3-windows-x64-portable.zip` |
-| macOS arm64 | `cc-desk-0.2.3-macos-arm64-setup.dmg` | `cc-desk-0.2.3-macos-arm64-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.3-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.3-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.2.2-windows-x64-setup.exe` | `cc-desk-0.2.2-windows-x64-portable.exe`，或 `cc-desk-0.2.2-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-0.2.2-macos-arm64-setup.dmg` | `cc-desk-0.2.2-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.2.2-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.2-linux-x64-portable.tar.gz` |
 
 macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 
