@@ -1,7 +1,5 @@
 name: Verify and package desktop
 on:
-  push:
-  pull_request:
   workflow_dispatch:
     inputs:
       publish_release:
@@ -88,8 +86,7 @@ jobs:
     needs: build
     if: >-
       github.ref == 'refs/heads/main' &&
-      ((github.event_name == 'workflow_dispatch' && inputs.publish_release) ||
-       (github.event_name == 'push' && startsWith(github.event.head_commit.message, 'release:')))
+      github.event_name == 'workflow_dispatch' && inputs.publish_release
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

@@ -63,7 +63,9 @@ npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面的 CI 使用 `xvfb-run -a npm run test:e2e`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
 
-维护者发布版本时，先更新 `package.json` / 锁文件版本及对应的 `docs/releases/v<版本>.md`。随后在 main 分支手动运行构建工作流并勾选 `publish_release`，或将以 `release:` 开头的发布提交推送到 main。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
+GitHub Actions 构建仅手动触发；日常提交、推送、PR 和 `release:` 提交均不会自动启动构建。需要安装包时，在 Actions → Verify and package desktop → Run workflow 手动运行；默认只验证和打包，产物保存在 Artifacts。
+
+维护者发布版本时，先更新 `package.json` / 锁文件版本及对应的 `docs/releases/v<版本>.md`。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 
 ## 主要流程
 
