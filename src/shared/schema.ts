@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { THEME_IDS } from './theme';
 import { PERMISSION_MODES } from './permissions';
 import { SUBTASK_STATUSES, SUBTASK_LIMIT } from './subtasks';
+import { DEFAULT_TYPOGRAPHY, isFontId } from './fonts';
+export const fontIdSchema = z.string().refine(isFontId, '请选择内置或已导入的字体。').transform(value => value as import('./fonts').FontId);
 export const idSchema = z.uuid();
 export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const settingsSchema = z.object({
@@ -11,6 +13,10 @@ export const settingsSchema = z.object({
   worktreeLocation: z.enum(['project','custom']).default('project'),
   worktreeRoot: z.string().max(4096).refine(s => !/[\x00-\x1f\x7f]/.test(s), 'Worktree 根目录不能包含控制字符。').trim().default(''),
   maxSessions: z.number().int().min(1).max(12), fontSize: z.number().int().min(11).max(24),
+  chatFontFamily: fontIdSchema.default(DEFAULT_TYPOGRAPHY.chatFontFamily),
+  chatFontSize: z.number().int().min(11).max(28).default(DEFAULT_TYPOGRAPHY.chatFontSize),
+  uiFontFamily: fontIdSchema.default(DEFAULT_TYPOGRAPHY.uiFontFamily),
+  uiFontSize: z.number().int().min(11).max(20).default(DEFAULT_TYPOGRAPHY.uiFontSize),
   scrollback: z.number().int().min(1000).max(50000),
   notifications: z.boolean().optional(), closeToTray: z.boolean().optional(), theme: z.enum(THEME_IDS).optional(),
   defaultPermissionMode: permissionModeSchema.default('default')

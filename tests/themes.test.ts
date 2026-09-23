@@ -101,7 +101,7 @@ test('terminal default, all 16 ANSI colors, cursor and selected text meet contra
 
 test('CSS palettes match audited colors and component styles have no fixed color literals', () => {
   const css = readFileSync(new URL('../src/renderer/themes.css', import.meta.url), 'utf8');
-  const components = readFileSync(new URL('../src/renderer/style.css', import.meta.url), 'utf8');
+  const components = ['style.css','settings.css'].map(file => readFileSync(new URL('../src/renderer/' + file, import.meta.url), 'utf8')).join('\n');
   for (const { id, colors } of THEMES) {
     const start = css.indexOf(`.theme-preview[data-theme="${id}"] {`);
     assert.ok(start >= 0, `missing root and preview palette for ${id}`);
@@ -109,6 +109,6 @@ test('CSS palettes match audited colors and component styles have no fixed color
     for (const [token, value] of Object.entries(colors)) assert.ok(block.includes(`--${token}: ${value};`), `${id} ${token} differs from audited palette`);
   }
   assert.doesNotMatch(components, /#[\da-f]{3,8}\b|rgba?\(/i);
-  const defined = new Set([...css.matchAll(/--([a-z-]+)\s*:/g)].map(match => match[1]));
+  const defined = new Set([...(css + components).matchAll(/--([a-z-]+)\s*:/g)].map(match => match[1]));
   for (const [, token] of (components + css).matchAll(/var\(--([a-z-]+)\)/g)) assert.ok(defined.has(token), `undefined CSS token ${token}`);
 });

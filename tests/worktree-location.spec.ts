@@ -34,6 +34,7 @@ async function workspace() {
 
 async function openSettings(page: Page) {
   await page.getByRole('button', { name: '设置与连接', exact: true }).click();
+  await page.getByRole('tab', { name: '工作区与 IDE', exact: true }).click();
   return page.getByRole('dialog', { name: '设置与连接', exact: true });
 }
 

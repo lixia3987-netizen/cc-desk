@@ -81,6 +81,7 @@ test('ide: configure an application through a draft, cancel safely and preserve 
     page = await app.firstWindow();
     await page.getByRole('button', { name: '设置与连接', exact: true }).click();
     settings = page.getByRole('dialog', { name: '设置与连接', exact: true });
+    await settings.getByRole('tab', { name: '工作区与 IDE', exact: true }).click();
     await expect(settings.getByLabel('IDE 应用路径', { exact: true })).toHaveValue(f.executable);
     // Editing an already saved path and closing the modal must also preserve it.
     await settings.getByLabel('IDE 应用路径', { exact: true }).fill('');

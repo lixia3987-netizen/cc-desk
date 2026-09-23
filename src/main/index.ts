@@ -17,6 +17,8 @@ import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project, Session } from '../shared/types';
 import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
 import { initialSessionTitle } from '../shared/session-title';
+import { FontLibrary } from './font-library';
+import { IMPORTED_FONT_ID } from '../shared/fonts';
 
 const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
 if(profileDirectory) {
@@ -28,6 +30,7 @@ let runtime: Runtime;
 let services: SessionService;
 let tray: Tray | undefined;
 let store: StateStore;
+let fonts: FontLibrary;
 let closing = false;
 let allowQuit = false;
 let capabilities: Capabilities = { available:false, executable:'', version:'', flags:[], efforts:['default'] };
@@ -133,6 +136,9 @@ function registerIPC() {
   handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => runtime.write(id,data));
   handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
   handle('settings:save',settingsSchema,async settings => {
+    for (const key of ['chatFontFamily', 'uiFontFamily'] as const) {
+      if (IMPORTED_FONT_ID.test(settings[key]) && settings[key] !== store.state.settings[key] && !fonts.list().some(font => font.id === settings[key])) throw new Error('所选字体已被移除，请重新选择。');
+    }
     if(settings.worktreeLocation === 'custom' && !path.isAbsolute(settings.worktreeRoot))throw new Error('统一 Worktree 根目录必须是绝对路径。');
     const cliChanged=settings.claudePath!==store.state.settings.claudePath;
     store.change(s => { s.settings = settings; });
@@ -141,6 +147,19 @@ function registerIPC() {
     notify();if(cliChanged)await refreshCapabilities();return undefined;
   });
   handle('cli:detect',z.undefined(),refreshCapabilities);
+  handle('fonts:list',z.undefined(),() => fonts.list());
+  handle('fonts:read',z.string().regex(IMPORTED_FONT_ID),id => fonts.read(id));
+  handle('fonts:import',z.undefined(),async () => {
+    const result = await dialog.showOpenDialog(window!,{title:'导入字体',buttonLabel:'导入',properties:['openFile'],filters:[{name:'字体文件',extensions:['ttf','otf','woff','woff2']}]});
+    return result.canceled || !result.filePaths[0] ? null : fonts.importFile(result.filePaths[0]);
+  });
+  handle('fonts:remove',z.string().regex(IMPORTED_FONT_ID),id => {
+    store.change(state => {
+      if (state.settings.chatFontFamily === id) state.settings.chatFontFamily = 'system';
+      if (state.settings.uiFontFamily === id) state.settings.uiFontFamily = 'system';
+    });
+    try { fonts.remove(id); } finally { notify(); }
+  });
   handle('history:list',idSchema,async id => {
     const project = store.state.projects.find(p => p.id === id);
     if (!project) throw new Error('项目不存在。');
@@ -223,6 +242,7 @@ else {
   app.whenReady().then(async () => {
     try {
       store = new StateStore(app.getPath('userData'),{onError:reportPersistenceError});
+      fonts = new FontLibrary(store.directory);
       runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); },{onError:reportPersistenceError});
       services = new SessionService(store,runtime,()=>capabilities,notify,()=>window);
       registerIPC(); createWindow();

@@ -108,6 +108,12 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     await page.locator('.terminal-host').click();
     await page.keyboard.type(process.platform === 'win32' ? "$env:CC_DESK_THEME_SENTINEL='still_alive'" : "CC_DESK_THEME_SENTINEL='still_alive'");
     await page.keyboard.press('Enter');
+    await page.getByRole('button', { name: '设置与连接', exact: true }).click();
+    await page.getByLabel('聊天字号', { exact: true }).fill('22');
+    await page.getByLabel('菜单字号', { exact: true }).fill('16');
+    await page.getByLabel('菜单字体', { exact: true }).selectOption('noto-sans-sc');
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    expect(await terminal!.evaluate(element => element.isConnected && element === document.querySelector('.terminal-host .xterm'))).toBe(true);
     const mainBackgrounds = new Set<string>();
     for (const choice of choices) {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
@@ -128,13 +134,15 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
       });
       expect(focusStyle.outline !== 'none' || focusStyle.parentOutline !== 'none' || focusStyle.shadow !== 'none').toBe(true);
       if (choice.id === 'forest') {
+        await page.locator('.theme-grid').scrollIntoViewIfNeeded();
         for (const option of choices) await expect(page.getByRole('radio', { name: option.name, exact: true })).toBeInViewport();
-        const footerBottomGap = () => page.locator('.preferences').evaluate(modal => Math.abs(modal.getBoundingClientRect().bottom - modal.querySelector('form > .modal-actions')!.getBoundingClientRect().bottom));
+        const footerBottomGap = () => page.locator('.preferences').evaluate(modal => Math.abs(modal.getBoundingClientRect().bottom - modal.querySelector('.settings-footer')!.getBoundingClientRect().bottom));
         await expect.poll(footerBottomGap).toBeLessThanOrEqual(2);
         await page.screenshot({ path: 'docs/themes/settings.png' });
         await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].setSize(980, 680); });
         await expect(page.getByRole('button', { name: '保存设置', exact: true })).toBeInViewport({ ratio: 1 });
         await expect.poll(footerBottomGap).toBeLessThanOrEqual(2);
+        await page.getByRole('radio', { name: '墨黑琥珀', exact: true }).scrollIntoViewIfNeeded();
         await expect(page.getByRole('radio', { name: '墨黑琥珀', exact: true })).toBeInViewport();
         await app.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].setSize(1460, 920); });
       }

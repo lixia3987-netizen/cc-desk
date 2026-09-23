@@ -213,11 +213,13 @@ test('experience: permission defaults persist while sessions, forks and import o
     let page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
+    await page.getByRole('tab',{name:'会话与权限',exact:true}).click();
     await expect(page.getByLabel('默认权限模式',{exact:true})).toHaveValue('default');
     await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.keyboard.press('Escape');
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('default');
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
+    await page.getByRole('tab',{name:'会话与权限',exact:true}).click();
     await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.getByRole('button',{name:'保存设置',exact:true}).click();
     await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('bypassPermissions');
@@ -280,7 +282,7 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
   const file=path.join(f.data,'workspace.json');const state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
   state.settings.claudePath=a.cli;state.sessions[0].started=true;await fs.writeFile(file,JSON.stringify(state));const app=await f.launch();
   try{
-    const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();
+    const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'连接与终端',exact:true}).click();
     await expect(page.locator('.connection-box')).toContainText('fixture-A');
     await page.getByLabel('Claude Code 路径').fill(b.cli);await expect(page.getByText(/路径尚未保存/)).toBeVisible();
     await page.getByRole('button',{name:'保存并检测',exact:true}).click();await expect(page.locator('.connection-box')).toContainText('fixture-B');

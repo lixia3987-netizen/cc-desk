@@ -97,7 +97,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     let page=await app.firstWindow();const rendererErrors:string[]=[];page.on('pageerror',error=>rendererErrors.push(error.message));
     await expect(page.getByRole('heading',{name:/让每个想法/})).toBeVisible();
     await page.evaluate(p=>window.desktop.addProject(p),project);
-    await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByLabel('Claude Code 路径').fill(fixture);await page.getByRole('button',{name:'保存设置',exact:true}).click();await expect(page.getByText('设置已保存',{exact:true})).toBeVisible();await page.getByRole('button',{name:'关闭弹窗'}).click();
+    await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'连接与终端',exact:true}).click();await page.getByLabel('Claude Code 路径').fill(fixture);await page.getByRole('button',{name:'保存设置',exact:true}).click();await expect(page.getByText('设置已保存',{exact:true})).toBeVisible();await page.getByRole('button',{name:'关闭弹窗'}).click();
     const create=async(title:string)=>{await page.getByRole('button',{name:/新建会话/}).click();await page.getByLabel('会话名称',{exact:true}).fill(title);await page.getByRole('button',{name:'创建会话',exact:true}).click();await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible().catch(async error=>{console.error(await page.locator('body').innerText());throw error;});};
     await create('会话 A');await page.getByLabel('提示词编辑器').fill('A 的独立草稿');
     await create('会话 B');await expect(page.getByLabel('提示词编辑器')).toHaveValue('');await page.getByLabel('提示词编辑器').fill('B 的独立草稿');

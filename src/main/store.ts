@@ -4,6 +4,7 @@ import { isDeepStrictEqual } from 'node:util';
 import type { AppState } from '../shared/types';
 import { stateSchema } from '../shared/schema';
 import { isSubtaskActive } from '../shared/subtasks';
+import { DEFAULT_TYPOGRAPHY } from '../shared/fonts';
 
 export class StateStore {
   state: AppState;
@@ -28,7 +29,7 @@ export class StateStore {
         }
       }
     } else {
-      this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default' } };
+      this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default', ...DEFAULT_TYPOGRAPHY } };
     }
   }
   get persistenceError() { return this.writeError; }

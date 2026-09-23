@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
-import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Code2, Command, Copy, CornerDownLeft, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
+import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Code2, Command, Copy, CornerDownLeft, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, PanelRightClose, PanelRightOpen, Play, Plus, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
 import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, taskLabels } from './ChatPane';
@@ -15,7 +15,9 @@ import { PermissionModeField } from './PermissionModeField';
 import { Dialog } from './Dialog';
 import { SessionSelection } from './selection';
 import { ApprovalDrafts } from './approval-drafts';
-import { ThemePicker } from './ThemePicker';
+import { SettingsPanel, type SettingsPage } from './SettingsPanel';
+import { typography, type ImportedFont } from '../shared/fonts';
+import { applyTypography, cacheSavedTypography, loadFont, readCachedTypography, unloadImportedFont } from './typography';
 import { applyTheme } from './themes';
 import { normalizeThemeId } from '../shared/theme';
 import { cacheSavedTheme, readCachedTheme } from './theme-preferences';
@@ -73,6 +75,12 @@ export function App() {
   const [dataPath,setDataPath]=useState('');
   const [platform,setPlatform]=useState('');
   const [draftSettings,setDraftSettings]=useState<Settings>();
+  const [settingsPage,setSettingsPage]=useState<SettingsPage>('appearance');
+  const [importedFonts,setImportedFonts]=useState<ImportedFont[]>([]);
+  const [startupTypography]=useState(readCachedTypography);
+  const displayedTypography=typography(modal==='settings'&&draftSettings?draftSettings:state?.settings??startupTypography);
+  useLayoutEffect(()=>{applyTypography(displayedTypography);},[displayedTypography.chatFontFamily,displayedTypography.chatFontSize,displayedTypography.uiFontFamily,displayedTypography.uiFontSize]);
+  useEffect(()=>{if(state)cacheSavedTypography(state.settings);},[state?.settings.chatFontFamily,state?.settings.chatFontSize,state?.settings.uiFontFamily,state?.settings.uiFontSize,!!state]);
   const focusIdeSettings=useRef(false);
   useEffect(()=>{
     if(modal==='settings'&&focusIdeSettings.current){
@@ -98,6 +106,12 @@ export function App() {
   const activeBusy=!!active&&isSessionBusy(active);
   const project=state?.projects.find(p => p.id===(active?.projectId ?? projectId));
   const report=useCallback((error:unknown) => setError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/,'') : String(error)),[]);
+  useEffect(()=>{
+    if(!window.desktop)return;
+    let active=true;
+    for(const family of new Set([displayedTypography.chatFontFamily,displayedTypography.uiFontFamily]))void loadFont(family).catch(()=>{if(active)report(new Error('所选字体无法加载，已使用系统字体显示。请重新选择或移除后重新导入。'));});
+    return()=>{active=false;};
+  },[displayedTypography.chatFontFamily,displayedTypography.uiFontFamily,report]);
   const applyState=useCallback((value:AppState)=>{
     latestState.current=value;setState(value);approvalDrafts.current.retainSessions(value.sessions.map(session=>session.id));
     const ids=new Set(value.sessions.map(session=>session.id));
@@ -112,6 +126,7 @@ export function App() {
   useEffect(() => {
     if(!window.desktop){setError('请使用 npm run dev 或已安装的桌面应用打开此界面。');return;}
     void refresh().catch(report);
+    void window.desktop.listFonts().then(setImportedFonts).catch(report);
     const offState=window.desktop.onState(value => {stateEvents.current++;applyState(value);});
     const approvalRequests=new Map<string,number>();let disposed=false;
     const offChat=window.desktop.onChat(id=>{if(id!==latestActiveId.current&&approvalDrafts.current.has(id)){const seq=(approvalRequests.get(id)??0)+1;approvalRequests.set(id,seq);void window.desktop.chatSnapshot(id).then(value=>{if(!disposed&&approvalRequests.get(id)===seq&&id!==latestActiveId.current)approvalDrafts.current.reconcile(id,value.pending);}).catch(report);}});
@@ -203,11 +218,27 @@ export function App() {
     const worktreeRoot=await window.desktop.chooseWorktreeRoot();
     if(worktreeRoot!==null)setDraftSettings(current=>current?{...current,worktreeRoot}:current);
   });
+  const importFont=()=>perform(async()=>{
+    const font=await window.desktop.importFont();
+    if(!font)return;
+    try {await loadFont(font.id);}
+    catch {
+      await window.desktop.removeFont(font.id);unloadImportedFont(font.id);
+      setImportedFonts(await window.desktop.listFonts());
+      throw new Error('此字体无法被显示引擎读取，已撤销导入。请选择完整有效的字体文件。');
+    }
+    setImportedFonts(await window.desktop.listFonts());setNotice('字体已导入，可分别为聊天和菜单选择');
+  });
+  const removeFont=(id:string)=>perform(async()=>{
+    await window.desktop.removeFont(id);unloadImportedFont(id);
+    setDraftSettings(current=>current?{...current,chatFontFamily:current.chatFontFamily===id?'system':current.chatFontFamily,uiFontFamily:current.uiFontFamily===id?'system':current.uiFontFamily}:current);
+    setImportedFonts(await window.desktop.listFonts());await refresh();setNotice('字体副本已移除，原文件保持不变');
+  });
   const openIde=()=>{
     const target=active?.id??project?.id;
     if(!target||!state)return;
     if(!state.settings.idePath?.trim()){
-      setError('');setDraftSettings({...state.settings});focusIdeSettings.current=true;setModal('settings');return;
+      setError('');setDraftSettings({...state.settings});setSettingsPage('workspace');focusIdeSettings.current=true;setModal('settings');return;
     }
     void perform(async()=>{await window.desktop.openIde(target);setNotice('已发送到指定 IDE');});
   };
@@ -285,7 +316,7 @@ export function App() {
         </section>;})}
         {!sessionGroups.length&&<div className="list-empty">{query?'没有匹配的会话':archived?'暂无归档会话':'从一个新会话开始。'}</div>}
       </div>
-      <div className="sidebar-bottom"><button onClick={()=>void openHistory()}><History size={16}/>导入 CLI 历史<ChevronRight size={14}/></button><button onClick={()=>{setDraftSettings({...state.settings});setModal('settings');}}><Settings2 size={16}/>设置与连接<ChevronRight size={14}/></button><div className="local-status"><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?'Claude Code 已安装':'未检测到 Claude Code'}<span>本地</span></div></div>
+      <div className="sidebar-bottom"><button onClick={()=>void openHistory()}><History size={16}/>导入 CLI 历史<ChevronRight size={14}/></button><button onClick={()=>{setDraftSettings({...state.settings});setSettingsPage('appearance');setModal('settings');}}><Settings2 size={16}/>设置与连接<ChevronRight size={14}/></button><div className="local-status"><span className={`dot ${cap.available?'running':'stopped'}`}/>{cap.available?'Claude Code 已安装':'未检测到 Claude Code'}<span>本地</span></div></div>
     </aside>
     <main className="workspace">
       <header className={'topbar '+(active?'session-header':'')}>
@@ -332,7 +363,7 @@ export function App() {
     </main>
     {filePicker&&<FilePicker key={filePicker} sessionId={filePicker} selected={[]} onClose={()=>setFilePicker('')} onError={report} onPick={paths=>{const id=filePicker;const value=drafts[id]??state.sessions.find(s=>s.id===id)?.draft??'';saveDraftFor(id,value+(value?'\n\n':'')+'请参考以下项目文件：\n'+paths.map(p=>'@'+JSON.stringify(p)).join('\n'));setFilePicker('');}}/>}
     {modal&&<Dialog className={modal==='settings'?'preferences':''} onClose={()=>setModal(null)} closeDisabled={busy} label={modal==='new'?'新建会话':modal==='settings'?'设置与连接':modal==='rename'?'重命名会话':modal==='palette'?'命令面板':'导入 CLI 历史'}><button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={()=>setModal(null)}><X size={20}/></button>
-      {modal==='palette'&&<><div className="eyebrow">COMMAND PALETTE</div><h2>快速切换</h2><input aria-label="查找命令与会话" autoFocus placeholder="查找会话或操作…" value={paletteQuery} onChange={e=>setPaletteQuery(e.target.value)}/><div className="palette-results">{['新建会话','导入 CLI 历史','设置与连接'].filter(name=>name.includes(paletteQuery)).map(name=><button key={name} onClick={()=>{if(name==='新建会话')openNew();else if(name==='导入 CLI 历史')void openHistory();else{setDraftSettings({...state.settings});setModal('settings');}}}>{name}<ChevronRight size={14}/></button>)}{state.sessions.filter(s=>(s.title+' '+s.cwd).toLowerCase().includes(paletteQuery.toLowerCase())).map(s=><button key={s.id} onClick={()=>{setProjectId('all');setArchived(s.archived);setSearch('');selectSession(s.id);setModal(null);}}><span>{s.title}<small>{s.cwd}</small></span><ChevronRight size={14}/></button>)}</div></>}
+      {modal==='palette'&&<><div className="eyebrow">COMMAND PALETTE</div><h2>快速切换</h2><input aria-label="查找命令与会话" autoFocus placeholder="查找会话或操作…" value={paletteQuery} onChange={e=>setPaletteQuery(e.target.value)}/><div className="palette-results">{['新建会话','导入 CLI 历史','设置与连接'].filter(name=>name.includes(paletteQuery)).map(name=><button key={name} onClick={()=>{if(name==='新建会话')openNew();else if(name==='导入 CLI 历史')void openHistory();else{setDraftSettings({...state.settings});setSettingsPage('appearance');setModal('settings');}}}>{name}<ChevronRight size={14}/></button>)}{state.sessions.filter(s=>(s.title+' '+s.cwd).toLowerCase().includes(paletteQuery.toLowerCase())).map(s=><button key={s.id} onClick={()=>{setProjectId('all');setArchived(s.archived);setSearch('');selectSession(s.id);setModal(null);}}><span>{s.title}<small>{s.cwd}</small></span><ChevronRight size={14}/></button>)}</div></>}
       {modal==='new'&&<><div className="eyebrow">NEW SESSION</div><h2>{draft.fork?'创建会话分支':'开始新的工作'}</h2><p>为这次任务选择项目和运行方式。</p><form onSubmit={event=>{event.preventDefault();void perform(async()=>{const session=await window.desktop.createSession({...draft,worktreeName:draft.isolated?draft.worktreeName:undefined,title:draft.title.trim()});selectSession(session.id);setArchived(false);setModal(null);});}}>
         <label>项目<select aria-label="项目" value={draft.projectId} onChange={e=>setDraft({...draft,projectId:e.target.value})}>{state.projects.map(p=><option key={p.id} value={p.id}>{p.name} — {p.path}</option>)}</select></label>
         <label>会话名称<input autoFocus maxLength={120} aria-label="会话名称" placeholder={draft.kind==='claude'&&!draft.fork?'留空，发送首条消息后自动命名':'例如：重构记忆检索模块'} value={draft.title} onChange={e=>setDraft({...draft,title:e.target.value})}/></label>
@@ -348,29 +379,10 @@ export function App() {
         {!cap.available&&draft.kind==='claude'&&<p className="hint">可以先创建会话；启动前请在设置中连接 Claude Code。</p>}
         <button className="primary full" disabled={busy||!draft.projectId}>{busy?<Loader2 size={16} className="spin"/>:<Plus size={16}/>}创建会话</button>
       </form></>}
-      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，配置本机 Claude Code 和外部 IDE。</p><form onSubmit={event=>{event.preventDefault();void savePreferences(false);}}>
-        <ThemePicker value={normalizeThemeId(draftSettings.theme)} disabled={busy} onChange={theme=>setDraftSettings({...draftSettings,theme})}/>
-        <PermissionModeField label="默认权限模式" value={draftSettings.defaultPermissionMode??'default'} disabled={busy} onChange={defaultPermissionMode=>setDraftSettings({...draftSettings,defaultPermissionMode})}/>
-        <p className="hint">用于新建和首次导入的 Claude 会话，可在创建时调整。已有会话保留自己的模式，创建分支时继承原会话模式。</p>
-        <div className="worktree-preferences">
-          <label>Worktree 位置<select aria-label="Worktree 位置" aria-describedby="worktree-location-help" disabled={busy} value={draftSettings.worktreeLocation??'project'} onChange={event=>setDraftSettings({...draftSettings,worktreeLocation:event.target.value as 'project'|'custom'})}><option value="project">项目目录内（.claude/worktrees）</option><option value="custom">统一目录</option></select></label>
-          {draftSettings.worktreeLocation==='custom'&&<><label htmlFor="worktree-root-path">统一 Worktree 根目录</label><div className="worktree-path-row"><input id="worktree-root-path" aria-label="统一 Worktree 根目录" aria-describedby="worktree-location-help" disabled={busy} required maxLength={4096} spellCheck={false} value={draftSettings.worktreeRoot??''} placeholder={platform==='win32'?'例如 D:\\Worktrees':'例如 /Users/你/Worktrees'} onChange={event=>setDraftSettings({...draftSettings,worktreeRoot:event.target.value})}/><button type="button" className="secondary" disabled={busy} onClick={()=>void chooseWorktreeRoot()}><FolderOpen size={14}/>选择 Worktree 目录</button></div></>}
-          <p className="hint" id="worktree-location-help">{draftSettings.worktreeLocation==='custom'?'统一目录下按「项目名-短标识 / Worktree 名称-短标识」创建子目录，区分同名项目与会话。':'在项目 Git 根目录的 .claude/worktrees 下创建独立目录。'}保存后仅用于新建 Worktree，已有会话的目录保持不变。</p>
-        </div>
-        <div className="ide-preferences"><label htmlFor="ide-application-path">外部 IDE 应用</label><div className="ide-path-row"><input id="ide-application-path" aria-label="IDE 应用路径" aria-describedby="ide-path-help" disabled={busy} maxLength={4096} value={draftSettings.idePath??''} placeholder={platform==='win32'?'例如 C:\\Apps\\Custom VS Code\\Code.exe':platform==='darwin'?'/Applications/WebStorm.app':'例如 /opt/WebStorm/bin/webstorm.sh'} onChange={event=>setDraftSettings({...draftSettings,idePath:event.target.value})}/><button type="button" className="secondary" disabled={busy} onClick={()=>void chooseIdeApplication()}><FolderOpen size={14}/>选择 IDE 应用</button></div><p className="hint" id="ide-path-help">选择你安装的 VS Code、WebStorm 或定制版应用，保存后点击顶部「IDE」打开当前工作目录（包括隔离 worktree）。{platform==='win32'?'请选择 Code.exe、webstorm64.exe 等程序文件。':platform==='darwin'?'请选择 .app 应用或可执行文件。':'请选择可执行文件或可执行的启动脚本。'}填写完整路径，无需添加项目路径或启动参数；留空可清除配置。</p></div>
-        <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
-        <label>Shell 可执行文件<input value={draftSettings.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={e=>setDraftSettings({...draftSettings,shellPath:e.target.value})}/></label>
-        <div className="form-grid"><label>最大并发会话<input type="number" min={1} max={12} value={draftSettings.maxSessions} onChange={e=>setDraftSettings({...draftSettings,maxSessions:Number(e.target.value)})}/></label><label>终端字号<input type="number" min={11} max={24} value={draftSettings.fontSize} onChange={e=>setDraftSettings({...draftSettings,fontSize:Number(e.target.value)})}/></label></div>
-        <p className="hint">{draftSettings.claudePath!==state.settings.claudePath?'路径尚未保存；点击“保存并检测”以检查当前输入。':'检测路径：'+(state.settings.claudePath||'自动查找')}</p>
-        <div className={`connection-box ${cap.available?'connected':''}`}><div><span className={`dot ${cap.available?'running':'error'}`}/><strong>{busy?'正在保存并检查设置…':cap.available?cap.version:'未检测到 CLI'}</strong></div><p>{busy?'请稍候…':cap.available?cap.executable:cap.error||'保存设置后自动检测 CLI。'}</p>{cap.available&&<small>可用强度：{cap.efforts.filter(x=>x!=='default').join(' / ')||'跟随 CLI'}</small>}</div>
-        <p className="hint">在终端完成 Claude 登录。API Key、MCP 与 provider 继续使用 Claude Code 自身的配置；客户端不保存凭据。设置变更用于后续启动的进程。</p>
-        <label className="checkbox"><input type="checkbox" checked={draftSettings.notifications??false} onChange={e=>setDraftSettings({...draftSettings,notifications:e.target.checked})}/><span>任务完成与等待审批时显示通知</span></label><label className="checkbox"><input type="checkbox" checked={draftSettings.closeToTray??false} onChange={e=>setDraftSettings({...draftSettings,closeToTray:e.target.checked})}/><span>关闭窗口后保留到系统托盘<small>任务继续运行，可从托盘重新打开。</small></span></label>
-        <label>工作台数据目录<code className="data-path">{dataPath}</code></label>
-        <div className="modal-actions"><button type="button" className="secondary" disabled={busy} onClick={()=>void savePreferences(true)}><RefreshCw size={14}/>保存并检测</button><button className="primary" disabled={busy}>{busy?<Loader2 className="spin" size={15}/>:<Check size={15}/>}保存设置</button></div>
-      </form></>}
+      {modal==='settings'&&draftSettings&&<SettingsPanel value={draftSettings} saved={state.settings} onChange={setDraftSettings} page={settingsPage} onPage={setSettingsPage} fonts={importedFonts} onImport={()=>void importFont()} onRemove={id=>void removeFont(id)} busy={busy} error={error} capabilities={cap} platform={platform} dataPath={dataPath} onSave={detect=>void savePreferences(detect)} onClose={()=>setModal(null)} onChooseIde={()=>void chooseIdeApplication()} onChooseWorktree={()=>void chooseWorktreeRoot()}/>}
       {modal==='history'&&<><div className="eyebrow">CONTINUE YOUR WORK</div><h2>导入 CLI 历史</h2><p>{state.projects.find(p=>p.id===draft.projectId)?.name} · 最近的本地会话</p><PermissionModeField label="导入会话权限模式" value={draft.permissionMode??'default'} disabled={busy} onChange={permissionMode=>setDraft({...draft,permissionMode})}/><input aria-label="搜索历史全文" placeholder="搜索标题和对话内容…" value={historyQuery} onChange={e=>setHistoryQuery(e.target.value)}/><div className="history-list">{historyBusy?<p>正在读取 Claude 历史…</p>:history.length?history.map(h=><button key={h.id} disabled={busy} onClick={()=>void importHistory(h.id,h.title)}><div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0,8)}</small></div><ArrowUpRight size={16}/></button>):<p>没有找到可导入的记录。也可以使用会话 UUID。</p>}</div>{historyNext!==null&&!historyBusy&&<button className="secondary compact full" disabled={busy} onClick={()=>void moreHistory()}>加载更多历史</button>}<form onSubmit={event=>{event.preventDefault();void importHistory(draft.resumeFrom||'',`导入会话 · ${(draft.resumeFrom||'').slice(0,8)}`);}}><label>通过 UUID 导入<input aria-label="历史会话 UUID" placeholder="00000000-0000-0000-0000-000000000000" value={draft.resumeFrom||''} onChange={e=>setDraft({...draft,resumeFrom:e.target.value})}/></label><button className="primary full" disabled={busy||!draft.resumeFrom}><History size={15}/>导入会话</button></form><p className="hint">只读扫描 CLI 记录。导入不会修改原始历史；首次恢复时会由 Claude Code 校验。</p></>}
       {modal==='rename'&&active&&<><h2>重命名会话</h2><form onSubmit={event=>{event.preventDefault();void perform(async()=>{await window.desktop.updateSession({id:active.id,title:rename});setModal(null);});}}><label>名称<input aria-label="新的会话名称" autoFocus maxLength={120} value={rename} onChange={e=>setRename(e.target.value)}/></label><button className="primary full" disabled={busy||!rename.trim()}>保存</button></form>{structured&&active.status==='running'&&!activeBusy&&<button className="secondary full" disabled={busy} title="释放空闲 CLI 进程，保留会话记录；下次发送时自动恢复" onClick={()=>void perform(async()=>{await window.desktop.stopSession(active.id);setModal(null);})}><X size={14}/>关闭空闲会话进程</button>}</>}
-      {error&&<div className="modal-error" role="alert">{error}</div>}
+      {error&&modal!=='settings'&&<div className="modal-error" role="alert">{error}</div>}
     </Dialog>}
   </div>;
 }

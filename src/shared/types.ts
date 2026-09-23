@@ -7,6 +7,7 @@ import type { PanelDrafts } from './panel-drafts';
 import type { PermissionMode } from './permissions';
 import type { SubtaskActivity } from './subtasks';
 import type { SessionTitleSource } from './session-title';
+import type { ImportedFont, TypographySettings } from './fonts';
 export type { PermissionMode } from './permissions';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
@@ -24,7 +25,7 @@ export interface Session {
   panelDrafts?: PanelDrafts;
   subtasks?: SubtaskActivity;
 }
-export interface Settings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
+export interface Settings extends TypographySettings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
 export interface Snapshot { state: AppState; capabilities: Capabilities; platform: string; dataPath: string }
@@ -83,6 +84,10 @@ export interface DesktopAPI {
   writeTerminal(id: string, data: string): Promise<void>;
   resizeTerminal(id: string, cols: number, rows: number): Promise<void>;
   saveSettings(settings: Settings): Promise<void>;
+  listFonts(): Promise<ImportedFont[]>;
+  importFont(): Promise<ImportedFont | null>;
+  readFont(id: string): Promise<Uint8Array>;
+  removeFont(id: string): Promise<void>;
   detect(): Promise<Capabilities>;
   history(projectId: string): Promise<HistoryEntry[]>;
   gitInfo(sessionId: string): Promise<GitInfo>;
