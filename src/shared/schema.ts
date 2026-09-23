@@ -16,7 +16,7 @@ export const settingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.default('default')
 }).refine(settings => settings.worktreeLocation !== 'custom' || !!settings.worktreeRoot, { message: '请选择或填写统一 Worktree 根目录。', path: ['worktreeRoot'] });
 export const sessionInputSchema = z.object({
-  projectId: idSchema, title: z.string().trim().min(1).max(120), kind: z.enum(['claude', 'shell']),
+  projectId: idSchema, title: z.string().trim().max(120), kind: z.enum(['claude', 'shell']),
   model: z.string().trim().max(200).refine(s => !/[\x00-\x1f]/.test(s)),
   effort: z.enum(['default','low','medium','high','xhigh','max','ultracode']),
   permissionMode: permissionModeSchema.optional(), isolated: z.boolean(),
@@ -43,6 +43,7 @@ const subtaskSchema = z.object({
 });
 const sessionSchema = z.object({
   id: idSchema, projectId: idSchema, title: z.string(), kind: z.enum(['claude','shell']),
+  titleSource: z.enum(['default','auto','manual']).optional(),
   cwd: z.string(), claudeId: idSchema, resumeFrom: idSchema.optional(), imported: z.boolean().optional(), started: z.boolean(),
   model: z.string(), effort: sessionInputSchema.shape.effort, permissionMode: permissionModeSchema,
   status: z.enum(['idle','running','stopping','stopped','error']), archived: z.boolean(),

@@ -15,6 +15,7 @@ import { queryHistory, exportClaudeTranscript, findClaudeTranscript } from './hi
 import { gitChanges, gitDiff, gitWorktreeRoot, worktreeInfo, mergeWorktree, cleanupWorktree } from './git';
 import { listProjectFiles, readProjectFile } from './files';
 import { diagnoseEnvironment } from './diagnostics';
+import { isSessionBusy } from '../shared/session-activity';
 
 type Register = <T>(name: string, schema: z.ZodType<T>, action: (data: T) => unknown) => void;
 const BUSY = new Set(['starting','thinking','tool_running','waiting_approval','waiting_input']);
@@ -47,7 +48,7 @@ export class SessionService {
     });
     this.workflows = new WorkflowEngine(store.directory,{
       getSession:id => { const s = this.structured(id); if(s.archived) throw new Error('请先取消会话归档。'); this.assertUnlocked(s); return {sessionId:s.id,projectId:s.projectId,cwd:s.cwd,worktree:s.worktree}; },
-      runStage:(id,prompt) => this.runChat(id,prompt),
+      runStage:(id,prompt,titlePrompt) => this.runChat(id,prompt,[],titlePrompt),
       cancelSession:id => this.chat.interrupt(id),
       onChange:() => this.getWindow()?.webContents.send('workflow:changed')
     });
@@ -75,6 +76,7 @@ export class SessionService {
     if(!p) throw new Error('项目不存在。'); return p;
   }
   private occupied(id: string) { return this.runtime.has(id) || this.chat.has(id) || this.admissions.has(id); }
+  private taskOccupied(id: string) { return this.runtime.has(id) || this.chat.isBusy(id) || this.admissions.has(id) || this.workflows.isSessionBusy(id); }
   private pathKey(value: string): string {
     let current = path.resolve(value);
     const missing: string[] = [];
@@ -109,8 +111,24 @@ export class SessionService {
     try { return await action(); } finally { this.lifecycle.delete(id); }
   }
   private worktreeBase(s: Session) { return s.worktreeBase ?? this.project(s.projectId).path; }
+  private directorySessions(keys: string[]) {
+    return this.store.state.sessions.filter(s => keys.some(key => this.overlaps(key,this.pathKey(s.cwd))));
+  }
   private directoriesBusy(keys: string[]) {
-    return this.store.state.sessions.some(s => (this.occupied(s.id) || this.workflows.isSessionBusy(s.id)) && keys.some(key => this.overlaps(key,this.pathKey(s.cwd))));
+    return this.directorySessions(keys).some(s => this.taskOccupied(s.id));
+  }
+  private idleTerminalBlock(keys: string[]) {
+    const occupied = this.directorySessions(keys).filter(s => this.taskOccupied(s.id));
+    return occupied.length > 0 && occupied.every(s => this.runtime.has(s.id) && s.kind === 'claude' &&
+      s.adapter === 'terminal' && s.terminalSync === 'synced' && !isSessionBusy(s) && !this.admissions.has(s.id) && !this.workflows.isSessionBusy(s.id));
+  }
+  private async releaseIdleDirectories(keys: string[], message: string) {
+    if (this.directoriesBusy(keys)) throw new Error(this.idleTerminalBlock(keys) ? '原生 Claude 终端仍打开，请先关闭终端释放工作目录，再创建或管理 worktree。' : message);
+    const releases = await Promise.allSettled(this.directorySessions(keys).filter(session=>this.chat.has(session.id)).map(session=>this.chat.stopIdle(session.id)));
+    for (const result of releases) if (result.status === 'rejected') throw result.reason;
+    // Locks prevent new admissions while exits are pending. Keep a final process
+    // check: no Git mutation may run merely because a UI task badge is complete.
+    if (this.directorySessions(keys).some(s => this.occupied(s.id) || this.workflows.isSessionBusy(s.id))) throw new Error(message);
   }
   private async worktreeDirectories(s: Session) {
     return [...new Set((await Promise.all([gitWorktreeRoot(this.worktreeBase(s)),gitWorktreeRoot(s.worktree ?? s.cwd)])).map(dir => this.pathKey(dir)))];
@@ -125,35 +143,51 @@ export class SessionService {
     const roots = isolated ? await Promise.all([gitWorktreeRoot(cwd), ...(destinationProjectPath ? [gitWorktreeRoot(destinationProjectPath)] : [])]) : [cwd];
     const keys = [...new Set(roots.map(root => this.pathKey(root)))];
     this.assertDirectoriesUnlocked(keys);
-    if (isolated && this.directoriesBusy(keys)) throw new Error('请先停止来源工作目录及目标项目目录中的全部会话，再创建独立 worktree。');
     keys.forEach(key => this.directoryLocks.add(key));
-    try { return await action(); } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
+    try {
+      if (isolated) await this.releaseIdleDirectories(keys,'请先停止来源工作目录及目标项目目录中的全部会话，再创建独立 worktree。');
+      return await action();
+    } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
   }
   private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>) {
     return this.manage(id,async()=>{
       const s=this.session(id); if(!s.worktree)throw new Error('此会话没有独立 worktree。');
       const keys = await this.worktreeDirectories(s);
       this.assertDirectoriesUnlocked(keys);
-      if(this.directoriesBusy(keys))throw new Error('请先停止此 worktree 和来源目录中的全部会话。');
       keys.forEach(k=>this.directoryLocks.add(k));
-      try{return await action(s);}finally{keys.forEach(k=>this.directoryLocks.delete(k));}
+      try{await this.releaseIdleDirectories(keys,'请先停止此 worktree 和来源目录中的全部会话。');return await action(s);}finally{keys.forEach(k=>this.directoryLocks.delete(k));}
     });
   }
-  private reserve(id: string) {
-    if(this.stopping) throw new Error('工作台正在退出。');
-    this.assertUnlocked(this.session(id));
-    const session=this.session(id);
-    if(session.kind==='claude'&&this.store.state.sessions.some(s=>s.id!==id&&s.kind==='claude'&&s.claudeId===session.claudeId&&this.occupied(s.id)))throw new Error('同一 Claude 对话已在另一个会话中运行，请先停止它或创建会话分支。');
-    const ids = new Set(this.store.state.sessions.filter(s => this.occupied(s.id)).map(s => s.id));
-    if(!ids.has(id) && ids.size >= this.store.state.settings.maxSessions) throw new Error('已达到最大并发会话数。');
-    if(this.admissions.has(id)) throw new Error('当前会话操作尚未完成。');
+  private async reserve(id: string) {
+    const assertReady = () => {
+      if(this.stopping) throw new Error('工作台正在退出。');
+      const session=this.session(id);this.assertUnlocked(session);
+      if(session.archived) throw new Error('请先取消会话归档。');
+      if(session.kind==='claude'&&this.store.state.sessions.some(s=>s.id!==id&&s.kind==='claude'&&s.claudeId===session.claudeId&&this.occupied(s.id)))throw new Error('同一 Claude 对话已在另一个会话中运行，请先停止它或创建会话分支。');
+      if(this.admissions.has(id)) throw new Error('当前会话操作尚未完成。');
+    };
+    assertReady();
+    const occupiedIds = () => new Set(this.store.state.sessions.filter(s => this.occupied(s.id)).map(s => s.id));
+    while (!occupiedIds().has(id) && occupiedIds().size >= this.store.state.settings.maxSessions) {
+      const idle = this.store.state.sessions.filter(s => s.id !== id && s.kind === 'claude' && s.adapter === 'structured' &&
+        this.chat.has(s.id) && !this.taskOccupied(s.id) && !this.lifecycle.has(s.id) &&
+        ![...this.directoryLocks].some(key => this.overlaps(key,this.pathKey(s.cwd))))
+        .sort((a,b) => a.updatedAt.localeCompare(b.updatedAt))[0];
+      if (!idle) throw new Error('已达到最大并发会话数。');
+      this.lifecycle.add(idle.id);
+      try { await this.chat.stopIdle(idle.id); } finally { this.lifecycle.delete(idle.id); }
+      assertReady();
+    }
+    // Idle eviction awaits process-tree shutdown; another session may have
+    // claimed the same native transcript while that wait was in progress.
+    assertReady();
     this.admissions.add(id);
   }
   async start(id: string) {
     const s = this.session(id);
     if(s.adapter === 'structured' && s.kind === 'claude') return; // Started by first message; no empty model request.
     if(this.chat.has(id)) throw new Error('此会话已由图形化运行器占用。');
-    this.reserve(id);
+    await this.reserve(id);
     try { await this.runtime.start(id,this.capabilities()); } finally { this.admissions.delete(id); }
   }
   async stop(id: string) {
@@ -169,15 +203,15 @@ export class SessionService {
     }
     if(this.session(id).adapter === 'structured') await this.chat.interrupt(id); else this.runtime.interrupt(id);
   }
-  private async runChat(id: string, text: string, attachments: string[] = []) {
+  private async runChat(id: string, text: string, attachments: string[] = [], titlePrompt?: string) {
     const s = this.structured(id);
     if(s.archived) throw new Error('请先取消会话归档。');
     if(this.runtime.has(id)) throw new Error('此会话已有终端进程。');
     if(BUSY.has(this.chat.taskState(id))) throw new Error('请等待当前回合完成，或先中断。');
-    this.reserve(id);
+    await this.reserve(id);
     try {
       await this.attachments.retain(id,attachments);
-      const result=await this.chat.send(id,text,this.capabilities(),attachments);
+      const result=await this.chat.send(id,text,this.capabilities(),attachments,titlePrompt);
       if(result.success) {
         try { await this.attachments.markSent(id,attachments); }
         catch (error) { throw new Error(`本轮任务已完成，但附件草稿状态保存失败；附件副本仍保留，请勿重复执行本轮任务。${error instanceof Error?error.message:String(error)}`); }
@@ -203,23 +237,29 @@ export class SessionService {
     handle('session:select',z.union([idSchema,z.literal('')]),id => this.select(id));
     handle('session:update',z.object({id:idSchema,title:z.string().trim().min(1).max(120).optional(),archived:z.boolean().optional(),model:sessionInputSchema.shape.model.optional(),effort:sessionInputSchema.shape.effort.optional(),permissionMode:sessionInputSchema.shape.permissionMode.optional()}),async input => {
       const s = this.session(input.id);
-      if(input.archived && (this.occupied(s.id) || this.workflows.isSessionBusy(s.id))) throw new Error('请先停止会话和工作流，再归档。');
+      if(input.archived && this.taskOccupied(s.id)) throw new Error('请先停止会话和工作流，再归档。');
+      const save = () => this.store.change(state => Object.assign(state.sessions.find(x=>x.id===s.id)!,input,
+        input.title !== undefined ? {titleSource:'manual'} : {}, input.permissionMode ? {observedPermissionMode:input.permissionMode} : {}, {updatedAt:new Date().toISOString()}));
       const config = input.model !== undefined || input.effort !== undefined || input.permissionMode !== undefined;
       if(config) {
         if(this.workflows.isSessionBusy(s.id) || this.admissions.has(s.id)) throw new Error('请等待当前任务完成后再修改配置。');
         if(this.runtime.has(s.id)) throw new Error('终端模式请停止会话后修改启动配置。');
         await this.manage(s.id,async()=>{
+          if(input.archived && this.chat.has(s.id)) await this.chat.stopIdle(s.id);
           if(this.chat.has(s.id)) await this.chat.updateConfig(s.id,{model:input.model,effort:input.effort,permissionMode:input.permissionMode});
-          this.store.change(state => Object.assign(state.sessions.find(x=>x.id===s.id)!,input,input.permissionMode?{observedPermissionMode:input.permissionMode}:{},{updatedAt:new Date().toISOString()}));
+          save();
         });
         this.onState(); return;
       }
-      this.store.change(state => Object.assign(state.sessions.find(x => x.id === input.id)!,input,{updatedAt:new Date().toISOString()})); this.onState();
+      if(input.archived) await this.manage(s.id,async()=>{await this.chat.stopIdle(s.id);save();});
+      else save();
+      this.onState();
     });
     handle('session:delete',idSchema,id => this.manage(id,async () => {
       const s = this.session(id);
-      if(this.occupied(id) || this.workflows.isSessionBusy(id)) throw new Error('请先停止会话及工作流，再删除。');
+      if(this.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
       if(s.worktree) throw new Error('请先在 Git 面板检查并清理独立 worktree。');
+      await this.chat.stopIdle(id);
       this.workflows.removeSession(id);
       this.runtime.forget(id,{deleteLogs:true}); this.chat.forget(id); await this.attachments.remove(id);
       this.store.change(state => {state.sessions=state.sessions.filter(s=>s.id!==id);if(state.selectedSessionId===id)state.selectedSessionId='';}); this.onState();
@@ -258,8 +298,10 @@ export class SessionService {
       const s=this.session(id);
       // Read-only refreshes can outlive cleanup. Missing Git roots should produce
       // unavailable metadata, while all mutation paths keep their strict checks.
-      const blocked=await this.worktreeDirectories(s).then(keys=>this.directoriesBusy(keys),()=>true);
+      const directories = await this.worktreeDirectories(s).catch(()=>undefined);
+      const blocked = directories ? this.directoriesBusy(directories) : true;
       const info=await worktreeInfo(this.worktreeBase(s),s.worktree ?? s.cwd,id,blocked);
+      if(directories && this.idleTerminalBlock(directories))info.reasons.push('原生 Claude 终端仍打开，请先关闭终端释放工作目录。');
       if(this.cleanupDependencies(s)) { info.canCleanup=false; info.reasons.push('其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。'); }
       return info;
     });

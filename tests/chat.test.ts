@@ -271,6 +271,54 @@ function setup(options: { initialFailure?: boolean; noTranscript?: boolean } = {
   return { directory, store, session, runtime, starts, launches, observedId, sent, cleanup: async () => { await runtime.shutdown(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
 
+test('completed reusable processes release idle resources without losing completion or native resume identity', async () => {
+  const s=setup();try{
+    await s.runtime.send(s.session.id,'first turn',capabilities);
+    const nativeId=s.store.state.sessions[0].claudeId;
+    assert.equal(s.runtime.isBusy(s.session.id),false);
+    assert.equal(s.runtime.has(s.session.id),true);
+    assert.equal(s.runtime.snapshot(s.session.id).taskState,'completed');
+    const release=s.runtime.stopIdle(s.session.id);
+    assert.equal(s.runtime.has(s.session.id),true,'directory ownership is retained during process-group shutdown');
+    await release;
+    assert.equal(s.runtime.has(s.session.id),false);
+    assert.equal(s.store.state.sessions[0].taskState,'completed');
+    assert.equal(s.runtime.snapshot(s.session.id).taskState,'completed');
+    assert.equal(s.store.state.sessions[0].claudeId,nativeId);
+    assert.equal((await s.runtime.send(s.session.id,'follow up',capabilities)).success,true);
+    assert.deepEqual(s.starts,[false,true]);
+    assert.equal(s.runtime.snapshot(s.session.id).messages.filter(message=>message.role==='user').length,2);
+  }finally{await s.cleanup();}
+});
+
+test('idle release rejects foreground, approval, and background turns without interrupting them',async()=>{
+  const s=setup();try{
+    for(const prompt of ['hang','approve','subtasks-interrupt']){
+      const turn=s.runtime.send(s.session.id,prompt,capabilities);
+      await until(()=>s.runtime.isBusy(s.session.id) && (prompt!=='approve'||s.runtime.taskState(s.session.id)==='waiting_approval') && fs.existsSync(path.join(s.directory,'stdin.jsonl')) && s.sent().some(message=>message.type==='user'&&message.message.content[0].text===prompt));
+      assert.equal(s.runtime.isBusy(s.session.id),true);
+      await assert.rejects(s.runtime.stopIdle(s.session.id),/正在执行/);
+      assert.equal(s.runtime.has(s.session.id),true);
+      await s.runtime.interrupt(s.session.id);assert.equal((await turn).interrupted,true);
+    }
+  }finally{await s.cleanup();}
+});
+
+test('accepted first prompts name default conversations once and never replace manual titles',async()=>{
+  const s=setup();try{
+    s.store.change(state=>{state.sessions[0].titleSource='default';state.sessions[0].title='新会话';});
+    await s.runtime.send(s.session.id,'内部工作流模板：完成计划阶段',capabilities,[],'修复会话结束后的按钮状态');
+    assert.equal(s.store.state.sessions[0].title,'修复会话结束后的按钮状态');
+    assert.equal(s.store.state.sessions[0].titleSource,'auto');
+    assert.equal(s.sent().find(message=>message.type==='user').message.content[0].text,'内部工作流模板：完成计划阶段');
+    await s.runtime.send(s.session.id,'换一个话题',capabilities);
+    assert.equal(s.store.state.sessions[0].title,'修复会话结束后的按钮状态');
+    s.store.change(state=>{state.sessions[0].title='自定义标题';state.sessions[0].titleSource='manual';});
+    await s.runtime.send(s.session.id,'再修改另一项',capabilities);
+    assert.equal(s.store.state.sessions[0].title,'自定义标题');
+  }finally{await s.cleanup();}
+});
+
 test('stream framing handles split/coalesced records, blank lines, UTF8 and rejects malformed/oversized frames', () => {
   const values: unknown[] = []; const decoder = new JsonLineDecoder(value => values.push(value), 100);
   decoder.push('{"text":"你'); decoder.push('好🌏"}\n\n{"n":2}\n'); decoder.push('{"tail":true}'); decoder.finish();

@@ -16,6 +16,7 @@ import { readHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project, Session } from '../shared/types';
 import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
+import { initialSessionTitle } from '../shared/session-title';
 
 const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
 if(profileDirectory) {
@@ -93,6 +94,7 @@ function registerIPC() {
     const id = randomUUID();
     const source = input.fork ? store.state.sessions.find(s => s.claudeId === input.resumeFrom && s.projectId === project.id) : undefined;
     const sourcePath = source?.cwd ?? project.path;
+    const title = initialSessionTitle(input);
     // Capture placement before asynchronous creation; later settings changes affect the next session.
     const location = store.state.settings.worktreeLocation ?? 'project';
     const customRoot = store.state.settings.worktreeRoot;
@@ -100,10 +102,10 @@ function registerIPC() {
     try { return await services.withSessionCreation(sourcePath,input.isolated,async()=>{
     const worktree = input.isolated ? await createWorktree(sourcePath,store.directory,id,{
       location, customRoot, projectPath:project.path, projectName:project.name,
-      name:input.worktreeName?.trim() || sanitizeWorktreeName(input.title),
+      name:input.worktreeName?.trim() || sanitizeWorktreeName(title.title),
     }) : undefined;
     const now = new Date().toISOString();
-    const session: Session = { id, projectId:project.id, title:input.title, cwd:worktree || sourcePath,
+    const session: Session = { id, projectId:project.id, ...title, cwd:worktree || sourcePath,
       kind:input.kind, claudeId:input.resumeFrom && !input.fork ? input.resumeFrom : randomUUID(),
       resumeFrom:input.fork ? input.resumeFrom : undefined, imported:!!input.resumeFrom && !input.fork, started:!!input.resumeFrom && !input.fork,
       model:input.model, effort:input.effort, permissionMode:input.permissionMode ?? source?.permissionMode ?? (input.kind==='claude'?store.state.settings.defaultPermissionMode ?? 'default':'default'),

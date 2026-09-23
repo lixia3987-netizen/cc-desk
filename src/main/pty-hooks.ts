@@ -20,6 +20,7 @@ const hookInput = z.object({
   // Only the documented message is used; agent_transcript_path is deliberately never read.
   last_assistant_message: z.string().max(1024 * 1024).transform(value => value.slice(0, 4000)).optional(),
   prompt_id: z.string().max(200).optional(), permission_mode: z.enum(permissionModes).optional(),
+  prompt: z.string().max(1024 * 1024).transform(value => value.slice(0, 128 * 1024)).optional(),
   tool_name: z.string().max(200).optional(), tool_use_id: z.string().max(200).optional(),
   notification_type: z.string().max(100).optional(), reason: z.string().max(100).optional(),
   to_model: z.string().min(1).max(200).refine(value => !/[\x00-\x1f]/.test(value)).optional()
@@ -57,7 +58,8 @@ export class PtyHookObserver {
   private approvals = new Set<string>();
   private questions = new Set<string>();
   private eliciting = false;
-  constructor(initialId: string, private onSubtask?: (event: PtySubtaskEvent) => void) { this.currentId = initialId; }
+  constructor(initialId: string, private onSubtask?: (event: PtySubtaskEvent) => void,
+    private onPrompt?: (prompt: string) => void) { this.currentId = initialId; }
   private emitSubtask(event: PtySubtaskEvent) {
     try { this.onSubtask?.(event); } catch { /* Observations must never block native tools or approvals. */ }
   }
@@ -161,7 +163,10 @@ export class PtyHookObserver {
         this.turnId = randomUUID();
         this.emitSubtask({ type: 'begin', turnId: this.turnId });
       }
-      this.promptId = input.prompt_id; this.clearTurn(); patch.taskState = 'thinking'; return patch;
+      this.promptId = input.prompt_id; this.clearTurn(); patch.taskState = 'thinking';
+      // Only an accepted main-session prompt can name the session; never parse terminal echo.
+      try { if (input.prompt !== undefined) this.onPrompt?.(input.prompt); } catch { /* Naming must not block a prompt. */ }
+      return patch;
     }
     // Ignore delayed state observations from a previous prompt; model/config metadata still applies.
     if (this.promptId && input.prompt_id && this.promptId !== input.prompt_id) return patch;
@@ -202,10 +207,10 @@ export interface PtyHookBridge {
 
 /** The endpoint is local to one live PTY run; it cannot execute commands or grant permissions. */
 export async function createPtyHookBridge(initialId: string, onPatch: (patch: Partial<Session>) => void,
-  onSubtask?: (event: PtySubtaskEvent) => void): Promise<PtyHookBridge> {
+  onSubtask?: (event: PtySubtaskEvent) => void, onPrompt?: (prompt: string) => void): Promise<PtyHookBridge> {
   const token = randomBytes(32).toString('hex');
   const expected = Buffer.from('Bearer ' + token);
-  const observer = new PtyHookObserver(initialId, onSubtask);
+  const observer = new PtyHookObserver(initialId, onSubtask, onPrompt);
   let closed = false;
   const server: Server = createServer((request, response) => {
     const reply = (status: number) => { if (!response.writableEnded) { response.writeHead(status, { 'Content-Length': '0', 'Cache-Control': 'no-store' }); response.end(); } };

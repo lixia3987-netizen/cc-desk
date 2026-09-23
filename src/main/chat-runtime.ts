@@ -3,6 +3,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createHash, randomUUID, type Hash } from 'node:crypto';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
 import { isPermissionMode } from '../shared/permissions';
+import { automaticSessionTitlePatch } from '../shared/session-title';
 import type { ChatApproval, ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
 import { findClaudeTranscript, transcriptExists } from './history';
@@ -30,6 +31,7 @@ interface Entry {
   backgroundTaskTools: Map<string, string>;
   stderr: string; decoder: JsonLineDecoder; killTimer?: NodeJS.Timeout; interruptTimer?: NodeJS.Timeout;
   waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
+  termination?: Promise<boolean>;
 }
 /** Test injection is constructor-only; renderer callers cannot select commands or protocol frames. */
 export interface ChatRuntimeOptions {
@@ -57,6 +59,7 @@ const taskStatus = (value: unknown): SubtaskStatus | undefined => {
  */
 export class ChatRuntime {
   private entries = new Map<string, Entry>();
+  private releasing = new Map<string, Entry>();
   private starting = new Set<string>();
   private busy = new Set<string>();
   private cancelled = new Set<string>();
@@ -84,9 +87,35 @@ export class ChatRuntime {
     });
     this.archive = new ChatArchive(this.history.directory);
   }
-  get activeCount() { return new Set([...this.entries.keys(), ...this.starting]).size; }
-  has(id: string) { return this.entries.has(id) || this.starting.has(id); }
-  isBusy(id: string) { return this.busy.has(id); }
+  get activeCount() { return new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting]).size; }
+  has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id); }
+  isBusy(id: string) {
+    const entry = this.entries.get(id) ?? this.releasing.get(id);
+    return this.busy.has(id) || this.starting.has(id) || Boolean(entry &&
+      (entry.turn || entry.tasks.size || entry.approvals.size || entry.controls.size));
+  }
+  /** Release a reusable idle CLI before changing its working directory or reclaiming a slot. */
+  async stopIdle(id: string) {
+    if (this.isBusy(id)) throw new Error('请先停止正在执行的任务。');
+    const entry = this.entries.get(id) ?? this.releasing.get(id);
+    if (!entry) return;
+    this.releasing.set(id, entry);
+    this.stop(id);
+    // A root process may exit before its MCP/tool descendants. Wait for the
+    // process-group escalation as well, rather than treating root exit as a
+    // guarantee that the working directory is no longer held on Windows.
+    const deadline = Date.now() + 5000;
+    while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，工作目录未释放，请稍后重试。');
+    if (entry.termination) {
+      entry.killTimer?.ref();
+      let timer: NodeJS.Timeout | undefined;
+      const stopped = await Promise.race([entry.termination, new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(1, deadline - Date.now())); })]);
+      if (timer) clearTimeout(timer);
+      if (!stopped) throw new Error('无法确认 CLI 子进程已停止，工作目录操作已取消。请关闭残留的 Claude 进程并重新打开工作台后重试。');
+    }
+    this.releasing.delete(id);
+  }
   taskState(id: string): TaskState { this.session(id); return this.history.get(id).taskState; }
   private session(id: string) {
     const session = this.store.state.sessions.find(item => item.id === id);
@@ -224,7 +253,7 @@ export class ChatRuntime {
     this.notifications.delete(id); this.transcriptVersions.delete(id); this.history.delete(id); this.archive.forget(id);
   }
 
-  async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = []): Promise<ChatTurnResult> {
+  async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = [], titlePrompt = text): Promise<ChatTurnResult> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
     const session = this.session(id);
     if (session.kind !== 'claude' || session.adapter === 'terminal') throw new Error('该会话没有使用结构化适配器。');
@@ -249,6 +278,8 @@ export class ChatRuntime {
       this.state(id, 'thinking');
       try {
         this.write(entry, { type: 'user', uuid: userId, message: { role: 'user', content }, parent_tool_use_id: null, session_id: this.session(id).claudeId });
+        const title = automaticSessionTitlePatch(this.session(id), titlePrompt);
+        if (title) this.update(id, title);
       } catch (error) { this.fail(id, entry, messageOf(error)); }
       return await result;
     } catch (error) {
@@ -797,21 +828,36 @@ export class ChatRuntime {
     } finally { this.terminate(entry); }
   }
   private terminate(entry: Entry) {
+    if (entry.ending) return;
     entry.ending = true;
     if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
     for (const waiter of entry.controls.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('会话进程已停止。')); }
     entry.controls.clear(); entry.approvals.clear();
-    entry.child.stdin.destroy();
-    const signal = (value: NodeJS.Signals) => {
-      if (!entry.child.pid) return;
+    const signal = (value: NodeJS.Signals): Promise<boolean> => {
+      if (!entry.child.pid) return Promise.resolve(true);
       if (process.platform === 'win32') {
-        const killer = spawn('taskkill', ['/PID', String(entry.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-        killer.on('error', () => { try { entry.child.kill(value); } catch { /* Already exited. */ } });
-      } else { try { process.kill(-entry.child.pid, value); } catch { try { entry.child.kill(value); } catch { /* Already exited. */ } } }
+        return new Promise(resolve => {
+          const killer = spawn('taskkill', ['/PID', String(entry.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+          killer.once('close', code => resolve(code === 0));
+          killer.once('error', () => { try { entry.child.kill(value); } catch { /* Already exited. */ } resolve(false); });
+        });
+      }
+      try { process.kill(-entry.child.pid, value); return Promise.resolve(true); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return Promise.resolve(true);
+        try { entry.child.kill(value); } catch { /* Already exited. */ }
+        return Promise.resolve(false);
+      }
     };
-    signal('SIGTERM');
+    const first = signal('SIGTERM');
+    // Keep Windows' root alive until taskkill has found the process tree. Closing
+    // stdin first lets a healthy CLI exit before taskkill can find descendants.
+    void first.then(() => entry.child.stdin.destroy());
     // Keep escalation even if the CLI root exits before an ignoring descendant.
-    entry.killTimer = setTimeout(() => signal('SIGKILL'), 1500); entry.killTimer.unref();
+    entry.termination = new Promise(resolve => {
+      entry.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(process.platform === 'win32' ? await first || last : last)); }, 1500);
+      entry.killTimer.unref();
+    });
   }
   private closed(id: string, entry: Entry, code: number | null, signal: NodeJS.Signals | null) {
     if (this.entries.get(id) !== entry) return;

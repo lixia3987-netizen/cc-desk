@@ -10,6 +10,7 @@ import { transcriptExists } from './history';
 import { StateStore } from './store';
 import { createPtyHookBridge, supportsPtyHooks, type PtyHookBridge } from './pty-hooks';
 import { SubtaskTracker } from './subtask-tracker';
+import { automaticSessionTitlePatch } from '../shared/session-title';
 
 const MEMORY_LIMIT = 1024 * 1024;
 const LOG_LIMIT = 5 * 1024 * 1024;
@@ -169,6 +170,13 @@ export class Runtime {
               if (event.type === 'begin') this.subtasks.begin(id, event.turnId);
               else if (event.type === 'observe') this.subtasks.observe(id, event.observation);
               else this.subtasks.end(id, event.status, event.reason);
+            });
+          }, prompt => {
+            const active = this.running.get(id);
+            if (!active || active.ending || active.hooks !== hooks) return;
+            this.guard(() => {
+              const patch = automaticSessionTitlePatch(this.getSession(id), prompt);
+              if (patch) this.update(id, patch);
             });
           });
           args.push('--settings', hooks.settings);

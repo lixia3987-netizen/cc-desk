@@ -7,10 +7,11 @@ import { ChatSearch } from './ChatSearch';
 import { ApprovalDrafts, type ApprovalDraft } from './approval-drafts';
 import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
 import { SubtaskPanel } from './SubtaskPanel';
+import { PromptEditor } from './PromptEditor';
+import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
-export const busyTask = (state?:string) => ['starting','thinking','tool_running','waiting_approval','waiting_input'].includes(state ?? '');
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
 function ApprovalCard({approval,sessionId,onError,drafts}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts}) {
@@ -51,7 +52,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
   session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(paths:string[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;
 }) {
   const [snapshot,setSnapshot]=useState<ChatSnapshot>(), [sending,setSending]=useState(false);
-  const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
+  const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false),sendInFlight=useRef(false);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
   const initialReading=useRef(readingPositions.get(session.id));
   const [archive,setArchive]=useState<ChatPage>(),[paging,setPaging]=useState(false),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
@@ -118,18 +119,19 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
       if(selected&&row instanceof HTMLDetailsElement)row.open=true;
     }
   },[highlight,visible,content]);
-  const task=snapshot?.taskState??session.taskState??'idle', running=sending||busyTask(task);
+  const task=snapshot?.taskState??session.taskState??'idle', running=sending||isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
+  const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
   const send=async()=>{
-    if((!draft.trim()&&!attachments.length)||running||session.archived)return;
+    if((!draft.trim()&&!attachments.length)||running||sendInFlight.current||session.archived)return;
     if(draft.length>60000){onError(new Error('单次提示词请控制在 60,000 个字符以内。'));return;}
-    setSending(true);jumpToLatest();
+    sendInFlight.current=true;setSending(true);jumpToLatest();
     try{
       const result=await window.desktop.sendChat(session.id,draft.trim(),attachments.map(file=>file.path));
       if(result.success)onSent(draft);
       if(result.success)onAttachmentsSent(attachments.map(file=>file.path));
       if(result.error)onError(new Error(result.error));
     }catch(error){onError(error);}
-    finally{if(mounted.current){setSending(false);void load().catch(onError);}}
+    finally{sendInFlight.current=false;if(mounted.current){setSending(false);void load().catch(onError);}}
   };
   return <div className="chat-pane">
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
@@ -143,15 +145,15 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message}/>)}
       {visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
-      {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{taskLabels[task]??task}</div>}
+      {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{session.status==='stopping'?'正在停止':taskLabel}</div>}
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
-    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{taskLabels[task]??task}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
+    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
     <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={running} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
-      <textarea aria-label="提示词编辑器" placeholder="描述任务… Ctrl / ⌘ + Enter 发送" value={draft} disabled={session.archived} onChange={e=>onDraft(e.target.value)} onKeyDown={e=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!e.nativeEvent.isComposing&&e.nativeEvent.keyCode!==229){e.preventDefault();void send();}}}/>
-      <div><button className="icon-button" title="添加图片、PDF 或文件附件" aria-label="添加附件" disabled={running} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" onClick={onProjectFiles}><File size={16}/></button><span>草稿自动保存 · {attachments.length} 个附件{attachments.length>0&&' · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running?<button className="secondary compact" onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>中断</button>:<button className="primary compact" disabled={(!draft.trim()&&!attachments.length)||session.archived} onClick={()=>void send()}><CornerDownLeft size={14}/>发送任务</button>}</div>
+      <PromptEditor placeholder="描述任务… Enter 发送，Ctrl / ⌘ + Enter 换行" value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}/>
+      <div><button className="icon-button" title="添加图片、PDF 或文件附件" aria-label="添加附件" disabled={running} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；草稿自动保存">Enter 发送 · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running?<button className="secondary compact" disabled={session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>:<button className="primary compact" disabled={(!draft.trim()&&!attachments.length)||session.archived} onClick={()=>void send()}><CornerDownLeft size={14}/>发送任务</button>}</div>
     </div>
   </div>;
 }

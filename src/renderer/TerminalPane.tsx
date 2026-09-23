@@ -5,7 +5,8 @@ import '@xterm/xterm/css/xterm.css';
 import type { Session, Settings, TerminalChunk } from '../shared/types';
 import type { ThemeId } from '../shared/theme';
 import { getTerminalTheme } from './themes';
-export interface TerminalHandle { paste: (text: string) => void; focus: () => void }
+import { terminalPromptPacket } from './composer-keyboard';
+export interface TerminalHandle { paste: (text: string) => void; submit: (text: string) => Promise<void>; focus: () => void }
 
 export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:Settings;themeId:ThemeId;active:boolean;onError:(error:unknown)=>void}>(function TerminalPane({session,settings,themeId,active,onError},ref) {
   const host = useRef<HTMLDivElement>(null);
@@ -14,7 +15,16 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
   const status = useRef(session.status);
   const errorHandler = useRef(onError);
   status.current = session.status; errorHandler.current = onError;
-  useImperativeHandle(ref,() => ({paste:text => terminal.current?.paste(text),focus:() => terminal.current?.focus()}),[]);
+  useImperativeHandle(ref,() => ({
+    paste:text => terminal.current?.paste(text),
+    submit:async text => {
+      if(status.current!=='running'||!terminal.current)throw new Error('终端尚未就绪，请先启动会话。');
+      if(!terminal.current.modes.bracketedPasteMode)throw new Error('CLI 尚未准备好接收提示词，请在终端完成登录或目录信任后重试。');
+      // A single IPC write prevents Enter from overtaking a pending asynchronous paste.
+      await window.desktop.writeTerminal(session.id,terminalPromptPacket(text));
+    },
+    focus:() => terminal.current?.focus()
+  }),[session.id]);
   useEffect(() => {
     const term = new Terminal({ fontFamily:'"Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace',fontSize:settings.fontSize,
       lineHeight:1.35,scrollback:settings.scrollback,cursorBlink:true,allowProposedApi:false,convertEol:false,minimumContrastRatio:4.5,

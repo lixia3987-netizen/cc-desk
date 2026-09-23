@@ -45,7 +45,7 @@ export interface WorkflowEngineOptions {
   /** Must reject deleted, archived, non-Claude, or non-structured sessions. */
   getSession(sessionId: string): WorkflowBinding;
   /** Resolves only after a real structured turn result (not after writing stdin). */
-  runStage(sessionId: string, prompt: string): Promise<WorkflowStageResult>;
+  runStage(sessionId: string, prompt: string, titlePrompt: string): Promise<WorkflowStageResult>;
   cancelSession(sessionId: string): void | Promise<void>;
   onChange?(runs: WorkflowRun[]): void;
 }
@@ -314,7 +314,7 @@ export class WorkflowEngine {
         delete current.finishedAt; delete current.error;
       });
       let result: WorkflowStageResult;
-      try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage)); }
+      try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage), run.goal); }
       catch (error) { result = { success: false, summary: '', error: errorText(error) }; }
       if (token.cancelled) return;
       if (!result || typeof result.success !== 'boolean' || typeof result.summary !== 'string') {

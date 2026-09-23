@@ -21,6 +21,30 @@ test('HTTP hooks require the documented version baseline and settings flag', () 
   assert.equal((PTY_HOOK_EVENTS as readonly string[]).includes('SessionStart'), false);
 });
 
+test('only accepted main-session prompt hooks supply automatic naming text', async () => {
+  const id = randomUUID(), nextId = randomUUID(); const prompts: string[] = [];
+  const bridge = await createPtyHookBridge(id, () => {}, undefined, prompt => prompts.push(prompt));
+  const handler = JSON.parse(bridge.settings).hooks.UserPromptSubmit[0].hooks[0];
+  const send = async (event: PtyHookInput) => {
+    const response = await fetch(handler.url, { method: 'POST', headers: { ...handler.headers, 'Content-Type': 'application/json' }, body: JSON.stringify(event) });
+    assert.equal(response.status, 200); assert.equal(await response.text(), '');
+  };
+  try {
+    await send(input(id, 'UserPromptSubmit', { prompt_id: 'one', prompt: '修复登录页面' }));
+    await send(input(id, 'UserPromptSubmit', { prompt_id: 'one', agent_id: 'child', prompt: '不应覆盖父会话' }));
+    await send(input(id, 'UserPromptSubmit', { prompt_id: 'two', prompt: '增加回归测试' }));
+    await send(input(id, 'UserPromptSubmit', { prompt_id: 'one', prompt: '迟到旧消息' }));
+    await send(input(id, 'Stop', { prompt: '完成事件不是用户消息' }));
+    await send(input(id, 'SessionEnd', { reason: 'clear' }));
+    await send(input(id, 'UserPromptSubmit', { prompt: '身份切换期间的旧消息' }));
+    await send(input(nextId, 'UserPromptSubmit', { prompt_id: 'fresh', prompt: '整理项目文档' }));
+    await send(input(id, 'UserPromptSubmit', { prompt: '旧身份消息' }));
+    assert.deepEqual(prompts, ['修复登录页面', '增加回归测试', '整理项目文档']);
+  } finally { await bridge.close(); }
+  const observer = new PtyHookObserver(id, undefined, () => { throw new Error('naming unavailable'); });
+  assert.equal(observer.accept(input(id, 'UserPromptSubmit', { prompt: '保存失败不能阻止原生执行' }))?.taskState, 'thinking');
+});
+
 test('main-session hook states distinguish approval, question, parallel tool work, completion and failure', () => {
   const id = randomUUID(); const observer = new PtyHookObserver(id);
   assert.equal(observer.accept(input(id, 'UserPromptSubmit'))?.taskState, 'thinking');

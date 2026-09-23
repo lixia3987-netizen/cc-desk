@@ -46,6 +46,154 @@ async function fixture(window:BrowserWindow|null=null) {
   return {dir,repo,store,service,runtime,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
+test('worktree creation releases completed structured CLIs under directory locks before invoking Git',async t=>{
+  const f=await fixture();try{
+    const session=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const physical=new Set([session.id]);let release!:()=>void,entered!:()=>void,created=false;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
+    t.mock.method(f.service.chat,'isBusy',()=>false);
+    t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{entered();await new Promise<void>(resolve=>{release=resolve;});physical.delete(id);});
+    const creation=f.service.withSessionCreation(f.repo,true,async()=>{assert.equal(physical.size,0);created=true;});
+    await Promise.race([ready,creation]);
+    assert.equal(created,false);
+    await assert.rejects(f.call('chat:send',{id:session.id,text:'cannot race directory mutation'}),/管理操作/);
+    await assert.rejects(f.service.withSessionCreation(f.repo,false,async()=>{}),/管理操作/);
+    release();await creation;
+    assert.equal(created,true);assert.equal(f.store.state.sessions[0].taskState,'completed');
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('worktree operations refuse real structured tasks, workflows, and terminal ownership',async t=>{
+  const f=await fixture();try{
+    const session=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    let busy=true,workflow=false,stops=0,created=false;
+    t.mock.method(f.service.chat,'has',()=>true);
+    t.mock.method(f.service.chat,'isBusy',()=>busy);
+    t.mock.method(f.service.chat,'stopIdle',async()=>{stops++;});
+    t.mock.method(f.service.workflows,'isSessionBusy',()=>workflow);
+    const attempt=()=>f.service.withSessionCreation(f.repo,true,async()=>{created=true;});
+    await assert.rejects(attempt(),/全部会话/);
+    busy=false;workflow=true;await assert.rejects(attempt(),/全部会话/);
+    workflow=false;f.active.add(session.id);await assert.rejects(attempt(),/全部会话/);
+    assert.equal(created,false);assert.equal(stops,0);
+    // A synced native terminal can be idle while still holding cwd and having
+    // unreported background shell commands, so give a precise close-terminal hint.
+    f.store.change(state=>{state.sessions[0].adapter='terminal';state.sessions[0].terminalSync='synced';});
+    await assert.rejects(attempt(),/原生 Claude 终端仍打开.*关闭终端/);
+    assert.equal(stops,0);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('idle-release failures keep Git unmodified and release management locks for a retry',async t=>{
+  const f=await fixture();try{
+    f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    let physical=true,fail=true,created=false;
+    t.mock.method(f.service.chat,'has',()=>physical);
+    t.mock.method(f.service.chat,'isBusy',()=>false);
+    t.mock.method(f.service.chat,'stopIdle',async()=>{if(fail)throw new Error('CLI 尚未停止');physical=false;});
+    await assert.rejects(f.service.withSessionCreation(f.repo,true,async()=>{created=true;}),/CLI 尚未停止/);
+    assert.equal(created,false);fail=false;
+    await f.service.withSessionCreation(f.repo,true,async()=>{created=true;});assert.equal(created,true);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('idle structured sessions can archive and delete while active tasks retain their records',async t=>{
+  const f=await fixture();try{
+    const archived=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const deleted=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const physical=new Set([archived.id,deleted.id]);let busy=false;
+    t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
+    t.mock.method(f.service.chat,'isBusy',()=>busy);
+    t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{physical.delete(id);});
+    await f.call('session:update',{id:archived.id,archived:true,title:'手动归档标题'});
+    assert.equal(f.store.state.sessions.find(s=>s.id===archived.id)?.archived,true);
+    assert.equal(f.store.state.sessions.find(s=>s.id===archived.id)?.titleSource,'manual');
+    assert.equal(f.store.state.sessions.find(s=>s.id===archived.id)?.taskState,'completed');
+    assert.equal(physical.has(archived.id),false);
+    busy=true;await assert.rejects(f.call('session:delete',deleted.id),/停止会话/);
+    assert.equal(physical.has(deleted.id),true);
+    busy=false;await f.call('session:delete',deleted.id);
+    assert.equal(physical.size,0);assert.equal(f.store.state.sessions.some(s=>s.id===deleted.id),false);
+    await f.call('session:update',{id:archived.id,archived:false,title:'配置时手动标题',model:'selected-model'});
+    assert.equal(f.store.state.sessions[0].titleSource,'manual');assert.equal(f.store.state.sessions[0].model,'selected-model');
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('concurrency limits reclaim idle structured processes and never evict live tasks',async t=>{
+  const f=await fixture();try{
+    const idle=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'}),next=f.add(f.repo);
+    f.store.change(state=>{state.settings.maxSessions=1;});
+    const physical=new Set([idle.id]);let busy=true;
+    t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
+    t.mock.method(f.service.chat,'isBusy',(id:string)=>physical.has(id)&&busy);
+    t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{physical.delete(id);});
+    await assert.rejects(f.service.start(next.id),/最大并发/);
+    assert.equal(physical.has(idle.id),true);
+    busy=false;await f.service.start(next.id);
+    assert.equal(physical.has(idle.id),false);assert.equal(f.active.has(next.id),true);
+    assert.equal(f.store.state.sessions.find(s=>s.id===idle.id)?.taskState,'completed');
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('slot reclamation rechecks native conversation ownership after asynchronous release',async t=>{
+  const f=await fixture();try{
+    const first=f.add(f.repo,{kind:'claude',adapter:'structured',updatedAt:'2020-01-01T00:00:00.000Z'});
+    const second=f.add(f.repo,{kind:'claude',adapter:'structured',updatedAt:'2021-01-01T00:00:00.000Z'});
+    const a=f.add(f.repo,{kind:'claude',adapter:'terminal'}),b=f.add(f.repo,{kind:'claude',adapter:'terminal',claudeId:a.claudeId});
+    f.store.change(state=>{state.settings.maxSessions=2;});
+    const physical=new Set([first.id,second.id]);let entered!:()=>void,release!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
+    t.mock.method(f.service.chat,'isBusy',()=>false);
+    t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{physical.delete(id);entered();await new Promise<void>(resolve=>{release=resolve;});});
+    const pending=f.service.start(a.id);
+    await Promise.race([ready,pending]);
+    // Another caller claims the native transcript while A is waiting on a slot.
+    await f.service.start(b.id);
+    release();await assert.rejects(pending,/同一 Claude 对话/);
+    assert.equal(f.active.has(a.id),false);assert.equal(f.active.has(b.id),true);
+    assert.equal(physical.has(second.id),true,'identity conflicts must not evict another idle session');
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('archiving a queued session during idle eviction prevents its pending prompt from starting',async t=>{
+  const f=await fixture();try{
+    const idle=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const target=f.add(f.repo,{kind:'claude',adapter:'structured'});
+    f.store.change(state=>{state.settings.maxSessions=1;});
+    const physical=new Set([idle.id]);let entered!:()=>void,release!:()=>void,sent=0;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
+    t.mock.method(f.service.chat,'isBusy',()=>false);
+    t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{
+      if(id!==idle.id)return;
+      entered();await new Promise<void>(resolve=>{release=resolve;});physical.delete(id);
+    });
+    t.mock.method(f.service.chat,'send',async()=>{sent++;return {success:true,summary:'done'};});
+    const pending=f.call('chat:send',{id:target.id,text:'queued task'});
+    await Promise.race([ready,pending]);
+    await f.call('session:update',{id:target.id,archived:true});
+    release();await assert.rejects(pending,/取消会话归档/);assert.equal(sent,0);
+    await f.call('session:update',{id:target.id,archived:false});
+    await f.call('chat:send',{id:target.id,text:'explicitly resumed'});assert.equal(sent,1);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('workflow turns explicitly pass their user goal for naming without modifying stage instructions',async t=>{
+  const f=await fixture();try{
+    const session=f.add(f.repo,{kind:'claude',adapter:'structured',titleSource:'default'});
+    const requests:{text:string;titlePrompt?:string}[]=[];
+    t.mock.method(f.service.chat,'send',async(_id:string,text:string,_capabilities:Capabilities,_attachments?:string[],titlePrompt?:string)=>{
+      requests.push({text,titlePrompt});return {success:true,summary:'done'};
+    });
+    const run=f.service.workflows.create({sessionId:session.id,goal:'修复登录状态恢复',stages:[{id:'inspect',title:'检查',instruction:'仅检查实现',dependsOn:[]}]});
+    f.service.workflows.start(run.id);assert.equal((await f.service.workflows.wait(run.id)).status,'completed');
+    assert.equal(requests.length,1);assert.equal(requests[0].titlePrompt,'修复登录状态恢复');
+    assert.match(requests[0].text,/仅检查实现/);assert.notEqual(requests[0].text,requests[0].titlePrompt);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
 test('panel drafts merge independent sections, survive restart and disappear with the owning session',async()=>{
   const f=await fixture();try{
     const a=f.add(f.repo,{kind:'claude',adapter:'structured',draft:'main draft'}),b=f.add(f.repo);

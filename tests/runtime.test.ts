@@ -233,20 +233,22 @@ const send = async (hook_event_name, fields = {}) => {
   if (response.status !== 200) throw new Error('Hook failed: ' + response.status);
 };
 (async () => {
-  await send('UserPromptSubmit');
+  await send('UserPromptSubmit', { prompt: '检查界面与接口' });
   await send('SubagentStart', { agent_id: 'finished', agent_type: '审查' });
   await send('SubagentStart', { agent_id: 'active', agent_type: '测试', permission_mode: 'bypassPermissions' });
   await send('SubagentStop', { agent_id: 'finished', last_assistant_message: '已检查', permission_mode: 'plan' });
   await send('Stop');
 })().catch(error => { console.error(error); process.exit(9); });
 `, { mode: 0o755 });
-      f.store.change(state => { state.sessions[0].kind = 'claude'; state.settings.claudePath = script; });
+      f.store.change(state => { state.sessions[0].kind = 'claude'; state.sessions[0].titleSource = ending === 'stop' ? 'default' : 'manual'; state.settings.claudePath = script; });
       await f.runtime.start(f.session.id, { available: true, executable: script, version: '2.1.278',
         flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
       const session = () => f.store.state.sessions[0];
       await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
         `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));
       assert.equal(session().permissionMode, 'default', 'child modes never overwrite main launch settings');
+      assert.equal(session().title, ending === 'stop' ? '检查界面与接口' : 'cleanup fixture');
+      assert.equal(session().titleSource, ending === 'stop' ? 'auto' : 'manual');
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
       if (ending === 'crash') {
         fs.writeFileSync(crash, 'exit');

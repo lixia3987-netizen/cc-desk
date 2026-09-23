@@ -6,12 +6,14 @@ import type { ThemeId } from './theme';
 import type { PanelDrafts } from './panel-drafts';
 import type { PermissionMode } from './permissions';
 import type { SubtaskActivity } from './subtasks';
+import type { SessionTitleSource } from './session-title';
 export type { PermissionMode } from './permissions';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Session {
   id: string; projectId: string; title: string; kind: 'claude' | 'shell';
+  titleSource?: SessionTitleSource;
   cwd: string; claudeId: string; resumeFrom?: string; imported?: boolean; started: boolean;
   model: string; effort: Effort; permissionMode: PermissionMode;
   status: SessionStatus; archived: boolean; createdAt: string; updatedAt: string;

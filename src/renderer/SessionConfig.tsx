@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Check } from 'lucide-react';
 import type { Capabilities, Effort, Session } from '../shared/types';
-import { busyTask } from './ChatPane';
+import { isSessionBusy } from '../shared/session-activity';
 import { PermissionModeField } from './PermissionModeField';
 
 export function SessionConfig({session,capabilities,onError}:{session:Session;capabilities:Capabilities;onError:(error:unknown)=>void}) {
   const [model,setModel]=useState(session.model),[effort,setEffort]=useState(session.effort),[permission,setPermission]=useState(session.permissionMode),[busy,setBusy]=useState(false),[saved,setSaved]=useState(false);
   useEffect(()=>{setModel(session.model);setEffort(session.effort);setPermission(session.permissionMode);setSaved(false);},[session.id,session.model,session.effort,session.permissionMode]);
-  const locked=busy||session.status==='stopping'||(session.adapter==='structured'?busyTask(session.taskState):session.status==='running');
+  const locked=busy||isSessionBusy(session)||(session.adapter!=='structured'&&session.status==='running');
   const restarts=session.adapter==='structured'&&session.status==='running'&&permission!==session.permissionMode&&(permission==='bypassPermissions'||session.permissionMode==='bypassPermissions');
   return <form className="session-config" onSubmit={event=>{event.preventDefault();setBusy(true);void window.desktop.updateSession({id:session.id,model,effort,permissionMode:permission}).then(()=>setSaved(true)).catch(onError).finally(()=>setBusy(false));}}>
     <h4>运行配置</h4>{session.observedPermissionMode&&<p className="panel-note">{session.status==='running'?'CLI 当前权限':'已保存权限'}：{session.observedPermissionMode}</p>}
