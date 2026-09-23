@@ -7,7 +7,6 @@
 | 字体 | 用途 | 固定依赖版本 | 许可 |
 | --- | --- | --- | --- |
 | [Noto Sans SC](https://fontsource.org/fonts/noto-sans-sc) | 简体中文无衬线，界面与阅读 | `@fontsource-variable/noto-sans-sc@5.3.0` | SIL Open Font License 1.1 |
-| [Noto Serif SC](https://fontsource.org/fonts/noto-serif-sc) | 简体中文衬线，长文阅读 | `@fontsource-variable/noto-serif-sc@5.3.0` | SIL Open Font License 1.1 |
 | [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | 拉丁字符等宽，代码阅读 | `@fontsource-variable/jetbrains-mono@5.3.0` | SIL Open Font License 1.1 |
 
 构建将原始 WOFF2 字体和 Unicode 分段 CSS 一起打入应用，运行时不访问字体 CDN。字体文件未经修改；完整原始许可证复制到 `dist/renderer/font-licenses/`，随桌面应用一起分发。JetBrains Mono 和导入字体缺少的中文字符由内置 Noto Sans SC 补齐，其余由系统字体回退。
@@ -17,6 +16,8 @@
 点击「导入字体」后通过系统文件选择器选取 TTF、OTF、WOFF 或 WOFF2。单个字体上限为 20 MiB，最多保留 24 个导入字体；相同内容自动去重。仅导入你有权使用的字体文件，导入不会将字体安装到操作系统。
 
 应用将字体复制到数据目录的 `fonts/`，按内容散列管理副本。数据目录位于「通知与后台」中。原文件移动或删除后，保存的字体仍可使用。移除条目只删除应用副本；若聊天或菜单正在使用该字体，该区域恢复系统默认。缺失或损坏的副本会显示错误并回退到可用字体，可重新导入或选择系统默认。
+
+旧版内置的 Noto Serif SC 已移除。升级时，曾选择这款内置字体的聊天或菜单区域自动恢复系统默认字体，原字号及其他设置保留。用户自行导入的字体不受影响。
 
 字体库的导入和移除立即保存。字体选择、字号和主题在设置窗口中即时预览；「保存设置」将其保留，取消、Esc、关闭按钮或点击弹窗外部会恢复已保存外观。不需要重新启动应用或正在运行的会话。
 

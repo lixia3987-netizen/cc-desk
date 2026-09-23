@@ -25,15 +25,38 @@ test('fonts: old workspaces keep their terminal size and receive independent cha
     const store = new StateStore(f.data);
     assert.deepEqual(typography(store.state.settings), DEFAULT_TYPOGRAPHY);
     assert.equal(store.state.settings.fontSize, 16);
-    store.change(state => {state.settings.chatFontSize=22;state.settings.uiFontFamily='noto-serif-sc';state.settings.uiFontSize=17;});
+    store.change(state => {state.settings.chatFontSize=22;state.settings.uiFontFamily='noto-sans-sc';state.settings.uiFontSize=17;});
     const restored = new StateStore(f.data).state.settings;
     assert.equal(restored.chatFontSize, 22); assert.equal(restored.uiFontSize, 17);
-    assert.equal(restored.uiFontFamily, 'noto-serif-sc'); assert.equal(restored.fontSize, 16);
+    assert.equal(restored.uiFontFamily, 'noto-sans-sc'); assert.equal(restored.fontSize, 16);
+  } finally { f.dispose(); }
+});
+
+test('fonts: retired built-in settings migrate without losing other preferences or replacing invalid workspaces', () => {
+  const f = fixture();
+  try {
+    fs.mkdirSync(f.data);
+    const file = path.join(f.data, 'workspace.json');
+    const saved = {version:1,projects:[],sessions:[],settings:{...oldSettings,chatFontFamily:'noto-serif-sc',uiFontFamily:'noto-serif-sc',chatFontSize:22,uiFontSize:17}};
+    const original = JSON.stringify(saved); fs.writeFileSync(file, original);
+    const store = new StateStore(f.data);
+    assert.equal(store.state.settings.chatFontFamily, 'system'); assert.equal(store.state.settings.uiFontFamily, 'system');
+    assert.equal(store.state.settings.chatFontSize, 22); assert.equal(store.state.settings.uiFontSize, 17);
+    assert.equal(store.state.settings.fontSize, 16);
+    assert.equal(fs.readFileSync(file, 'utf8'), original);
+    store.flush();
+    assert.equal(fs.readFileSync(file + '.bak', 'utf8'), original);
+    assert.equal(new StateStore(f.data).state.settings.chatFontFamily, 'system');
+    assert.deepEqual(typography({chatFontFamily:'noto-serif-sc',uiFontFamily:'noto-serif-sc'} as never), DEFAULT_TYPOGRAPHY);
+    const invalid = JSON.stringify({...saved,settings:{...saved.settings,uiFontFamily:'missing-font'}});
+    fs.writeFileSync(file, invalid);
+    assert.throws(() => new StateStore(f.data), /原文件已保留/);
+    assert.equal(fs.readFileSync(file, 'utf8'), invalid);
   } finally { f.dispose(); }
 });
 
 test('fonts: settings reject unknown families, CSS injection and out-of-range or fractional sizes', () => {
-  for (const field of ['chatFontFamily','uiFontFamily']) for (const value of ['../file.ttf','Arial','imported:../../file','";color:red','imported:'+'0'.repeat(63)]) {
+  for (const field of ['chatFontFamily','uiFontFamily']) for (const value of ['noto-serif-sc','../file.ttf','Arial','imported:../../file','";color:red','imported:'+'0'.repeat(63)]) {
     assert.equal(settingsSchema.safeParse({...oldSettings,[field]:value}).success, false);
   }
   for (const [field, maximum] of [['chatFontSize',28],['uiFontSize',20]] as const) {
