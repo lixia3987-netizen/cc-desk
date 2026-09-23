@@ -160,6 +160,11 @@ export class ChatHistory {
     // Approval requests belong to the old process, never to a restored UI.
     if (snapshot.pending?.length || LIVE_STATES.has(snapshot.taskState)) this.dirty.add(id);
     snapshot.pending = [];
+    delete snapshot.commands;
+    if (snapshot.context?.status === 'compacting') {
+      snapshot.context = { ...snapshot.context, status: 'unknown', inputTokens: undefined, measuredAt: undefined };
+      this.dirty.add(id);
+    }
     if (LIVE_STATES.has(snapshot.taskState)) snapshot.taskState = 'interrupted';
     if (!TASK_STATES.has(snapshot.taskState)) snapshot.taskState = 'idle';
     entry.managedChange = false;
@@ -298,6 +303,9 @@ export class ChatHistory {
       if (Array.isArray(event.mcpServers)) snapshot.mcpServers = event.mcpServers.filter(item => {
         const server = object(item); return server && typeof server.name === 'string' && typeof server.status === 'string';
       }) as ChatSnapshot['mcpServers'];
+    } else if (event.type === 'context') {
+      const context = object(event.context);
+      if (context && ['unknown','ready','compacting','compacted'].includes(String(context.status))) snapshot.context = context as unknown as ChatSnapshot['context'];
     } else if (event.type === 'result') {
       if (object(event.usage)) snapshot.usage = event.usage as ChatSnapshot['usage'];
       // A result may precede background task completion. Only a state event can

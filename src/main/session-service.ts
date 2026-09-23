@@ -265,6 +265,16 @@ export class SessionService {
       this.store.change(state => {state.sessions=state.sessions.filter(s=>s.id!==id);if(state.selectedSessionId===id)state.selectedSessionId='';}); this.onState();
     }));
     handle('chat:snapshot',idSchema,async id => {this.structured(id);await this.chat.hydrate(id);return this.chat.snapshot(id);});
+    handle('chat:commands',idSchema,async id => {
+      const session=this.structured(id);
+      if(session.archived)throw new Error('请先取消会话归档。');
+      this.assertUnlocked(session);
+      if(this.chat.has(id))return this.chat.snapshot(id);
+      if(this.runtime.has(id)||this.workflows.isSessionBusy(id))throw new Error('请先结束当前会话任务。');
+      await this.reserve(id);
+      try{return await this.chat.prepareCommands(id,this.capabilities());}
+      finally{this.admissions.delete(id);}
+    });
     const messageId=z.string().min(1).max(4096);
     handle('chat:page',z.object({id:idSchema,before:messageId.optional(),after:messageId.optional(),around:messageId.optional(),query:z.string().max(500).optional()}).refine(value=>[value.before,value.after,value.around].filter(Boolean).length<=1),({id,...options})=>{this.structured(id);return this.chat.page(id,options);});
     handle('chat:search',z.object({id:idSchema,query:z.string().trim().min(1).max(500),before:messageId.optional()}),({id,query,before})=>{this.structured(id);return this.chat.search(id,query,before);});

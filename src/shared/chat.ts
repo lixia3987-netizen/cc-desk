@@ -1,3 +1,4 @@
+import type { ClaudeCommand, ContextUsage } from './claude-session';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 export interface ChatMessage {
@@ -35,6 +36,9 @@ export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
   messages: ChatMessage[]; pending: ChatApproval[];
   usage?: ChatUsage; model?: string; permissionMode?: string;
+  context?: ContextUsage;
+  /** The current process's command catalog; never restored from disk. */
+  commands?: ClaudeCommand[];
   mcpServers?: { name: string; status: string }[];
   error?: string; truncated?: boolean;
   /** The CLI transcript was imported only in part; the local journal cannot supply that missing prefix. */

@@ -14,6 +14,7 @@ const api: DesktopAPI = {
   setSelection:id => ipcRenderer.invoke('session:select',id),
   deleteSession:id => ipcRenderer.invoke('session:delete',id),
   chatSnapshot:id => ipcRenderer.invoke('chat:snapshot',id),
+  prepareChatCommands:id => ipcRenderer.invoke('chat:commands',id),
   chatPage:(id,options) => ipcRenderer.invoke('chat:page',{id,...options}),
   searchChat:(id,query,before) => ipcRenderer.invoke('chat:search',{id,query,before}),
   chatAttention:() => ipcRenderer.invoke('chat:attention'),

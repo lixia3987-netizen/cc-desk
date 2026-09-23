@@ -21,7 +21,8 @@ const until = async (condition: () => boolean, timeout = 4000) => {
 const fixture = String.raw`
 const readline = require('node:readline');
 const fs = require('node:fs');
-const session = process.argv[2];
+let session = process.argv[2];
+const commands=[{name:'compact',builtin:true,description:'压缩上下文',argumentHint:'[保留内容]'}, {name:'context',builtin:true,description:'上下文详情'}, {name:'clear',builtin:true}, {name:'team:review',description:'项目代码检查'}, {name:'resume',builtin:true}];
 let permissionMode = process.argv[5] || 'default';
 const bypassEnabled = permissionMode === 'bypassPermissions';
 const output = value => process.stdout.write(JSON.stringify(value)+'\n');
@@ -37,14 +38,44 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    if(r.mode==='bypassPermissions'&&!bypassEnabled){output({type:'control_response',response:{subtype:'error',request_id:m.request_id,error:'bypass was not enabled at launch'}});return;}
    permissionMode=r.mode;
   }
-  output({type:'control_response',response:r.model==='bad'?{subtype:'error',request_id:m.request_id,error:'unknown model'}:{subtype:'success',request_id:m.request_id,response:{}}});
+  output({type:'control_response',response:r.model==='bad'?{subtype:'error',request_id:m.request_id,error:'unknown model'}:{subtype:'success',request_id:m.request_id,response:r.subtype==='initialize'?{commands}: {}}});
   if(r.subtype==='interrupt'){if(pending)output({type:'control_cancel_request',request_id:pending.id});pending=undefined;done('interrupted');}
   return;
  }
  if(m.type==='user'){
-  ++turn;current=m.message.content[0].text;
+  ++turn;current=typeof m.message.content==='string'?m.message.content:m.message.content[0].text;
   output({type:'system',subtype:'init',session_id:current==='wrong-session'?'11111111-1111-4111-8111-111111111111':session,model:'fixture-model',permissionMode,mcp_servers:[{name:'memory',status:'connected'}]});
   if(current==='child-init')output({type:'system',subtype:'init',session_id:'11111111-1111-4111-8111-111111111111',parent_tool_use_id:'parent',model:'child-model',permissionMode:'acceptEdits'});
+  if(current==='context-fixture'){
+   for(const [id,input,cache] of [['first',100,10000],['second',200,40000],['second',200,40000]])output({type:'assistant',message:{id,model:'fixture-model',usage:{input_tokens:input,cache_read_input_tokens:cache,cache_creation_input_tokens:5000},content:[]}});
+   output({type:'assistant',parent_tool_use_id:'child',message:{model:'child-model',usage:{input_tokens:900000},content:[]}});
+   output({type:'result',subtype:'success',result:'done',session_id:session,usage:{input_tokens:999999},modelUsage:{'fixture-model':{contextWindow:200000,inputTokens:999999},'child-model':{contextWindow:1000000}}});return;
+  }
+  if(current==='/compact'){
+   output({type:'system',subtype:'status',status:'compacting'});
+   setTimeout(()=>{output({type:'system',subtype:'compact_boundary',compact_metadata:{trigger:'manual',pre_tokens:45200}});done('compacted');},30);return;
+  }
+  if(current==='/compact noop'){done('Not enough messages to compact');return;}
+  if(current==='/compact fail'){
+   output({type:'system',subtype:'status',status:'compacting'});
+   output({type:'result',subtype:'error_during_execution',is_error:true,session_id:session,errors:['compaction failed']});return;
+  }
+  if(current==='auto-compact'){
+   output({type:'system',subtype:'status',status:'compacting'});
+   output({type:'assistant',message:{model:'fixture-model',usage:{input_tokens:199999},content:[]}});
+   output({type:'system',subtype:'compact_boundary',compact_metadata:{trigger:'auto',pre_tokens:45200}});
+   output({type:'stream_event',event:{type:'message_start',message:{id:'after-compact',model:'fixture-model',usage:{input_tokens:8000}}}});
+   done('continued after automatic compaction');return;
+  }
+  if(current==='/context'){
+   output({type:'assistant',message:{id:'context-report',content:[{type:'text',text:'context report'}]},context_usage:{model:'fixture-model',total_tokens:12000,raw_max_tokens:200000,percentage:6}});done('context report');return;
+  }
+  if(current==='/clear'){
+   session='22222222-2222-4222-8222-222222222222';output({type:'conversation_reset',session_id:session,new_conversation_id:session});done('cleared');return;
+  }
+  if(current==='/team:review 参数'){
+   output({type:'system',subtype:'commands_changed',commands:[{name:'context',builtin:true},{name:'new-skill',description:'新 Skill',builtin:false}]});done('skill done');return;
+  }
   if(current==='malformed'){process.stdout.write('not-json\n');return;}
   if(current==='crash'){output({type:'result',subtype:'error_during_execution',is_error:true,errors:['fixture auth failure'],session_id:session});process.exitCode=1;process.stdin.destroy();return;}
   if(current==='multi-block'||current==='partial-blocks'){
@@ -888,5 +919,66 @@ test('background lifecycle remains accurate after the task display reaches its b
     fs.writeFileSync(path.join(s.directory, 'release-overflow'), 'release');
     assert.equal((await result).summary, 'all tasks done');
     assert.equal(s.runtime.isBusy(s.session.id), false);
+  } finally { await s.cleanup(); }
+});
+
+test('command discovery starts no model turn, preserves metadata, and sends slash arguments as a string', async () => {
+  const s = setup(); try {
+    await assert.rejects(s.runtime.send(s.session.id, '/context', capabilities, ['/nonexistent.png']), /移除附件/);
+    assert.equal(s.runtime.has(s.session.id), false);
+    await assert.rejects(s.runtime.send(s.session.id, '/resume other', capabilities), /工作台/);
+    assert.equal(s.runtime.snapshot(s.session.id).taskState, 'idle');
+    const snapshot = await s.runtime.prepareCommands(s.session.id, capabilities);
+    assert.equal(snapshot.taskState, 'idle'); assert.equal(snapshot.messages.length, 0);
+    assert.equal(snapshot.commands?.find(command => command.name === 'compact')?.kind, 'builtin');
+    assert.equal(snapshot.commands?.find(command => command.name === 'compact')?.argumentHint, '[保留内容]');
+    assert.equal(s.sent().filter(frame => frame.type === 'user').length, 0);
+    await assert.rejects(s.runtime.send(s.session.id, '/resume other', capabilities), /工作台/);
+    assert.equal((await s.runtime.send(s.session.id, '/team:review 参数', capabilities)).success, true);
+    assert.equal(s.sent().find(frame => frame.type === 'user').message.content, '/team:review 参数');
+    assert.deepEqual(s.runtime.snapshot(s.session.id).commands?.map(command => command.name), ['context', 'new-skill']);
+    await s.runtime.stopIdle(s.session.id);
+    assert.equal(s.runtime.snapshot(s.session.id).commands, undefined);
+  } finally { await s.cleanup(); }
+});
+
+test('context tracks the latest root request, compaction completion, reports, reset identity and restart recovery', async () => {
+  const s = setup(); try {
+    await s.runtime.send(s.session.id, 'context-fixture', capabilities);
+    const context = s.runtime.snapshot(s.session.id).context;
+    assert.equal(context?.inputTokens, 45200); assert.equal(context?.contextWindow, 200000); assert.equal(context?.model, 'fixture-model');
+    const compact = s.runtime.send(s.session.id, '/compact', capabilities);
+    await until(() => s.runtime.snapshot(s.session.id).context?.status === 'compacting');
+    await assert.rejects(s.runtime.send(s.session.id, '/context', capabilities), /上一轮/);
+    assert.equal((await compact).success, true);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.status, 'compacted');
+    assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, undefined);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.lastCompaction?.preTokens, 45200);
+    await s.runtime.send(s.session.id, '/context', capabilities);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, 12000);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.source, 'context-command');
+    const history = new ChatHistory(s.directory, () => false);
+    assert.equal(history.get(s.session.id).context?.inputTokens, 12000); history.flush();
+    await s.runtime.send(s.session.id, '/clear', capabilities);
+    assert.equal(s.store.state.sessions[0].claudeId, '22222222-2222-4222-8222-222222222222');
+    assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, undefined);
+    assert.ok(s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'context-fixture'));
+    assert.equal((await s.runtime.send(s.session.id, 'after clear', capabilities)).success, true);
+    assert.equal(s.sent().filter(frame => frame.type === 'user').at(-1).session_id, '22222222-2222-4222-8222-222222222222');
+  } finally { await s.cleanup(); }
+});
+
+test('unsuccessful compaction keeps its last measurement and auto-compaction resumes with the next request', async () => {
+  const s = setup(); try {
+    await s.runtime.send(s.session.id, 'context-fixture', capabilities);
+    assert.equal((await s.runtime.send(s.session.id, '/compact noop', capabilities)).success, true);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.lastCompaction, undefined);
+    assert.equal((await s.runtime.send(s.session.id, '/compact fail', capabilities)).success, false);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.status, 'ready');
+    assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, 45200);
+    await s.runtime.send(s.session.id, 'auto-compact', capabilities);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.lastCompaction?.trigger, 'auto');
+    assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, 8000);
+    assert.equal(s.runtime.snapshot(s.session.id).context?.status, 'ready');
   } finally { await s.cleanup(); }
 });
