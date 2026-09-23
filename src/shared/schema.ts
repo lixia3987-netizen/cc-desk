@@ -6,6 +6,7 @@ export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const settingsSchema = z.object({
   claudePath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   shellPath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
+  idePath: z.string().trim().max(4096).refine(s => !/[\x00-\x1f\x7f]/.test(s), 'IDE 应用路径不能包含控制字符。').default(''),
   maxSessions: z.number().int().min(1).max(12), fontSize: z.number().int().min(11).max(24),
   scrollback: z.number().int().min(1000).max(50000),
   notifications: z.boolean().optional(), closeToTray: z.boolean().optional(), theme: z.enum(THEME_IDS).optional(),

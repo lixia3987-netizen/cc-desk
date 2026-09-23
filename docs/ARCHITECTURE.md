@@ -21,6 +21,12 @@ MessageText 识别 Mermaid 代码围栏，源码与本地图表独立切换。Me
 
 渲染使用 Mermaid strict 模式，锁定宿主安全及主题配置，禁用 HTML 标签和链接绑定；SVG 再经 DOMPurify 过滤并移除外部资源引用，保持现有 CSP。源码上限 32,000 字符、边数上限 300、输出 SVG 上限 2 MiB，超限时保留源码入口。配置语义见 [Mermaid 官方文档](https://mermaid.js.org/config/schema-docs/config)。代码复制通过只写文本的受校验 IPC 调用系统剪贴板，最多 4 MiB UTF-8；不开放剪贴板读取或网页权限。
 
+## 外部 IDE
+
+应用路径保存在本机工作台设置中，旧配置迁移为空值。原生应用选择器只更新设置草稿，保存后生效。打开请求仅传项目或会话 ID，主进程从已保存状态确定目录，隔离会话使用自身 cwd。启动前检查目录、应用类型及权限；路径失效不影响工作台加载，可在设置中重新选择。
+
+Windows 使用指定 .exe，macOS 应用包通过 `/usr/bin/open -a` 交给 LaunchServices，其他可执行文件直接启动。应用路径和目录使用独立参数，`shell: false`；不解析 CMD/BAT、快捷方式或命令字符串。启动环境清除工作台和 Electron 专用标记，编辑器进程独立运行，不计入 Claude 会话并发或随会话停止。
+
 ## 数据与恢复
 
 设置和会话元数据仍使用版本 1 JSON，新增字段可选，兼容 v0.1。StateStore 深拷贝、校验、写临时文件、fsync、备份、rename；损坏数据不会被空状态覆盖。重启把活动进程和回合标为停止/中断。

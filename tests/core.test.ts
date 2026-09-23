@@ -81,6 +81,26 @@ test('launch and resume pass only the explicitly selected permission mode to the
     assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.claudeId,'--permission-mode',permissionMode]);
   }
 });
+test('IDE preference migrates old settings, persists a custom application and can be cleared',()=>{
+  const dir=temp();try{
+    const oldSettings={claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000};
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[session()],settings:oldSettings}));
+    const store=new StateStore(dir);
+    assert.equal(store.state.settings.idePath,'');
+    const idePath='C:\\Apps\\定制 VS Code\\Code.exe';
+    store.change(state=>{state.settings.idePath=idePath;});
+    const restored=new StateStore(dir);
+    assert.equal(restored.state.settings.idePath,idePath);
+    assert.equal(restored.state.sessions.length,1);
+    // A missing application can be repaired in settings later; it must not block loading the workspace.
+    for(const invalid of ['app\0.exe','app\n.exe','app\t.exe','x'.repeat(4097)]){
+      assert.throws(()=>restored.change(state=>{state.settings.idePath=invalid;}));
+      assert.equal(new StateStore(dir).state.settings.idePath,idePath);
+    }
+    restored.change(state=>{state.settings.idePath='';});
+    assert.equal(new StateStore(dir).state.settings.idePath,'');
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
 test('terminal buffer bounds retained output and assigns monotonically increasing sequence IDs',()=>{
   const buffer=new TerminalBuffer();for(let i=0;i<1500;i++)buffer.push('id','x'.repeat(1024));
   assert.ok(buffer.chunks.length<=1024);assert.equal(buffer.chunks.at(-1)!.seq,1500);assert.ok(buffer.chunks[0].seq>1);

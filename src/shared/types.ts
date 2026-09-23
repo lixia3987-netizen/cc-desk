@@ -20,7 +20,7 @@ export interface Session {
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
   panelDrafts?: PanelDrafts;
 }
-export interface Settings { claudePath: string; shellPath: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
+export interface Settings { claudePath: string; shellPath: string; idePath?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
 export interface Snapshot { state: AppState; capabilities: Capabilities; platform: string; dataPath: string }
@@ -84,6 +84,8 @@ export interface DesktopAPI {
   gitInfo(sessionId: string): Promise<GitInfo>;
   exportTranscript(id: string): Promise<string | null>;
   openFolder(id: string): Promise<void>;
+  chooseIdeApplication(): Promise<string | null>;
+  openIde(id: string): Promise<void>;
   onState(callback: (state: AppState) => void): () => void;
   onError(callback: (message: string) => void): () => void;
   onNavigate(callback: (sessionId: string) => void): () => void;

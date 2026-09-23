@@ -399,6 +399,11 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 
 /* Settings keep the theme choices and commit actions within easy reach. */
 .preferences { width:650px; max-width:100%; }
+.ide-open {flex-shrink:0}
+.ide-path-row {display:flex;align-items:center;gap:8px}
+.ide-path-row input {flex:1;min-width:0}
+.ide-path-row button {flex-shrink:0;white-space:nowrap}
+.ide-preferences>label {margin-bottom:8px}
 .preferences .theme-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .preferences form > .modal-actions { position:sticky; bottom:-32px; z-index:2; margin:23px -32px -32px; padding:14px 32px; border-top:1px solid var(--border); background:var(--elevated); }
 @media(max-width:700px) { .preferences .theme-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }

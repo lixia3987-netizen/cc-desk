@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
-import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
+import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Code2, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
 import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, busyTask, taskLabels } from './ChatPane';
@@ -66,6 +66,14 @@ export function App() {
   const [dataPath,setDataPath]=useState('');
   const [platform,setPlatform]=useState('');
   const [draftSettings,setDraftSettings]=useState<Settings>();
+  const focusIdeSettings=useRef(false);
+  useEffect(()=>{
+    if(modal==='settings'&&focusIdeSettings.current){
+      focusIdeSettings.current=false;
+      const input=document.getElementById('ide-application-path');
+      input?.focus();input?.scrollIntoView({block:'center'});
+    }
+  },[modal]);
   const [startupTheme]=useState(readCachedTheme);
   const savedTheme=state?normalizeThemeId(state.settings.theme):startupTheme;
   const themeId=modal==='settings'&&draftSettings?normalizeThemeId(draftSettings.theme):savedTheme;
@@ -177,6 +185,18 @@ export function App() {
     if(detect&&!cliChanged)await window.desktop.detect();
     await refresh();setNotice(detect?'设置已保存并完成检测':'设置已保存');
   });
+  const chooseIdeApplication=()=>perform(async()=>{
+    const idePath=await window.desktop.chooseIdeApplication();
+    if(idePath!==null)setDraftSettings(current=>current?{...current,idePath}:current);
+  });
+  const openIde=()=>{
+    const target=active?.id??project?.id;
+    if(!target||!state)return;
+    if(!state.settings.idePath?.trim()){
+      setError('');setDraftSettings({...state.settings});focusIdeSettings.current=true;setModal('settings');return;
+    }
+    void perform(async()=>{await window.desktop.openIde(target);setNotice('已发送到指定 IDE');});
+  };
   const openHistory=() => perform(async () => {
     const id=projectId==='all'?(active?.projectId??state?.projects[0]?.id):projectId;
     if(!id)throw new Error('请先添加一个项目。');
@@ -245,6 +265,7 @@ export function App() {
           <div className="session-title-line"><h1><span title={active.title}>{active.title}</span><button className="icon-button" title="重命名" onClick={()=>{setRename(active.title);setModal('rename');}}><MoreHorizontal size={18}/></button></h1><span className={`status-tag ${active.status}`}><span className={`dot ${active.status}`}/>{sessionLabel(active)}</span></div>
         </div>:<div className="breadcrumb"><FolderOpen size={15}/><span>{project?.name??'工作空间'}</span><ChevronRight size={13}/><strong>概览</strong></div>}
         <div className="workspace-actions"><AttentionCenter sessions={state.sessions} projects={state.projects} onOpen={item=>{const target=state.sessions.find(session=>session.id===item.sessionId);if(!target)return;setProjectId('all');setArchived(target.archived);setSearch('');selectSession(item.sessionId);setAttentionTarget({...item,nonce:++attentionNonce.current});}}/><button className="icon-button command-button" aria-label="命令面板" title="命令面板 Ctrl / ⌘ + K" onClick={()=>{setPaletteQuery('');setModal('palette');}}><Command size={16}/></button>
+          {(active||project)&&<button className="secondary compact ide-open" aria-label="在 IDE 中打开" title={state.settings.idePath?`使用 ${state.settings.idePath} 打开 ${active?.cwd??project?.path}`:'配置用于打开项目的 IDE 应用'} disabled={busy} onClick={openIde}><Code2 size={16}/>IDE</button>}
           {active&&<div className="session-actions"><button className="secondary compact" aria-label="打开工作目录" title={active.cwd} onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={16}/></button><button className="secondary compact" title="导出会话记录" onClick={()=>void perform(async()=>{const file=await window.desktop.exportTranscript(active.id);if(file)setNotice('会话记录已导出');})}><ArrowDownToLine size={16}/></button>{active.status==='running'?<><button className="secondary compact" onClick={()=>void perform(()=>window.desktop.interruptSession(active.id))}>中断任务</button><button className="secondary compact danger" onClick={()=>void perform(()=>window.desktop.stopSession(active.id))}><Square size={13}/>停止</button></>:<button className="primary compact" disabled={busy||active.archived||active.status==='stopping'} onClick={()=>{if(structured){document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus();setNotice('输入任务并发送后，将启动 Claude 会话。');}else void start(active);}}><Play size={14}/>{structured?'开始输入':active.started?'恢复会话':'启动会话'}</button>}</div>}
         </div>
       </header>
@@ -291,10 +312,11 @@ export function App() {
         {!cap.available&&draft.kind==='claude'&&<p className="hint">可以先创建会话；启动前请在设置中连接 Claude Code。</p>}
         <button className="primary full" disabled={busy||!draft.projectId}>{busy?<Loader2 size={16} className="spin"/>:<Plus size={16}/>}创建会话</button>
       </form></>}
-      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，管理本机 Claude Code 连接。</p><form onSubmit={event=>{event.preventDefault();void savePreferences(false);}}>
+      {modal==='settings'&&draftSettings&&<><div className="eyebrow">PREFERENCES</div><h2>设置与连接</h2><p>选择工作台外观，配置本机 Claude Code 和外部 IDE。</p><form onSubmit={event=>{event.preventDefault();void savePreferences(false);}}>
         <ThemePicker value={normalizeThemeId(draftSettings.theme)} disabled={busy} onChange={theme=>setDraftSettings({...draftSettings,theme})}/>
         <PermissionModeField label="默认权限模式" value={draftSettings.defaultPermissionMode??'default'} disabled={busy} onChange={defaultPermissionMode=>setDraftSettings({...draftSettings,defaultPermissionMode})}/>
         <p className="hint">用于新建和首次导入的 Claude 会话，可在创建时调整。已有会话保留自己的模式，创建分支时继承原会话模式。</p>
+        <div className="ide-preferences"><label htmlFor="ide-application-path">外部 IDE 应用</label><div className="ide-path-row"><input id="ide-application-path" aria-label="IDE 应用路径" aria-describedby="ide-path-help" disabled={busy} maxLength={4096} value={draftSettings.idePath??''} placeholder={platform==='win32'?'例如 C:\\Apps\\Custom VS Code\\Code.exe':platform==='darwin'?'/Applications/WebStorm.app':'例如 /opt/WebStorm/bin/webstorm.sh'} onChange={event=>setDraftSettings({...draftSettings,idePath:event.target.value})}/><button type="button" className="secondary" disabled={busy} onClick={()=>void chooseIdeApplication()}><FolderOpen size={14}/>选择 IDE 应用</button></div><p className="hint" id="ide-path-help">选择你安装的 VS Code、WebStorm 或定制版应用，保存后点击顶部「IDE」打开当前工作目录（包括隔离 worktree）。{platform==='win32'?'请选择 Code.exe、webstorm64.exe 等程序文件。':platform==='darwin'?'请选择 .app 应用或可执行文件。':'请选择可执行文件或可执行的启动脚本。'}填写完整路径，无需添加项目路径或启动参数；留空可清除配置。</p></div>
         <label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={draftSettings.claudePath} placeholder="留空自动检测 · C:\Users\你\.local\bin\claude.exe" onChange={e=>setDraftSettings({...draftSettings,claudePath:e.target.value})}/></label>
         <label>Shell 可执行文件<input value={draftSettings.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={e=>setDraftSettings({...draftSettings,shellPath:e.target.value})}/></label>
         <div className="form-grid"><label>最大并发会话<input type="number" min={1} max={12} value={draftSettings.maxSessions} onChange={e=>setDraftSettings({...draftSettings,maxSessions:Number(e.target.value)})}/></label><label>终端字号<input type="number" min={11} max={24} value={draftSettings.fontSize} onChange={e=>setDraftSettings({...draftSettings,fontSize:Number(e.target.value)})}/></label></div>

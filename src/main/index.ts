@@ -9,6 +9,7 @@ import { StateStore } from './store';
 import { Runtime } from './runtime';
 import { SessionService } from './session-service';
 import { detectCLI } from './commands';
+import { openIde } from './ide';
 import { cleanupWorktree, createWorktree, gitInfo } from './git';
 import { readHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
@@ -140,6 +141,17 @@ function registerIPC() {
     const cwd = store.state.projects.find(p => p.id === id)?.path ?? runtime.getSession(id).cwd;
     const error = await shell.openPath(cwd);
     if (error) throw new Error(error);
+  });
+  handle('ide:choose',z.undefined(),async () => {
+    const filters = process.platform === 'win32' ? [{name:'IDE 应用',extensions:['exe']}]
+      : process.platform === 'darwin' ? [{name:'IDE 应用',extensions:['app']},{name:'所有文件',extensions:['*']}] : undefined;
+    // On macOS, .app packages remain selectable applications, not navigable folders.
+    const result = await dialog.showOpenDialog(window!,{properties:['openFile'],title:'选择 IDE 应用',buttonLabel:'选择应用',filters});
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  handle('ide:open',idSchema,id => {
+    const cwd = store.state.projects.find(p => p.id === id)?.path ?? runtime.getSession(id).cwd;
+    return openIde(store.state.settings.idePath,cwd);
   });
 }
 
