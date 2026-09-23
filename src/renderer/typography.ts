@@ -1,4 +1,4 @@
-import { BUILTIN_FONTS, IMPORTED_FONT_ID, fontFamily, importedFamily, typography, type FontId, type TypographySettings } from '../shared/fonts';
+import { IMPORTED_FONT_ID, fontFamily, importedFamily, typography, type FontId, type TypographySettings } from '../shared/fonts';
 
 const cacheKey = 'cc-desk.typography';
 export function readCachedTypography() {
@@ -23,12 +23,7 @@ export function unloadImportedFont(id: string) {
   imports.delete(id);
 }
 export function loadFont(id: FontId): Promise<void> {
-  if (!IMPORTED_FONT_ID.test(id)) {
-    const family = BUILTIN_FONTS.find(font => font.id === id)?.family;
-    return family ? document.fonts.load('16px "' + family + '"', '中文 Aa 123').then(fonts => {
-      if (!fonts.length) throw new Error('内置字体资源缺失，请重新安装应用。');
-    }) : Promise.resolve();
-  }
+  if (!IMPORTED_FONT_ID.test(id)) return Promise.resolve();
   const cached = imports.get(id);
   if (cached) return cached.promise;
   const item: FontLoad = { promise: Promise.resolve() };

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { AppState, Session } from '../src/shared/types';
 import type { ChatSnapshot } from '../src/shared/chat';
 import { importedFamily } from '../src/shared/fonts';
+import { fontFixture } from './fixtures/font';
 
 async function workspace() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-fonts-ui-'));
@@ -21,7 +22,7 @@ async function workspace() {
   await fs.writeFile(path.join(data,'workspace.json'),JSON.stringify(state));
   await fs.writeFile(path.join(data,'chat',session.id+'.json'),JSON.stringify(chat));
   const source = path.join(directory,'My imported font.woff2');
-  await fs.copyFile(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'),source);
+  await fs.writeFile(source,fontFixture);
   const launch = () => electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
   return {directory,data,source,launch,dispose:()=>fs.rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100})};
 }
@@ -50,16 +51,22 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     const menuSize = () => page.locator('html').evaluate(el=>getComputedStyle(el).fontSize);
     await expect.poll(chatSize).toBe('12px'); await expect.poll(menuSize).toBe('13px');
     let settings = await openSettings(page);
+    for (const label of ['聊天字体','菜单字体']) {
+      await expect(settings.getByLabel(label,{exact:true}).locator('option')).toHaveText(['系统默认']);
+    }
+    await picker(app,f.source); await settings.getByRole('button',{name:'导入字体',exact:true}).click();
+    await expect(settings.locator('.imported-fonts li')).toHaveCount(1);
+    await expect(settings.getByRole('button',{name:'导入字体',exact:true})).toBeEnabled();
+    const [font] = await page.evaluate(()=>window.desktop.listFonts());
     await settings.getByLabel('聊天字号',{exact:true}).fill('18');
     await expect.poll(chatSize).toBe('18px'); await expect.poll(menuSize).toBe('13px');
     await expect(page.locator('.composer textarea')).toHaveCSS('font-size','18px');
     await settings.getByLabel('菜单字号',{exact:true}).fill('16');
     await expect.poll(menuSize).toBe('16px'); await expect.poll(chatSize).toBe('18px');
-    await settings.getByLabel('聊天字体',{exact:true}).selectOption('noto-sans-sc');
-    await settings.getByLabel('菜单字体',{exact:true}).selectOption('jetbrains-mono');
-    expect(await fontLoaded(page,'Noto Sans SC Variable')).toBe(true);
-    expect(await fontLoaded(page,'JetBrains Mono Variable','Aa 123')).toBe(true);
-    await expect(page.locator('.message-markdown').first()).toHaveCSS('font-family',/Noto Sans SC Variable/);
+    await settings.getByLabel('聊天字体',{exact:true}).selectOption(font.id);
+    await expect(settings.getByLabel('菜单字体',{exact:true})).toHaveValue('system');
+    expect(await fontLoaded(page,importedFamily(font.id),'A')).toBe(true);
+    await expect(page.locator('.message-markdown').first()).toHaveCSS('font-family',new RegExp(importedFamily(font.id)));
     await settings.getByRole('tab',{name:'连接与终端',exact:true}).click();
     await settings.getByLabel('终端字号',{exact:true}).fill('17');
     await settings.getByRole('tab',{name:'外观与字体',exact:true}).click();
@@ -69,10 +76,11 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     await expect.poll(chatSize).toBe('12px'); await expect.poll(menuSize).toBe('13px');
 
     settings = await openSettings(page);
+    await expect(settings.getByLabel('聊天字体',{exact:true})).toHaveValue('system');
     await settings.getByLabel('聊天字号',{exact:true}).fill('18');
     await settings.getByLabel('菜单字号',{exact:true}).fill('15');
-    await settings.getByLabel('聊天字体',{exact:true}).selectOption('noto-sans-sc');
-    await settings.getByLabel('菜单字体',{exact:true}).selectOption('jetbrains-mono');
+    await settings.getByLabel('聊天字体',{exact:true}).selectOption('system');
+    await settings.getByLabel('菜单字体',{exact:true}).selectOption(font.id);
     await settings.getByRole('button',{name:'保存设置',exact:true}).click();
     await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontSize).toBe(18);
     await expect(settings.getByRole('button',{name:'保存设置',exact:true})).toBeEnabled();
@@ -82,36 +90,11 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     await page.screenshot({path:testInfo.outputPath('font-chat.png')});
     await app.close(); app=await f.launch(); page=await app.firstWindow();
     await expect.poll(chatSize).toBe('18px'); await expect.poll(menuSize).toBe('15px');
-    expect(await fontLoaded(page,'Noto Sans SC Variable')).toBe(true);
+    await expect.poll(()=>fontLoaded(page,importedFamily(font.id),'A')).toBe(true);
+    await expect(page.locator('html')).toHaveCSS('font-family',new RegExp(importedFamily(font.id)));
     const saved = (await page.evaluate(()=>window.desktop.snapshot())).state.settings;
-    expect(saved.chatFontFamily).toBe('noto-sans-sc'); expect(saved.uiFontFamily).toBe('jetbrains-mono');
+    expect(saved.chatFontFamily).toBe('system'); expect(saved.uiFontFamily).toBe(font.id);
     expect(saved.fontSize).toBe(14);
-  } finally {await app.close();await f.dispose();}
-});
-
-test('fonts: a workspace using the retired built-in opens with system fonts and keeps its sessions and sizes', async () => {
-  const f = await workspace();
-  const file = path.join(f.data,'workspace.json'), original = JSON.parse(await fs.readFile(file,'utf8'));
-  Object.assign(original.settings,{chatFontFamily:'noto-serif-sc',uiFontFamily:'noto-serif-sc',chatFontSize:19,uiFontSize:16});
-  await fs.writeFile(file,JSON.stringify(original));
-  const app = await f.launch();
-  try {
-    const page = await app.firstWindow();
-    await expect(page.getByRole('heading',{name:'清晰阅读，自由设置',exact:true})).toBeVisible();
-    await expect(page.locator('.message-markdown').first()).toHaveCSS('font-size','19px');
-    await expect(page.locator('html')).toHaveCSS('font-size','16px');
-    const settings = await openSettings(page);
-    for (const label of ['聊天字体','菜单字体']) {
-      const selector = settings.getByLabel(label,{exact:true});
-      await expect(selector).toHaveValue('system');
-      await expect(selector.locator('option[value="noto-serif-sc"]')).toHaveCount(0);
-    }
-    const snapshot = (await page.evaluate(()=>window.desktop.snapshot())).state;
-    expect(snapshot.sessions.map(session=>session.id)).toEqual(original.sessions.map((session:Session)=>session.id));
-    expect(snapshot.settings.fontSize).toBe(original.settings.fontSize);
-    await settings.getByRole('button',{name:'保存设置',exact:true}).click();
-    await expect.poll(async()=>JSON.parse(await fs.readFile(file,'utf8')).settings.chatFontFamily).toBe('system');
-    expect(JSON.parse(await fs.readFile(file,'utf8')).settings.uiFontFamily).toBe('system');
   } finally {await app.close();await f.dispose();}
 });
 

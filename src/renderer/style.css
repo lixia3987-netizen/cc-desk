@@ -516,5 +516,5 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 /* Chat and interface typography are independent from the live terminal. */
 .chat-message,.message-markdown,.composer textarea,.approval-card legend,.question-options button>span{font-family:var(--chat-font-family)}
 .chat-message>header,.tool-card>summary{font-family:var(--ui-font-family)}
-.message-markdown code,.message-markdown pre,.tool-input{font-family:"JetBrains Mono Variable","Noto Sans SC Variable",monospace}
+.message-markdown code,.message-markdown pre,.tool-input{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
 .statusbar{height:auto;min-height:30px;gap:10px;padding-block:6px;flex-wrap:wrap}

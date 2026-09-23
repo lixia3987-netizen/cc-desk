@@ -4,8 +4,6 @@ import { App } from './App';
 import { applyTheme } from './themes';
 import { readCachedTheme } from './theme-preferences';
 import { applyTypography, readCachedTypography } from './typography';
-import '@fontsource-variable/noto-sans-sc';
-import '@fontsource-variable/jetbrains-mono';
 import './themes.css';
 import './style.css';
 import './settings.css';

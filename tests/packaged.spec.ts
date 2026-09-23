@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { extractFile } from '@electron/asar';
+import { listPackage } from '@electron/asar';
 
 type Target = { format: string; artifact: string; executable: string; arch: string };
 const manifest = process.env.WORKBENCH_PACKAGED_TARGETS;
@@ -70,18 +70,9 @@ for (const target of targets) {
     try {
       let page = await launch();
       await expect(page.getByRole('heading', { name: /让每个想法/ })).toBeVisible();
-      // Exercise the actual packaged font URLs, not the development node_modules tree.
-      expect(await page.evaluate(async () => {
-        const families = ['Noto Sans SC Variable','JetBrains Mono Variable'];
-        for (const family of families) {
-          const faces = await document.fonts.load('16px "'+family+'"','中文 Aa 123');
-          if (!faces.length || faces.some(face=>face.status!=='loaded')) return false;
-        }
-        return true;
-      })).toBe(true);
+      // A release must not retain stale bundled font files from an earlier build.
       const archivePath = await app!.evaluate(({app}) => app.getAppPath());
-      const notices = ['noto-sans-sc','jetbrains-mono'].map(family => extractFile(archivePath,path.join('dist','renderer','font-licenses',family+'-OFL.txt')).toString('utf8'));
-      for (const notice of notices) expect(notice).toContain('SIL OPEN FONT LICENSE');
+      expect(listPackage(archivePath,{isPack:false}).filter(file => /@fontsource-variable|font-licenses|noto-(?:sans|serif)-sc|jetbrains-mono/.test(file))).toEqual([]);
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
       // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
       await page.evaluate(p => window.desktop.addProject(p), project);

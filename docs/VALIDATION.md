@@ -1,5 +1,13 @@
 # 验证记录
 
+## 移除全部 Fontsource Variable 字体包
+
+- 删除剩余 Noto Sans SC、JetBrains Mono 的依赖与锁文件记录、样式导入、内置字体选项和许可证复制步骤；安装目录、依赖清单及生产产物中均无 `@fontsource-variable/*` 及其字体资源。
+- 聊天和菜单使用系统默认或用户导入字体，代码使用系统等宽字体；导入字体缺少的字符由操作系统补齐。按要求删除旧内置字体设置迁移，不处理旧配置适配；下方相关迁移及内置字体记录仅保留历史结果。
+- 字体导入测试改用项目原创的 380 字节 WOFF2 样本，测试与运行均无需 Fontsource 包。保留原生选择器、复制 / 去重、预览 / 取消 / 重启、损坏校验、移除回退及终端连接保护，安装包检查改为拒绝残留字体资源。
+- `npm run check` 通过：TypeScript、生产构建和 237 项 Node 测试（236 通过，1 项 Windows 专用测试在 Linux 跳过）。Linux 虚拟 X11 下字体、上下文 / 命令及主题共 7 项真实 Electron 场景全部通过；依赖和构建产物检查、`git diff --check` 通过。
+- 此 Linux 测试容器没有中文系统字体，截图存在缺字，不作为中文显示验收；本轮未执行 Windows/macOS 实机或安装包验证，未发布 Release。
+
 ## 移除 Noto Serif SC 依赖
 
 - 删除 `@fontsource-variable/noto-serif-sc` 的依赖与锁文件记录、CSS 导入、内置选项和许可证复制步骤，保留 Noto Sans SC、JetBrains Mono 及用户导入字体。

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import type { AppState, Session } from '../src/shared/types';
 import type { ChatSnapshot } from '../src/shared/chat';
+import { fontFixture } from './fixtures/font';
 
 const choices = [
   { id: 'forest', name: '森野绿' },
@@ -41,6 +42,8 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-themes-'));
   const projectPath = path.join(directory, 'theme-preview');
   const dataPath = path.join(directory, 'data');
+  const fontSource = path.join(directory, 'Preview font.woff2');
+  await fs.writeFile(fontSource, fontFixture);
   await fs.mkdir(projectPath);
   await fs.mkdir(path.join(dataPath, 'chat'), { recursive: true });
   execFileSync('git', ['init', '--quiet'], { cwd: projectPath });
@@ -109,9 +112,16 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     await page.keyboard.type(process.platform === 'win32' ? "$env:CC_DESK_THEME_SENTINEL='still_alive'" : "CC_DESK_THEME_SENTINEL='still_alive'");
     await page.keyboard.press('Enter');
     await page.getByRole('button', { name: '设置与连接', exact: true }).click();
+    await app.evaluate(({ dialog }, source) => {
+      dialog.showOpenDialog = (async () => ({ canceled: false, filePaths: [source] })) as typeof dialog.showOpenDialog;
+    }, fontSource);
+    await page.getByRole('button', { name: '导入字体', exact: true }).click();
+    await expect(page.locator('.imported-fonts li')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: '导入字体', exact: true })).toBeEnabled();
+    const [font] = await page.evaluate(() => window.desktop.listFonts());
     await page.getByLabel('聊天字号', { exact: true }).fill('22');
     await page.getByLabel('菜单字号', { exact: true }).fill('16');
-    await page.getByLabel('菜单字体', { exact: true }).selectOption('noto-sans-sc');
+    await page.getByLabel('菜单字体', { exact: true }).selectOption(font.id);
     await page.getByRole('button', { name: '取消', exact: true }).click();
     expect(await terminal!.evaluate(element => element.isConnected && element === document.querySelector('.terminal-host .xterm'))).toBe(true);
     const mainBackgrounds = new Set<string>();
