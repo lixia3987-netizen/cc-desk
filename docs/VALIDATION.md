@@ -1,5 +1,11 @@
 # 验证记录
 
+## v0.3.0 正式流水线的 IDE 测试清理修复
+
+- [首轮发布构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35820614403) 在 macOS/Linux 的真实 IDE 启动测试中报告 `Promise resolution is still pending but the event loop has already resolved`；其它 220 项 Node 测试通过，1 项平台测试跳过，发布未执行。
+- 应用按设计在 IDE 启动交接后调用 `unref()`。测试的 `finally` 随后等待该子进程退出，却未恢复引用，Node 22 可以先结束事件循环。清理现在先调用 `child.ref()`，再终止并等待退出；原有启动参数、环境隔离、子进程存活和及时返回断言全部保留。
+- 修复仅涉及测试清理。IDE 套件在 Node 22.23.2 和 Node 24.19.0 下均为 6/6 通过，TypeScript 与 `git diff --check` 通过；三平台正式检查与打包将基于修复提交重新执行。
+
 ## v0.3.0 发布前复核（2026-09-23）
 
 - 在源码提交 `110a424` 基础上补充 README 产品定位、版本摘要与上手流程，并将路线图同步到 v0.3.0；本轮未修改应用或测试代码。

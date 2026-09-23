@@ -139,7 +139,14 @@ setInterval(() => {}, 1000);
     assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'the parent environment is not mutated');
     assert.equal(fs.existsSync(path.join(f.cwd, 'forbidden')), false, 'shell syntax in a directory name is never evaluated');
   } finally {
-    if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
+    if (child && child.exitCode === null) {
+      // openIde deliberately unrefs the editor after handoff. Keep test cleanup
+      // alive until the exit event arrives, including on the Node 22 CI runners.
+      child.ref();
+      const exited = once(child, 'exit');
+      child.kill();
+      await exited;
+    }
     f.cleanup();
   }
 });
