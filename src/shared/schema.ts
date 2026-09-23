@@ -3,7 +3,7 @@ import { THEME_IDS } from './theme';
 import { PERMISSION_MODES } from './permissions';
 import { SUBTASK_STATUSES, SUBTASK_LIMIT } from './subtasks';
 import { DEFAULT_TYPOGRAPHY, isFontId } from './fonts';
-export const fontIdSchema = z.string().refine(isFontId, '请选择内置或已导入的字体。').transform(value => value as import('./fonts').FontId);
+export const fontIdSchema = z.string().max(2311).refine(isFontId, '请选择系统或已导入的字体。').transform(value => value as import('./fonts').FontId);
 export const idSchema = z.uuid();
 export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const settingsSchema = z.object({

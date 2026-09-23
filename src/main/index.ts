@@ -2,7 +2,6 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nati
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
@@ -19,6 +18,7 @@ import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
 import { initialSessionTitle } from '../shared/session-title';
 import { FontLibrary } from './font-library';
 import { IMPORTED_FONT_ID } from '../shared/fonts';
+import { allowsLocalFonts, isTrustedRendererUrl } from './renderer-permissions';
 
 const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
 if(profileDirectory) {
@@ -57,7 +57,7 @@ async function refreshCapabilities() { const epoch=++detectionEpoch; const value
 function assertSender(event: Electron.IpcMainInvokeEvent) {
   if (!window || event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted IPC sender');
   const url = event.senderFrame.url;
-  if (devUrl ? new URL(url).origin !== devUrl : !url.startsWith('file:') || path.resolve(fileURLToPath(url.split('#')[0])) !== path.resolve(rendererFile)) throw new Error('Invalid IPC origin');
+  if (!isTrustedRendererUrl(url, rendererFile, devUrl)) throw new Error('Invalid IPC origin');
 }
 function handle<T>(name: string, schema: z.ZodType<T>, action: (data: T) => unknown) {
   ipcMain.handle(name, (event, input) => { assertSender(event); return action(schema.parse(input)); });
@@ -73,7 +73,7 @@ async function addProject(value: string): Promise<Project> {
 }
 function registerIPC() {
   handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, platform:process.platform, dataPath:store.directory }));
-  // Explicit write-only bridge; web permission requests remain denied.
+  // Explicit write-only bridge; browser clipboard permissions remain denied.
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
     const result = await dialog.showOpenDialog(window!,{ properties:['openDirectory'],title:'添加项目文件夹' });
@@ -197,7 +197,8 @@ function createWindow() {
     return {action:'deny'};
   });
   window.webContents.on('will-navigate',event => event.preventDefault());
-  window.webContents.session.setPermissionRequestHandler((_webContents,_permission,callback) => callback(false));
+  window.webContents.session.setPermissionCheckHandler((contents,permission,_origin,details) => allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl));
+  window.webContents.session.setPermissionRequestHandler((contents,permission,callback,details) => callback(allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl)));
   window.on('close',event => { if (!allowQuit) { event.preventDefault(); if(store.state.settings.closeToTray && tray) window?.hide(); else void requestQuit(); } });
   window.on('closed',() => {window=null;});
   if (devUrl) void window.loadURL(devUrl); else void window.loadFile(rendererFile);

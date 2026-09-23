@@ -6,10 +6,33 @@ import path from 'node:path';
 import { FontLibrary, validateFont } from '../src/main/font-library';
 import { StateStore } from '../src/main/store';
 import { settingsSchema } from '../src/shared/schema';
-import { DEFAULT_TYPOGRAPHY, MAX_FONT_BYTES, MAX_IMPORTED_FONTS, fontFamily, importedFamily, typography } from '../src/shared/fonts';
+import { DEFAULT_TYPOGRAPHY, MAX_FONT_BYTES, MAX_IMPORTED_FONTS, SYSTEM_FONT_STACK, fontFamily, importedFamily, isFontId, normalizeSystemFonts, systemFontFamily, systemFontId, typography } from '../src/shared/fonts';
 import { fontFixture } from './fixtures/font';
 
 const oldSettings = { claudePath: '', shellPath: '', maxSessions: 4, fontSize: 16, scrollback: 8000 };
+
+test('fonts: system families deduplicate styles and encode names without allowing CSS or malformed IDs', () => {
+  const fonts = normalizeSystemFonts([{family:'Arial'},{family:'Arial'},{family:'arial'},{family:' 微软雅黑 '},{family:''},{family:'bad\nfont'},{family:12},{family:'\ud800'}]);
+  assert.equal(fonts.length, 2);
+  for (const font of fonts) { assert.equal(systemFontFamily(font.id),font.name); assert.ok(isFontId(font.id)); }
+  const name = '字体 "Quoted", serif; \\ font';
+  assert.equal(systemFontFamily(systemFontId(name)), name);
+  assert.equal(fontFamily(systemFontId(name)), '"字体 \\"Quoted\\", serif; \\\\ font", ' + SYSTEM_FONT_STACK);
+  for (const id of ['system:','system:%ZZ','system:%0AArial','system:Arial%20','system:%41rial','system:'+'x'.repeat(257),'system:%ED%A0%80']) assert.equal(isFontId(id), false, id);
+  assert.equal(fontFamily('system:%ZZ' as never),SYSTEM_FONT_STACK);
+});
+
+test('fonts: explicit system families and independent sizes survive saving and restarting', () => {
+  const f = fixture();
+  try {
+    const store = new StateStore(f.data), chat = systemFontId('Microsoft YaHei'), ui = systemFontId('Segoe UI');
+    store.change(state => {Object.assign(state.settings,{chatFontFamily:chat,uiFontFamily:ui,chatFontSize:19,uiFontSize:15});});
+    const restored = new StateStore(f.data).state.settings;
+    assert.deepEqual(typography(restored),{chatFontFamily:chat,uiFontFamily:ui,chatFontSize:19,uiFontSize:15});
+    assert.equal(restored.fontSize,14);
+    assert.ok(settingsSchema.safeParse(restored).success);
+  } finally { f.dispose(); }
+});
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-desk-fonts-unit-'));
   const source = path.join(directory, '我的字体.woff2'), data = path.join(directory, 'data');
