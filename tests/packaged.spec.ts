@@ -80,7 +80,7 @@ for (const target of targets) {
         return true;
       })).toBe(true);
       const archivePath = await app!.evaluate(({app}) => app.getAppPath());
-      const notices = ['noto-sans-sc','noto-serif-sc','jetbrains-mono'].map(family => extractFile(archivePath,'dist/renderer/font-licenses/'+family+'-OFL.txt').toString('utf8'));
+      const notices = ['noto-sans-sc','noto-serif-sc','jetbrains-mono'].map(family => extractFile(archivePath,path.join('dist','renderer','font-licenses',family+'-OFL.txt')).toString('utf8'));
       for (const notice of notices) expect(notice).toContain('SIL OPEN FONT LICENSE');
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
       // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
