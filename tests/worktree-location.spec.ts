@@ -21,7 +21,7 @@ async function workspace() {
   git('add', '.'); git('commit', '-m', 'Fixture');
   const project = { id: randomUUID(), name: 'worktree-project', path: projectPath, createdAt: new Date().toISOString() };
   const state: AppState = {
-    version: 1, projects: [project], sessions: [],
+    version: 2, projects: [project], sessions: [],
     settings: { claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
   };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
@@ -128,9 +128,9 @@ test('worktree location: UI creates named trees in both locations and preserves 
     execFileSync('git', ['add', 'fork-source.txt'], { cwd: original.cwd, stdio: 'pipe' });
     execFileSync('git', ['commit', '-m', 'Source tree commit'], { cwd: original.cwd, stdio: 'pipe' });
     const fork = await page.evaluate(input => window.desktop.createSession({
-      projectId: input.projectId, title: 'fork-child', kind: 'claude', adapter: 'structured',
-      model: '', effort: 'default', isolated: true, resumeFrom: input.claudeId, fork: true, worktreeName: 'fork-child',
-    }), { projectId: f.project.id, claudeId: original.claudeId });
+      projectId: input.projectId, title: 'fork-child', kind: 'agent', mode: 'structured',
+      model: '', effort: 'default', isolated: true, conversationId: input.conversationId, fork: true, worktreeName: 'fork-child',
+    }), { conversationId: original.execution.conversationId, projectId: f.project.id });
     expect(fork.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', `fork-child-${fork.id.slice(0, 8)}`));
     expect(fork.worktreeBase).toBe(original.cwd);
     expect(await fs.readFile(path.join(fork.cwd, 'fork-source.txt'), 'utf8')).toBe('Committed only in the source tree\n');

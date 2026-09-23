@@ -2,9 +2,10 @@ import { isPermissionMode } from '../shared/permissions';
 import { createServer, type Server } from 'node:http';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
-import type { Capabilities, Session } from '../shared/types';
+import type { Capabilities } from '../shared/types';
+import type { PermissionMode } from '../shared/permissions';
 import type { TaskState } from '../shared/chat';
-import type { SubtaskObservation } from './subtask-tracker';
+import type { TerminalSubtaskEvent } from './execution/terminal-launch';
 
 /** Public HTTP hook events only. SessionStart does NOT support HTTP. */
 export const PTY_HOOK_EVENTS = [
@@ -26,10 +27,17 @@ const hookInput = z.object({
   to_model: z.string().min(1).max(200).refine(value => !/[\x00-\x1f]/.test(value)).optional()
 });
 export type PtyHookInput = z.infer<typeof hookInput>;
-export type PtySubtaskEvent =
-  | { type: 'begin'; turnId: string }
-  | { type: 'observe'; observation: SubtaskObservation }
-  | { type: 'end'; status: 'interrupted' | 'failed' | 'unknown'; reason?: string };
+export type PtySubtaskEvent = TerminalSubtaskEvent;
+/** Claude observations have no access to the app's local session or provider identity. */
+export interface PtySessionPatch {
+  conversationId?: string;
+  terminalSync?: 'waiting' | 'synced' | 'unsupported';
+  identityPending?: boolean;
+  taskState?: TaskState;
+  model?: string;
+  permissionMode?: PermissionMode;
+  observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
+}
 interface ObservedAgent {
   turnId: string; taskId: string; promptId?: string; ended: boolean;
   tools: Set<string>; approvals: Set<string>; questions: Set<string>; eliciting: boolean;
@@ -125,7 +133,7 @@ export class PtyHookObserver {
   private toolState(): TaskState {
     return this.approvals.size ? 'waiting_approval' : this.questions.size || this.eliciting ? 'waiting_input' : this.tools.size ? 'tool_running' : 'thinking';
   }
-  accept(input: PtyHookInput): Partial<Session> | null {
+  accept(input: PtyHookInput): PtySessionPatch | null {
     // Subagents inherit hooks and share the parent session_id. They must not replace parent state.
     if (input.agent_id || input.hook_event_name === 'SubagentStart' || input.hook_event_name === 'SubagentStop') return this.observeAgent(input);
     if (this.awaitingIdentity) {
@@ -140,7 +148,7 @@ export class PtyHookObserver {
       this.currentId = input.session_id; this.promptId = undefined; this.retiredPrompts.clear(); this.clearTurn();
     }
     this.awaitingIdentity = false;
-    const patch: Partial<Session> = { claudeId: input.session_id, terminalSync: 'synced', identityPending: false };
+    const patch: PtySessionPatch = { conversationId: input.session_id, terminalSync: 'synced', identityPending: false };
     if (input.permission_mode) {
       patch.observedPermissionMode = input.permission_mode;
       if (isPermissionMode(input.permission_mode)) patch.permissionMode = input.permission_mode;
@@ -206,7 +214,7 @@ export interface PtyHookBridge {
 }
 
 /** The endpoint is local to one live PTY run; it cannot execute commands or grant permissions. */
-export async function createPtyHookBridge(initialId: string, onPatch: (patch: Partial<Session>) => void,
+export async function createPtyHookBridge(initialId: string, onPatch: (patch: PtySessionPatch) => void,
   onSubtask?: (event: PtySubtaskEvent) => void, onPrompt?: (prompt: string) => void): Promise<PtyHookBridge> {
   const token = randomBytes(32).toString('hex');
   const expected = Buffer.from('Bearer ' + token);

@@ -5,6 +5,15 @@ import { SUBTASK_STATUSES, SUBTASK_LIMIT } from './subtasks';
 import { DEFAULT_TYPOGRAPHY, isFontId } from './fonts';
 export const fontIdSchema = z.string().max(2311).refine(isFontId, '请选择系统或已导入的字体。').transform(value => value as import('./fonts').FontId);
 export const idSchema = z.uuid();
+export const providerIdSchema = z.string().min(1).max(200).regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/);
+export const conversationIdSchema = z.string().min(1).max(4096).refine(value => !/[\x00-\x1f\x7f]/.test(value));
+export const sessionExecutionSchema = z.object({
+  providerId: providerIdSchema,
+  mode: z.enum(['terminal', 'structured']),
+  conversationId: conversationIdSchema.optional(),
+  forkFrom: conversationIdSchema.optional(),
+  imported: z.boolean().optional(),
+}).strict();
 export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const settingsSchema = z.object({
   claudePath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
@@ -22,14 +31,14 @@ export const settingsSchema = z.object({
   defaultPermissionMode: permissionModeSchema.default('default')
 }).refine(settings => settings.worktreeLocation !== 'custom' || !!settings.worktreeRoot, { message: '请选择或填写统一 Worktree 根目录。', path: ['worktreeRoot'] });
 export const sessionInputSchema = z.object({
-  projectId: idSchema, title: z.string().trim().max(120), kind: z.enum(['claude', 'shell']),
+  projectId: idSchema, title: z.string().trim().max(120), kind: z.enum(['agent', 'shell']),
   model: z.string().trim().max(200).refine(s => !/[\x00-\x1f]/.test(s)),
   effort: z.enum(['default','low','medium','high','xhigh','max','ultracode']),
   permissionMode: permissionModeSchema.optional(), isolated: z.boolean(),
   worktreeName: z.string().max(80).refine(s => !/[/\\\x00-\x1f\x7f]/.test(s) && !s.includes('..'), 'Worktree 名称不能包含路径分隔符、控制字符或 ..。').trim().optional(),
-  resumeFrom: idSchema.optional(), fork: z.boolean().optional(),
-  adapter: z.enum(['terminal','structured']).optional()
-});
+  providerId: providerIdSchema.optional(), conversationId: conversationIdSchema.optional(), fork: z.boolean().optional(),
+  mode: z.enum(['terminal','structured']).optional()
+}).strict();
 const draftEntries = (keyLength: number, textLength: number) => z.record(z.string().max(keyLength), z.string().max(textLength))
   .refine(value => Object.keys(value).length <= 200, '草稿条目过多，请先处理已有草稿。');
 export const panelDraftsSchema = z.object({
@@ -47,22 +56,51 @@ const subtaskSchema = z.object({
   summary:z.string().max(2000).optional(),progress:z.string().max(2000).optional(),lastTool:z.string().max(200).optional(),
   toolUses:z.number().nonnegative().finite().optional(),totalTokens:z.number().nonnegative().finite().optional(),durationMs:z.number().nonnegative().finite().optional(),background:z.boolean().optional()
 });
-const sessionSchema = z.object({
-  id: idSchema, projectId: idSchema, title: z.string(), kind: z.enum(['claude','shell']),
+const sessionFieldsSchema = z.object({
+  id: idSchema, projectId: idSchema, title: z.string(),
   titleSource: z.enum(['default','auto','manual']).optional(),
-  cwd: z.string(), claudeId: idSchema, resumeFrom: idSchema.optional(), imported: z.boolean().optional(), started: z.boolean(),
+  cwd: z.string(), started: z.boolean(),
   model: z.string(), effort: sessionInputSchema.shape.effort, permissionMode: permissionModeSchema,
   status: z.enum(['idle','running','stopping','stopped','error']), archived: z.boolean(),
   createdAt: z.string(), updatedAt: z.string(), worktree: z.string().optional(), exitCode: z.number().optional(), error: z.string().optional(),
-  adapter: z.enum(['terminal','structured']).optional(), draft: z.string().max(128*1024).optional(), worktreeBase: z.string().optional(),
+  draft: z.string().max(128*1024).optional(), worktreeBase: z.string().optional(),
   terminalSync: z.enum(['waiting','synced','unsupported']).optional(), identityPending: z.boolean().optional(),
   observedPermissionMode: z.enum(['default','plan','acceptEdits','auto','dontAsk','bypassPermissions']).optional(),
   panelDrafts: panelDraftsSchema.optional(),
   subtasks:z.object({turnId:subtaskIdentity,tasks:z.array(subtaskSchema).max(SUBTASK_LIMIT),truncated:z.boolean().optional()}).optional(),
   taskState: z.enum(['idle','starting','thinking','tool_running','waiting_approval','waiting_input','completed','interrupted','error']).optional()
 });
-export const stateSchema = z.object({
-  version: z.literal(1), settings: settingsSchema,
+export const sessionSchema = sessionFieldsSchema.extend({
+  kind: z.enum(['agent', 'shell']), execution: sessionExecutionSchema,
+}).strict().refine(session => session.kind === 'shell'
+  ? session.execution.providerId === 'shell' && session.execution.mode === 'terminal' && session.execution.conversationId === undefined && session.execution.forkFrom === undefined && session.execution.imported === undefined
+  : session.execution.providerId !== 'shell', { message: '会话类型与执行身份不匹配。', path: ['execution'] });
+const workspaceFields = {
+  settings: settingsSchema,
   projects: z.array(z.object({ id: idSchema, name: z.string(), path: z.string(), createdAt: z.string() })),
-  sessions: z.array(sessionSchema), selectedSessionId: z.union([idSchema,z.literal('')]).optional()
+  selectedSessionId: z.union([idSchema,z.literal('')]).optional(),
+};
+export const stateSchema = z.object({
+  version: z.literal(2), ...workspaceFields, sessions: z.array(sessionSchema),
 });
+
+const legacySessionSchema = sessionFieldsSchema.extend({
+  kind: z.enum(['claude', 'shell']), claudeId: idSchema,
+  resumeFrom: idSchema.optional(), imported: z.boolean().optional(),
+  adapter: z.enum(['terminal', 'structured']).optional(),
+}).strict();
+const legacyStateSchema = z.object({ version: z.literal(1), ...workspaceFields, sessions: z.array(legacySessionSchema) });
+
+/** Disk compatibility is isolated from live writes: only one identity is ever persisted. */
+export const persistedStateSchema = z.union([stateSchema, legacyStateSchema.transform((state): z.infer<typeof stateSchema> => ({
+  ...state, version: 2 as const,
+  sessions: state.sessions.map(({ kind, claudeId, resumeFrom, imported, adapter, ...session }) => ({
+    ...session,
+    kind: kind === 'claude' ? 'agent' as const : 'shell' as const,
+    execution: kind === 'shell' ? { providerId: 'shell', mode: 'terminal' as const } : {
+      providerId: 'claude', mode: adapter ?? 'terminal', conversationId: claudeId,
+      ...(resumeFrom === undefined ? {} : { forkFrom: resumeFrom }),
+      ...(imported === undefined ? {} : { imported }),
+    },
+  })),
+}))]);

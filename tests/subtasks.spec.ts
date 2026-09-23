@@ -76,14 +76,14 @@ async function workspace() {
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath)]);
   const fixture = await protocolFixture(directory), cwd = await fs.realpath(projectPath);
   const now = new Date().toISOString(), projectId = randomUUID();
-  const makeSession = (title: string, adapter: Session['adapter'] = 'structured'): Session => ({
-    id: randomUUID(), projectId, title, kind: 'claude', adapter, cwd, claudeId: randomUUID(),
+  const makeSession = (title: string, adapter: Session['execution']['mode'] = 'structured'): Session => ({ execution: { providerId: 'claude', mode: adapter, conversationId: randomUUID() },
+    id: randomUUID(), projectId, title, kind: 'agent',  cwd,
     started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', taskState: 'idle',
     archived: false, createdAt: now, updatedAt: now,
   });
   const first = makeSession('并行检查'), second = makeSession('独立会话'), terminal = makeSession('CLI 子任务', 'terminal');
   const state: AppState = {
-    version: 1, projects: [{ id: projectId, name: '子任务项目', path: cwd, createdAt: now }],
+    version: 2, projects: [{ id: projectId, name: '子任务项目', path: cwd, createdAt: now }],
     sessions: [first, second, terminal], selectedSessionId: first.id,
     settings: { claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
   };

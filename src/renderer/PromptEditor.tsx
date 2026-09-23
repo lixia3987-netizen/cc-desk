@@ -1,11 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { composerKeyAction, insertComposerNewline } from './composer-keyboard';
-import { insertCommand, matchingCommands, slashQuery, type ClaudeCommand } from '../shared/claude-session';
+import type { SessionCommand } from '../shared/execution';
+import { insertCommand, matchingCommands, slashQuery } from '../shared/session-commands';
 
 export function PromptEditor({ value, onChange, onSend, placeholder, disabled, commands, loadCommands }: {
   value: string; onChange: (value: string) => void; onSend: () => void;
   placeholder: string; disabled?: boolean;
-  commands?: ClaudeCommand[]; loadCommands?: () => Promise<void>;
+  commands?: SessionCommand[]; loadCommands?: () => Promise<void>;
 }) {
   const composing = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -33,7 +34,7 @@ export function PromptEditor({ value, onChange, onSend, placeholder, disabled, c
   }, [open, commands]);
   useEffect(() => { setSelected(0); }, [query]);
   useEffect(() => { if (open) document.getElementById(`${listId}-${activeIndex}`)?.scrollIntoView({ block: 'nearest' }); }, [open, activeIndex, listId]);
-  const choose = (command: ClaudeCommand) => {
+  const choose = (command: SessionCommand) => {
     if (command.disabledReason) return;
     const next = insertCommand(value, command.name);
     pendingSelection.current = next;

@@ -7,13 +7,13 @@ const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
 const TITLE_CHARACTERS = 48;
 const TITLE_CODE_UNITS = 120;
 
-/** Empty names opt new Claude conversations into naming; imported/forked names are preserved. */
-export function initialSessionTitle(input: Pick<NewSession, 'title' | 'kind' | 'resumeFrom' | 'fork'>):
+/** Empty names opt new agent conversations into naming; imported/forked names are preserved. */
+export function initialSessionTitle(input: Pick<NewSession, 'title' | 'kind' | 'conversationId' | 'fork'>):
   { title: string; titleSource: SessionTitleSource } {
   const title = input.title.trim();
   return {
     title: title || (input.kind === 'shell' ? '项目终端' : '新的开发会话'),
-    titleSource: !title && input.kind === 'claude' && !input.resumeFrom && !input.fork ? 'default' : 'manual'
+    titleSource: !title && input.kind === 'agent' && !input.conversationId && !input.fork ? 'default' : 'manual'
   };
 }
 
@@ -75,10 +75,10 @@ export function titleFromPrompt(prompt: string): string | undefined {
 
 /** Apply beside the accepted user message, using the current session to respect a concurrent rename. */
 export function automaticSessionTitlePatch(
-  session: Pick<Session, 'kind' | 'titleSource' | 'imported' | 'resumeFrom'>,
+  session: Pick<Session, 'kind' | 'titleSource' | 'execution'>,
   prompt: string
 ): { title: string; titleSource: 'auto' } | undefined {
-  if (session.kind !== 'claude' || session.titleSource !== 'default' || session.imported || session.resumeFrom) return undefined;
+  if (session.kind !== 'agent' || session.titleSource !== 'default' || session.execution.imported || session.execution.forkFrom) return undefined;
   const title = titleFromPrompt(prompt);
   return title ? { title, titleSource: 'auto' } : undefined;
 }

@@ -12,13 +12,13 @@ async function workspace() {
   await Promise.all([fs.mkdir(data), fs.mkdir(first), fs.mkdir(second)]);
   const now = new Date().toISOString();
   const projects = [first, second].map((directory, i) => ({ id: randomUUID(), name: `Workspace ${i + 1}`, path: directory, createdAt: now }));
-  const makeSession = (project: typeof projects[number], kind: Session['kind']): Session => ({
-    id: randomUUID(), projectId: project.id, title: kind === 'shell' ? 'Shell' : project.name, kind, adapter: kind === 'shell' ? 'terminal' : 'structured',
-    cwd: project.path, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+  const makeSession = (project: typeof projects[number], kind: Session['kind']): Session => ({ execution: kind === 'shell' ? {providerId: 'shell', mode: 'terminal'} : { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
+    id: randomUUID(), projectId: project.id, title: kind === 'shell' ? 'Shell' : project.name, kind,
+    cwd: project.path,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
     createdAt: now, updatedAt: now, draft: '草稿需要保留',
   });
-  const sessions = [makeSession(projects[0], 'claude'), makeSession(projects[1], 'claude'), makeSession(projects[1], 'shell')];
-  const state: AppState = { version: 1, projects, sessions, selectedSessionId: sessions[0].id, settings: {
+  const sessions = [makeSession(projects[0], 'agent'), makeSession(projects[1], 'agent'), makeSession(projects[1], 'shell')];
+  const state: AppState = { version: 2, projects, sessions, selectedSessionId: sessions[0].id, settings: {
     claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system',
   } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
@@ -78,7 +78,7 @@ test('confirmed update drains all workspaces, terminals, workflows and descendan
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
     expect(snapshot.state.projects).toHaveLength(2); expect(snapshot.state.sessions).toHaveLength(3);
     expect(snapshot.state.sessions.every(session => session.status === 'stopped')).toBe(true);
-    expect(snapshot.state.sessions.map(session => session.claudeId)).toEqual(f.sessions.map(session => session.claudeId));
+    expect(snapshot.state.sessions.map(session => session.execution.conversationId)).toEqual(f.sessions.map(session => session.execution.conversationId));
     expect(snapshot.state.sessions.map(session => session.draft)).toEqual(f.sessions.map(session => session.draft));
     expect(snapshot.capabilities.version).toContain('2.1.10');
     const runs = await page.evaluate(() => window.desktop.workflows()); expect(runs.find(run => run.id === workflow)?.status).toBe('interrupted');

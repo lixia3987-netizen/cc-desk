@@ -7,7 +7,10 @@ import { randomUUID } from 'node:crypto';
 import { stripVTControlCharacters } from 'node:util';
 import { Runtime } from '../src/main/runtime';
 import { StateStore } from '../src/main/store';
-import type { Session } from '../src/shared/types';
+import type { Capabilities, Session } from '../src/shared/types';
+import { ClaudeTerminalLauncher } from '../src/main/engines/claude/terminal-launcher';
+import { ShellTerminalLauncher } from '../src/main/engines/shell/terminal-launcher';
+import type { TerminalLauncher, TerminalLaunchCallbacks } from '../src/main/execution/terminal-launch';
 import { createWorktree, gitInfo } from '../src/main/git';
 import { execFileAsync } from '../src/main/commands';
 
@@ -22,16 +25,15 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-pty-'));const cwd=path.join(root,'项目 space & quote');fs.mkdirSync(cwd);
   const cwdProof = randomUUID(); fs.writeFileSync(path.join(cwd, 'cwd-proof.txt'), cwdProof + '\n', 'utf8');
   const store=new StateStore(path.join(root,'data'));const projectId=randomUUID();
-  const create=():Session=>({id:randomUUID(),projectId,title:'shell',kind:'shell',cwd,claudeId:randomUUID(),started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  const create=():Session=>({id:randomUUID(),projectId,title:'shell',kind:'shell',cwd,execution:{providerId:'shell',mode:'terminal'},started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   const a=create(),b=create();store.change(s=>{s.sessions=[a,b];s.settings.maxSessions=1;});
-  const output=new Map<string,string>();const runtime=new Runtime(store,()=>{},chunk=>output.set(chunk.sessionId,(output.get(chunk.sessionId)||'')+chunk.data));
-  const cap={available:false,executable:'',version:'',flags:[],efforts:['default' as const]};
+  const output=new Map<string,string>();const runtime=new Runtime(store,()=>{},chunk=>output.set(chunk.sessionId,(output.get(chunk.sessionId)||'')+chunk.data), new ShellTerminalLauncher(store));
   try {
     fs.writeFileSync(runtime.logPath(a.id), 'retained-before-rotation\n' + 'x'.repeat(5 * 1024 * 1024 - 25));
-    await runtime.start(a.id,cap);
+    await runtime.start(a.id);
     assert.throws(() => runtime.forget(a.id), /请先停止/);
     assert.equal(fs.statSync(runtime.logPath(a.id) + '.previous').size, 5 * 1024 * 1024);
-    await assert.rejects(runtime.start(b.id,cap),/并发会话上限/);
+    await assert.rejects(runtime.start(b.id),/并发会话上限/);
     runtime.resize(a.id,120,40);
     // Construct the marker from separate arguments: command echo alone must never satisfy the test.
     const command=process.platform==='win32'?"Write-Output ('中文' + '输入完成'); Get-Content -LiteralPath './cwd-proof.txt'; (Get-Location).Path\r":"printf '\\n%s%s\\n' '中文' '输入完成'; cat ./cwd-proof.txt; pwd\r";
@@ -45,7 +47,7 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
     const exported=runtime.exportLogs(a.id);assert.match(exported,/retained-before-rotation/);assert.match(stripVTControlCharacters(exported),/中文输入完成/);
     runtime.stop(a.id);await until(()=>runtime.activeCount===0, 'stop', () => JSON.stringify({ status: store.state.sessions[0].status, active: runtime.activeCount }));
     assert.equal(store.state.sessions[0].status,'stopped');
-    await runtime.start(b.id,cap);assert.equal(store.state.sessions[1].status,'running');
+    await runtime.start(b.id);assert.equal(store.state.sessions[1].status,'running');
   }finally{await runtime.shutdown();fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
 });
 test('worktree creates an independent branch and preserves the original working tree', { timeout: 30000 }, async()=>{
@@ -65,9 +67,9 @@ test('worktree creates an independent branch and preserves the original working 
 test('stopped terminal caches are bounded, evicted output reloads, and exports retain both log segments', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-cache-'));
   const store = new StateStore(root); const now = new Date().toISOString();
-  const sessions: Session[] = Array.from({ length: 12 }, () => ({ id: randomUUID(), projectId: randomUUID(), title: 'stopped', kind: 'shell', cwd: root, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now }));
+  const sessions: Session[] = Array.from({ length: 12 }, () => ({ id: randomUUID(), projectId: randomUUID(), title: 'stopped', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now }));
   store.change(state => { state.sessions = sessions; });
-  const runtime = new Runtime(store, () => {}, () => {}, { maxStoppedBuffers: 2 });
+  const runtime = new Runtime(store, () => {}, () => {}, new ShellTerminalLauncher(store), { maxStoppedBuffers: 2 });
   try {
     let firstSequence = 0;
     for (const [index, session] of sessions.entries()) {
@@ -91,13 +93,12 @@ test('stopped terminal caches are bounded, evicted output reloads, and exports r
 test('a pending CLI identity or unsupported observed permission cannot silently resume with stale settings', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-runtime-guard-'));
   const store = new StateStore(root); const now = new Date().toISOString(); const id = randomUUID();
-  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'guard', kind: 'claude', cwd: root, claudeId: randomUUID(), started: true, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now, identityPending: true }));
-  const runtime = new Runtime(store, () => {}, () => {});
-  const cap = { available: false, executable: '', version: '', flags: [], efforts: ['default' as const] };
+  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'guard', kind: 'agent', cwd: root, execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }, started: true, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now, identityPending: true }));
+  const runtime = new Runtime(store, () => {}, () => {}, new ClaudeTerminalLauncher(store, () => ({ available: false, executable: '', version: '', flags: [], efforts: ['default'] })));
   try {
-    await assert.rejects(runtime.start(id, cap), /新会话身份尚未确认/);
+    await assert.rejects(runtime.start(id), /新会话身份尚未确认/);
     store.change(state => { state.sessions[0].identityPending = false; state.sessions[0].observedPermissionMode = 'auto'; });
-    await assert.rejects(runtime.start(id, cap), /明确选择/);
+    await assert.rejects(runtime.start(id), /明确选择/);
     assert.equal(runtime.activeCount, 0);
     assert.equal(store.state.sessions[0].permissionMode, 'default');
   } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
@@ -106,29 +107,78 @@ test('a pending CLI identity or unsupported observed permission cannot silently 
 function lifecycleFixture(shellPath = '') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-lifecycle-'));
   const store = new StateStore(path.join(root, 'data')); const now = new Date().toISOString();
-  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'cleanup fixture', kind: 'shell', cwd: root, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'cleanup fixture', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
   store.change(state => { state.sessions.push(session); state.settings.shellPath = shellPath; });
   const errors: Error[] = [];
-  const runtime = new Runtime(store, () => {}, () => {}, { onError: error => errors.push(error) });
-  const capabilities = { available: false, executable: '', version: '', flags: [], efforts: ['default' as const] };
-  return { root, store, session, runtime, errors, capabilities };
+  let capabilities: Capabilities = { available: false, executable: '', version: '', flags: [], efforts: ['default'] };
+  const claude = new ClaudeTerminalLauncher(store, () => capabilities);
+  const shell = new ShellTerminalLauncher(store);
+  const launcher: TerminalLauncher = { prepare: (session, callbacks) => (session.execution.providerId === 'claude' ? claude : shell).prepare(session, callbacks) };
+  const runtime = new Runtime(store, () => {}, () => {}, launcher, { onError: error => errors.push(error) });
+  return { root, store, session, runtime, errors, setCapabilities: (next: Capabilities) => { capabilities = next; } };
 }
+
+test('terminal runtime accepts another provider and isolates identity observations to the current launch', { timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const callbacks: TerminalLaunchCallbacks[] = [];
+  let resourcesClosed = 0;
+  f.store.change(state => {
+    state.sessions[0].kind = 'agent';
+    state.sessions[0].execution = { providerId: 'test-agent', mode: 'terminal', conversationId: 'first-conversation' };
+    state.sessions[0].titleSource = 'default';
+  });
+  const launcher: TerminalLauncher = {
+    async prepare(session, callback) {
+      assert.equal(session.execution.providerId, 'test-agent');
+      callbacks.push(callback);
+      return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: {},
+        resource: { async close() { resourcesClosed++; } }, terminalSync: 'waiting' };
+    }
+  };
+  const runtime = new Runtime(f.store, () => {}, () => {}, launcher);
+  const current = () => f.store.state.sessions[0];
+  try {
+    await runtime.start(f.session.id);
+    callbacks[0].update({ conversationId: 'second-conversation', taskState: 'thinking', terminalSync: 'synced' });
+    assert.equal(current().id, f.session.id);
+    assert.deepEqual(current().execution, { providerId: 'test-agent', mode: 'terminal', conversationId: 'second-conversation' });
+    runtime.stop(f.session.id);
+    await until(() => !runtime.has(f.session.id), 'first provider cleanup');
+    assert.equal(resourcesClosed, 1);
+    await runtime.start(f.session.id);
+    callbacks[0].update({ conversationId: 'stale-conversation', model: 'stale' });
+    callbacks[0].prompt('stale prompt');
+    callbacks[0].subtask({ type: 'begin', turnId: 'stale-turn' });
+    assert.equal(current().execution.conversationId, 'second-conversation');
+    assert.equal(current().model, '');
+    assert.equal(current().title, 'cleanup fixture');
+    assert.notEqual(current().subtasks?.turnId, 'stale-turn');
+    callbacks[1].update({ conversationId: 'third-conversation' });
+    callbacks[1].prompt('新的会话标题');
+    assert.equal(current().execution.conversationId, 'third-conversation');
+    assert.equal(current().title, '新的会话标题');
+  } finally {
+    await runtime.shutdown(); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+  assert.equal(resourcesClosed, 2);
+});
 
 test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async () => {
   const f = lifecycleFixture();
   try {
-    await f.runtime.start(f.session.id, f.capabilities);
+    await f.runtime.start(f.session.id);
     f.runtime.setMaintenance(true); await f.runtime.disconnectAll();
     assert.equal(f.runtime.activeCount, 0); assert.equal(f.runtime.pendingCleanupCount, 0);
-    await assert.rejects(f.runtime.start(f.session.id, f.capabilities), /正在更新/);
-    f.runtime.setMaintenance(false); await f.runtime.start(f.session.id, f.capabilities);
+    await assert.rejects(f.runtime.start(f.session.id), /正在更新/);
+    f.runtime.setMaintenance(false); await f.runtime.start(f.session.id);
     assert.equal(f.runtime.activeCount, 1);
   } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
 });
 test('stop and exit release a real PTY even when every state write fails', { timeout: 15000 }, async () => {
   const f = lifecycleFixture();
   try {
-    await f.runtime.start(f.session.id, f.capabilities);
+    await f.runtime.start(f.session.id);
     fs.mkdirSync(f.store.file + '.tmp');
     assert.throws(() => f.runtime.stop(f.session.id));
     assert.doesNotThrow(() => f.runtime.stop(f.session.id), 'repeated stop cannot strand an ending process');
@@ -147,7 +197,7 @@ test('state failure after spawn terminates the process before start rejects', { 
   const f = lifecycleFixture();
   try {
     fs.mkdirSync(f.store.file + '.tmp');
-    await assert.rejects(f.runtime.start(f.session.id, f.capabilities));
+    await assert.rejects(f.runtime.start(f.session.id));
     await until(() => f.runtime.activeCount === 0, 'failed-start cleanup');
     assert.equal(f.runtime.pendingCleanupCount, 0);
   } finally {
@@ -169,7 +219,7 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
     const childCode = `const fs = require('node:fs'); process.on('SIGTERM', () => {}); process.on('SIGHUP', () => {}); fs.writeFileSync(${JSON.stringify(childFile)}, String(process.pid)); setInterval(() => fs.writeFileSync(${JSON.stringify(heartbeat)}, String(Date.now())), 20);`;
     fs.writeFileSync(script, `#!${process.execPath}\nconst fs = require('node:fs'); const {spawn} = require('node:child_process'); process.on('SIGTERM', () => process.exit(0)); fs.writeFileSync(${JSON.stringify(rootFile)}, String(process.pid)); spawn(process.execPath, ['-e', ${JSON.stringify(childCode)}], {stdio:'ignore'}); setInterval(() => {}, 1000);\n`, { mode: 0o755 });
     f.store.change(state => { state.settings.shellPath = script; });
-    await f.runtime.start(f.session.id, f.capabilities);
+    await f.runtime.start(f.session.id);
     await until(() => fs.existsSync(childFile) && fs.existsSync(heartbeat), 'descendant ready');
     rootPid = Number(fs.readFileSync(rootFile, 'utf8')); childPid = Number(fs.readFileSync(childFile, 'utf8'));
     let finished = false;
@@ -196,8 +246,9 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
 test('shutdown cancels and awaits a CLI start that is still resolving transcript and hook state', { timeout: 10000 }, async () => {
   const f = lifecycleFixture();
   try {
-    f.store.change(state => { state.sessions[0].kind = 'claude'; state.settings.claudePath = process.execPath; });
-    const pending = f.runtime.start(f.session.id, { available: true, executable: process.execPath, version: '2.1.278', flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
+    f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.settings.claudePath = process.execPath; });
+    f.setCapabilities({ available: true, executable: process.execPath, version: '2.1.278', flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
+    const pending = f.runtime.start(f.session.id);
     const rejected = assert.rejects(pending, /已取消启动会话/);
     await f.runtime.shutdown();
     await rejected;
@@ -251,9 +302,10 @@ const send = async (hook_event_name, fields = {}) => {
   await send('Stop');
 })().catch(error => { console.error(error); process.exit(9); });
 `, { mode: 0o755 });
-      f.store.change(state => { state.sessions[0].kind = 'claude'; state.sessions[0].titleSource = ending === 'stop' ? 'default' : 'manual'; state.settings.claudePath = script; });
-      await f.runtime.start(f.session.id, { available: true, executable: script, version: '2.1.278',
+      f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.sessions[0].titleSource = ending === 'stop' ? 'default' : 'manual'; state.settings.claudePath = script; });
+      f.setCapabilities({ available: true, executable: script, version: '2.1.278',
         flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
+      await f.runtime.start(f.session.id);
       const session = () => f.store.state.sessions[0];
       await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
         `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));

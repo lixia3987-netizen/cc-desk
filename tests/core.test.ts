@@ -11,7 +11,7 @@ import { TerminalBuffer } from '../src/main/runtime';
 import type { Session } from '../src/shared/types';
 
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(),'workbench-unit-'));
-const session = (): Session => ({id:randomUUID(),projectId:randomUUID(),title:'测试',kind:'claude',cwd:'/tmp/项目 space',claudeId:randomUUID(),started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+const session = (): Session => ({ execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() },id:randomUUID(),projectId:randomUUID(),title:'测试',kind:'agent',cwd:'/tmp/项目 space',started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
 const cap = parseCapabilities('--session-id UUID\n--resume ID\n--fork-session\n--model ID\n--permission-mode default\n--effort <level> low medium high xhigh max ultracode','claude','v-test');
 
 test('state persists atomically, creates a backup, and marks interrupted runs stopped', () => {
@@ -29,11 +29,11 @@ test('corrupt state is preserved instead of overwritten',()=>{
   const dir=temp();try{const file=path.join(dir,'workspace.json');fs.writeFileSync(file,'{broken');assert.throws(()=>new StateStore(dir),/原文件已保留/);assert.equal(fs.readFileSync(file,'utf8'),'{broken');}finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('new session, resume, imported UUID, and first fork use distinct CLI arguments',()=>{
-  const s=session();assert.deepEqual(claudeArguments(s,cap,false),['--session-id',s.claudeId,'--permission-mode','default']);
-  assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.claudeId,'--permission-mode','default']);
-  s.imported=true;assert.equal(claudeArguments(s,cap,false)[0],'--resume');
-  s.imported=false;s.resumeFrom=randomUUID();
-  assert.deepEqual(claudeArguments(s,cap,false).slice(0,5),['--resume',s.resumeFrom,'--fork-session','--session-id',s.claudeId]);
+  const s=session();assert.deepEqual(claudeArguments(s,cap,false),['--session-id',s.execution.conversationId,'--permission-mode','default']);
+  assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.execution.conversationId,'--permission-mode','default']);
+  s.execution.imported=true;assert.equal(claudeArguments(s,cap,false)[0],'--resume');
+  s.execution.imported=false;s.execution.forkFrom=randomUUID();
+  assert.deepEqual(claudeArguments(s,cap,false).slice(0,5),['--resume',s.execution.forkFrom,'--fork-session','--session-id',s.execution.conversationId]);
   assert.equal(claudeArguments(s,cap,true).includes('--fork-session'),false);
 });
 test('arguments retain shell metacharacters as a single argument without interpolation',()=>{
@@ -49,8 +49,8 @@ test('unsupported effort and flags fail explicitly; ultracode is never rewritten
 });
 test('IPC validators reject path injection, invalid IDs and unsupported permission modes',()=>{
   assert.equal(settingsSchema.safeParse({claudePath:'claude\nwhoami',shellPath:'',maxSessions:1,fontSize:14,scrollback:1000}).success,false);
-  assert.equal(sessionInputSchema.safeParse({projectId:'../evil',title:'test',kind:'claude',model:'',effort:'max',permissionMode:'bypassPermissions',isolated:false}).success,false);
-  const input={projectId:randomUUID(),title:'test',kind:'claude',model:'',effort:'default',isolated:false};
+  assert.equal(sessionInputSchema.safeParse({projectId:'../evil',title:'test',kind:'agent',model:'',effort:'max',permissionMode:'bypassPermissions',isolated:false}).success,false);
+  const input={projectId:randomUUID(),title:'test',kind:'agent',model:'',effort:'default',isolated:false};
   assert.equal(sessionInputSchema.safeParse({...input,permissionMode:'bypassPermissions'}).success,true);
   assert.equal(sessionInputSchema.safeParse(input).success,true);
   for(const permissionMode of ['auto','unknown','bypassPermissions --model injected']) {
@@ -61,7 +61,7 @@ test('IPC validators reject path injection, invalid IDs and unsupported permissi
 test('old settings retain manual approval and explicit bypass defaults and sessions survive restart',()=>{
   const dir=temp();try{
     const oldSettings={claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000};
-    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[session()],settings:oldSettings}));
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version: 2,projects:[],sessions:[session()],settings:oldSettings}));
     const store=new StateStore(dir);
     assert.equal(store.state.settings.defaultPermissionMode,'default');
     store.change(state=>{state.settings.defaultPermissionMode='bypassPermissions';});
@@ -77,14 +77,14 @@ test('old settings retain manual approval and explicit bypass defaults and sessi
 test('launch and resume pass only the explicitly selected permission mode to the CLI',()=>{
   for(const permissionMode of ['default','plan','acceptEdits','bypassPermissions'] as const){
     const s={...session(),permissionMode};
-    assert.deepEqual(claudeArguments(s,cap,false),['--session-id',s.claudeId,'--permission-mode',permissionMode]);
-    assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.claudeId,'--permission-mode',permissionMode]);
+    assert.deepEqual(claudeArguments(s,cap,false),['--session-id',s.execution.conversationId,'--permission-mode',permissionMode]);
+    assert.deepEqual(claudeArguments(s,cap,true),['--resume',s.execution.conversationId,'--permission-mode',permissionMode]);
   }
 });
 test('IDE preference migrates old settings, persists a custom application and can be cleared',()=>{
   const dir=temp();try{
     const oldSettings={claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000};
-    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[session()],settings:oldSettings}));
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version: 2,projects:[],sessions:[session()],settings:oldSettings}));
     const store=new StateStore(dir);
     assert.equal(store.state.settings.idePath,'');
     const idePath='C:\\Apps\\定制 VS Code\\Code.exe';
@@ -105,7 +105,7 @@ test('worktree settings migrate without relocating existing sessions and survive
   const dir=temp();try{
     const original={...session(),worktree:path.join(dir,'legacy-worktree'),worktreeBase:path.join(dir,'original-project')};
     original.cwd=original.worktree;
-    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[original],settings:{claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}}));
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version: 2,projects:[],sessions:[original],settings:{claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}}));
     const store=new StateStore(dir);
     assert.equal(store.state.settings.worktreeLocation,'project');
     assert.equal(store.state.settings.worktreeRoot,'');
@@ -128,7 +128,7 @@ test('worktree settings migrate without relocating existing sessions and survive
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
 test('worktree names accept readable optional names but reject path components and control characters',()=>{
-  const input={projectId:randomUUID(),title:'test',kind:'claude',model:'',effort:'default',isolated:true};
+  const input={projectId:randomUUID(),title:'test',kind:'agent',model:'',effort:'default',isolated:true};
   assert.equal(sessionInputSchema.parse({...input,worktreeName:'  修复 登录  '}).worktreeName,'修复 登录');
   assert.equal(sessionInputSchema.parse({...input,worktreeName:''}).worktreeName,'');
   assert.equal(sessionInputSchema.parse(input).worktreeName,undefined);

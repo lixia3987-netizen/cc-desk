@@ -78,6 +78,8 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 ## 运行与打包
 
+开发者可参阅[公共会话身份、执行接口与代码职责](docs/ARCHITECTURE.md)，了解现有 Claude 路径的适配边界和执行器扩展方式。
+
 需要 Node.js 22.12+、npm、Git；使用 Claude 会话还需要安装并登录 Claude Code CLI。推荐原生 CLI 安装。
 
 ```sh

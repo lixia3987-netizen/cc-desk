@@ -12,14 +12,14 @@ async function workspace(shellSelected = false) {
   await fs.mkdir(projectPath);
   await fs.mkdir(path.join(data, 'chat'), { recursive: true });
   const cwd = await fs.realpath(projectPath), now = new Date().toISOString(), projectId = randomUUID();
-  const makeSession = (title: string, kind: Session['kind'] = 'claude'): Session => ({
-    id: randomUUID(), projectId, cwd, claudeId: randomUUID(), title, kind,
-    adapter: kind === 'shell' ? 'terminal' : 'structured', started: false, model: '', effort: 'default',
+  const makeSession = (title: string, kind: Session['kind'] = 'agent'): Session => ({ execution: kind === 'shell' ? {providerId: 'shell', mode: 'terminal'} : { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
+    id: randomUUID(), projectId, cwd,  title, kind,
+     started: false, model: '', effort: 'default',
     permissionMode: 'default', status: 'idle', taskState: 'idle', archived: false, createdAt: now, updatedAt: now,
   });
   const first = makeSession('面板切换会话'), second = makeSession('另一个会话'), shell = makeSession('保留运行中的终端', 'shell');
   const state: AppState = {
-    version: 1, projects: [{ id: projectId, name: '面板体验项目', path: cwd, createdAt: now }],
+    version: 2, projects: [{ id: projectId, name: '面板体验项目', path: cwd, createdAt: now }],
     sessions: [first, second, shell], selectedSessionId: shellSelected ? shell.id : first.id,
     settings: { claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
   };

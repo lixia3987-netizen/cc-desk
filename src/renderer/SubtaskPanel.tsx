@@ -58,7 +58,7 @@ export function SubtaskPanel({ session }: { session: Session }) {
   const counts = subtaskCounts(visible), hasHistory = current.length < tasks.length;
   const active = tasks.some(task => isSubtaskActive(task.status));
   const busy = ['starting', 'thinking', 'tool_running', 'waiting_approval', 'waiting_input'].includes(session.taskState ?? '');
-  const unsupported = session.adapter !== 'structured' && session.terminalSync === 'unsupported';
+  const unsupported = session.execution.mode !== 'structured' && session.terminalSync === 'unsupported';
   useEffect(() => {
     if (!expanded || !active) return;
     setNow(Date.now());

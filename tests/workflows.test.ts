@@ -12,7 +12,10 @@ const steps: WorkflowStageDefinition[] = [
   { id: 'build', title: 'Build', instruction: 'Implement safely', dependsOn: ['plan'] },
   { id: 'review', title: 'Review', instruction: 'Review changes', dependsOn: ['build'] },
 ];
-const makeBinding = (): WorkflowBinding => ({ sessionId: randomUUID(), projectId: randomUUID(), cwd: '/tmp/workflow-project' });
+const makeBinding = (): WorkflowBinding => ({
+  sessionId: randomUUID(), providerId: 'claude', executionMode: 'structured',
+  projectId: randomUUID(), cwd: '/tmp/workflow-project',
+});
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -213,6 +216,82 @@ test('changing a bound working directory interrupts before the next stage can ex
     assert.equal(calls, 1);
     assert.equal(interrupted.stages[1].attempts, 0);
     assert.throws(() => engine.continue(run.id), /工作目录已改变/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('changing a bound provider blocks continuation before another executor can receive a stage', async () => {
+  const directory = temporary();
+  try {
+    const binding = makeBinding();
+    let calls = 0;
+    const engine = new WorkflowEngine(directory, {
+      getSession: () => binding, cancelSession: () => {},
+      runStage: async () => { calls++; return { success: true, summary: 'planned' }; },
+    });
+    const run = engine.create({ sessionId: binding.sessionId, goal: 'Keep executor binding', stages: steps, pauseAfterEachStage: true });
+    engine.start(run.id);
+    assert.equal((await engine.wait(run.id)).status, 'paused');
+    binding.providerId = 'another-agent';
+    assert.throws(() => engine.continue(run.id), /执行后端或执行模式已改变/);
+    assert.equal(calls, 1);
+    assert.equal(engine.list()[0].stages[1].attempts, 0);
+    assert.equal(engine.list()[0].providerId, 'claude');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('a non-Claude structured executor receives stages and cancellation through the same workflow port', async () => {
+  const directory = temporary();
+  try {
+    const binding = { ...makeBinding(), providerId: 'fake-agent' };
+    const pending = deferred<WorkflowStageResult>();
+    const stageSessions: string[] = [], cancelled: string[] = [];
+    const engine = new WorkflowEngine(directory, {
+      getSession: () => binding,
+      runStage: async id => { stageSessions.push(id); return pending.promise; },
+      cancelSession: id => { cancelled.push(id); pending.resolve({ success: true, summary: 'late result' }); },
+    });
+    const run = engine.create({ sessionId: binding.sessionId, goal: 'Use a declared structured executor', stages: steps });
+    assert.equal(run.providerId, 'fake-agent');
+    assert.equal(run.executionMode, 'structured');
+    engine.start(run.id);
+    await tick();
+    await engine.cancel(run.id);
+    const cancelledRun = await engine.wait(run.id);
+    assert.equal(cancelledRun.status, 'cancelled');
+    assert.deepEqual(stageSessions, [binding.sessionId]);
+    assert.deepEqual(cancelled, [binding.sessionId]);
+    assert.equal(cancelledRun.stages[1].attempts, 0);
+    const stored = JSON.parse(fs.readFileSync(engine.file, 'utf8')).runs[0];
+    assert.equal(stored.providerId, 'fake-agent');
+    assert.equal(stored.executionMode, 'structured');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('legacy v1 workflow records acquire the Claude structured binding on load and keep it when saved', async () => {
+  const directory = temporary();
+  try {
+    const binding = makeBinding();
+    let calls = 0;
+    const options = {
+      getSession: () => binding, cancelSession: () => {},
+      runStage: async () => { calls++; return { success: true, summary: 'completed' }; },
+    };
+    const original = new WorkflowEngine(directory, options);
+    const run = original.create({ sessionId: binding.sessionId, goal: 'Legacy workflow', stages: [steps[0]] });
+    const legacy = JSON.parse(fs.readFileSync(original.file, 'utf8'));
+    delete legacy.runs[0].providerId;
+    delete legacy.runs[0].executionMode;
+    fs.writeFileSync(original.file, JSON.stringify(legacy));
+    const restored = new WorkflowEngine(directory, options);
+    assert.equal(restored.list()[0].providerId, 'claude');
+    assert.equal(restored.list()[0].executionMode, 'structured');
+    assert.equal(calls, 0);
+    restored.start(run.id);
+    assert.equal((await restored.wait(run.id)).status, 'completed');
+    const stored = JSON.parse(fs.readFileSync(restored.file, 'utf8')).runs[0];
+    assert.equal(stored.providerId, 'claude');
+    assert.equal(stored.executionMode, 'structured');
+    assert.equal(calls, 1);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 

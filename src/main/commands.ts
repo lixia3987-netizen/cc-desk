@@ -148,15 +148,18 @@ export async function detectCLI(settings: Settings): Promise<Capabilities> {
 }
 
 export function claudeArguments(session: Session, capabilities: Capabilities, hasTranscript: boolean): string[] {
+  const { conversationId, forkFrom, imported } = session.execution;
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  if (!conversationId || !uuid.test(conversationId) || (forkFrom && !uuid.test(forkFrom))) throw new Error('Claude 会话 ID 必须为有效的 UUID。');
   if (session.started && !hasTranscript) throw new Error('无法恢复会话：未找到原会话记录。请检查 Claude 配置目录或从历史记录重新导入；不会自动创建空白会话。');
   const args: string[] = [];
   const add = (flag: string, ...values: string[]) => {
     if (!capabilities.flags.includes(flag)) throw new Error(`当前 CLI 不支持 ${flag}，请更新 Claude Code 后重新检测。`);
     args.push(flag, ...values);
   };
-  if (hasTranscript || session.imported) add('--resume', session.claudeId);
-  else if (session.resumeFrom) { add('--resume', session.resumeFrom); add('--fork-session'); add('--session-id', session.claudeId); }
-  else add('--session-id', session.claudeId);
+  if (hasTranscript || imported) add('--resume', conversationId);
+  else if (forkFrom) { add('--resume', forkFrom); add('--fork-session'); add('--session-id', conversationId); }
+  else add('--session-id', conversationId);
   add('--permission-mode', session.permissionMode);
   if (session.model) add('--model', session.model);
   if (session.effort !== 'default') {

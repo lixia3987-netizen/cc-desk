@@ -11,10 +11,10 @@ export function hasActiveSubtasks(session: Pick<Session, 'subtasks'>): boolean {
 }
 
 /** A connected CLI may be waiting for the next turn; process lifetime is not task lifetime. */
-export function isSessionBusy(session: Pick<Session, 'kind' | 'adapter' | 'status' | 'taskState' | 'terminalSync' | 'subtasks'>): boolean {
+export function isSessionBusy(session: Pick<Session, 'kind' | 'execution' | 'status' | 'taskState' | 'terminalSync' | 'subtasks'>): boolean {
   if (session.status === 'stopping') return true;
   if (session.status !== 'running') return isTaskBusy(session.taskState);
   if (session.kind === 'shell') return true;
-  if (session.adapter !== 'structured' && session.terminalSync !== 'synced') return true;
+  if (session.execution.mode !== 'structured' && session.terminalSync !== 'synced') return true;
   return isTaskBusy(session.taskState) || hasActiveSubtasks(session);
 }

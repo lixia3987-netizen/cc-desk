@@ -21,14 +21,14 @@ async function workspace(configured = false) {
     const quotedLog = "'" + log.replaceAll("'", "'\\''") + "'";
     await fs.writeFile(executable, '#!/bin/sh\nprintf \'%s\\n\' "$PWD" "$#" "$1" > ' + quotedLog + '\n', { mode: 0o755 });
   }
-  const session: Session = {
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
     id: randomUUID(), projectId: project.id, cwd, worktree: cwd, worktreeBase: project.path,
-    claudeId: randomUUID(), title: 'IDE 工作树会话', kind: 'claude', adapter: 'structured',
+     title: 'IDE 工作树会话', kind: 'agent',
     started: false, model: '', effort: 'default', permissionMode: 'default',
     status: 'idle', taskState: 'idle', archived: false, createdAt: now, updatedAt: now,
   };
   const state: AppState = {
-    version: 1, projects: [project], sessions: [session], selectedSessionId: session.id,
+    version: 2, projects: [project], sessions: [session], selectedSessionId: session.id,
     settings: { claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, ...(configured ? { idePath: executable } : {}) },
   };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));

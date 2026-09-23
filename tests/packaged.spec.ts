@@ -108,7 +108,11 @@ for (const target of targets) {
       // project, session identity and transcript, then reopen with the packaged app.
       delete persisted.settings.notifications;
       delete persisted.settings.closeToTray;
+      persisted.version = 1;
       for (const session of persisted.sessions) {
+        session.claudeId = session.execution.conversationId ?? randomUUID();
+        session.kind = session.kind === 'agent' ? 'claude' : 'shell';
+        delete session.execution;
         for (const key of ['adapter', 'draft', 'taskState', 'terminalSync', 'identityPending']) delete session[key];
       }
       await fs.writeFile(path.join(profile, 'workspace.json'), JSON.stringify(persisted));

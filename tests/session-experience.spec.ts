@@ -108,7 +108,7 @@ if (mode === 'structured') {
   const cli = path.join(prefix, 'claude.cmd');
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
   const project = { id: randomUUID(), name: '会话体验项目', path: projectPath, createdAt: new Date().toISOString() };
-  const state: AppState = { version: 1, projects: [project], sessions: [], settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 } };
+  const state: AppState = { version: 2, projects: [project], sessions: [], settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = () => electron.launch({
     args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])],
@@ -233,7 +233,7 @@ test('session experience: active tasks block worktree changes, completed workers
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(2);
     const records = await f.records(), starts = records.filter(value => value.event === 'start');
     expect(starts).toHaveLength(2); expect(starts[1].resume).toBe(true); expect(starts[1].pid).not.toBe(starts[0].pid);
-    expect(starts.map(value => value.session)).toEqual([original.claudeId, original.claudeId]);
+    expect(starts.map(value => value.session)).toEqual([original.execution.conversationId, original.execution.conversationId]);
     expect((await page.evaluate(id => window.desktop.chatSnapshot(id), original.id)).messages.filter(value => value.role === 'user')).toHaveLength(2);
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await close(app); await f.dispose(); }
