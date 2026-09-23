@@ -117,6 +117,10 @@ test('IDE startup errors and early nonzero exits are reported without leaking pr
 
 test('an actual executable launcher receives the exact worktree and detaches while its GUI process stays alive', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
   const f = fixture();
+  // Exercise a path alias on every POSIX runner, including macOS's /var alias.
+  const realProject = path.join(f.root, 'real-worktree');
+  fs.renameSync(f.cwd, realProject);
+  fs.symlinkSync(realProject, f.cwd, 'dir');
   const record = path.join(f.root, 'invocation.json');
   fs.writeFileSync(f.application, `#!${process.execPath}
 require('node:fs').writeFileSync(${JSON.stringify(record)}, JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),keep:process.env.KEEP_VALUE,electron:process.env.ELECTRON_RUN_AS_NODE,testMode:process.env.WORKBENCH_TEST_MODE}));
@@ -135,7 +139,8 @@ setInterval(() => {}, 1000);
     assert.equal(launchOptions?.detached, true);
     assert.equal(launchOptions?.stdio, 'ignore');
     assert.equal(launchOptions?.windowsHide, true);
-    assert.deepEqual(JSON.parse(fs.readFileSync(record, 'utf8')), { args: [f.cwd], cwd: f.cwd, keep: 'preserved' });
+    // Arguments preserve the selected path; process.cwd() resolves directory aliases.
+    assert.deepEqual(JSON.parse(fs.readFileSync(record, 'utf8')), { args: [f.cwd], cwd: fs.realpathSync(f.cwd), keep: 'preserved' });
     assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'the parent environment is not mutated');
     assert.equal(fs.existsSync(path.join(f.cwd, 'forbidden')), false, 'shell syntax in a directory name is never evaluated');
   } finally {

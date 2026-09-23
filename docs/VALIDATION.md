@@ -1,5 +1,11 @@
 # 验证记录
 
+## v0.3.0 macOS 路径别名与 Windows 测试进程调度
+
+- [后续发布构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35828513314) 的 Linux 全部检查、桌面测试、打包和载荷验证通过；macOS 真实 IDE 测试比较了 `/var` 与 `/private/var` 两种目录表示。现在保留原始启动参数断言，仅将子进程的工作目录与 `realpath` 比较，并用符号链接在所有 POSIX 平台复现此场景。
+- Windows 两次分别在不同的 Git 子进程处失败：一次返回 `3221225794`（`0xC0000142`），另一次在临时仓库初始提交时非零退出。将 Node 测试文件并发数固定为 1，降低 Git、PTY 与 Node 子进程同时启动的压力；测试文件仍在独立进程中执行，测试内部的并发保护场景保持原样。
+- Node 22.23.2 下，新增目录别名场景先复现原断言失败，修复后 IDE、Git、Worktree 路径三套测试 25/25 通过；TypeScript 与 `git diff --check` 通过。Windows 进程调度调整的有效性及三平台完整发布结果仍以重新执行的正式流水线为准。
+
 ## v0.3.0 正式流水线的 IDE 测试清理修复
 
 - [首轮发布构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35820614403) 在 macOS/Linux 的真实 IDE 启动测试中报告 `Promise resolution is still pending but the event loop has already resolved`；其它 220 项 Node 测试通过，1 项平台测试跳过，发布未执行。
