@@ -114,6 +114,17 @@ function lifecycleFixture(shellPath = '') {
   return { root, store, session, runtime, errors, capabilities };
 }
 
+test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  try {
+    await f.runtime.start(f.session.id, f.capabilities);
+    f.runtime.setMaintenance(true); await f.runtime.disconnectAll();
+    assert.equal(f.runtime.activeCount, 0); assert.equal(f.runtime.pendingCleanupCount, 0);
+    await assert.rejects(f.runtime.start(f.session.id, f.capabilities), /正在更新/);
+    f.runtime.setMaintenance(false); await f.runtime.start(f.session.id, f.capabilities);
+    assert.equal(f.runtime.activeCount, 1);
+  } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
+});
 test('stop and exit release a real PTY even when every state write fails', { timeout: 15000 }, async () => {
   const f = lifecycleFixture();
   try {

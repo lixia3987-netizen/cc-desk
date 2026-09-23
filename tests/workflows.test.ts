@@ -216,6 +216,21 @@ test('changing a bound working directory interrupts before the next stage can ex
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('CLI update interrupts workflows without dispatching late stages and allows manual continuation', async () => {
+  const directory = temporary();
+  try {
+    const binding = makeBinding(), pending = deferred<WorkflowStageResult>(); let first = true;
+    const engine = new WorkflowEngine(directory, { getSession: () => binding,
+      cancelSession: () => { pending.resolve({ success: true, summary: 'late result after update' }); },
+      runStage: async () => { if (first) { first = false; return pending.promise; } return { success: true, summary: 'manual continuation' }; },
+    });
+    const run = engine.create({ sessionId: binding.sessionId, goal: 'Update', stages: steps });
+    engine.start(run.id); await tick(); await engine.disconnectAll();
+    const interrupted = await engine.wait(run.id);
+    assert.equal(interrupted.status, 'interrupted'); assert.equal(interrupted.stages[1].attempts, 0);
+    engine.continue(run.id); assert.equal((await engine.wait(run.id)).status, 'completed');
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
 test('shutdown preserves an interrupted stage and prevents late success from advancing', async () => {
   const directory = temporary();
   try {

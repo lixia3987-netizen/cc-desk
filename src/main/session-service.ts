@@ -31,6 +31,7 @@ export class SessionService {
   private directoryLocks = new Set<string>();
   private notified = new Map<string,string>();
   private stopping = false;
+  private maintenance = false;
   constructor(private store: StateStore, private runtime: Runtime, private capabilities: () => Capabilities,
     private onState: () => void, private getWindow: () => BrowserWindow | null) {
     this.attachments = new Attachments(store.directory);
@@ -101,8 +102,13 @@ export class SessionService {
     if (keys.some(key => [...this.directoryLocks].some(lock => this.overlaps(key,lock)))) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
   }
   private assertUnlocked(session: Session) {
+    this.assertAvailable();
     if(this.lifecycle.has(session.id)) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
     this.assertDirectoriesUnlocked([this.pathKey(session.cwd)]);
+  }
+  private assertAvailable() {
+    if (this.stopping) throw new Error('工作台正在退出。');
+    if (this.maintenance) throw new Error('Claude Code 正在更新，所有工作区暂时断开，请等待更新完成。');
   }
   private async manage<T>(id: string, action: () => T | Promise<T>): Promise<T> {
     this.assertUnlocked(this.session(id));
@@ -184,11 +190,12 @@ export class SessionService {
     this.admissions.add(id);
   }
   async start(id: string) {
+    this.assertAvailable();
     const s = this.session(id);
     if(s.adapter === 'structured' && s.kind === 'claude') return; // Started by first message; no empty model request.
     if(this.chat.has(id)) throw new Error('此会话已由图形化运行器占用。');
     await this.reserve(id);
-    try { await this.runtime.start(id,this.capabilities()); } finally { this.admissions.delete(id); }
+    try { this.assertAvailable(); await this.runtime.start(id,this.capabilities()); } finally { this.admissions.delete(id); }
   }
   async stop(id: string) {
     if(this.workflows.isSessionBusy(id)) {
@@ -211,6 +218,7 @@ export class SessionService {
     await this.reserve(id);
     try {
       await this.attachments.retain(id,attachments);
+      this.assertAvailable();
       const result=await this.chat.send(id,text,this.capabilities(),attachments,titlePrompt);
       if(result.success) {
         try { await this.attachments.markSent(id,attachments); }
@@ -368,5 +376,23 @@ export class SessionService {
       if(result.status==='rejected')errors.push(result.reason);
     }
     if(errors.length)throw new AggregateError(errors,errors.map(error=>error instanceof Error?error.message:String(error)).join('\n'));
+  }
+  async withDisconnectedWorkspaces<T>(action: () => Promise<T>): Promise<T> {
+    this.assertAvailable();
+    this.maintenance = true;
+    this.runtime.setMaintenance(true); this.chat.setMaintenance(true);
+    try {
+      // Stop each runner even when another runner cannot save or terminate.
+      const results = await Promise.allSettled([this.workflows.disconnectAll(), this.chat.disconnectAll(), this.runtime.disconnectAll()]);
+      const deadline = Date.now() + 10_000;
+      while (this.admissions.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      if (results.some(result => result.status === 'rejected') || this.activeCount || this.admissions.size) throw new Error('未能断开全部工作区或保存记录，已取消更新。请检查会话进程、磁盘空间和目录权限后重试。');
+      this.store.flush();
+      if (this.store.persistenceError) throw new Error('工作区记录尚未成功保存，已取消更新。请检查磁盘空间和目录权限。');
+      return await action();
+    } finally {
+      this.runtime.setMaintenance(false); this.chat.setMaintenance(false);
+      this.maintenance = false; this.onState();
+    }
   }
 }

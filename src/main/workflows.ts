@@ -235,6 +235,14 @@ export class WorkflowEngine {
   /** Called on application shutdown; restarting never silently repeats a tool call. */
   async shutdown(): Promise<void> {
     this.closed = true;
+    await this.interruptRuns('应用退出导致工作流中断，请检查现有结果后手动继续。');
+  }
+  async disconnectAll(): Promise<void> {
+    const running = [...this.active.values()];
+    await this.interruptRuns('Claude Code 更新导致工作流中断，请检查现有结果后手动继续。');
+    await Promise.all(running.map(token => token.completion));
+  }
+  private async interruptRuns(reason: string): Promise<void> {
     const running = [...this.active.entries()];
     // Invalidate every late result before any persistence operation can fail.
     for (const [,token] of running) token.cancelled = true;
@@ -245,7 +253,7 @@ export class WorkflowEngine {
       try {
         this.update(id, run => {
           if (run.status !== 'running') return;
-          run.status = 'interrupted'; run.error = '应用退出导致工作流中断，请检查现有结果后手动继续。';
+          run.status = 'interrupted'; run.error = reason;
           for (const stage of run.stages) if (stage.status === 'running') stage.status = 'interrupted';
         });
       } catch(error) { errors.push(error); }
