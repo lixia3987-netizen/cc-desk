@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
-import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Code2, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
+import { Activity, Archive, ArrowDownToLine, ArrowUpRight, Check, ChevronRight, Code2, Command, Copy, Folder, FolderOpen, GitBranch, History, Layers, Loader2, MoreHorizontal, PanelRightClose, PanelRightOpen, Play, Plus, RefreshCw, Search, Settings2, ShieldCheck, Sparkles, Square, TerminalSquare, X } from 'lucide-react';
 import type { AppState, Attachment, Capabilities, Effort, HistoryEntry, NewSession, Session, Settings } from '../shared/types';
 import { TerminalPane, type TerminalHandle } from './TerminalPane';
 import { ChatPane, busyTask, taskLabels } from './ChatPane';
@@ -16,6 +16,7 @@ import { ThemePicker } from './ThemePicker';
 import { applyTheme } from './themes';
 import { normalizeThemeId } from '../shared/theme';
 import { cacheSavedTheme, readCachedTheme } from './theme-preferences';
+import { readInspectorOpen, saveInspectorOpen } from './layout-preferences';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../shared/panel-drafts';
 import type { ChatReadingPosition } from './chat-scroll';
 
@@ -54,6 +55,8 @@ export function App() {
   const readingPositions=useRef(new Map<string,ChatReadingPosition>());
   const latestActiveId=useRef(activeId);latestActiveId.current=activeId;
   const [inspectorTab,setInspectorTab]=useState<'context'|'git'|'workflows'|'diagnostics'>('context');
+  const [inspectorOpen,setInspectorOpen]=useState(readInspectorOpen);
+  const toggleInspector=()=>{const next=!inspectorOpen;setInspectorOpen(next);saveInspectorOpen(next);};
   const [filePicker,setFilePicker]=useState('');
   const [attachments,setAttachments]=useState<Record<string,Attachment[]>>({});
   const [deleteConfirm,setDeleteConfirm]=useState('');
@@ -267,6 +270,7 @@ export function App() {
         <div className="workspace-actions"><AttentionCenter sessions={state.sessions} projects={state.projects} onOpen={item=>{const target=state.sessions.find(session=>session.id===item.sessionId);if(!target)return;setProjectId('all');setArchived(target.archived);setSearch('');selectSession(item.sessionId);setAttentionTarget({...item,nonce:++attentionNonce.current});}}/><button className="icon-button command-button" aria-label="命令面板" title="命令面板 Ctrl / ⌘ + K" onClick={()=>{setPaletteQuery('');setModal('palette');}}><Command size={16}/></button>
           {(active||project)&&<button className="secondary compact ide-open" aria-label="在 IDE 中打开" title={state.settings.idePath?`使用 ${state.settings.idePath} 打开 ${active?.cwd??project?.path}`:'配置用于打开项目的 IDE 应用'} disabled={busy} onClick={openIde}><Code2 size={16}/>IDE</button>}
           {active&&<div className="session-actions"><button className="secondary compact" aria-label="打开工作目录" title={active.cwd} onClick={()=>void perform(()=>window.desktop.openFolder(active.id))}><FolderOpen size={16}/></button><button className="secondary compact" title="导出会话记录" onClick={()=>void perform(async()=>{const file=await window.desktop.exportTranscript(active.id);if(file)setNotice('会话记录已导出');})}><ArrowDownToLine size={16}/></button>{active.status==='running'?<><button className="secondary compact" onClick={()=>void perform(()=>window.desktop.interruptSession(active.id))}>中断任务</button><button className="secondary compact danger" onClick={()=>void perform(()=>window.desktop.stopSession(active.id))}><Square size={13}/>停止</button></>:<button className="primary compact" disabled={busy||active.archived||active.status==='stopping'} onClick={()=>{if(structured){document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus();setNotice('输入任务并发送后，将启动 Claude 会话。');}else void start(active);}}><Play size={14}/>{structured?'开始输入':active.started?'恢复会话':'启动会话'}</button>}</div>}
+          {active&&<button className={'icon-button inspector-toggle '+(inspectorOpen?'active':'')} aria-label={inspectorOpen?'收起右侧面板':'展开右侧面板'} title={inspectorOpen?'收起右侧面板':'展开右侧面板'} aria-expanded={inspectorOpen} aria-controls="session-inspector" onClick={toggleInspector}>{inspectorOpen?<PanelRightClose size={18}/>:<PanelRightOpen size={18}/>}</button>}
         </div>
       </header>
       {error&&<div className="error-banner" role="alert"><span>{error}</span><button className="icon-button" aria-label="关闭错误" onClick={()=>setError('')}><X size={16}/></button></div>}
@@ -286,7 +290,7 @@ export function App() {
             {!active.started&&<div className="terminal-empty"><TerminalSquare size={30}/><h3>会话准备就绪</h3><p>启动后，在这里与 {active.kind==='shell'?'Shell':'Claude Code'} 直接交互。</p>{active.kind==='claude'&&<small>登录、信任目录与工具审批均在终端内完成</small>}</div>}
           </div>
           {active.kind==='claude'&&!structured&&<div className="composer"><textarea aria-label="提示词编辑器" placeholder="在这里准备提示词，或直接在终端输入…" value={composer} onChange={e=>setComposer(e.target.value)}/><div><span>粘贴后，请在终端确认并按 Enter 发送。</span><button className="secondary compact" disabled={active.status!=='running'||!composer.trim()} onClick={()=>{if(composer.length>60000){setError('单次提示词请控制在 60,000 个字符以内。');return;}const handle=handles.current.get(active.id);if(!handle){setError('终端尚未就绪，请稍后再试。');return;}handle.paste(composer);handle.focus();setComposer('');}}><Copy size={13}/>粘贴到终端</button></div></div>}
-        </section><aside className={'inspector '+(inspectorTab==='git'?'git-expanded':'')}>
+        </section><aside id="session-inspector" aria-label="会话详情" hidden={!inspectorOpen} className={'inspector '+(inspectorTab==='git'?'git-expanded':'')}>
           <div className="inspector-tabs" role="tablist" aria-label="会话面板">{(['context','git','workflows','diagnostics'] as const).map(tab=><button key={tab} role="tab" aria-selected={inspectorTab===tab} className={inspectorTab===tab?'active':''} onClick={()=>setInspectorTab(tab)}>{{context:'上下文',git:'变更',workflows:'工作流',diagnostics:'诊断'}[tab]}</button>)}</div>
           {inspectorTab==='context'&&<div className="panel-content"><div className="section-label">会话上下文<Activity size={14}/></div><div className="detail-block"><label>项目</label><strong>{project?.name??'原项目已移除'}</strong><label>工作目录</label><strong>{active.cwd}</strong><label>运行方式</label><strong>{structured?'结构化对话':active.kind==='shell'?'系统 Shell':'Claude Code 终端'}</strong><label>创建时间</label><strong>{time(active.createdAt)}</strong>{active.kind==='claude'&&<><label>Claude 会话 ID{active.identityPending?' · 等待同步':''}</label><button className="id-copy" title="复制会话 ID" onClick={()=>void perform(async()=>{await navigator.clipboard.writeText(active.claudeId);setNotice('会话 ID 已复制');})}>{active.claudeId.slice(0,18)}…<Copy size={12}/></button></>}</div>
           {active.kind==='claude'&&<><SessionConfig key={active.id} session={active} capabilities={cap} onError={report}/><button className="secondary full" disabled={!active.started||!cap.flags.includes('--fork-session')||busyTask(active.taskState)||active.identityPending} onClick={()=>openNew('claude',active)}><GitBranch size={14}/>从此会话创建分支</button></>}

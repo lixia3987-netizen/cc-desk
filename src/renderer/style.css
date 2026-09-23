@@ -193,6 +193,9 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 
 /* v0.2 structured workbench */
 .inspector{width:320px;padding:0;display:flex;flex-direction:column;overflow:hidden}
+.inspector[hidden]{display:none}
+.inspector-toggle{flex-shrink:0}
+.inspector-toggle.active{background:var(--selected);color:var(--text-strong)}
 .inspector.git-expanded{width:410px}
 .inspector-tabs{display:flex;flex-shrink:0;border-bottom:1px solid var(--line);padding:6px;gap:3px}
 .inspector-tabs button{flex:1;font-size:11px;padding:10px 4px;border-radius:5px;color:var(--text-muted)}
