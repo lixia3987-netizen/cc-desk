@@ -21,7 +21,7 @@ async function workspace() {
   await fs.writeFile(path.join(data,'workspace.json'),JSON.stringify(state));
   await fs.writeFile(path.join(data,'chat',session.id+'.json'),JSON.stringify(chat));
   const source = path.join(directory,'My imported font.woff2');
-  await fs.copyFile(new URL('../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2',import.meta.url),source);
+  await fs.copyFile(path.resolve('node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2'),source);
   const launch = () => electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
   return {directory,data,source,launch,dispose:()=>fs.rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100})};
 }

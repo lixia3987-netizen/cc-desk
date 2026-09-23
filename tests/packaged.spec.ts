@@ -69,6 +69,20 @@ for (const target of targets) {
     try {
       let page = await launch();
       await expect(page.getByRole('heading', { name: /让每个想法/ })).toBeVisible();
+      // Exercise the actual packaged font URLs, not the development node_modules tree.
+      expect(await page.evaluate(async () => {
+        const families = ['Noto Sans SC Variable','Noto Serif SC Variable','JetBrains Mono Variable'];
+        for (const family of families) {
+          const faces = await document.fonts.load('16px "'+family+'"','中文 Aa 123');
+          if (!faces.length || faces.some(face=>face.status!=='loaded')) return false;
+        }
+        return true;
+      })).toBe(true);
+      const notices = await app!.evaluate(async ({app}) => {
+        const fs = await import('node:fs/promises'), path = await import('node:path');
+        return Promise.all(['noto-sans-sc','noto-serif-sc','jetbrains-mono'].map(family=>fs.readFile(path.join(app.getAppPath(),'dist','renderer','font-licenses',family+'-OFL.txt'),'utf8')));
+      });
+      for (const notice of notices) expect(notice).toContain('SIL OPEN FONT LICENSE');
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
       // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
       await page.evaluate(p => window.desktop.addProject(p), project);

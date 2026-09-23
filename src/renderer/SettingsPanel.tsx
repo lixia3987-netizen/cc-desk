@@ -49,7 +49,7 @@ export function SettingsPanel(props: Props) {
   const [validation, setValidation] = useState('');
   const content = useRef<HTMLDivElement>(null);
   const selected = pages.find(item => item.id === page)!;
-  const dirty = JSON.stringify(value) !== JSON.stringify(saved);
+  const dirty = (Object.keys({...saved,...value}) as (keyof Settings)[]).some(key => value[key] !== saved[key]);
   const changePage = (next: SettingsPage) => { onPage(next); content.current?.scrollTo(0, 0); };
   const save = (detect: boolean) => {
     const result = settingsSchema.safeParse(value);
