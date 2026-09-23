@@ -1,9 +1,9 @@
 {
   "name": "claude-workbench",
   "productName": "Claude Workbench",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "private": true,
-  "description": "Independent local desktop workspace for the Claude Code CLI",
+  "description": "A Chinese desktop workspace for Claude Code with projects, sessions, workflows, worktrees, and live subtask progress",
   "author": "Claude Workbench contributors",
   "license": "MIT",
   "main": "dist/main/index.cjs",

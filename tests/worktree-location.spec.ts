@@ -13,6 +13,8 @@ async function workspace() {
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath), fs.mkdir(customRoot)]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-b', 'main');
+  // Fixture bytes must not depend on the host's checkout newline policy.
+  git('config', 'core.autocrlf', 'false');
   git('config', 'user.name', 'Workbench Tests');
   git('config', 'user.email', 'tests@example.invalid');
   await fs.writeFile(path.join(projectPath, 'README.md'), 'Original project content\n');

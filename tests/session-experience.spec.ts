@@ -18,6 +18,8 @@ async function workspace(nativeHooks = true) {
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath), fs.mkdir(pkg, { recursive: true })]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: projectPath, encoding: 'utf8', stdio: 'pipe' }).trim();
   git('init', '-b', 'main'); git('config', 'user.name', 'Session Test'); git('config', 'user.email', 'tests@example.invalid');
+  // Fixture bytes must not depend on the host's checkout newline policy.
+  git('config', 'core.autocrlf', 'false');
   await fs.writeFile(path.join(projectPath, 'README.md'), 'Session experience fixture\n');
   git('add', '.'); git('commit', '-m', 'Fixture');
   await fs.writeFile(commands, '[]'); await fs.writeFile(log, '');
@@ -179,7 +181,14 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await page.getByLabel('新的会话名称', { exact: true }).fill('登录校验专项');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('继续补充接口验证');
-    await page.getByLabel('提示词编辑器', { exact: true }).press('Enter'); await completed(page);
+    await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
+    // A resumed conversation initially shows the previous turn's completion.
+    // Wait for this prompt and response before asserting the new terminal state.
+    await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(3);
+    await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('');
+    await expect(page.locator('.chat-message.assistant')).toHaveCount(3);
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].taskState).toBe('completed');
+    await completed(page);
     await expect(page.getByRole('heading', { name: '登录校验专项', exact: true })).toBeVisible();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].titleSource).toBe('manual');
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));

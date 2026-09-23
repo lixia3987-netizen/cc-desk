@@ -12,6 +12,8 @@ async function git(cwd: string, ...args: string[]) { return (await execFileAsync
 async function init(repo: string) {
   await fs.mkdir(repo, { recursive: true });
   await git(repo, 'init', '-b', 'main');
+  // Fixture bytes must not depend on the host's checkout newline policy.
+  await git(repo, 'config', 'core.autocrlf', 'false');
   await git(repo, 'config', 'user.name', 'Workbench Tests');
   await git(repo, 'config', 'user.email', 'tests@example.invalid');
   await fs.writeFile(path.join(repo, 'file.txt'), 'initial\n');

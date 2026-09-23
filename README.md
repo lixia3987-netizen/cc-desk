@@ -1,42 +1,42 @@
-# Claude Workbench / cc-desk
+# cc-desk · Claude Workbench
 
-封装本机 Claude Code CLI 的独立桌面工作台，Electron + React + TypeScript，中文界面，面向 Windows、macOS 和 Linux。
+把本机 Claude Code CLI 变成可管理多个项目、会话和工作流的独立桌面工作台。提供中文图形化对话、工具审批和代码审阅，也保留原生 Claude 终端与 Shell；沿用本机 CLI 的登录、模型和 provider 配置。
 
-**v0.2.3 三平台构建与验证已通过，安装包已生成。** 新增五套完整主题：森野绿、云白靛、暖砂陶、极夜蓝、墨黑琥珀。支持即时预览、保存恢复，终端同步换色并保留运行中的会话。[查看主题预览](docs/THEMES.md)。[本次构建](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224) 基于 `83f3fe9`，Windows x64、macOS arm64、Linux x64 均完成检查、桌面测试、打包和实际包启动验证；下载见下方工作流附件。
+适合同时推进多个项目、需要隔离工作目录，或希望随时看清任务进度与待处理请求的开发者。基于 Electron + React + TypeScript，面向 Windows、Apple silicon Mac 和 Linux。
 
-**v0.2.2** 修复回复重复显示、退出清理、审批等待、历史恢复与缓存、Worktree 依赖和界面交互；新增标准 Markdown、附件草稿恢复、工作流导出/删除，以及实际发布包启动验证。详见 [修复清单](docs/FIXES-v0.2.2.md)。保留 v0.2.1 的 Windows npm CLI 兼容性修复。
+- **项目有序**：会话按项目分组，支持自动命名、搜索、恢复、归档与独立草稿。
+- **进度可见**：主任务与子任务分开展示，实时查看启动数量、进行中、已完成及异常；集中处理审批与提问。
+- **阅读顺手**：紧凑标题栏、可收起的右侧面板、五套主题；Markdown、代码高亮及 Mermaid 源码 / 预览切换。
+- **开发连贯**：项目文件引用、附件、Git diff 审阅和可配置位置的 worktree；使用指定的 VS Code、WebStorm 或定制 IDE 打开工作目录。
+- **执行可控**：按需审批、Plan、接受编辑与 Bypass，支持默认权限设置；工作流按阶段推进，可确认、取消、重试与恢复。
 
-v0.2.3 还包含 [第一轮体验修复](docs/UX-FIXES-round1.md)：工作流与审阅草稿跨切换/重启保存、模板追加、正确选择新建项目、长对话阅读位置、CLI 路径检测和 Git 自动刷新等九项改进。最新三平台测试结果见 [验证记录](docs/VALIDATION.md)。
+[下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.3.0 版本说明](docs/releases/v0.3.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
-本轮新增 [对话检索与待处理入口](docs/UX-FIXES-round2.md)：Ctrl / ⌘ + F 查找本地消息并定位工具卡片，按页查看更早记录，跨会话恢复阅读，顶栏集中处理各项目的审批与提问。
-
-侧栏现已按项目分组展示会话，可折叠、搜索和在项目内直接创建；对话顶部合并为紧凑标题栏，增加消息阅读空间。[查看布局与新截图](docs/UX-LAYOUT.md)。
-
-**v0.2.0** 增加结构化对话、图形化工具审批、项目文件与代码审阅、配置诊断和持久化工作流，同时保留原生 Claude 终端与 Shell。模型、账户、provider 和底层工具仍由本机 CLI 提供。
+客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
 
 ## 下载安装包与便携包
 
-v0.2.3 安装包与便携包保存在本次工作流的 Artifacts： [Windows x64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10694005447)、[macOS arm64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10693093630)、[Linux x64](https://github.com/lixia3987-netizen/cc-desk/actions/runs/35725728224/artifacts/10692668154)。登录有仓库访问权限的 GitHub 账户下载并解压附件，再选择其中的安装包或便携包。工作流附件会按保留期限过期；本次没有发布新的 GitHub Release。
-
-当前已发布的 Release 仍为 [v0.2.2](https://github.com/lixia3987-netizen/cc-desk/releases/tag/v0.2.2)，不包含本次主题、体验修复和项目分组布局；下表列出该 Release 的文件。后续版本见 [Releases](https://github.com/lixia3987-netizen/cc-desk/releases)。
+打开 [最新 Release](https://github.com/lixia3987-netizen/cc-desk/releases/latest)，在 **Assets** 中选择对应系统的文件。v0.3.0 的安装包与便携包文件名如下：
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.2.2-windows-x64-setup.exe` | `cc-desk-0.2.2-windows-x64-portable.exe`，或 `cc-desk-0.2.2-windows-x64-portable.zip` |
-| macOS arm64 | `cc-desk-0.2.2-macos-arm64-setup.dmg` | `cc-desk-0.2.2-macos-arm64-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.2.2-linux-x86_64-portable.AppImage`，或 `cc-desk-0.2.2-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.3.0-windows-x64-setup.exe` | `cc-desk-0.3.0-windows-x64-portable.exe`，或 `cc-desk-0.3.0-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-0.3.0-macos-arm64-setup.dmg` | `cc-desk-0.3.0-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.3.0-linux-x86_64-portable.AppImage`，或 `cc-desk-0.3.0-linux-x64-portable.tar.gz` |
 
-macOS 发布包固定为 Apple silicon 的 `arm64`；尚未提供 Intel 包。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
+共 7 个安装 / 便携文件，另附 `SHA256SUMS.txt`，用于校验下载文件；GitHub 自动提供的源码压缩包不是桌面应用。
 
-这里的“便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。Release 同时提供 `SHA256SUMS.txt`，可校验下载文件。
+macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows 单文件便携版直接运行；ZIP 解压后运行其中的应用程序，需保留完整目录。macOS ZIP 解压得到 `.app`。Linux AppImage 增加执行权限后运行；`tar.gz` 解压后运行 `claude-workbench`，需保留完整目录。
 
-安装包尚未签名或公证，当前没有自动更新；更新时下载新版本。使用前先安装并登录本机 Claude Code CLI，再在“设置与连接”中检测或指定 CLI 路径。安装桌面包本身不需要执行下面的源码构建命令。
+“便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。
+
+安装包尚未签名或公证，当前没有自动更新。更新前完全退出旧版（包括托盘），再安装或解压新版本，原数据目录不变。首次使用请在「设置与连接」中检测或指定 CLI 路径；使用桌面包不需要执行下方的源码构建命令。
 
 ### Windows npm 安装的 CLI
 
 新版 npm 包声明的入口是 `bin/claude.exe`，旧版是 `cli.js`；工作台读取实际包信息，分别直接启动原生程序或使用 Node.js。无需把 npm 的 `claude.cmd` 改名为 `.exe`。
 
-自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入“设置与连接 → CLI 路径”，点击“保存并检测”（v0.2.3），按当前输入检查 CLI。v0.2.2 及更早版本需先点击“保存设置”，其“重新检测”使用已保存的路径。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
+自动检测失败时，在 PowerShell 执行 `where.exe claude`，将结果中的 `claude.cmd` 或 `claude.exe` 完整路径填入「设置与连接 → CLI 路径」，点击「保存并检测」，按当前输入检查 CLI。支持标准全局 npm、自定义 npm prefix 和项目 `node_modules/.bin` 的安装布局。旧版 JavaScript 入口需有同目录或 PATH 中的 `node.exe`；安装 Node 或更改 PATH 后，应完全退出托盘中的工作台再打开。
 
 若提示 npm 启动文件缺失，先在终端确认 `claude --version` 能运行，再修复 npm 安装；工作台不会执行任意 CMD/BAT 内容，也不会自动改写 Claude 配置。
 
@@ -156,7 +156,7 @@ Claude 启动子代理或后台任务后，输入区上方会出现「当前轮�
 
 结构化实时界面保留有界消息投影，旧消息可按页读取；会话内检索覆盖工作台保留的本地记录，长内容或部分导入会明确提示。完整可用记录仍可导出读取。终端日志是滚动保留的调试输出，导出包含上一段和当前段，不能视为完整对话备份。对话与工具输出可能含项目内容，存放在本机，请按自己的数据保留需求管理。
 
-v0.2.2 会回放快照之后的完整日志事件，并自动修正旧日志能够证明的重复结果。没有足够来源信息的旧重复文本会保留；不会按文本相同批量删除历史。CLI 原始记录不改写。
+恢复时会回放快照之后的完整日志事件，并自动修正旧日志能够证明的重复结果。没有足够来源信息的旧重复文本会保留；不会按文本相同批量删除历史。CLI 原始记录不改写。
 
 默认数据目录为 Electron userData，准确路径显示在设置中：
 
