@@ -37,11 +37,6 @@
 .font-preview p{font-size:1em;margin:5px 0;color:var(--text-secondary)}
 .font-preview small{font-size:.85em;color:var(--text-muted)}
 .font-library{border-top:1px solid var(--border)!important;padding-top:22px!important}
-.builtin-fonts{display:grid;gap:12px;margin:17px 0}
-.builtin-fonts>div{display:grid;grid-template-columns:1fr auto;gap:4px 12px;font-size:calc(11px * var(--ui-font-scale))}
-.builtin-fonts strong{font-weight:500}
-.builtin-fonts span{font-size:calc(9px * var(--ui-font-scale));color:var(--text-muted);align-self:center}
-.builtin-fonts small{grid-column:1/-1;color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale));line-height:1.7}
 .font-library-empty{padding:12px;border:1px dashed var(--border);border-radius:7px;font-size:calc(11px * var(--ui-font-scale));line-height:1.8;color:var(--text-muted)}
 .imported-fonts{list-style:none;padding:0;margin:15px 0;border:1px solid var(--border);border-radius:7px;overflow:hidden}
 .imported-fonts li{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-bottom:1px solid var(--border)}

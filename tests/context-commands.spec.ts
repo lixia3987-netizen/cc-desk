@@ -56,7 +56,7 @@ process.stdin.on('end',()=>process.exit(0));
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
   const now = new Date().toISOString(), project = { id: randomUUID(), name: 'Context 测试', path: projectPath, createdAt: now };
   const session: Session = { id: randomUUID(), projectId: project.id, title: '上下文与命令', kind: 'claude', adapter: 'structured', cwd: projectPath, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
-  const state: AppState = { version: 1, projects: [project], sessions: [session], selectedSessionId: session.id, settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'noto-sans-sc', uiFontFamily: 'noto-sans-sc' } };
+  const state: AppState = { version: 1, projects: [project], sessions: [session], selectedSessionId: session.id, settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = () => electron.launch({ args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])], env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: path.join(directory, 'claude-config') } });
   return { launch, log, session, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };

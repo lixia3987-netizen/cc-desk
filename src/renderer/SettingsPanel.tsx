@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { Bell, Check, FolderCog, FolderOpen, Layers, Loader2, Palette, Plug, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { Capabilities, Settings } from '../shared/types';
-import { BUILTIN_FONTS, DEFAULT_TYPOGRAPHY, fontFamily, typography, type FontId, type ImportedFont } from '../shared/fonts';
+import { DEFAULT_TYPOGRAPHY, fontFamily, typography, type FontId, type ImportedFont } from '../shared/fonts';
 import { settingsSchema } from '../shared/schema';
 import { normalizeThemeId } from '../shared/theme';
 import { PermissionModeField } from './PermissionModeField';
@@ -27,12 +27,12 @@ function FontControl({scope, value, fonts, disabled, onChange}: {scope: 'chat' |
   const settings = typography(value), isChat = scope === 'chat', title = isChat ? '聊天' : '菜单';
   const familyKey = isChat ? 'chatFontFamily' : 'uiFontFamily', sizeKey = isChat ? 'chatFontSize' : 'uiFontSize';
   const family = settings[familyKey], size = value[sizeKey] ?? DEFAULT_TYPOGRAPHY[sizeKey], maximum = isChat ? 28 : 20;
-  const found = BUILTIN_FONTS.some(font => font.id === family) || fonts.some(font => font.id === family);
+  const found = family === 'system' || fonts.some(font => font.id === family);
   return <section className="font-control" aria-label={title + '字体设置'}>
     <div className="settings-card-heading"><h4>{isChat ? '聊天内容' : '菜单与界面'}</h4><button type="button" className="text-button" disabled={disabled} aria-label={'重置' + title + '字体'} onClick={() => onChange({...value, [familyKey]: DEFAULT_TYPOGRAPHY[familyKey], [sizeKey]: DEFAULT_TYPOGRAPHY[sizeKey]})}>恢复默认</button></div>
     <p className="settings-description">{isChat ? '正文、输入框与工具内容；代码保留等宽字体。' : '侧栏、菜单、工具栏与设置；辅助文字按比例缩放。'}</p>
     <label>{title}字体<select aria-label={title + '字体'} value={family} disabled={disabled} onChange={event => onChange({...value, [familyKey]: event.target.value as FontId})}>
-      <optgroup label="系统与内置字体">{BUILTIN_FONTS.map(font => <option key={font.id} value={font.id}>{font.name}</option>)}</optgroup>
+      <option value="system">系统默认</option>
       {!!fonts.length && <optgroup label="已导入字体">{fonts.map(font => <option key={font.id} value={font.id}>{font.name}</option>)}</optgroup>}
       {!found && <option value={family}>字体不可用 · 请重新选择</option>}
     </select></label>
@@ -78,8 +78,7 @@ export function SettingsPanel(props: Props) {
           <section className="settings-section font-library" aria-label="字体库">
             <div className="settings-card-heading"><h4>本机字体库</h4><button type="button" className="secondary compact" disabled={busy} onClick={props.onImport}><Upload size={15}/>导入字体</button></div>
             <p className="settings-description">支持 TTF、OTF、WOFF、WOFF2，单个最多 20 MiB。导入后可在聊天和菜单中选择，无需安装到系统。</p>
-            <div className="builtin-fonts">{BUILTIN_FONTS.filter(font => font.id !== 'system').map(font => <div key={font.id}><strong>{font.name}</strong><span>内置 · OFL 开源许可</span><small>{font.description}</small></div>)}</div>
-            {fonts.length ? <ul className="imported-fonts">{fonts.map(font => <li key={font.id}><div><strong>{font.name}</strong><small>{font.format.toUpperCase()} · {(font.bytes / 1024 / 1024).toFixed(2)} MiB{[value.chatFontFamily,value.uiFontFamily].includes(font.id) ? ' · 当前已选' : ''}</small></div><button type="button" className="icon-button danger" aria-label={'移除字体 ' + font.name} title="移除后，使用此字体的区域恢复系统默认；原文件不受影响。" disabled={busy} onClick={() => props.onRemove(font.id)}><Trash2 size={16}/></button></li>)}</ul> : <p className="font-library-empty">还没有导入字体。内置字体可直接离线使用。</p>}
+            {fonts.length ? <ul className="imported-fonts">{fonts.map(font => <li key={font.id}><div><strong>{font.name}</strong><small>{font.format.toUpperCase()} · {(font.bytes / 1024 / 1024).toFixed(2)} MiB{[value.chatFontFamily,value.uiFontFamily].includes(font.id) ? ' · 当前已选' : ''}</small></div><button type="button" className="icon-button danger" aria-label={'移除字体 ' + font.name} title="移除后，使用此字体的区域恢复系统默认；原文件不受影响。" disabled={busy} onClick={() => props.onRemove(font.id)}><Trash2 size={16}/></button></li>)}</ul> : <p className="font-library-empty">还没有导入字体。当前可使用系统默认字体，也可以导入本机字体文件。</p>}
             <p className="settings-description">字体库的导入、移除会立即保存；只管理应用内副本，不修改原文件。关闭设置只撤销尚未保存的字体选择、字号与主题。</p>
           </section>
           <ThemePicker value={normalizeThemeId(value.theme)} disabled={busy} onChange={theme => onChange({...value, theme})}/>
