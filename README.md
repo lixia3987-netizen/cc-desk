@@ -1,6 +1,8 @@
 # cc-desk · Claude Workbench
 
-把本机 Claude Code CLI 变成可管理多个项目、会话和工作流的独立桌面工作台。提供中文图形化对话、工具审批和代码审阅，也保留原生 Claude 终端与 Shell；沿用本机 CLI 的登录、模型和 provider 配置。
+**面向 Claude Code 的中文桌面工作台，在一个窗口中管理项目、会话、子任务和工作流。**
+
+cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和代码审阅，也保留原生 Claude 终端与 Shell。沿用本机 CLI 的登录、模型和 provider 配置，将日常开发中的对话、文件、Git 变更和隔离工作目录放在同一处管理。
 
 适合同时推进多个项目、需要隔离工作目录，或希望随时看清任务进度与待处理请求的开发者。基于 Electron + React + TypeScript，面向 Windows、Apple silicon Mac 和 Linux。
 
@@ -13,6 +15,23 @@
 [下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.3.0 版本说明](docs/releases/v0.3.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
 客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
+
+## v0.3.0 更新
+
+本版整合 v0.2.2 之后的功能与体验改进：
+
+- **会话自动命名与状态修复**：首条有效消息生成标题；回合结束后正确恢复输入状态，空闲结构化进程可按需释放。
+- **子任务实时进度**：查看进行中、已完成及异常数量，展开查看任务说明、工具和结果摘要。
+- **阅读与输入**：五套主题、Mermaid 源码 / 预览、会话内检索、可收起的右侧面板；Enter 发送，Ctrl+Enter 换行。
+- **环境与权限**：自定义 IDE、项目内或统一 Worktree 目录，以及新建会话的默认权限和 Bypass 设置。
+
+完整改动与升级说明见 [v0.3.0 版本说明](docs/releases/v0.3.0.md)。
+
+## 三步开始使用
+
+1. 安装并登录本机 Claude Code CLI，确认终端中能正常启动 Claude Code。
+2. 下载对应系统的桌面包，打开后在「设置与连接」中检测或指定 CLI 路径。
+3. 添加项目目录并新建会话，选择结构化对话或原生终端；需要隔离代码时创建独立 Git worktree。
 
 ## 下载安装包与便携包
 
