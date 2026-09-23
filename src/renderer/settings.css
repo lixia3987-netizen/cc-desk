@@ -55,3 +55,12 @@
 .settings-save-state{margin-right:auto;font-size:calc(11px * var(--ui-font-scale));color:var(--text-muted);line-height:1.6}
 .settings-error{font-size:calc(11px * var(--ui-font-scale));line-height:1.7;color:var(--danger);padding:0 0 11px;max-height:90px;overflow:auto;overflow-wrap:anywhere}
 @media(max-width:1100px){.font-controls{grid-template-columns:1fr}.settings-content{padding:20px}.font-control .settings-description{min-height:0}.settings-content .theme-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+.cli-update-notice{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 20px;background:var(--elevated);border-bottom:1px solid var(--border);flex-shrink:0}
+.cli-update-copy{min-width:0;overflow-wrap:anywhere}
+.cli-update-copy strong{display:flex;align-items:center;gap:8px;font-size:calc(12px * var(--ui-font-scale))}
+.cli-update-copy p{margin:7px 0 0;font-size:calc(12px * var(--ui-font-scale));line-height:1.6}
+.cli-update-copy small{display:block;margin-top:6px;color:var(--text-muted);line-height:1.6}
+.cli-update-actions{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.settings-content .cli-update-notice{border:1px solid var(--border);border-radius:10px;margin-bottom:20px;padding:16px;flex-wrap:wrap}
+.cli-update-notice.error .cli-update-copy p{color:var(--danger)}

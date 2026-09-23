@@ -102,6 +102,9 @@ function usesEnvNode(file: string): boolean {
  * Pass this same object to the child process so CLI tools inherit the resolved Node.
  */
 export function cliInvocation(settings: Settings, env = environment()): { file: string; prefix: string[] } {
+  // cc-desk owns update confirmation for the CLI processes it starts.
+  // Explicit `claude update` still works with the background updater disabled.
+  env.DISABLE_AUTOUPDATER = '1';
   const file = findExecutable(settings.claudePath || 'claude', env);
   if (!file) throw new CLIResolutionError('找不到 Claude Code。请先安装 CLI，或在设置中填写 claude 可执行文件的完整路径。');
   if (/\.(cmd|bat)$/i.test(file)) return resolveNpmLauncher(file, env);

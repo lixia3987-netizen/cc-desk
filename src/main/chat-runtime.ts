@@ -66,6 +66,9 @@ export class ChatRuntime {
   private busy = new Set<string>();
   private cancelled = new Set<string>();
   private shuttingDown = false;
+  private maintenance = false;
+  private terminations = new Set<Promise<boolean>>();
+  private terminationFailed = false;
   private history: ChatHistory;
   private archive: ChatArchive;
   private subtasks: SubtaskTracker;
@@ -99,10 +102,13 @@ export class ChatRuntime {
   /** Release a reusable idle CLI before changing its working directory or reclaiming a slot. */
   async stopIdle(id: string) {
     if (this.isBusy(id)) throw new Error('请先停止正在执行的任务。');
+    await this.stopAndWait(id);
+  }
+  private async stopAndWait(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
-    if (!entry) return;
-    this.releasing.set(id, entry);
+    if (entry) this.releasing.set(id, entry);
     this.stop(id);
+    if (!entry) return;
     // A root process may exit before its MCP/tool descendants. Wait for the
     // process-group escalation as well, rather than treating root exit as a
     // guarantee that the working directory is no longer held on Windows.
@@ -182,6 +188,7 @@ export class ChatRuntime {
   /** Initialize the CLI without sending a prompt or spending a model turn. */
   async prepareCommands(id: string, capabilities: Capabilities): Promise<ChatSnapshot> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
+    if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能连接会话。');
     const session = this.session(id);
     if (session.kind !== 'claude' || session.adapter !== 'structured' || session.archived) throw new Error('此功能需要未归档的图形化 Claude 会话。');
     if (this.busy.has(id) || this.starting.has(id)) throw new Error('当前会话正在处理任务，请稍后重试。');
@@ -299,6 +306,7 @@ export class ChatRuntime {
 
   async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = [], titlePrompt = text): Promise<ChatTurnResult> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
+    if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能发送任务。');
     const session = this.session(id);
     if (session.kind !== 'claude' || session.adapter === 'terminal') throw new Error('该会话没有使用结构化适配器。');
     if (session.archived) throw new Error('请先取消会话归档。');
@@ -312,7 +320,7 @@ export class ChatRuntime {
       await this.hydrate(id);
       const content = await userContent(text, attachments);
       if (this.cancelled.has(id)) throw new Error('消息发送已取消。');
-      if (this.shuttingDown) throw new Error('工作台正在退出。');
+      if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
       const previousState = this.history.get(id).taskState;
       const entry = this.entries.get(id) ?? await this.start(id, capabilities);
       if (entry.ending || !entry.initialized) throw new Error('会话正在停止或尚未初始化。');
@@ -343,6 +351,7 @@ export class ChatRuntime {
   }
 
   private async start(id: string, capabilities: Capabilities): Promise<Entry> {
+    if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
     if (this.has(id)) throw new Error('会话正在启动。');
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error('已达到并发会话上限。');
     this.starting.add(id);
@@ -351,7 +360,7 @@ export class ChatRuntime {
       const session = this.session(id);
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
       const resumed = await (this.options.transcriptExists ?? transcriptExists)(session.claudeId);
-      if (this.shuttingDown || !this.starting.has(id)) throw new Error('会话启动已取消。');
+      if (this.shuttingDown || this.maintenance || !this.starting.has(id)) throw new Error('会话启动已取消。');
       const env = environment();
       const invocation = this.options.invocation?.(session, capabilities, resumed) ?? (() => {
         const cli = cliInvocation(this.store.state.settings, env);
@@ -934,6 +943,10 @@ export class ChatRuntime {
       entry.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(process.platform === 'win32' ? await first || last : last)); }, 1500);
       entry.killTimer.unref();
     });
+    // Keep tracking descendants even after `closed` removes the root entry.
+    const termination = entry.termination;
+    this.terminations.add(termination);
+    void termination.then(stopped => { if (!stopped) this.terminationFailed = true; this.terminations.delete(termination); });
   }
   private closed(id: string, entry: Entry, code: number | null, signal: NodeJS.Signals | null) {
     if (this.entries.get(id) !== entry) return;
@@ -961,5 +974,16 @@ export class ChatRuntime {
     this.notifications.clear();
     try { this.history.flush(); } catch (error) { errors.push(error); }
     if (errors.length) throw new AggregateError(errors, '聊天会话退出时部分记录未能保存：' + errors.map(messageOf).join('；'));
+  }
+  setMaintenance(value: boolean) { this.maintenance = value; }
+  async disconnectAll() {
+    if (!this.maintenance) throw new Error('断开聊天前必须暂停新会话。');
+    const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy]);
+    const results = await Promise.allSettled([...ids].map(id => this.stopAndWait(id)));
+    // Pending hydration / attachment reads must settle while starts remain blocked.
+    const deadline = Date.now() + 10_000;
+    while ((this.busy.size || this.terminations.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (results.some(result => result.status === 'rejected') || this.activeCount || this.busy.size || this.terminations.size || this.terminationFailed) throw new Error('无法确认全部聊天进程已停止，已取消更新。请等待或重启工作台后重试。');
+    this.history.flush();
   }
 }

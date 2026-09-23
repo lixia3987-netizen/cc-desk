@@ -38,6 +38,8 @@ export class Runtime {
   private pending = new Map<string, string>();
   private flushTimer?: NodeJS.Timeout;
   private shuttingDown = false;
+  private maintenance = false;
+  private cleanupError?: unknown;
   private sequence = 0;
   private cancelledStarts = new Set<string>();
   private shutdownPromise?: Promise<void>;
@@ -58,7 +60,7 @@ export class Runtime {
   }
   private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
   private trackCleanup(cleanup: Promise<void>) {
-    const tracked = cleanup.catch(error => this.reportError(error));
+    const tracked = cleanup.catch(error => { this.cleanupError = error; this.reportError(error); });
     this.cleanups.add(tracked);
     void tracked.then(() => this.cleanups.delete(tracked));
     return tracked;
@@ -138,6 +140,7 @@ export class Runtime {
   }
   async start(id: string, capabilities: Capabilities) {
     if (this.shuttingDown) throw new Error('工作台正在退出，无法启动新会话。');
+    if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能启动终端。');
     const session = this.getSession(id);
     if (this.has(id)) return;
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
@@ -182,7 +185,7 @@ export class Runtime {
           args.push('--settings', hooks.settings);
         }
       } else ({ file, args } = shellInvocation(this.store.state.settings));
-      if (this.shuttingDown || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
+      if (this.shuttingDown || this.maintenance || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
       const child = pty.spawn(file, args, { name: 'xterm-256color', cwd: session.cwd, env, cols: 100, rows: 30 });
       const entry: ProcessEntry = spawned = { process: child, ending: false, hooks };
@@ -285,19 +288,21 @@ export class Runtime {
       let changed = true;
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
     } catch { /* Fall back to the owned process group. */ }
+    let failure: unknown;
     const signal = (name: NodeJS.Signals) => {
       for (const pid of [...ids].reverse()) {
         try { process.kill(pid,name); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') this.reportError(error); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
       }
       try { process.kill(-entry.process.pid,name); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') this.reportError(error); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
     };
     signal('SIGTERM');
     // Keep this cleanup even when the root exits before an ignoring descendant.
     // This is a tracked Promise, independent of the root PTY's exit event.
     await new Promise<void>(resolve => setTimeout(resolve,1500));
     signal('SIGKILL');
+    if (failure) throw failure;
   }
   snapshot(id: string): TerminalSnapshot {
     const session = this.getSession(id);
@@ -346,8 +351,15 @@ export class Runtime {
     // Resource cleanup is idempotent, but saving must be retried after a disk fault.
     this.store.flush();
   }
-  private async performShutdown() {
-    this.shuttingDown = true;
+  setMaintenance(value: boolean) { this.maintenance = value; }
+  async disconnectAll() {
+    if (!this.maintenance) throw new Error('断开终端前必须暂停新会话。');
+    await this.performShutdown(false);
+    if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程已停止，已取消更新。请关闭残留进程并重启工作台后重试。');
+    this.store.flush();
+  }
+  private async performShutdown(permanent = true) {
+    if (permanent) this.shuttingDown = true;
     for (const id of this.starting) this.cancelledStarts.add(id);
     for (const id of this.running.keys()) this.guard(() => this.stop(id));
     await Promise.all([...this.startCompletions.values()]);

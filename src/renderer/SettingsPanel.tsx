@@ -7,6 +7,7 @@ import { settingsSchema } from '../shared/schema';
 import { normalizeThemeId } from '../shared/theme';
 import { PermissionModeField } from './PermissionModeField';
 import { ThemePicker } from './ThemePicker';
+import type { ReactNode } from 'react';
 
 const pages = [
   { id: 'appearance', title: '外观与字体', icon: Palette, description: '选择主题，分别调整聊天内容与菜单界面的阅读体验。' },
@@ -22,6 +23,7 @@ interface Props {
   fonts: ImportedFont[]; onImport(): void; onRemove(id: string): void;
   busy: boolean; error: string; capabilities: Capabilities; platform: string; dataPath: string;
   onSave(detect: boolean): void; onClose(): void; onChooseIde(): void; onChooseWorktree(): void;
+  cliUpdate: ReactNode;
 }
 
 function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoaded, disabled, onChange}: {scope: 'chat' | 'ui'; value: Settings; fonts: ImportedFont[]; systemFonts: SystemFont[]; systemQuery: string; systemLoaded: boolean; disabled: boolean; onChange(value: Settings): void}) {
@@ -111,6 +113,7 @@ export function SettingsPanel(props: Props) {
           <ThemePicker value={normalizeThemeId(value.theme)} disabled={busy} onChange={theme => onChange({...value, theme})}/>
         </>}
         {page === 'connection' && <>
+          {props.cliUpdate}
           <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
             <p className="hint">{value.claudePath !== saved.claudePath ? '路径尚未保存；点击“保存并检测”以检查当前输入。' : '检测路径：' + (saved.claudePath || '自动查找')}</p>
             <div className={'connection-box ' + (cap.available ? 'connected' : '')}><div><span className={'dot ' + (cap.available ? 'running' : 'error')}/><strong>{busy ? '正在保存并检查设置…' : cap.available ? cap.version : '未检测到 CLI'}</strong></div><p>{busy ? '请稍候…' : cap.available ? cap.executable : cap.error || '保存设置后自动检测 CLI。'}</p>{cap.available && <small>可用强度：{cap.efforts.filter(value => value !== 'default').join(' / ') || '跟随 CLI'}</small>}</div>

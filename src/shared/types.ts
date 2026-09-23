@@ -8,6 +8,7 @@ import type { PermissionMode } from './permissions';
 import type { SubtaskActivity } from './subtasks';
 import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
+import type { CLIUpdateState } from './cli-update';
 export type { PermissionMode } from './permissions';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
@@ -28,7 +29,7 @@ export interface Session {
 export interface Settings extends TypographySettings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
-export interface Snapshot { state: AppState; capabilities: Capabilities; platform: string; dataPath: string }
+export interface Snapshot { state: AppState; capabilities: Capabilities; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
 export interface NewSession { projectId: string; title: string; kind: 'claude' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; resumeFrom?: string; fork?: boolean; adapter?: 'terminal' | 'structured' }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
@@ -90,6 +91,10 @@ export interface DesktopAPI {
   readFont(id: string): Promise<Uint8Array>;
   removeFont(id: string): Promise<void>;
   detect(): Promise<Capabilities>;
+  checkCLIUpdate(): Promise<CLIUpdateState>;
+  updateCLI(): Promise<CLIUpdateState>;
+  dismissCLIUpdate(): Promise<void>;
+  onCLIUpdate(callback: (state: CLIUpdateState) => void): () => void;
   history(projectId: string): Promise<HistoryEntry[]>;
   gitInfo(sessionId: string): Promise<GitInfo>;
   exportTranscript(id: string): Promise<string | null>;

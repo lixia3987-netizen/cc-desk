@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme, net } from 'electron';
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -8,6 +8,8 @@ import { StateStore } from './store';
 import { Runtime } from './runtime';
 import { SessionService } from './session-service';
 import { detectCLI } from './commands';
+import { CLIUpdater } from './cli-updater';
+import { CLIUpdateService } from './cli-update-service';
 import { openIde } from './ide';
 import { cleanupWorktree, createWorktree, gitInfo } from './git';
 import { sanitizeWorktreeName } from './worktree-paths';
@@ -31,6 +33,7 @@ let services: SessionService;
 let tray: Tray | undefined;
 let store: StateStore;
 let fonts: FontLibrary;
+let cliUpdates: CLIUpdateService;
 let closing = false;
 let allowQuit = false;
 let capabilities: Capabilities = { available:false, executable:'', version:'', flags:[], efforts:['default'] };
@@ -72,7 +75,7 @@ async function addProject(value: string): Promise<Project> {
   store.change(s => s.projects.push(project)); notify(); return project;
 }
 function registerIPC() {
-  handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, platform:process.platform, dataPath:store.directory }));
+  handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));
   // Explicit write-only bridge; browser clipboard permissions remain denied.
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
@@ -133,7 +136,7 @@ function registerIPC() {
   handle('session:stop',idSchema,id => services.stop(id));
   handle('session:interrupt',idSchema,id => services.interrupt(id));
   handle('terminal:snapshot',idSchema,id => runtime.snapshot(id));
-  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => runtime.write(id,data));
+  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => {cliUpdates.assertIdle();runtime.write(id,data);});
   handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
   handle('settings:save',settingsSchema,async settings => {
     for (const key of ['chatFontFamily', 'uiFontFamily'] as const) {
@@ -141,12 +144,16 @@ function registerIPC() {
     }
     if(settings.worktreeLocation === 'custom' && !path.isAbsolute(settings.worktreeRoot))throw new Error('统一 Worktree 根目录必须是绝对路径。');
     const cliChanged=settings.claudePath!==store.state.settings.claudePath;
+    if(cliChanged)cliUpdates.assertIdle();
     store.change(s => { s.settings = settings; });
     const appearance=THEME_APPEARANCE[normalizeThemeId(settings.theme)];nativeTheme.themeSource=appearance.scheme;
     if(window&&!window.isDestroyed())window.setBackgroundColor(appearance.background);
-    notify();if(cliChanged)await refreshCapabilities();return undefined;
+    notify();if(cliChanged){cliUpdates.reset();await refreshCapabilities();void cliUpdates.check();}return undefined;
   });
-  handle('cli:detect',z.undefined(),refreshCapabilities);
+  handle('cli:detect',z.undefined(),()=>{cliUpdates.assertIdle();return refreshCapabilities();});
+  handle('cli-update:check',z.undefined(),()=>cliUpdates.check());
+  handle('cli-update:dismiss',z.undefined(),()=>cliUpdates.dismiss());
+  handle('cli-update:apply',z.undefined(),()=>{if(closing)throw new Error('工作台正在退出。');return cliUpdates.update();});
   handle('fonts:list',z.undefined(),() => fonts.list());
   handle('fonts:read',z.string().regex(IMPORTED_FONT_ID),id => fonts.read(id));
   handle('fonts:import',z.undefined(),async () => {
@@ -218,6 +225,7 @@ function showWindow() {
 }
 async function requestQuit() {
   if (closing) return;
+  if(cliUpdates?.busy){showWindow();if(window)await dialog.showMessageBox(window,{type:'info',buttons:['返回工作台'],title:'Claude Code 正在更新',message:'请先完成或取消更新，再退出工作台。'});return;}
   closing = true;
   if (services?.activeCount && window) {
     const result = await dialog.showMessageBox(window,{type:'question',buttons:['保留窗口','停止会话并退出'],defaultId:0,cancelId:0,title:'退出工作台',message:`仍有 ${services.activeCount} 个会话进程运行。`,detail:'退出会停止这些进程。已保存的 Claude 对话可以在下次启动时恢复。'});
@@ -246,8 +254,24 @@ else {
       fonts = new FontLibrary(store.directory);
       runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); },{onError:reportPersistenceError});
       services = new SessionService(store,runtime,()=>capabilities,notify,()=>window);
+      const updater = new CLIUpdater(()=>store.state.settings,(url,options)=>net.fetch(url,options));
+      cliUpdates = new CLIUpdateService({
+        check:()=>updater.check(), verify:async candidate=>{await updater.verify(candidate);},
+        install:candidate=>updater.install(candidate), refresh:refreshCapabilities,
+        disconnect:action=>services.withDisconnectedWorkspaces(action),
+        confirm:async candidate=>{
+          if(!window||window.isDestroyed())return false;
+          const result=await dialog.showMessageBox(window,{type:'warning',title:'更新 Claude Code CLI',
+            message:`将 Claude Code 从 ${candidate.currentVersion} 更新至 ${candidate.latestVersion}？`,
+            detail:`更新前会断开全部 ${store.state.projects.length} 个工作区，停止所有 Claude 会话、Shell 终端及工作流（当前 ${services.activeCount} 个会话进程）。正在执行的任务会被中断。项目、会话历史和已保存草稿会保留；更新结束后需手动恢复。`,
+            buttons:['取消','断开全部工作区并更新'],defaultId:0,cancelId:0,noLink:true});
+          return result.response===1;
+        },
+        changed:state=>{if(window&&!window.isDestroyed())window.webContents.send('cli-update:state',state);},
+      });
       registerIPC(); createWindow();
       await refreshCapabilities();
+      void cliUpdates.check();
     } catch (error) { dialog.showErrorBox('启动失败',String((error as Error).message));allowQuit=true;app.quit(); }
   });
 }

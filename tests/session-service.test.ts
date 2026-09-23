@@ -31,7 +31,8 @@ async function fixture(window:BrowserWindow|null=null) {
   const runtime={
     getSession:(id:string)=>{const session=store.state.sessions.find(s=>s.id===id);if(!session)throw new Error('Session missing');return session;},
     has:(id:string)=>active.has(id),start:async(id:string)=>{active.add(id);},stop:(id:string)=>{active.delete(id);},
-    forget:(id:string)=>{active.delete(id);},shutdown:async()=>{active.clear();},get activeCount(){return active.size;}
+    forget:(id:string)=>{active.delete(id);},shutdown:async()=>{active.clear();},get activeCount(){return active.size;},
+    setMaintenance:(_value:boolean)=>{},disconnectAll:async()=>{active.clear();}
   } as unknown as Runtime;
   const caps:Capabilities={available:false,executable:'',version:'',flags:[],efforts:[]};
   const service=new SessionService(store,runtime,()=>caps,()=>{},()=>window);
@@ -46,6 +47,40 @@ async function fixture(window:BrowserWindow|null=null) {
   return {dir,repo,store,service,runtime,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
+test('CLI update waits for disconnection, blocks new work and keeps every workspace available afterward', async t => {
+  const f = await fixture();
+  let release!: () => void, finish!: () => void;
+  const stopped = new Promise<void>(resolve => { release = resolve; });
+  const installing = new Promise<void>(resolve => { finish = resolve; });
+  let invoked = false;
+  try {
+    const shell = f.add(f.repo), other = f.add(f.repo, { kind: 'claude', adapter: 'structured' });
+    await f.service.start(shell.id);
+    t.mock.method(f.runtime, 'disconnectAll', async () => { await stopped; f.active.clear(); });
+    const update = f.service.withDisconnectedWorkspaces(async () => { invoked = true; assert.equal(f.active.size, 0); await installing; });
+    await assert.rejects(f.service.start(shell.id), /正在更新/);
+    await assert.rejects(f.call('chat:commands', other.id), /正在更新/);
+    await assert.rejects(f.call('chat:send', { id: other.id, text: 'new work' }), /正在更新/);
+    assert.throws(() => f.service.workflows.create({ sessionId: other.id, goal: 'new workflow', pauseAfterEachStage: false, maxAttempts: 2 }), /正在更新/);
+    assert.equal(invoked, false); release();
+    while (!invoked) await new Promise(resolve => setTimeout(resolve, 5));
+    await assert.rejects(f.service.start(shell.id), /正在更新/); finish(); await update;
+    assert.equal(f.store.state.sessions.length, 2); assert.equal(f.store.state.projects.length, 1);
+    await f.service.start(shell.id); assert.equal(f.active.size, 1);
+  } finally { release?.(); finish?.(); await f.dispose(); }
+});
+test('disconnection and persistence failures abort the update but still stop independent runners', async t => {
+  const f = await fixture();
+  try {
+    let terminals = 0, chats = 0, installed = 0;
+    t.mock.method(f.service.workflows, 'disconnectAll', async () => { throw new Error('disk fault'); });
+    t.mock.method(f.service.chat, 'disconnectAll', async () => { chats++; });
+    t.mock.method(f.runtime, 'disconnectAll', async () => { terminals++; });
+    await assert.rejects(f.service.withDisconnectedWorkspaces(async () => { installed++; }), /已取消更新/);
+    assert.equal(terminals, 1); assert.equal(chats, 1); assert.equal(installed, 0);
+    const session = f.add(f.repo); await f.service.start(session.id); assert.equal(f.active.size, 1);
+  } finally { await f.dispose(); }
+});
 test('worktree creation releases completed structured CLIs under directory locks before invoking Git',async t=>{
   const f=await fixture();try{
     const session=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});

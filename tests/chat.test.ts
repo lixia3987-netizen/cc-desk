@@ -302,6 +302,20 @@ function setup(options: { initialFailure?: boolean; noTranscript?: boolean } = {
   return { directory, store, session, runtime, starts, launches, observedId, sent, cleanup: async () => { await runtime.shutdown(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
 
+test('CLI update interrupts a running turn and permits explicit conversation resume after disconnection', async () => {
+  const s = setup();
+  try {
+    const turn = s.runtime.send(s.session.id, 'hang', capabilities);
+    await until(() => s.runtime.taskState(s.session.id) === 'thinking' && s.store.state.sessions[0].claudeId === s.observedId);
+    s.runtime.setMaintenance(true); await s.runtime.disconnectAll();
+    assert.equal((await turn).interrupted, true); assert.equal(s.runtime.activeCount, 0);
+    await assert.rejects(s.runtime.send(s.session.id, 'blocked', capabilities), /正在更新/);
+    await assert.rejects(s.runtime.prepareCommands(s.session.id, capabilities), /正在更新/);
+    s.runtime.setMaintenance(false);
+    assert.equal((await s.runtime.send(s.session.id, 'follow up', capabilities)).success, true);
+    assert.deepEqual(s.starts, [false, true]);
+  } finally { await s.cleanup(); }
+});
 test('completed reusable processes release idle resources without losing completion or native resume identity', async () => {
   const s=setup();try{
     await s.runtime.send(s.session.id,'first turn',capabilities);
