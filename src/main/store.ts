@@ -3,6 +3,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AppState } from '../shared/types';
 import { stateSchema } from '../shared/schema';
+import { isSubtaskActive } from '../shared/subtasks';
 
 export class StateStore {
   state: AppState;
@@ -20,6 +21,11 @@ export class StateStore {
       for (const session of this.state.sessions) {
         if (session.status === 'running' || session.status === 'stopping') session.status = 'stopped';
         if (session.taskState && !['idle','completed','interrupted','error'].includes(session.taskState)) session.taskState = 'interrupted';
+        for(const task of session.subtasks?.tasks??[])if(isSubtaskActive(task.status)) {
+          task.status='interrupted';task.endedAt=new Date().toISOString();task.updatedAt=task.endedAt;
+          task.summary='上次运行已结束，未收到此子任务的完成确认。';
+          this.dirty=true;
+        }
       }
     } else {
       this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default' } };

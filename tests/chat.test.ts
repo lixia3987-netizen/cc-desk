@@ -119,6 +119,120 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    output(intermediate);output(intermediate);
    output({type:'system',subtype:'task_notification',task_id:'child',status:'completed',summary:'child done'});return;
   }
+  if(current==='subtasks-parallel'){
+   for(const [tool,task] of [['agent-a','task-a'],['agent-b','task-b'],['agent-c','task-c']]){
+    output({type:'assistant',message:{id:tool,content:[{type:'tool_use',id:tool,name:'Agent',input:{description:tool,run_in_background:true}}]}});
+    output({type:'system',subtype:'task_started',task_id:task,tool_use_id:tool,task_type:'local_agent',description:tool});
+   }
+   output({type:'system',subtype:'task_progress',task_id:'task-a',tool_use_id:'agent-a',description:'Review implementation',summary:'Reading tests',last_tool_name:'Read',usage:{total_tokens:240,tool_uses:2,duration_ms:25}});
+   setTimeout(()=>{
+    output({type:'system',subtype:'task_notification',task_id:'task-a',tool_use_id:'agent-a',status:'completed',summary:'Review done'});
+    output({type:'system',subtype:'task_updated',task_id:'task-b',patch:{status:'killed',description:'Cancelled analysis'}});
+    output({type:'system',subtype:'task_notification',task_id:'task-c',status:'failed',summary:'Fixture failure'});
+    output({type:'system',subtype:'task_started',task_id:'task-a',tool_use_id:'agent-a',description:'late duplicate'});
+    output({type:'system',subtype:'task_progress',task_id:'task-a',tool_use_id:'agent-a',usage:{total_tokens:999}});
+    done('parallel done');
+   },100);return;
+  }
+  if(current==='subtasks-foreground'){
+   for(const [tool,input] of [['foreground',{run_in_background:false}],['unconfirmed',{}],['reported',{}]]){
+    output({type:'assistant',message:{id:tool,content:[{type:'tool_use',id:tool,name:'Task',input:{description:tool,...input}}]}});
+    output({type:'user',tool_use_result:tool==='reported'?{status:'completed',agentId:'agent-reported',totalToolUseCount:4,totalDurationMs:75,content:[{type:'text',text:'Final report'}]}:undefined,message:{content:[{type:'tool_result',tool_use_id:tool,content:tool==='unconfirmed'?'Agent launched':'Agent finished'}]}});
+   }
+   done('foreground done');return;
+  }
+  if(current==='subtasks-background-ack'){
+   output({type:'system',subtype:'task_started',task_id:'async-task',tool_use_id:'async-tool',task_type:'local_agent',description:'Background agent'});
+   output({type:'assistant',message:{id:'async-message',content:[{type:'tool_use',id:'async-tool',name:'Agent',input:{description:'Background agent'}}]}});
+   output({type:'user',tool_use_result:{status:'async_launched',agentId:'async-agent',description:'Background agent'},message:{content:[{type:'tool_result',tool_use_id:'async-tool',content:'Launched successfully'}]}});
+   output({type:'result',uuid:'async-intermediate',subtype:'success',result:'Agent launched',session_id:session});
+   setTimeout(()=>{
+    output({type:'system',subtype:'task_notification',task_id:'async-task',status:'completed',summary:'Background work complete'});
+    done('background done');
+   },100);return;
+  }
+  if(current==='subtasks-agent-alias'){
+   output({type:'assistant',message:{id:'alias-message',content:[{type:'tool_use',id:'alias-tool',name:'Agent',input:{description:'Alias task'}}]}});
+   output({type:'user',tool_use_result:{status:'async_launched',agentId:'alias-agent',description:'Alias task'},message:{content:[{type:'tool_result',tool_use_id:'alias-tool',content:'Launched successfully'}]}});
+   output({type:'system',subtype:'task_started',task_id:'alias-agent',task_type:'local_agent',description:'Alias task'});
+   output({type:'system',subtype:'task_notification',task_id:'alias-agent',status:'completed',summary:'Alias done'});
+   done('alias done');return;
+  }
+  if(current==='subtasks-no-start'||current==='subtasks-remote-no-start'){
+   const remote=current==='subtasks-remote-no-start';const taskId=remote?'remote-agent':'ack-only-agent';
+   output({type:'assistant',message:{id:'ack-only-message',content:[{type:'tool_use',id:'ack-only-tool',name:'Agent',input:{description:'Acknowledged background task'}}]}});
+   output({type:'user',tool_use_result:remote?{status:'remote_launched',taskId,description:'Remote background task'}:{status:'async_launched',agentId:taskId,description:'Acknowledged background task'},message:{content:[{type:'tool_result',tool_use_id:'ack-only-tool',content:'Background launch acknowledged'}]}});
+   output({type:'result',uuid:'ack-only-intermediate',subtype:'success',result:'Waiting for acknowledged task',session_id:session});
+   setTimeout(()=>{
+    output({type:'system',subtype:'task_notification',task_id:taskId,status:'completed',summary:'Acknowledged task finished'});
+    done('acknowledged background done');
+   },150);return;
+  }
+  if(current==='subtasks-resumed-agent'){
+   for(const tool of ['initial-agent-tool','resumed-agent-tool']){
+    output({type:'assistant',message:{id:tool,content:[{type:'tool_use',id:tool,name:'Agent',input:{description:tool}}]}});
+    output({type:'user',tool_use_result:{status:'async_launched',agentId:'shared-agent',description:tool},message:{content:[{type:'tool_result',tool_use_id:tool,content:'Launched'}]}});
+    if(tool==='initial-agent-tool')output({type:'system',subtype:'task_notification',task_id:'shared-agent',tool_use_id:tool,status:'completed',summary:'Initial task done'});
+   }
+   output({type:'system',subtype:'task_updated',task_id:'shared-agent',patch:{description:'Resumed task still running'}});
+   output({type:'result',uuid:'resumed-intermediate',subtype:'success',result:'Waiting for resumed task',session_id:session});
+   const resumeTimer=setInterval(()=>{
+    if(!fs.existsSync(require('node:path').join(require('node:path').dirname(process.argv[3]),'release-resumed')))return;
+    clearInterval(resumeTimer);
+    output({type:'system',subtype:'task_notification',task_id:'shared-agent',tool_use_id:'resumed-agent-tool',status:'completed',summary:'Resumed task done'});
+    done('resumed background done');
+   },20);return;
+  }
+  if(current==='subtasks-updated-only'){
+   output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'pending',description:'Queued task'}});
+   output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'running',description:'Running task'}});
+   output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'paused',is_backgrounded:true}});
+   output({type:'system',subtype:'task_started',task_id:'shell-task',task_type:'local_bash',description:'Background shell'});
+   setTimeout(()=>{
+    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'completed'}});
+    output({type:'system',subtype:'task_updated',task_id:'shell-task',patch:{status:'stopped'}});
+    done('updated done');
+   },100);return;
+  }
+  if(current==='subtasks-interrupt'||current==='subtasks-crash'||current==='subtasks-child'||current==='subtasks-child-approval'){
+   output({type:'assistant',message:{id:'child-request',content:[{type:'tool_use',id:'child-agent',name:'Agent',input:{description:'Child task'}}]}});
+   output({type:'system',subtype:'init',parent_tool_use_id:'child-agent',session_id:'11111111-1111-4111-8111-111111111111',model:'must-not-replace-parent',permissionMode:'acceptEdits'});
+   output({type:'stream_event',parent_tool_use_id:'child-agent',event:{type:'message_start',message:{id:'child-stream'}}});
+   if(current==='subtasks-child-approval'){
+    pending={id:'permission-'+turn,question:true,input:{questions:[{question:'Which database?',options:[{label:'SQLite'}]}]}};
+    output({type:'control_request',parent_tool_use_id:'child-agent',request_id:pending.id,request:{subtype:'can_use_tool',tool_name:'AskUserQuestion',tool_use_id:'child-question',input:pending.input}});
+    output({type:'stream_event',parent_tool_use_id:'child-agent',event:{type:'content_block_start',index:0,content_block:{type:'text',text:'Buffered child progress'}}});
+    output({type:'system',subtype:'task_progress',task_id:'question-child',tool_use_id:'child-agent',summary:'Waiting for an answer'});return;
+   }
+   if(current==='subtasks-crash'){setTimeout(()=>process.exit(7),100);return;}
+   if(current==='subtasks-interrupt')return;
+   output({type:'system',subtype:'task_started',parent_tool_use_id:'child-agent',task_id:'nested-shell',task_type:'local_bash',description:'Nested shell'});
+   output({type:'system',subtype:'task_notification',parent_tool_use_id:'child-agent',task_id:'nested-shell',status:'completed',summary:'Nested shell done'});
+   output({type:'result',parent_tool_use_id:'child-agent',subtype:'success',result:'Child final report',session_id:'11111111-1111-4111-8111-111111111111'});
+   done('parent done');return;
+  }
+  if(current==='subtasks-unknown'){
+   output({type:'assistant',message:{id:'late-request',content:[{type:'tool_use',id:'late-tool',name:'Agent',input:{description:'Late task'}}]}});
+   output({type:'user',message:{content:[{type:'tool_result',tool_use_id:'late-tool',content:'Remote task may have launched'}]}});
+   done('unconfirmed work');return;
+  }
+  if(current==='subtasks-late-completion'){
+   output({type:'system',subtype:'task_notification',task_id:'late-task',tool_use_id:'late-tool',status:'completed',summary:'Confirmed previous task'});
+   for(let i=0;i<420;i++)output({type:'assistant',message:{id:'bounded-'+i,content:[{type:'text',text:'bounded history '+i}]}});
+   done('late completion done');return;
+  }
+  if(current==='subtasks-overflow'){
+   for(let i=0;i<201;i++)output({type:'system',subtype:'task_started',task_id:'overflow-'+i,description:'Task '+i});
+   for(let i=0;i<200;i++)output({type:'system',subtype:'task_notification',task_id:'overflow-'+i,status:'completed'});
+   output({type:'result',uuid:'overflow-intermediate',subtype:'success',result:'Visible tasks done; overflow still active',session_id:session});
+   const overflowTimer=setInterval(()=>{
+    if(!fs.existsSync(require('node:path').join(require('node:path').dirname(process.argv[3]),'release-overflow')))return;
+    clearInterval(overflowTimer);
+    output({type:'system',subtype:'task_notification',task_id:'overflow-200',status:'completed'});
+    output({type:'system',subtype:'task_started',task_id:'overflow-200',description:'Late duplicate'});
+    done('all tasks done');
+   },20);return;
+  }
   if(current==='approve'||current==='question'||current==='cancel'){
    const question=current==='question';const input=question?{questions:[{question:'Which database?',header:'Database',options:[{label:'SQLite',description:'Local'},{label:'Postgres'}],multiSelect:false}]}:{command:'touch approved-file',description:'fixture only'};
    const toolName=question?'AskUserQuestion':'Bash';
@@ -563,4 +677,168 @@ test('attention summaries expose only live requests and remove resolved, cancell
     const stopping=s.runtime.send(s.session.id,'approve',capabilities);await until(()=>s.runtime.attention().length===1);s.runtime.stop(s.session.id);
     assert.deepEqual(s.runtime.attention(),[]);await stopping;
   }finally{await s.cleanup();}
+});
+
+test('parallel subtask cards merge tool and lifecycle identities, preserve progress and resist terminal replays', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-parallel', capabilities);
+    await until(() => s.store.state.sessions[0].subtasks?.tasks.length === 3 && s.store.state.sessions[0].subtasks?.tasks.every(task => task.status === 'running') === true && s.store.state.sessions[0].subtasks?.tasks[0].lastTool === 'Read');
+    const running = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(running.filter(task => task.status === 'running').length, 3);
+    assert.equal(running.find(task => task.taskId === 'task-a')?.lastTool, 'Read');
+    assert.equal((await result).success, true);
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(tasks.length, 3);
+    assert.deepEqual(tasks.map(task => task.status), ['completed', 'stopped', 'failed']);
+    assert.equal(tasks[0].toolUseId, 'agent-a'); assert.equal(tasks[0].totalTokens, 240);
+    assert.equal(tasks[0].progress, 'Reading tests'); assert.equal(tasks[0].summary, 'Review done');
+    assert.equal(tasks[0].description, 'Review implementation');
+    assert.ok(tasks.every(task => task.endedAt && task.kind === 'agent'));
+  } finally { await s.cleanup(); }
+});
+
+test('foreground completion requires a final report or explicit foreground call; launch text stays unconfirmed', async () => {
+  const s = setup();
+  try {
+    assert.equal((await s.runtime.send(s.session.id, 'subtasks-foreground', capabilities)).success, true);
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.deepEqual(tasks.map(task => task.status), ['completed', 'unknown', 'completed']);
+    assert.equal(tasks[2].agentId, 'agent-reported'); assert.equal(tasks[2].toolUses, 4);
+    assert.equal(tasks[2].durationMs, 75); assert.equal(tasks[2].summary, 'Final report');
+    assert.equal(s.runtime.isBusy(s.session.id), false);
+  } finally { await s.cleanup(); }
+});
+
+test('background launch acknowledgement remains running until its lifecycle confirms completion', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-background-ack', capabilities);
+    await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Agent launched'));
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'running'); assert.equal(tasks[0].background, true);
+    assert.equal(tasks[0].agentId, 'async-agent'); assert.equal(s.runtime.isBusy(s.session.id), true);
+    assert.equal((await result).summary, 'background done');
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'completed');
+  } finally { await s.cleanup(); }
+});
+
+test('Agent agentId and lifecycle task_id link without an optional tool_use_id', async () => {
+  const s = setup();
+  try {
+    assert.equal((await s.runtime.send(s.session.id, 'subtasks-agent-alias', capabilities)).success, true);
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(tasks.length, 1); assert.equal(tasks[0].toolUseId, 'alias-tool');
+    assert.equal(tasks[0].agentId, 'alias-agent'); assert.equal(tasks[0].taskId, 'alias-agent');
+    assert.equal(tasks[0].status, 'completed');
+  } finally { await s.cleanup(); }
+});
+
+test('authoritative async and remote Agent launches wait for completion even without task_started', async () => {
+  for (const prompt of ['subtasks-no-start', 'subtasks-remote-no-start']) {
+    const s = setup();
+    try {
+      const result = s.runtime.send(s.session.id, prompt, capabilities);
+      await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Waiting for acknowledged task'));
+      assert.equal(s.runtime.isBusy(s.session.id), true);
+      assert.equal(s.store.state.sessions[0].subtasks!.tasks.length, 1);
+      assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'running');
+      assert.equal((await result).summary, 'acknowledged background done');
+      const tasks = s.store.state.sessions[0].subtasks!.tasks;
+      assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'completed');
+    } finally { await s.cleanup(); }
+  }
+});
+
+test('description-only updates retain the running status of a resumed agent sharing its previous agent id', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-resumed-agent', capabilities);
+    await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Waiting for resumed task'));
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(tasks.length, 2); assert.deepEqual(tasks.map(task => task.status), ['completed', 'running']);
+    assert.equal(tasks[1].description, 'Resumed task still running'); assert.equal(s.runtime.isBusy(s.session.id), true);
+    fs.writeFileSync(path.join(s.directory, 'release-resumed'), 'release');
+    assert.equal((await result).summary, 'resumed background done');
+    assert.ok(s.store.state.sessions[0].subtasks!.tasks.every(task => task.status === 'completed'));
+  } finally { await s.cleanup(); }
+});
+
+test('task_updated alone exposes pending, running and paused states and settles completed or stopped tasks', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-updated-only', capabilities);
+    await until(() => s.store.state.sessions[0].subtasks?.tasks.length === 2);
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'paused');
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[1].kind, 'shell');
+    assert.equal((await result).success, true);
+    assert.deepEqual(s.store.state.sessions[0].subtasks!.tasks.map(task => task.status), ['completed', 'stopped']);
+  } finally { await s.cleanup(); }
+});
+
+test('child system events and results track nested work without changing parent identity, model or permission', async () => {
+  const s = setup();
+  try {
+    assert.equal((await s.runtime.send(s.session.id, 'subtasks-child', capabilities)).summary, 'parent done');
+    const tasks = s.store.state.sessions[0].subtasks!.tasks;
+    assert.equal(tasks.length, 2); assert.ok(tasks.every(task => task.status === 'completed'));
+    assert.equal(tasks[0].summary, 'Child final report'); assert.equal(tasks[1].parentToolUseId, 'child-agent');
+    assert.equal(s.store.state.sessions[0].claudeId, s.observedId);
+    assert.equal(s.runtime.snapshot(s.session.id).model, 'fixture-model');
+    assert.equal(s.store.state.sessions[0].permissionMode, 'default');
+  } finally { await s.cleanup(); }
+});
+
+test('child task waiting for an answer stays waiting through buffered stream and progress frames', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-child-approval', capabilities);
+    await until(() => s.store.state.sessions[0].subtasks?.tasks[0]?.progress === 'Waiting for an answer');
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'waiting_input');
+    await s.runtime.interrupt(s.session.id); assert.equal((await result).interrupted, true);
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'interrupted');
+  } finally { await s.cleanup(); }
+});
+
+test('interrupt and unexpected process exit settle active children without inventing successful completion', async () => {
+  const s = setup();
+  try {
+    const interrupted = s.runtime.send(s.session.id, 'subtasks-interrupt', capabilities);
+    await until(() => s.store.state.sessions[0].subtasks?.tasks[0]?.status === 'running');
+    await s.runtime.interrupt(s.session.id); assert.equal((await interrupted).interrupted, true);
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'interrupted');
+    const crashed = await s.runtime.send(s.session.id, 'subtasks-crash', capabilities);
+    assert.equal(crashed.success, false);
+    assert.deepEqual(s.store.state.sessions[0].subtasks!.tasks.map(task => task.status), ['interrupted', 'failed']);
+    await until(() => !s.runtime.has(s.session.id));
+  } finally { await s.cleanup(); }
+});
+
+test('late completion retains its original turn and survives chat message projection truncation', async () => {
+  const s = setup();
+  try {
+    await s.runtime.send(s.session.id, 'subtasks-unknown', capabilities);
+    const firstTurn = s.store.state.sessions[0].subtasks!.turnId;
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'unknown');
+    await s.runtime.send(s.session.id, 'subtasks-late-completion', capabilities);
+    const activity = s.store.state.sessions[0].subtasks!;
+    assert.notEqual(activity.turnId, firstTurn); assert.equal(activity.tasks.length, 1);
+    assert.equal(activity.tasks[0].turnId, firstTurn); assert.equal(activity.tasks[0].status, 'completed');
+    assert.equal(activity.tasks[0].summary, 'Confirmed previous task');
+    assert.equal(s.runtime.snapshot(s.session.id).messages.some(message => message.toolUseId === 'late-tool'), false);
+  } finally { await s.cleanup(); }
+});
+
+test('background lifecycle remains accurate after the task display reaches its bounded row limit', async () => {
+  const s = setup();
+  try {
+    const result = s.runtime.send(s.session.id, 'subtasks-overflow', capabilities);
+    await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Visible tasks done; overflow still active'));
+    assert.equal(s.store.state.sessions[0].subtasks!.truncated, true);
+    assert.equal(s.store.state.sessions[0].subtasks!.tasks.length, 200);
+    assert.equal(s.runtime.isBusy(s.session.id), true);
+    fs.writeFileSync(path.join(s.directory, 'release-overflow'), 'release');
+    assert.equal((await result).summary, 'all tasks done');
+    assert.equal(s.runtime.isBusy(s.session.id), false);
+  } finally { await s.cleanup(); }
 });

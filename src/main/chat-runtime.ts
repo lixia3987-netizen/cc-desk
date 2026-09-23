@@ -11,6 +11,8 @@ import { ChatHistory } from './chat-history';
 import { ChatArchive } from './chat-archive';
 import { readTranscriptPreview } from './chat-import';
 import { chatArguments, JsonLineDecoder, object, string, userContent, type WireObject } from './chat-protocol';
+import { SubtaskTracker } from './subtask-tracker';
+import type { SubtaskStatus } from '../shared/subtasks';
 
 interface ControlWaiter { resolve: (value: WireObject) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
 interface Turn { id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean }
@@ -22,6 +24,10 @@ interface Entry {
   expectedId: string; enforceIdentity: boolean; bypassEnabled: boolean;
   turn?: Turn; controls: Map<string, ControlWaiter>; approvals: Map<string, ChatApproval>;
   streams: Map<string, string>; assistants: Map<string, AssistantGroup>; latestRoot?: AssistantGroup; resultIds: Set<string>; tools: Set<string>; tasks: Set<string>;
+  subtaskTools: Map<string, { foreground: boolean; parent?: string }>;
+  approvalTasks: Map<string, string>;
+  finishedTasks: Set<string>;
+  backgroundTaskTools: Map<string, string>;
   stderr: string; decoder: JsonLineDecoder; killTimer?: NodeJS.Timeout; interruptTimer?: NodeJS.Timeout;
   waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
 }
@@ -37,6 +43,11 @@ const now = () => new Date().toISOString();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
+const terminalTask = (status: string) => ['completed', 'failed', 'stopped', 'interrupted', 'unknown'].includes(status);
+const taskStatus = (value: unknown): SubtaskStatus | undefined => {
+  if (value === 'killed') return 'stopped';
+  return ['pending', 'running', 'paused', 'waiting_approval', 'waiting_input', 'completed', 'failed', 'stopped', 'interrupted', 'unknown'].includes(string(value)) ? value as SubtaskStatus : undefined;
+};
 
 /**
  * One persistent CLI subprocess per structured session. Wire protocol follows
@@ -52,15 +63,18 @@ export class ChatRuntime {
   private shuttingDown = false;
   private history: ChatHistory;
   private archive: ChatArchive;
+  private subtasks: SubtaskTracker;
   private notifications = new Map<string, NodeJS.Timeout>();
   private hydrating = new Map<string, Promise<void>>();
   private transcriptVersions = new Map<string, string>();
   constructor(private store: StateStore, private onState: () => void, private onEvents: (sessionId: string) => void, private options: ChatRuntimeOptions = {}) {
+    this.subtasks = new SubtaskTracker(store, onState);
     this.history = new ChatHistory(store.directory, id => this.has(id), (id, error) => {
       const snapshot = this.history.get(id);
       snapshot.error = '聊天记录写入失败：' + error.message;
       const entry = this.entries.get(id);
       if (entry) {
+        try { this.subtasks.end(id, 'failed', snapshot.error); } catch { /* Preserve the original disk failure. */ }
         entry.turn?.resolve({ success: false, summary: '', error: snapshot.error });
         entry.turn = undefined; this.terminate(entry);
       }
@@ -228,6 +242,8 @@ export class ChatRuntime {
       if (entry.ending || !entry.initialized) throw new Error('会话正在停止或尚未初始化。');
       const result = new Promise<ChatTurnResult>(resolve => { entry.turn = { id: randomUUID(), resolve, interrupted: false }; });
       entry.tools.clear(); entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
+      entry.subtaskTools.clear(); entry.approvalTasks.clear(); entry.finishedTasks.clear(); entry.backgroundTaskTools.clear();
+      this.subtasks.begin(id, entry.turn!.id);
       const userId = randomUUID();
       this.message(id, { id: userId, sourceId: userId, turnId: entry.turn!.id, role: 'user', text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
       this.state(id, 'thinking');
@@ -259,7 +275,7 @@ export class ChatRuntime {
       })();
       this.state(id, 'starting');
       const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
-      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, bypassEnabled: session.permissionMode==='bypassPermissions', controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
+      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, bypassEnabled: session.permissionMode==='bypassPermissions', controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), subtaskTools: new Map(), approvalTasks: new Map(), finishedTasks: new Set(), backgroundTaskTools: new Map(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
       const current = entry;
       current.decoder = new JsonLineDecoder(value => this.receive(id, current, value));
       this.entries.set(id, current);
@@ -323,6 +339,8 @@ export class ChatRuntime {
     }
     if (type === 'control_request') { this.permission(id, entry, frame); return; }
     if (type === 'control_cancel_request') {
+      const approval = entry.approvals.get(string(frame.request_id));
+      if (approval) this.subtaskApproval(id, entry, approval, 'running');
       entry.approvals.delete(string(frame.request_id)); this.activity(id, entry); return;
     }
     const parent = string(frame.parent_tool_use_id) || undefined;
@@ -331,12 +349,19 @@ export class ChatRuntime {
       if (this.session(id).claudeId !== frame.session_id) this.update(id, { claudeId: frame.session_id });
       entry.expectedId = frame.session_id; entry.enforceIdentity = true;
     }
-    if (type === 'system') { if (!parent) this.systemEvent(id, entry, frame); return; }
-    if (type === 'stream_event') { this.stream(id, entry, object(frame.event), parent); return; }
+    if (type === 'system') { this.systemEvent(id, entry, frame, parent); return; }
+    if (type === 'stream_event') {
+      if (parent) this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: this.observedSubtaskStatus(entry, parent, 'running'), phase: 'progress' });
+      this.stream(id, entry, object(frame.event), parent); return;
+    }
     if (type === 'assistant' || type === 'user') {
       const payload = object(frame.message);
       const blocks = Array.isArray(payload.content) ? payload.content : [];
-      if (!entry.turn) return;
+      if (!entry.turn) {
+        for (const raw of blocks) { const block = object(raw); if (block.type === 'tool_result') this.subtaskToolResult(id, entry, string(block.tool_use_id), block, object(frame.tool_use_result)); }
+        return;
+      }
+      if (parent) this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: this.observedSubtaskStatus(entry, parent, 'running'), phase: 'progress' });
       const group = type === 'assistant' ? this.assistantGroup(entry, payload, frame, parent) : undefined;
       const used = new Set<number>();
       for (const [index, raw] of blocks.entries()) {
@@ -348,6 +373,12 @@ export class ChatRuntime {
           if (!this.session(id).started) this.update(id, { started: true });
           entry.tools.add(toolId);
           this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', text: '', createdAt: now(), toolName: string(block.name), toolUseId: toolId, input: object(block.input), parentToolUseId: parent });
+          if (block.name === 'Agent' || block.name === 'Task') {
+            const input = object(block.input);
+            entry.subtaskTools.set(toolId, { foreground: input.run_in_background === false, parent });
+            const observed = this.session(id).subtasks?.tasks.find(task => task.toolUseId === toolId && task.turnId === entry.turn?.id);
+            this.subtasks.observe(id, { source: 'stream', kind: 'agent', status: observed?.status ?? 'pending', phase: 'start', toolUseId: toolId, parentToolUseId: parent, description: string(input.description) || string(input.subagent_type) || undefined, ...(typeof input.run_in_background === 'boolean' ? { background: input.run_in_background } : {}) });
+          }
           this.activity(id, entry);
         } else if (block.type === 'tool_result') {
           const toolId = string(block.tool_use_id); entry.tools.delete(toolId);
@@ -356,6 +387,7 @@ export class ChatRuntime {
             const item = object(value); return item.type === 'text' ? string(item.text) : '[' + string(item.type) + ']';
           }).join('\n') : '';
           this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', createdAt: now(), ...existing, text, toolUseId: toolId, isError: block.is_error === true, parentToolUseId: parent });
+          this.subtaskToolResult(id, entry, toolId, block, object(frame.tool_use_result), text);
           this.activity(id, entry);
         } else if (block.type === 'text' && parent) {
           this.message(id, { id: string(frame.uuid) || randomUUID(), turnId: entry.turn?.id ?? '', role: 'user', text: string(block.text), parentToolUseId: parent, createdAt: now() });
@@ -367,6 +399,13 @@ export class ChatRuntime {
         if (group.stopped) entry.streams.delete(JSON.stringify(parent ?? null));
         this.pruneAssistants(entry);
       }
+      return;
+    }
+    if (type === 'result' && parent) {
+      const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
+      this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: failed ? 'failed' : 'completed', phase: 'finish', summary: string(frame.result) || (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : undefined), durationMs: number(frame.duration_ms) });
+      // Child results report a child lifecycle; they cannot end or rewrite the parent turn.
+      this.settleBackgroundTask(id, entry, parent);
       return;
     }
     if (type === 'result' && !parent) {
@@ -511,9 +550,57 @@ export class ChatRuntime {
       if (entry.turn && entry.waitingBackgroundResult && !entry.tasks.size && !entry.approvals.size) this.fail(id, entry, '后台子任务已结束，但 CLI 未返回最终结果。会话已停止，可恢复后继续；工作流没有自动进入下一阶段。');
     }, this.options.backgroundResultTimeoutMs ?? 120_000);
   }
-  private systemEvent(id: string, entry: Entry, frame: WireObject) {
+  private settleBackgroundTask(id: string, entry: Entry, toolUseId: string) {
+    this.backgroundTask(entry, undefined, toolUseId, 'completed');
+    for (const task of this.session(id).subtasks?.tasks ?? []) if (task.toolUseId === toolUseId && terminalTask(task.status)) {
+      if (task.taskId) this.backgroundTask(entry, task.taskId, toolUseId, task.status);
+    }
+    this.refreshBackgroundTimeout(id, entry);
+  }
+  private backgroundTask(entry: Entry, taskId: string | undefined, toolUseId: string | undefined, status: SubtaskStatus) {
+    const valid = (value: string | undefined) => !!value && value.length <= 200 && !/[\x00-\x1f\x7f]/.test(value);
+    if (!valid(taskId)) taskId = undefined;
+    if (!valid(toolUseId)) toolUseId = undefined;
+    toolUseId ??= taskId ? entry.backgroundTaskTools.get(taskId) : undefined;
+    if (!taskId && !toolUseId) return;
+    if (taskId && toolUseId) {
+      // A resumed agent can retain its agent id with a fresh tool invocation.
+      // Keep execution keys distinct and do not let an old terminal replay
+      // replace the alias belonging to its newer invocation.
+      if (!terminalTask(status) || !entry.backgroundTaskTools.has(taskId)) entry.backgroundTaskTools.set(taskId, toolUseId);
+      if (entry.backgroundTaskTools.get(taskId) === toolUseId) entry.tasks.delete('task:' + taskId);
+    }
+    const key = toolUseId ? 'tool:' + toolUseId : 'task:' + taskId;
+    if (terminalTask(status)) { entry.tasks.delete(key); entry.finishedTasks.add(key); }
+    else if (!entry.finishedTasks.has(key)) entry.tasks.add(key);
+  }
+  private observedSubtaskStatus(entry: Entry, toolUseId: string | undefined, fallback: SubtaskStatus): SubtaskStatus {
+    if (!toolUseId || terminalTask(fallback)) return fallback;
+    const approvals = [...entry.approvals.values()].filter(approval => entry.approvalTasks.get(approval.requestId) === toolUseId);
+    return approvals.some(approval => approval.kind === 'question') ? 'waiting_input' : approvals.length ? 'waiting_approval' : fallback;
+  }
+  private subtaskToolResult(id: string, entry: Entry, toolUseId: string, block: WireObject, result: WireObject, text = '') {
+    const launched = entry.subtaskTools.get(toolUseId);
+    const previous = this.session(id).subtasks?.tasks.find(task => task.toolUseId === toolUseId && task.kind === 'agent');
+    if (!toolUseId || !launched && !previous) return;
+    const status = block.is_error === true ? 'failed' : taskStatus(result.status) ?? (result.status === 'async_launched' || result.status === 'remote_launched' ? 'running' : launched?.foreground ? 'completed' : undefined);
+    if (!status) return;
+    const report = Array.isArray(result.content) ? result.content.map(object).filter(item => item.type === 'text').map(item => string(item.text)).join('\n') : '';
+    const task = this.subtasks.observe(id, {
+      source: 'stream', kind: 'agent', status, phase: terminalTask(status) ? 'finish' : 'progress', toolUseId,
+      parentToolUseId: launched?.parent, agentId: string(result.agentId) || undefined, taskId: string(result.taskId) || undefined,
+      description: string(result.description) || undefined, summary: terminalTask(status) ? report || text || undefined : undefined,
+      toolUses: number(result.totalToolUseCount), durationMs: number(result.totalDurationMs),
+      ...(result.status === 'async_launched' || result.status === 'remote_launched' ? { background: true } : {}),
+    });
+    const observed = task?.status ?? status;
+    if (result.status === 'async_launched' || result.status === 'remote_launched') this.backgroundTask(entry, string(result.taskId) || string(result.agentId) || undefined, toolUseId, observed);
+    if (terminalTask(observed)) this.settleBackgroundTask(id, entry, toolUseId);
+  }
+  private systemEvent(id: string, entry: Entry, frame: WireObject, parent?: string) {
     const subtype = string(frame.subtype); const snapshot = this.history.get(id);
     if (subtype === 'init') {
+      if (parent) return;
       snapshot.model = string(frame.model) || undefined;
       snapshot.permissionMode = string(frame.permissionMode) || this.session(id).permissionMode;
       snapshot.mcpServers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers.map(value => { const item = object(value); return { name: string(item.name), status: string(item.status) }; }) : [];
@@ -521,13 +608,34 @@ export class ChatRuntime {
       this.history.append(id, { type: 'metadata', model: snapshot.model, permissionMode: snapshot.permissionMode, mcpServers: snapshot.mcpServers });
       for (const field of ['plugin_errors', 'mcp_server_errors']) if (Array.isArray(frame[field]) && frame[field].length) this.system(id, field + ': ' + JSON.stringify(frame[field]), true);
       this.notify(id, true);
-    } else if (subtype === 'task_started') {
-      const taskId = string(frame.task_id); if (taskId) entry.tasks.add(taskId);
-      this.system(id, '子任务开始：' + (string(frame.description) || taskId));
-      this.refreshBackgroundTimeout(id, entry);
-    } else if (subtype === 'task_notification') {
-      entry.tasks.delete(string(frame.task_id));
-      this.system(id, '子任务 ' + string(frame.status) + '：' + (string(frame.summary) || string(frame.task_id)), frame.status === 'failed');
+    } else if (['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(subtype)) {
+      const patch = subtype === 'task_updated' ? object(frame.patch) : frame;
+      const status = subtype === 'task_started' || subtype === 'task_progress' ? 'running' : taskStatus(patch.status);
+      const taskId = string(frame.task_id); const toolUseId = string(frame.tool_use_id) || undefined;
+      const usage = object(frame.usage);
+      // Description-only task_updated frames have no status transition. Preserve
+      // the observed status rather than inventing a running task from a label.
+      const activity = this.session(id).subtasks;
+      const matches = (activity?.tasks ?? []).filter(task => toolUseId ? task.toolUseId === toolUseId : taskId && (task.taskId === taskId || task.kind === 'agent' && task.agentId === taskId));
+      const current = matches.filter(task => task.turnId === activity?.turnId);
+      const relevant = current.length ? current : matches;
+      const existing = relevant.filter(task => !terminalTask(task.status)).at(-1) ?? relevant.at(-1);
+      const observed = status ?? existing?.status;
+      if (observed) {
+        const kind = /(?:bash|shell|command)/i.test(string(frame.task_type)) ? 'shell' : frame.task_type === 'local_agent' || string(frame.subagent_type) ? 'agent' : undefined;
+        const task = this.subtasks.observe(id, {
+          source: 'stream', kind, status: this.observedSubtaskStatus(entry, toolUseId ?? existing?.toolUseId, observed), phase: subtype === 'task_started' ? 'start' : terminalTask(observed) ? 'finish' : 'progress', taskId: taskId || undefined, toolUseId,
+          parentToolUseId: parent, description: string(patch.description) || undefined,
+          summary: string(patch.summary) || string(patch.error) || undefined, progress: subtype === 'task_progress' ? string(frame.summary) || undefined : undefined,
+          lastTool: string(frame.last_tool_name) || undefined, toolUses: number(usage.tool_uses), totalTokens: number(usage.total_tokens), durationMs: number(usage.duration_ms),
+          ...(typeof patch.is_backgrounded === 'boolean' ? { background: patch.is_backgrounded } : subtype === 'task_started' ? { background: true } : {}),
+        });
+        // Waiting for the CLI must remain correct even when the bounded UI
+        // projection has no room for another task row.
+        if (taskId) this.backgroundTask(entry, taskId, task?.toolUseId ?? toolUseId, task?.status ?? observed);
+      }
+      if (subtype === 'task_started') this.system(id, '子任务开始：' + (string(frame.description) || taskId));
+      else if (subtype === 'task_notification') this.system(id, '子任务 ' + string(frame.status) + '：' + (string(frame.summary) || taskId), frame.status === 'failed');
       this.refreshBackgroundTimeout(id, entry);
     } else if (subtype === 'api_retry') this.system(id, '模型请求重试 ' + String(frame.attempt ?? '') + '/' + String(frame.max_retries ?? '') + '：' + string(frame.error), true);
     else if (subtype === 'permission_denied') this.system(id, 'CLI 权限规则拒绝了操作：' + JSON.stringify(frame), true);
@@ -552,8 +660,23 @@ export class ChatRuntime {
     }) : undefined;
     const approval: ChatApproval = { requestId, toolName, input: structuredClone(input), kind: toolName === 'AskUserQuestion' ? 'question' : 'permission', questions, createdAt: now(), toolUseId: string(request.tool_use_id) || undefined };
     entry.approvals.set(requestId, approval);
+    const parent = string(frame.parent_tool_use_id) || string(request.parent_tool_use_id) || (approval.toolUseId && this.history.getMessage(id, 'tool:' + approval.toolUseId)?.parentToolUseId);
+    const taskTool = toolName === 'Agent' || toolName === 'Task' ? approval.toolUseId : parent;
+    if (taskTool) {
+      entry.approvalTasks.set(requestId, taskTool);
+      this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: taskTool, status: approval.kind === 'question' ? 'waiting_input' : 'waiting_approval', phase: 'progress' });
+    }
     this.history.append(id, { type: 'approval_requested', approval });
     this.activity(id, entry);
+  }
+  private subtaskApproval(id: string, entry: Entry, approval: ChatApproval, status: 'running' | 'stopped') {
+    const toolUseId = entry.approvalTasks.get(approval.requestId);
+    entry.approvalTasks.delete(approval.requestId);
+    if (!toolUseId) return;
+    const waiting = [...entry.approvals.values()].find(item => item.requestId !== approval.requestId && entry.approvalTasks.get(item.requestId) === toolUseId);
+    const observed = waiting ? waiting.kind === 'question' ? 'waiting_input' : 'waiting_approval'
+      : status === 'running' && (approval.toolName === 'Agent' || approval.toolName === 'Task') ? 'pending' : status;
+    this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId, status: observed, phase: observed === 'stopped' ? 'finish' : 'progress' });
   }
   respond(id: string, requestId: string, decision: ChatDecision) {
     const entry = this.entries.get(id); const approval = entry?.approvals.get(requestId);
@@ -573,6 +696,7 @@ export class ChatRuntime {
     const response = decision.behavior === 'allow' ? { behavior: 'allow', updatedInput } : { behavior: 'deny', message: decision.message?.slice(0, 16_000) || '用户拒绝了这次操作。' };
     this.reply(entry, requestId, response);
     entry.approvals.delete(requestId);
+    this.subtaskApproval(id, entry, approval, decision.behavior === 'deny' && (approval.toolName === 'Agent' || approval.toolName === 'Task') ? 'stopped' : 'running');
     this.history.append(id, { type: 'approval_resolved', requestId, decision });
     this.activity(id, entry);
   }
@@ -636,10 +760,11 @@ export class ChatRuntime {
     if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
     entry.interruptTimer = undefined;
     entry.backgroundTimer = undefined; entry.waitingBackgroundResult = false;
-    const turn = entry.turn; entry.turn = undefined; entry.tools.clear(); entry.tasks.clear(); entry.approvals.clear();
+    const turn = entry.turn; entry.turn = undefined; entry.tools.clear(); entry.tasks.clear(); entry.approvals.clear(); entry.approvalTasks.clear();
     entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
     this.history.get(id).pending = [];
     try {
+      this.subtasks.end(id, result.interrupted ? 'interrupted' : result.success ? 'unknown' : 'failed', result.error);
       this.state(id, result.interrupted ? 'interrupted' : result.success ? 'completed' : 'error', result.error);
       this.history.flush(); turn?.resolve(result);
     } catch (error) {
@@ -667,7 +792,7 @@ export class ChatRuntime {
     const entry = this.entries.get(id); if (!entry || entry.ending) return;
     try {
       if (entry.turn) this.finish(id, entry, { success: false, summary: '', interrupted: true });
-      else if (this.history.get(id).taskState === 'starting') this.state(id, 'interrupted');
+      else { this.subtasks.end(id, 'interrupted'); if (this.history.get(id).taskState === 'starting') this.state(id, 'interrupted'); }
       this.update(id, { status: 'stopping' });
     } finally { this.terminate(entry); }
   }
@@ -697,6 +822,7 @@ export class ChatRuntime {
     entry.controls.clear();
     if (entry.interruptTimer) clearTimeout(entry.interruptTimer);
     if (entry.turn) this.finish(id, entry, { success: false, summary: '', error: entry.ending ? undefined : error, interrupted: entry.ending });
+    else this.subtasks.end(id, entry.ending ? 'interrupted' : 'failed', entry.ending ? undefined : error);
     const previous = this.history.get(id).taskState;
     this.update(id, { status: previous === 'error' || !entry.ending && code !== 0 ? 'error' : 'stopped', exitCode: code ?? undefined, error: previous === 'error' ? this.history.get(id).error : !entry.ending && code !== 0 ? error : undefined });
     this.history.get(id).pending = []; this.notify(id, true);

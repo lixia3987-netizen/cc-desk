@@ -9,6 +9,7 @@ import { claudeArguments, cliInvocation, environment, execFileAsync, shellInvoca
 import { transcriptExists } from './history';
 import { StateStore } from './store';
 import { createPtyHookBridge, supportsPtyHooks, type PtyHookBridge } from './pty-hooks';
+import { SubtaskTracker } from './subtask-tracker';
 
 const MEMORY_LIMIT = 1024 * 1024;
 const LOG_LIMIT = 5 * 1024 * 1024;
@@ -40,7 +41,9 @@ export class Runtime {
   private cancelledStarts = new Set<string>();
   private shutdownPromise?: Promise<void>;
   private lifecycleError?: Error;
+  private subtasks: SubtaskTracker;
   constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
+    this.subtasks = new SubtaskTracker(store, onState);
     fs.mkdirSync(path.join(store.directory,'logs'), { recursive: true, mode: 0o700 });
   }
   get activeCount() { return new Set([...this.running.keys(), ...this.starting, ...this.stopping.keys()]).size; }
@@ -146,6 +149,7 @@ export class Runtime {
     let hooks: PtyHookBridge | undefined;
     let spawned: ProcessEntry | undefined;
     try {
+      this.guard(() => this.subtasks.end(id, 'interrupted', '会话已重新连接，之前的子任务不再运行。'));
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
       const env = environment();
       let file: string; let args: string[];
@@ -158,6 +162,14 @@ export class Runtime {
           hooks = await createPtyHookBridge(session.claudeId, patch => {
             const active = this.running.get(id);
             if (active && active.hooks === hooks) this.guard(() => this.update(id, active.ending ? { ...patch, taskState: 'interrupted' } : patch));
+          }, event => {
+            const active = this.running.get(id);
+            if (!active || active.ending || active.hooks !== hooks) return;
+            this.guard(() => {
+              if (event.type === 'begin') this.subtasks.begin(id, event.turnId);
+              else if (event.type === 'observe') this.subtasks.observe(id, event.observation);
+              else this.subtasks.end(id, event.status, event.reason);
+            });
           });
           args.push('--settings', hooks.settings);
         }
@@ -174,6 +186,8 @@ export class Runtime {
         this.running.delete(id);
         if (process.platform === 'win32') this.releasePty(entry);
         void this.closeHooks(entry);
+        this.guard(() => this.subtasks.end(id, entry.ending ? 'interrupted' : exitCode !== 0 ? 'failed' : 'unknown',
+          entry.ending ? '会话已停止。' : exitCode !== 0 ? '会话进程异常退出。' : '会话进程已退出，未收到子任务完成通知。'));
         this.guard(() => this.flush());
         this.guard(() => this.emit(id, `\r\n\x1b[90m── 会话进程已退出 · code ${exitCode} ──\x1b[0m\r\n`));
         this.guard(() => this.update(id, { status: entry.ending || exitCode === 0 ? 'stopped' : 'error', exitCode,
@@ -200,7 +214,11 @@ export class Runtime {
     entry.process.write(data);
   }
   resize(id: string, cols: number, rows: number) { this.running.get(id)?.process.resize(cols,rows); }
-  interrupt(id: string) { this.write(id,'\x03'); this.update(id, { taskState: 'interrupted' }); }
+  interrupt(id: string) {
+    this.write(id,'\x03');
+    // Ctrl-C is only a request: background agents may continue until a hook or process exit confirms otherwise.
+    this.update(id, { taskState: 'interrupted' });
+  }
   stop(id: string) {
     if (this.starting.has(id)) this.cancelledStarts.add(id);
     const entry = this.running.get(id);
@@ -213,6 +231,7 @@ export class Runtime {
   private beginStop(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.cleanup) return entry.cleanup;
     entry.ending = true;
+    this.guard(() => this.subtasks.end(id, 'interrupted', '会话已停止。'));
     this.stopping.set(id, entry);
     entry.cleanup = this.trackCleanup((async () => {
       try {

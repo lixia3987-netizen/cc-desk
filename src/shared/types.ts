@@ -5,6 +5,7 @@ import type { WorkflowRun, NewWorkflow } from './workflows';
 import type { ThemeId } from './theme';
 import type { PanelDrafts } from './panel-drafts';
 import type { PermissionMode } from './permissions';
+import type { SubtaskActivity } from './subtasks';
 export type { PermissionMode } from './permissions';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
@@ -19,6 +20,7 @@ export interface Session {
   terminalSync?: 'waiting' | 'synced' | 'unsupported'; identityPending?: boolean;
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
   panelDrafts?: PanelDrafts;
+  subtasks?: SubtaskActivity;
 }
 export interface Settings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }

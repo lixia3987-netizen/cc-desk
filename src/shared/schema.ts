@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { THEME_IDS } from './theme';
 import { PERMISSION_MODES } from './permissions';
+import { SUBTASK_STATUSES, SUBTASK_LIMIT } from './subtasks';
 export const idSchema = z.uuid();
 export const permissionModeSchema = z.enum(PERMISSION_MODES);
 export const settingsSchema = z.object({
@@ -32,6 +33,14 @@ export const panelDraftsSchema = z.object({
   }).optional(),
   git: z.object({ selected: z.string().max(4096), staged: z.boolean(), feedback: draftEntries(4096, 60000) }).optional(),
 }).refine(value => JSON.stringify(value).length <= 2 * 1024 * 1024, '面板草稿过大，请先处理已有草稿。');
+const subtaskIdentity = z.string().min(1).max(200).refine(value=>!/[\x00-\x1f\x7f]/.test(value));
+const subtaskSchema = z.object({
+  id:z.string().min(1).max(1024),turnId:subtaskIdentity,source:z.enum(['stream','hooks']),kind:z.enum(['agent','shell','task']),
+  status:z.enum(SUBTASK_STATUSES),description:z.string().max(500),startedAt:z.string().max(100),updatedAt:z.string().max(100),endedAt:z.string().max(100).optional(),
+  taskId:subtaskIdentity.optional(),toolUseId:subtaskIdentity.optional(),parentToolUseId:subtaskIdentity.optional(),agentId:subtaskIdentity.optional(),
+  summary:z.string().max(2000).optional(),progress:z.string().max(2000).optional(),lastTool:z.string().max(200).optional(),
+  toolUses:z.number().nonnegative().finite().optional(),totalTokens:z.number().nonnegative().finite().optional(),durationMs:z.number().nonnegative().finite().optional(),background:z.boolean().optional()
+});
 const sessionSchema = z.object({
   id: idSchema, projectId: idSchema, title: z.string(), kind: z.enum(['claude','shell']),
   cwd: z.string(), claudeId: idSchema, resumeFrom: idSchema.optional(), imported: z.boolean().optional(), started: z.boolean(),
@@ -42,6 +51,7 @@ const sessionSchema = z.object({
   terminalSync: z.enum(['waiting','synced','unsupported']).optional(), identityPending: z.boolean().optional(),
   observedPermissionMode: z.enum(['default','plan','acceptEdits','auto','dontAsk','bypassPermissions']).optional(),
   panelDrafts: panelDraftsSchema.optional(),
+  subtasks:z.object({turnId:subtaskIdentity,tasks:z.array(subtaskSchema).max(SUBTASK_LIMIT),truncated:z.boolean().optional()}).optional(),
   taskState: z.enum(['idle','starting','thinking','tool_running','waiting_approval','waiting_input','completed','interrupted','error']).optional()
 });
 export const stateSchema = z.object({

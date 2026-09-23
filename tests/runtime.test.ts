@@ -214,3 +214,56 @@ test('shutdown retries deferred persistence after cleanup has completed and stor
     await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });
+
+test('real hooked PTY keeps children active after Ctrl-C and settles them on confirmed stop or crash', { skip: process.platform === 'win32', timeout: 25000 }, async () => {
+  for (const ending of ['stop', 'interrupt', 'crash'] as const) {
+    const f = lifecycleFixture();
+    try {
+      const script = path.join(f.root, 'fixture-claude'); const crash = path.join(f.root, 'crash');
+      fs.writeFileSync(script, `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2);
+const session_id = args[args.indexOf('--session-id') + 1];
+const handler = JSON.parse(args[args.indexOf('--settings') + 1]).hooks.SubagentStart[0].hooks[0];
+process.on('SIGINT', () => {});
+setInterval(() => { if (fs.existsSync(${JSON.stringify(crash)})) process.exit(7); }, 25);
+const send = async (hook_event_name, fields = {}) => {
+  const response = await fetch(handler.url, { method: 'POST', headers: { ...handler.headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hook_event_name, session_id, cwd: process.cwd(), prompt_id: 'live-prompt', ...fields }) });
+  if (response.status !== 200) throw new Error('Hook failed: ' + response.status);
+};
+(async () => {
+  await send('UserPromptSubmit');
+  await send('SubagentStart', { agent_id: 'finished', agent_type: '审查' });
+  await send('SubagentStart', { agent_id: 'active', agent_type: '测试', permission_mode: 'bypassPermissions' });
+  await send('SubagentStop', { agent_id: 'finished', last_assistant_message: '已检查', permission_mode: 'plan' });
+  await send('Stop');
+})().catch(error => { console.error(error); process.exit(9); });
+`, { mode: 0o755 });
+      f.store.change(state => { state.sessions[0].kind = 'claude'; state.settings.claudePath = script; });
+      await f.runtime.start(f.session.id, { available: true, executable: script, version: '2.1.278',
+        flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
+      const session = () => f.store.state.sessions[0];
+      await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
+        `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));
+      assert.equal(session().permissionMode, 'default', 'child modes never overwrite main launch settings');
+      assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
+      if (ending === 'crash') {
+        fs.writeFileSync(crash, 'exit');
+        await until(() => !f.runtime.has(f.session.id), 'crashed hooked PTY');
+        assert.equal(session().status, 'error');
+        assert.equal(session().subtasks?.tasks[1].status, 'failed');
+      } else {
+        if (ending === 'interrupt') {
+          f.runtime.interrupt(f.session.id);
+          assert.equal(session().taskState, 'interrupted');
+          assert.equal(session().subtasks?.tasks[1].status, 'running', 'Ctrl-C does not acknowledge background child termination');
+        }
+        f.runtime.stop(f.session.id);
+        assert.equal(session().subtasks?.tasks[1].status, 'interrupted');
+      }
+      assert.equal(session().subtasks?.tasks[0].status, 'completed', 'settling active tasks preserves confirmed completion');
+      assert.equal(session().subtasks?.tasks[0].summary, '已检查');
+    } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  }
+});

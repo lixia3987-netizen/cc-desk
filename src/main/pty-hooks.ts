@@ -1,25 +1,38 @@
 import { isPermissionMode } from '../shared/permissions';
 import { createServer, type Server } from 'node:http';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import type { Capabilities, Session } from '../shared/types';
 import type { TaskState } from '../shared/chat';
+import type { SubtaskObservation } from './subtask-tracker';
 
 /** Public HTTP hook events only. SessionStart does NOT support HTTP. */
 export const PTY_HOOK_EVENTS = [
   'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure',
-  'Stop', 'StopFailure', 'Notification', 'SessionEnd', 'PostModelSwitch', 'Elicitation', 'ElicitationResult'
+  'Stop', 'StopFailure', 'Notification', 'SessionEnd', 'PostModelSwitch', 'Elicitation', 'ElicitationResult',
+  'SubagentStart', 'SubagentStop'
 ] as const;
 const permissionModes = ['default', 'plan', 'acceptEdits', 'auto', 'dontAsk', 'bypassPermissions'] as const;
 const hookInput = z.object({
   hook_event_name: z.enum(PTY_HOOK_EVENTS), session_id: z.uuid(),
-  cwd: z.string().min(1).max(4096), agent_id: z.string().max(200).optional(),
+  cwd: z.string().min(1).max(4096), agent_id: z.string().min(1).max(200).optional(),
+  agent_type: z.string().max(200).optional(),
+  // Only the documented message is used; agent_transcript_path is deliberately never read.
+  last_assistant_message: z.string().max(1024 * 1024).transform(value => value.slice(0, 4000)).optional(),
   prompt_id: z.string().max(200).optional(), permission_mode: z.enum(permissionModes).optional(),
   tool_name: z.string().max(200).optional(), tool_use_id: z.string().max(200).optional(),
   notification_type: z.string().max(100).optional(), reason: z.string().max(100).optional(),
   to_model: z.string().min(1).max(200).refine(value => !/[\x00-\x1f]/.test(value)).optional()
 });
 export type PtyHookInput = z.infer<typeof hookInput>;
+export type PtySubtaskEvent =
+  | { type: 'begin'; turnId: string }
+  | { type: 'observe'; observation: SubtaskObservation }
+  | { type: 'end'; status: 'interrupted' | 'failed' | 'unknown'; reason?: string };
+interface ObservedAgent {
+  turnId: string; taskId: string; promptId?: string; ended: boolean;
+  tools: Set<string>; approvals: Set<string>; questions: Set<string>; eliciting: boolean;
+}
 const MAX_BODY = 2 * 1024 * 1024;
 
 /** Conservative documented baseline: PostModelSwitch was added in 2.1.251. */
@@ -31,33 +44,98 @@ export function supportsPtyHooks(capabilities: Capabilities): boolean {
   return major > 2 || major === 2 && (minor > 1 || minor === 1 && patch >= 251);
 }
 
-/** Observes main-session events, without reading terminal output or making permission decisions. */
+/** Observes parent and child lifecycles without reading terminal output or making permission decisions. */
 export class PtyHookObserver {
   private currentId: string;
   private retiredIds = new Set<string>();
   private awaitingIdentity = false;
   private promptId?: string;
+  private turnId?: string;
+  private retiredPrompts = new Set<string>();
+  private agents = new Map<string, ObservedAgent>();
   private tools = new Set<string>();
   private approvals = new Set<string>();
   private questions = new Set<string>();
   private eliciting = false;
-  constructor(initialId: string) { this.currentId = initialId; }
+  constructor(initialId: string, private onSubtask?: (event: PtySubtaskEvent) => void) { this.currentId = initialId; }
+  private emitSubtask(event: PtySubtaskEvent) {
+    try { this.onSubtask?.(event); } catch { /* Observations must never block native tools or approvals. */ }
+  }
+  private endSubtasks(status: 'interrupted' | 'failed', reason: string) {
+    this.emitSubtask({ type: 'end', status, reason });
+    this.agents.clear(); this.turnId = undefined;
+  }
+  private observeAgent(input: PtyHookInput): null {
+    // Child hooks never establish an identity or modify main-session metadata.
+    if (!input.agent_id || this.awaitingIdentity || input.session_id !== this.currentId) return null;
+    let agent = this.agents.get(input.agent_id);
+    if (input.hook_event_name === 'SubagentStart') {
+      if (!this.turnId || this.promptId && input.prompt_id && input.prompt_id !== this.promptId) return null;
+      if (agent && !agent.ended) return null;
+      if (this.agents.size >= 500) {
+        for (const [id, item] of this.agents) if (item.ended) this.agents.delete(id);
+        if (this.agents.size >= 500) return null;
+      }
+      // Claude reuses agent_id when resuming an agent, including within one parent prompt.
+      agent = { turnId: this.turnId, taskId: randomUUID(), promptId: input.prompt_id ?? this.promptId, ended: false,
+        tools: new Set(), approvals: new Set(), questions: new Set(), eliciting: false };
+      this.agents.set(input.agent_id, agent);
+      this.emitSubtask({ type: 'observe', observation: { source: 'hooks', phase: 'start', kind: 'agent',
+        turnId: agent.turnId, taskId: agent.taskId, agentId: input.agent_id, status: 'running', description: input.agent_type || '子代理' } });
+      return null;
+    }
+    // Internal agents sometimes emit only SubagentStop; these are not user-launched tasks.
+    // Background agents from a previous prompt remain valid until their own stop arrives.
+    if (!agent || agent.ended || agent.promptId && input.prompt_id && agent.promptId !== input.prompt_id) return null;
+    if (input.hook_event_name === 'SubagentStop' || input.hook_event_name === 'StopFailure') {
+      agent.ended = true;
+      this.emitSubtask({ type: 'observe', observation: { source: 'hooks', phase: 'finish', kind: 'agent',
+        turnId: agent.turnId, taskId: agent.taskId, agentId: input.agent_id,
+        status: input.hook_event_name === 'StopFailure' ? 'failed' : 'completed',
+        summary: input.hook_event_name === 'StopFailure' ? '子代理响应失败。' : input.last_assistant_message } });
+      return null;
+    }
+    const key = input.tool_use_id || input.tool_name || 'unknown';
+    switch (input.hook_event_name) {
+      case 'PreToolUse':
+        if (agent.tools.size < 500) agent.tools.add(key);
+        if (input.tool_name === 'AskUserQuestion' && agent.questions.size < 500) agent.questions.add(key);
+        break;
+      case 'PermissionRequest':
+        if (input.tool_name === 'AskUserQuestion') { if (agent.questions.size < 500) agent.questions.add(key); }
+        else if (agent.approvals.size < 500) agent.approvals.add(key);
+        break;
+      case 'PostToolUse': case 'PostToolUseFailure':
+        agent.tools.delete(key); agent.approvals.delete(key); agent.questions.delete(key);
+        if (input.tool_name) { agent.approvals.delete(input.tool_name); agent.questions.delete(input.tool_name); }
+        break;
+      case 'Elicitation': agent.eliciting = true; break;
+      case 'ElicitationResult': agent.eliciting = false; break;
+      default: return null;
+    }
+    this.emitSubtask({ type: 'observe', observation: { source: 'hooks', phase: 'progress', kind: 'agent',
+      turnId: agent.turnId, taskId: agent.taskId, agentId: input.agent_id,
+      status: agent.approvals.size ? 'waiting_approval' : agent.questions.size || agent.eliciting ? 'waiting_input' : 'running',
+      ...(input.tool_name ? { lastTool: input.tool_name } : {}) } });
+    return null;
+  }
   private clearTurn() { this.tools.clear(); this.approvals.clear(); this.questions.clear(); this.eliciting = false; }
   private toolState(): TaskState {
     return this.approvals.size ? 'waiting_approval' : this.questions.size || this.eliciting ? 'waiting_input' : this.tools.size ? 'tool_running' : 'thinking';
   }
   accept(input: PtyHookInput): Partial<Session> | null {
     // Subagents inherit hooks and share the parent session_id. They must not replace parent state.
-    if (input.agent_id) return null;
+    if (input.agent_id || input.hook_event_name === 'SubagentStart' || input.hook_event_name === 'SubagentStop') return this.observeAgent(input);
     if (this.awaitingIdentity) {
       if (input.session_id === this.currentId) return null;
       this.retiredIds.delete(input.session_id); // Explicit /resume may return to an earlier conversation.
     } else if (this.retiredIds.has(input.session_id)) return null;
     const switched = input.session_id !== this.currentId;
     if (switched) {
+      this.endSubtasks('interrupted', 'CLI 已切换会话。');
       this.retiredIds.add(this.currentId);
       while (this.retiredIds.size > 64) this.retiredIds.delete(this.retiredIds.values().next().value!);
-      this.currentId = input.session_id; this.promptId = undefined; this.clearTurn();
+      this.currentId = input.session_id; this.promptId = undefined; this.retiredPrompts.clear(); this.clearTurn();
     }
     this.awaitingIdentity = false;
     const patch: Partial<Session> = { claudeId: input.session_id, terminalSync: 'synced', identityPending: false };
@@ -67,6 +145,7 @@ export class PtyHookObserver {
     }
     if (input.hook_event_name === 'PostModelSwitch' && input.to_model) patch.model = input.to_model;
     if (input.hook_event_name === 'SessionEnd') {
+      this.endSubtasks('interrupted', 'CLI 会话已结束或切换。');
       this.clearTurn();
       if (input.reason === 'clear' || input.reason === 'resume') {
         this.awaitingIdentity = true;
@@ -75,6 +154,13 @@ export class PtyHookObserver {
       return patch;
     }
     if (input.hook_event_name === 'UserPromptSubmit') {
+      if (input.prompt_id && this.retiredPrompts.has(input.prompt_id)) return null;
+      if (!this.turnId || !input.prompt_id || input.prompt_id !== this.promptId) {
+        if (this.promptId) this.retiredPrompts.add(this.promptId);
+        while (this.retiredPrompts.size > 128) this.retiredPrompts.delete(this.retiredPrompts.values().next().value!);
+        this.turnId = randomUUID();
+        this.emitSubtask({ type: 'begin', turnId: this.turnId });
+      }
       this.promptId = input.prompt_id; this.clearTurn(); patch.taskState = 'thinking'; return patch;
     }
     // Ignore delayed state observations from a previous prompt; model/config metadata still applies.
@@ -97,7 +183,7 @@ export class PtyHookObserver {
       case 'ElicitationResult': this.eliciting = false; patch.taskState = this.toolState(); break;
       // Stop is the latest observed end-of-response event. Other user hooks can request another turn.
       case 'Stop': this.clearTurn(); patch.taskState = 'completed'; break;
-      case 'StopFailure': this.clearTurn(); patch.taskState = 'error'; break;
+      case 'StopFailure': this.clearTurn(); this.endSubtasks('failed', '主会话响应失败。'); patch.taskState = 'error'; break;
       case 'Notification':
         if (input.notification_type === 'permission_prompt') patch.taskState = 'waiting_approval';
         else if (['idle_prompt', 'elicitation_dialog', 'elicitation_url_dialog', 'quota_auto_resume_stale'].includes(input.notification_type ?? '')) patch.taskState = 'waiting_input';
@@ -115,10 +201,11 @@ export interface PtyHookBridge {
 }
 
 /** The endpoint is local to one live PTY run; it cannot execute commands or grant permissions. */
-export async function createPtyHookBridge(initialId: string, onPatch: (patch: Partial<Session>) => void): Promise<PtyHookBridge> {
+export async function createPtyHookBridge(initialId: string, onPatch: (patch: Partial<Session>) => void,
+  onSubtask?: (event: PtySubtaskEvent) => void): Promise<PtyHookBridge> {
   const token = randomBytes(32).toString('hex');
   const expected = Buffer.from('Bearer ' + token);
-  const observer = new PtyHookObserver(initialId);
+  const observer = new PtyHookObserver(initialId, onSubtask);
   let closed = false;
   const server: Server = createServer((request, response) => {
     const reply = (status: number) => { if (!response.writableEnded) { response.writeHead(status, { 'Content-Length': '0', 'Cache-Control': 'no-store' }); response.end(); } };
