@@ -101,6 +101,41 @@ test('IDE preference migrates old settings, persists a custom application and ca
     assert.equal(new StateStore(dir).state.settings.idePath,'');
   }finally{fs.rmSync(dir,{recursive:true,force:true});}
 });
+test('worktree settings migrate without relocating existing sessions and survive restart',()=>{
+  const dir=temp();try{
+    const original={...session(),worktree:path.join(dir,'legacy-worktree'),worktreeBase:path.join(dir,'original-project')};
+    original.cwd=original.worktree;
+    fs.writeFileSync(path.join(dir,'workspace.json'),JSON.stringify({version:1,projects:[],sessions:[original],settings:{claudePath:'',shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}}));
+    const store=new StateStore(dir);
+    assert.equal(store.state.settings.worktreeLocation,'project');
+    assert.equal(store.state.settings.worktreeRoot,'');
+    const worktreeRoot=path.join(dir,'not-created','shared-worktrees');
+    store.change(state=>{state.settings.worktreeLocation='custom';state.settings.worktreeRoot=worktreeRoot;});
+    let restored=new StateStore(dir);
+    assert.equal(restored.state.settings.worktreeLocation,'custom');
+    assert.equal(restored.state.settings.worktreeRoot,worktreeRoot);
+    assert.deepEqual(restored.state.sessions,[original]);
+    assert.equal(fs.existsSync(worktreeRoot),false);
+    restored.change(state=>{state.settings.worktreeLocation='project';});
+    restored=new StateStore(dir);
+    assert.equal(restored.state.settings.worktreeLocation,'project');
+    assert.equal(restored.state.settings.worktreeRoot,worktreeRoot);
+    assert.deepEqual(restored.state.sessions,[original]);
+    for(const invalid of ['', '  ', 'root\npath', 'root\tpath', 'x'.repeat(4097)]){
+      assert.throws(()=>restored.change(state=>{state.settings.worktreeLocation='custom';state.settings.worktreeRoot=invalid;}));
+      assert.equal(restored.state.settings.worktreeLocation,'project');
+    }
+  }finally{fs.rmSync(dir,{recursive:true,force:true});}
+});
+test('worktree names accept readable optional names but reject path components and control characters',()=>{
+  const input={projectId:randomUUID(),title:'test',kind:'claude',model:'',effort:'default',isolated:true};
+  assert.equal(sessionInputSchema.parse({...input,worktreeName:'  修复 登录  '}).worktreeName,'修复 登录');
+  assert.equal(sessionInputSchema.parse({...input,worktreeName:''}).worktreeName,'');
+  assert.equal(sessionInputSchema.parse(input).worktreeName,undefined);
+  for(const worktreeName of ['../escape','foo/bar','foo\\bar','foo..bar','\ntree','tree\0','x'.repeat(81)]){
+    assert.equal(sessionInputSchema.safeParse({...input,worktreeName}).success,false);
+  }
+});
 test('terminal buffer bounds retained output and assigns monotonically increasing sequence IDs',()=>{
   const buffer=new TerminalBuffer();for(let i=0;i<1500;i++)buffer.push('id','x'.repeat(1024));
   assert.ok(buffer.chunks.length<=1024);assert.equal(buffer.chunks.at(-1)!.seq,1500);assert.ok(buffer.chunks[0].seq>1);

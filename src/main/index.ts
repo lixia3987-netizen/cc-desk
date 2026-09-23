@@ -11,6 +11,7 @@ import { SessionService } from './session-service';
 import { detectCLI } from './commands';
 import { openIde } from './ide';
 import { cleanupWorktree, createWorktree, gitInfo } from './git';
+import { sanitizeWorktreeName } from './worktree-paths';
 import { readHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project, Session } from '../shared/types';
@@ -92,9 +93,15 @@ function registerIPC() {
     const id = randomUUID();
     const source = input.fork ? store.state.sessions.find(s => s.claudeId === input.resumeFrom && s.projectId === project.id) : undefined;
     const sourcePath = source?.cwd ?? project.path;
+    // Capture placement before asynchronous creation; later settings changes affect the next session.
+    const location = store.state.settings.worktreeLocation ?? 'project';
+    const customRoot = store.state.settings.worktreeRoot;
     projectCreations.set(project.id,(projectCreations.get(project.id)??0)+1);
     try { return await services.withSessionCreation(sourcePath,input.isolated,async()=>{
-    const worktree = input.isolated ? await createWorktree(sourcePath,store.directory,id) : undefined;
+    const worktree = input.isolated ? await createWorktree(sourcePath,store.directory,id,{
+      location, customRoot, projectPath:project.path, projectName:project.name,
+      name:input.worktreeName?.trim() || sanitizeWorktreeName(input.title),
+    }) : undefined;
     const now = new Date().toISOString();
     const session: Session = { id, projectId:project.id, title:input.title, cwd:worktree || sourcePath,
       kind:input.kind, claudeId:input.resumeFrom && !input.fork ? input.resumeFrom : randomUUID(),
@@ -111,7 +118,7 @@ function registerIPC() {
       throw error;
     }
     notify(); return session;
-    }); } finally {
+    },input.isolated && location === 'project' ? project.path : undefined); } finally {
       const count=(projectCreations.get(project.id)??1)-1;
       if(count)projectCreations.set(project.id,count);else projectCreations.delete(project.id);
     }
@@ -124,6 +131,7 @@ function registerIPC() {
   handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => runtime.write(id,data));
   handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
   handle('settings:save',settingsSchema,async settings => {
+    if(settings.worktreeLocation === 'custom' && !path.isAbsolute(settings.worktreeRoot))throw new Error('统一 Worktree 根目录必须是绝对路径。');
     const cliChanged=settings.claudePath!==store.state.settings.claudePath;
     store.change(s => { s.settings = settings; });
     const appearance=THEME_APPEARANCE[normalizeThemeId(settings.theme)];nativeTheme.themeSource=appearance.scheme;
@@ -147,6 +155,10 @@ function registerIPC() {
       : process.platform === 'darwin' ? [{name:'IDE 应用',extensions:['app']},{name:'所有文件',extensions:['*']}] : undefined;
     // On macOS, .app packages remain selectable applications, not navigable folders.
     const result = await dialog.showOpenDialog(window!,{properties:['openFile'],title:'选择 IDE 应用',buttonLabel:'选择应用',filters});
+    return result.canceled ? null : result.filePaths[0] ?? null;
+  });
+  handle('worktree:choose-root',z.undefined(),async () => {
+    const result = await dialog.showOpenDialog(window!,{properties:['openDirectory','createDirectory'],title:'选择统一 Worktree 根目录',buttonLabel:'选择目录',defaultPath:store.state.settings.worktreeRoot || undefined});
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('ide:open',idSchema,id => {

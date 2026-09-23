@@ -120,11 +120,12 @@ export class SessionService {
     return this.store.state.sessions.some(other => other.id !== s.id &&
       (this.contains(target,this.pathKey(other.cwd)) || (other.worktree && other.worktreeBase && this.contains(target,this.pathKey(other.worktreeBase)))));
   }
-  /** Keep the source locked until index.ts records the new dependent session. */
-  async withSessionCreation<T>(cwd: string, isolated: boolean, action: () => Promise<T>): Promise<T> {
-    const keys = [this.pathKey(isolated ? await gitWorktreeRoot(cwd) : cwd)];
+  /** Keep source and project-local destination locked until the dependent session is saved. */
+  async withSessionCreation<T>(cwd: string, isolated: boolean, action: () => Promise<T>, destinationProjectPath?: string): Promise<T> {
+    const roots = isolated ? await Promise.all([gitWorktreeRoot(cwd), ...(destinationProjectPath ? [gitWorktreeRoot(destinationProjectPath)] : [])]) : [cwd];
+    const keys = [...new Set(roots.map(root => this.pathKey(root)))];
     this.assertDirectoriesUnlocked(keys);
-    if (isolated && this.directoriesBusy(keys)) throw new Error('请先停止来源工作目录中的全部会话，再创建独立 worktree。');
+    if (isolated && this.directoriesBusy(keys)) throw new Error('请先停止来源工作目录及目标项目目录中的全部会话，再创建独立 worktree。');
     keys.forEach(key => this.directoryLocks.add(key));
     try { return await action(); } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
   }
@@ -245,13 +246,20 @@ export class SessionService {
     handle('files:attachments',idSchema,id => { this.structured(id); return this.attachments.list(id); });
     handle('files:remove-attachment',z.object({id:idSchema,path:z.string().min(1).max(4096)}),({id,path}) => { this.structured(id); return this.attachments.removeFile(id,path); });
     handle('history:query',z.object({projectId:idSchema,query:z.string().max(500).optional(),offset:z.number().int().min(0).optional(),limit:z.number().int().min(1).max(100).optional()}),({projectId,...options}) => queryHistory(this.project(projectId).path,options));
-    handle('git:changes',idSchema,id => gitChanges(this.session(id).cwd));
+    handle('git:changes',idSchema,id => {
+      const s=this.session(id);
+      if(s.archived && !s.worktree && s.worktreeBase)return {available:false,changes:[],truncated:false,error:'工作目录已清理，此记录仅保留历史。'};
+      return gitChanges(s.cwd);
+    });
     handle('git:diff',z.object({id:idSchema,path:relativePath,staged:z.boolean()}),({id,path,staged}) => gitDiff(this.session(id).cwd,path,staged));
     handle('files:list',z.object({id:idSchema,query:z.string().max(500)}),({id,query}) => listProjectFiles(this.session(id).cwd,query));
     handle('files:read',z.object({id:idSchema,path:relativePath}),({id,path}) => readProjectFile(this.session(id).cwd,path));
     handle('worktree:info',idSchema,async id => {
       const s=this.session(id);
-      const info=await worktreeInfo(this.worktreeBase(s),s.worktree ?? s.cwd,id,this.directoriesBusy(await this.worktreeDirectories(s)));
+      // Read-only refreshes can outlive cleanup. Missing Git roots should produce
+      // unavailable metadata, while all mutation paths keep their strict checks.
+      const blocked=await this.worktreeDirectories(s).then(keys=>this.directoriesBusy(keys),()=>true);
+      const info=await worktreeInfo(this.worktreeBase(s),s.worktree ?? s.cwd,id,blocked);
       if(this.cleanupDependencies(s)) { info.canCleanup=false; info.reasons.push('其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。'); }
       return info;
     });

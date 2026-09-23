@@ -4,6 +4,7 @@ import { environment, execFileAsync } from './commands';
 import type { GitInfo } from '../shared/types';
 import { readProjectFile, resolveProjectFile } from './files';
 import type { GitChange, GitChanges, GitDiff, WorktreeInfo, WorktreeActionResult } from '../shared/git';
+import { ensureWorktreeParent, removeEmptyWorktreeParents, worktreeDestination, type WorktreePlacement } from './worktree-paths';
 
 const MAX_DIFF = 256 * 1024;
 const OWNER_FILE = 'workbench-owner.json';
@@ -32,7 +33,33 @@ async function withGitMutation<T>(cwd: string, action: () => Promise<T>): Promis
   try { return await action(); } finally { mutations.delete(key); }
 }
 
-export async function createWorktree(cwd: string, root: string, id: string): Promise<string> {
+async function excludeWorktree(projectRoot: string, common: string, destination: string): Promise<() => Promise<void>> {
+  const directory = path.join(common, 'info');
+  // Never follow an info/exclude symlink when appending a local Git rule.
+  await ensureWorktreeParent(directory, []);
+  const file = path.join(directory, 'exclude');
+  const entry = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
+  if (entry && (!entry.isFile() || entry.isSymbolicLink())) throw new Error('Git 本地排除文件不能是符号链接或目录。');
+  const original = entry ? await fs.readFile(file) : undefined;
+  const escaped = path.relative(projectRoot, destination).split(path.sep).join('/').replace(/[\\*?\[\]#! ]/g, '\\$&');
+  const rule = `/${escaped}/`;
+  if (original?.toString('utf8').split(/\r?\n/).includes(rule)) return async () => undefined;
+  const newline = original?.includes(Buffer.from('\r\n')) ? '\r\n' : '\n';
+  const addition = Buffer.from(`${original?.length && original[original.length - 1] !== 10 ? newline : ''}${rule}${newline}`);
+  await fs.writeFile(file, addition, { flag: 'a', mode: 0o600 });
+  const expected = Buffer.concat([original ?? Buffer.alloc(0), addition]);
+  return async () => {
+    // An external editor may have changed exclude while Git was running. Preserve its edits.
+    const current = await fs.readFile(file).catch(() => undefined);
+    if (!current?.equals(expected)) return;
+    const currentEntry = await fs.lstat(file).catch(() => undefined);
+    if (!currentEntry?.isFile() || currentEntry.isSymbolicLink()) return;
+    if (original) await fs.writeFile(file, original);
+    else await fs.unlink(file);
+  };
+}
+
+export async function createWorktree(cwd: string, root: string, id: string, placement?: WorktreePlacement): Promise<string> {
   if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('无效的会话标识。');
   return withGitMutation(cwd, async () => {
   await git(cwd, ['rev-parse', '--verify', 'HEAD']);
@@ -40,16 +67,49 @@ export async function createWorktree(cwd: string, root: string, id: string): Pro
   const baseBranch = (await git(cwd, ['branch', '--show-current'])).trim();
   if (!baseBranch) throw new Error('请先切换到一个分支，再创建隔离工作区。');
   const branch = `workbench/${id.slice(0, 8)}`;
-  const destination = path.join(root, 'worktrees', id.slice(0,8));
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  await git(cwd, ['worktree', 'add', '-b', branch, destination, 'HEAD']);
-  const owner: Ownership = { version: 1, sessionId: id, basePath, branch, baseBranch };
-  try { await fs.writeFile(path.join(await gitDirectory(destination), OWNER_FILE), JSON.stringify(owner), { flag: 'wx', mode: 0o600 }); }
-  catch (error) {
-    await git(cwd, ['worktree', 'remove', '--', destination]).catch(() => undefined);
+  const sourceRoot = await gitWorktreeRoot(cwd);
+  const projectRoot = placement ? await gitWorktreeRoot(placement.projectPath) : sourceRoot;
+  const common = await fs.realpath((await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
+  const projectCommon = await fs.realpath((await git(projectRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
+  if (common !== projectCommon) throw new Error('当前会话与项目不属于同一个 Git 仓库。');
+  if (placement?.location === 'project') {
+    const [tracked, sourceTracked] = await Promise.all([
+      git(projectRoot, ['ls-files', '-z', '--', '.claude/worktrees']),
+      git(sourceRoot, ['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', '.claude/worktrees'])
+    ]);
+    if (tracked || sourceTracked) throw new Error('.claude/worktrees 已包含受 Git 跟踪的文件，请先移走这些文件或选择统一目录。');
+  }
+  const destination = await worktreeDestination(root, id, placement, sourceRoot, projectRoot, [common, await gitDirectory(cwd), await gitDirectory(projectRoot)]);
+  const created: string[] = [];
+  let undoExclude: (() => Promise<void>) | undefined;
+  let added = false;
+  let reserved = false;
+  try {
+    await ensureWorktreeParent(path.dirname(destination), created);
+    // Reserve exclusively: Git itself permits an existing empty folder, but our UI must never take it over.
+    try { await fs.mkdir(destination); reserved = true; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('工作区目标目录已经存在，请更换名称后重试。'); throw error; }
+    if (placement?.location === 'project') undoExclude = await excludeWorktree(projectRoot, common, destination);
+    await git(cwd, ['worktree', 'add', '-b', branch, destination, 'HEAD']);
+    added = true;
+    const owner: Ownership = { version: 1, sessionId: id, basePath, branch, baseBranch };
+    await fs.writeFile(path.join(await gitDirectory(destination), OWNER_FILE), JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
+    return destination;
+  } catch (error) {
+    if (added) {
+      // Git remove can delete ignored data even without --force. Checkout hooks may
+      // have created it before the owner marker failed, so apply the normal cleanup guard.
+      const noIgnoredFiles = await git(destination, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']).then(value => !value, () => false);
+      if (noIgnoredFiles) await git(cwd, ['worktree', 'remove', '--', destination]).catch(() => undefined);
+    }
+    // Only remove directories we reserved and only if empty. Never force-delete checkout/hook/user data.
+    if (reserved) await fs.rmdir(destination).catch(() => undefined);
+    const remains = !reserved || await fs.lstat(destination).then(() => true, (cause: NodeJS.ErrnoException) => cause.code !== 'ENOENT');
+    if (!remains) await undoExclude?.().catch(() => undefined);
+    await removeEmptyWorktreeParents(created);
+    if (reserved && remains) throw new Error(`创建工作区未完成，已保留目录 ${destination}，请检查文件后手动处理。${errorMessage(error)}`, { cause: error });
     throw error;
   }
-  return destination;
   });
 }
 export async function gitInfo(cwd: string): Promise<GitInfo> {

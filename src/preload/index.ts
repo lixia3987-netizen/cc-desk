@@ -55,6 +55,7 @@ const api: DesktopAPI = {
   exportTranscript:id => ipcRenderer.invoke('session:export',id),
   openFolder:id => ipcRenderer.invoke('folder:open',id),
   chooseIdeApplication:() => ipcRenderer.invoke('ide:choose'),
+  chooseWorktreeRoot:() => ipcRenderer.invoke('worktree:choose-root'),
   openIde:id => ipcRenderer.invoke('ide:open',id),
   onState:callback => { const listener = (_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0]) => callback(data);ipcRenderer.on('workspace:state',listener);return () => ipcRenderer.removeListener('workspace:state',listener); },
   onError:callback => { const listener=(_event:Electron.IpcRendererEvent,message:string)=>callback(message);ipcRenderer.on('workspace:error',listener);return()=>ipcRenderer.removeListener('workspace:error',listener); },

@@ -7,16 +7,19 @@ export const settingsSchema = z.object({
   claudePath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   shellPath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   idePath: z.string().trim().max(4096).refine(s => !/[\x00-\x1f\x7f]/.test(s), 'IDE 应用路径不能包含控制字符。').default(''),
+  worktreeLocation: z.enum(['project','custom']).default('project'),
+  worktreeRoot: z.string().max(4096).refine(s => !/[\x00-\x1f\x7f]/.test(s), 'Worktree 根目录不能包含控制字符。').trim().default(''),
   maxSessions: z.number().int().min(1).max(12), fontSize: z.number().int().min(11).max(24),
   scrollback: z.number().int().min(1000).max(50000),
   notifications: z.boolean().optional(), closeToTray: z.boolean().optional(), theme: z.enum(THEME_IDS).optional(),
   defaultPermissionMode: permissionModeSchema.default('default')
-});
+}).refine(settings => settings.worktreeLocation !== 'custom' || !!settings.worktreeRoot, { message: '请选择或填写统一 Worktree 根目录。', path: ['worktreeRoot'] });
 export const sessionInputSchema = z.object({
   projectId: idSchema, title: z.string().trim().min(1).max(120), kind: z.enum(['claude', 'shell']),
   model: z.string().trim().max(200).refine(s => !/[\x00-\x1f]/.test(s)),
   effort: z.enum(['default','low','medium','high','xhigh','max','ultracode']),
   permissionMode: permissionModeSchema.optional(), isolated: z.boolean(),
+  worktreeName: z.string().max(80).refine(s => !/[/\\\x00-\x1f\x7f]/.test(s) && !s.includes('..'), 'Worktree 名称不能包含路径分隔符、控制字符或 ..。').trim().optional(),
   resumeFrom: idSchema.optional(), fork: z.boolean().optional(),
   adapter: z.enum(['terminal','structured']).optional()
 });

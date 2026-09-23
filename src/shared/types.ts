@@ -20,11 +20,11 @@ export interface Session {
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
   panelDrafts?: PanelDrafts;
 }
-export interface Settings { claudePath: string; shellPath: string; idePath?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
+export interface Settings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
 export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
 export interface Snapshot { state: AppState; capabilities: Capabilities; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'claude' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; resumeFrom?: string; fork?: boolean; adapter?: 'terminal' | 'structured' }
+export interface NewSession { projectId: string; title: string; kind: 'claude' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; resumeFrom?: string; fork?: boolean; adapter?: 'terminal' | 'structured' }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalChunk { sessionId: string; seq: number; data: string }
@@ -85,6 +85,7 @@ export interface DesktopAPI {
   exportTranscript(id: string): Promise<string | null>;
   openFolder(id: string): Promise<void>;
   chooseIdeApplication(): Promise<string | null>;
+  chooseWorktreeRoot(): Promise<string | null>;
   openIde(id: string): Promise<void>;
   onState(callback: (state: AppState) => void): () => void;
   onError(callback: (message: string) => void): () => void;

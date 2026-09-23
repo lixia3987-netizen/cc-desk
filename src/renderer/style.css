@@ -407,6 +407,14 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .ide-path-row input {flex:1;min-width:0}
 .ide-path-row button {flex-shrink:0;white-space:nowrap}
 .ide-preferences>label {margin-bottom:8px}
+.worktree-preferences>label {margin-bottom:8px}
+.worktree-path-row {display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.worktree-path-row input {flex:1 1 240px;min-width:0}
+.worktree-path-row button {flex-shrink:0;white-space:nowrap}
+.worktree-session-options {padding:0 12px}
+.worktree-session-options>label {margin-bottom:8px}
+.worktree-location-hint {overflow-wrap:anywhere}
+.worktree-location-hint code {font-family:inherit;color:var(--text-secondary)}
 .preferences .theme-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
 .preferences form > .modal-actions { position:sticky; bottom:-32px; z-index:2; margin:23px -32px -32px; padding:14px 32px; border-top:1px solid var(--border); background:var(--elevated); }
 @media(max-width:700px) { .preferences .theme-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }

@@ -91,6 +91,14 @@ test('cleanup preserves a worktree referenced as another worktree source', async
     assert.equal((await worktreeInfo(treeA,treeB,b.id)).owned,true);
     assert.equal((await f.call<{ok:boolean}>('worktree:cleanup',b.id)).ok,true);
     assert.equal((await f.call<{ok:boolean}>('worktree:cleanup',a.id)).ok,true);
+    // The active Git panel refreshes after cleanup, when both source and target may be gone.
+    const removed=await f.call<WorktreeInfo>('worktree:info',b.id);
+    assert.equal(removed.owned,false);
+    assert.equal(removed.canMerge,false);
+    assert.equal(removed.canCleanup,false);
+    const changes=await f.call<{available:boolean;error:string}>('git:changes',b.id);
+    assert.equal(changes.available,false);
+    assert.match(changes.error,/工作目录已清理/);
   }finally{await f.dispose();}
 });
 
@@ -130,6 +138,72 @@ test('canonical containment locks prevent new admissions and dependency registra
       }
     }finally{release();await held;}
     await f.service.start(child.id);assert.equal(f.active.has(child.id),true);
+  }finally{await f.dispose();}
+});
+
+test('fork creation reserves source and destination project roots until the dependent session is saved',async()=>{
+  const f=await fixture();try{
+    const sourceId=randomUUID(),sourceTree=await createWorktree(f.repo,f.dir,sourceId);
+    const source=f.add(sourceTree,{id:sourceId,worktree:sourceTree,worktreeBase:f.repo});
+    const projectSession=f.add(path.join(f.repo,'other'));
+    const otherId=randomUUID(),otherTree=await createWorktree(f.repo,f.dir,otherId);
+    const other=f.add(otherTree,{id:otherId,worktree:otherTree,worktreeBase:f.repo});
+    const childId=randomUUID();
+    let entered!:()=>void,release!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    const pendingSave=new Promise<void>(resolve=>{release=resolve;});
+    const held=f.service.withSessionCreation(sourceTree,true,async()=>{
+      const childTree=await createWorktree(sourceTree,f.dir,childId);
+      entered();await pendingSave;
+      return f.add(childTree,{id:childId,worktree:childTree,worktreeBase:sourceTree});
+    },path.join(f.repo,'src'));
+    // If creation rejects before entering the callback, fail instead of waiting forever.
+    await Promise.race([ready,held]);
+    try{
+      assert.equal(f.store.state.sessions.some(session=>session.id===childId),false);
+      await assert.rejects(f.service.start(source.id),/管理操作/);
+      await assert.rejects(f.service.start(projectSession.id),/管理操作/);
+      await assert.rejects(f.call('worktree:cleanup',other.id),/管理操作/);
+      await assert.rejects(f.service.withSessionCreation(path.join(f.repo,'other'),false,async()=>{}),/管理操作/);
+    }finally{release();await held;}
+    assert.equal(f.store.state.sessions.find(session=>session.id===childId)?.worktreeBase,sourceTree);
+    await assert.rejects(f.call('worktree:cleanup',source.id),/来源依赖/);
+    await f.service.start(projectSession.id);
+    assert.equal(f.active.has(projectSession.id),true);
+  }finally{await f.dispose();}
+});
+
+test('fork creation refuses a busy destination project before running the creation action',async()=>{
+  const f=await fixture();try{
+    const sourceId=randomUUID(),sourceTree=await createWorktree(f.repo,f.dir,sourceId);
+    const source=f.add(sourceTree,{id:sourceId,worktree:sourceTree,worktreeBase:f.repo});
+    const projectSession=f.add(path.join(f.repo,'other'));
+    await f.service.start(projectSession.id);
+    let entered=false;
+    await assert.rejects(f.service.withSessionCreation(sourceTree,true,async()=>{entered=true;},path.join(f.repo,'src')),/全部会话/);
+    assert.equal(entered,false);
+    // A rejected reservation must not retain the otherwise idle source lock.
+    await f.service.start(source.id);
+    assert.equal(f.active.has(source.id),true);
+    await f.service.stop(source.id);await f.service.stop(projectSession.id);
+    await f.service.withSessionCreation(sourceTree,true,async()=>{entered=true;},f.repo);
+    assert.equal(entered,true);
+  }finally{await f.dispose();}
+});
+
+test('failed fork registration releases both source and destination project reservations',async()=>{
+  const f=await fixture();try{
+    const sourceId=randomUUID(),sourceTree=await createWorktree(f.repo,f.dir,sourceId);
+    const source=f.add(sourceTree,{id:sourceId,worktree:sourceTree,worktreeBase:f.repo});
+    const projectSession=f.add(path.join(f.repo,'other'));
+    const failedSave=new Error('session save failed');
+    await assert.rejects(f.service.withSessionCreation(sourceTree,true,async()=>{throw failedSave;},f.repo),error=>error===failedSave);
+    await f.service.start(source.id);await f.service.start(projectSession.id);
+    assert.equal(f.active.has(source.id),true);assert.equal(f.active.has(projectSession.id),true);
+    await f.service.stop(source.id);await f.service.stop(projectSession.id);
+    let retried=false;
+    await f.service.withSessionCreation(sourceTree,true,async()=>{retried=true;},f.repo);
+    assert.equal(retried,true);
   }finally{await f.dispose();}
 });
 
