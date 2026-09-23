@@ -40,8 +40,8 @@ export function GitPanel({session,onError,onReview,draft,onDraft}:{session:Sessi
     const previous=lastTask.current;lastTask.current={state:session.taskState,status:session.status};
     const finished=previous.state!==session.taskState&&['completed','interrupted','error'].includes(session.taskState??'');
     const stopped=previous.status!==session.status&&['running','stopping'].includes(previous.status)&&!['running','stopping'].includes(session.status);
-    if((finished&&session.adapter!=='structured')||stopped)scheduleRefresh();
-  },[session.taskState,session.status,session.adapter,scheduleRefresh]);
+    if((finished&&session.execution.mode!=='structured')||stopped)scheduleRefresh();
+  },[session.taskState,session.status,session.execution.mode,scheduleRefresh]);
   const missing=!!selected&&!!changes?.available&&!changes.truncated&&!changes.changes.some(change=>change.path===selected);
   useEffect(()=>{
     setDiff(undefined);const request=++seq.current;

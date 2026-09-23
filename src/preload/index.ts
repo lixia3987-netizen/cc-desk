@@ -43,6 +43,7 @@ const api: DesktopAPI = {
   reviseWorkflowStage:(id,stageId,instruction) => ipcRenderer.invoke('workflow:revise',{id,stageId,instruction}),
   onWorkflows:callback => { const listener = () => callback(); ipcRenderer.on('workflow:changed',listener); return () => ipcRenderer.removeListener('workflow:changed',listener); },
   onChat:callback => { const listener = (_event:Electron.IpcRendererEvent,id:string,state?:TaskState) => callback(id,state); ipcRenderer.on('chat:changed',listener); return () => ipcRenderer.removeListener('chat:changed',listener); },
+  onExecution:callback => { const listener = (_event:Electron.IpcRendererEvent,event:Parameters<typeof callback>[0]) => callback(event); ipcRenderer.on('execution:event',listener); return () => ipcRenderer.removeListener('execution:event',listener); },
   startSession:id => ipcRenderer.invoke('session:start',id),
   stopSession:id => ipcRenderer.invoke('session:stop',id),
   interruptSession:id => ipcRenderer.invoke('session:interrupt',id),

@@ -20,11 +20,11 @@ async function workspace(historyCount=90) {
     git('add','.');git('commit','--quiet','-m','fixture');
   }
   const sessions:Session[]=[
-    {title:'长对话 B',kind:'claude',adapter:'structured'}, {title:'短对话 B',kind:'claude',adapter:'structured'},
-    {title:'CLI 终端 B',kind:'claude',adapter:'terminal'}, {title:'Shell B',kind:'shell',adapter:'terminal'},
-  ].map(value=>({...value,id:randomUUID(),projectId:projects[1].id,cwd:projects[1].path,claudeId:randomUUID(),started:false,
+    {title:'长对话 B',kind:'agent',mode:'structured'}, {title:'短对话 B',kind:'agent',mode:'structured'},
+    {title:'CLI 终端 B',kind:'agent',mode:'terminal'}, {title:'Shell B',kind:'shell',mode:'terminal'},
+  ].map(({mode,...value})=>({...value,execution: value.kind === 'shell' ? {providerId:'shell',mode:'terminal'} : {providerId:'claude',mode,conversationId:randomUUID()},id:randomUUID(),projectId:projects[1].id,cwd:projects[1].path,started:false,
     model:'',effort:'default',permissionMode:'default',status:'idle',taskState:'idle',archived:false,createdAt:now,updatedAt:now} as Session));
-  const state:AppState={version:1,projects,sessions,selectedSessionId:sessions[0].id,
+  const state:AppState={version: 2,projects,sessions,selectedSessionId:sessions[0].id,
     settings:{claudePath:path.join(directory,'unavailable-claude'),shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}};
   await fs.mkdir(path.join(data,'chat'),{recursive:true});
   await fs.writeFile(path.join(data,'workspace.json'),JSON.stringify(state));
@@ -64,7 +64,7 @@ async function settleReading(page:Page){
 test('experience: project groups preserve navigation and drafts with a compact header at desktop and narrow widths',async()=>{
   const f=await workspace(12),file=path.join(f.data,'workspace.json');
   const state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
-  const inA=(title:string,updatedAt:string,archived=false):Session=>({...f.sessions[1],id:randomUUID(),claudeId:randomUUID(),projectId:f.projects[0].id,cwd:f.projects[0].path,title,updatedAt,archived});
+  const inA=(title:string,updatedAt:string,archived=false):Session=>({ ...f.sessions[1],execution: { ...f.sessions[1].execution, conversationId: randomUUID() },id:randomUUID(),projectId:f.projects[0].id,cwd:f.projects[0].path,title,updatedAt,archived});
   state.sessions.push(inA('较早的 A 对话','2025-01-01T00:00:00.000Z'),inA('最近的 A 对话','2025-02-01T00:00:00.000Z'),inA('已归档的 A 对话','2025-03-01T00:00:00.000Z',true));
   const orphan={...inA('保留的旧项目对话','2025-01-01T00:00:00.000Z'),projectId:randomUUID()};state.sessions.push(orphan);
   await fs.writeFile(file,JSON.stringify(state));const app=await f.launch();
@@ -248,15 +248,15 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByRole('button',{name:'导入会话',exact:true}).click();
     await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('acceptEdits');
     const modes=await page.evaluate(async({projectId,sourceId})=>{
-      const input={projectId,title:'IPC permission test',kind:'claude' as const,model:'',effort:'default' as const,isolated:false};
+      const input={projectId,title:'IPC permission test',kind:'agent' as const,model:'',effort:'default' as const,isolated:false};
       const implicit=await window.desktop.createSession(input);
-      const terminal=await window.desktop.createSession({...input,adapter:'terminal'});
+      const terminal=await window.desktop.createSession({...input,mode:'terminal'});
       const explicit=await window.desktop.createSession({...input,permissionMode:'plan'});
-      const fork=await window.desktop.createSession({...input,resumeFrom:sourceId,fork:true});
+      const fork=await window.desktop.createSession({...input,conversationId:sourceId,fork:true});
       const shell=await window.desktop.createSession({...input,kind:'shell'});
-      const duplicate=await window.desktop.createSession({...input,resumeFrom:sourceId,permissionMode:'bypassPermissions'});
+      const duplicate=await window.desktop.createSession({...input,conversationId:sourceId,permissionMode:'bypassPermissions'});
       return [implicit,terminal,explicit,fork,shell,duplicate].map(s=>s.permissionMode);
-    },{projectId:f.projects[1].id,sourceId:f.sessions[0].claudeId});
+    },{projectId:f.projects[1].id,sourceId:f.sessions[0].execution.conversationId});
     expect(modes).toEqual(['bypassPermissions','bypassPermissions','plan','default','default','default']);
     await expect(page.locator('.error-banner')).toHaveCount(0);
   }finally{await app.close();await f.dispose();}

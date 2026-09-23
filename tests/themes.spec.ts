@@ -58,18 +58,18 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
   const shellId = randomUUID();
   const chatId = randomUUID();
   const canonicalPath = await fs.realpath(projectPath);
-  const common: Omit<Session, 'id' | 'title' | 'kind' | 'claudeId'> = {
+  const common: Omit<Session, 'id' | 'title' | 'kind' | 'execution'> = {
     projectId, cwd: canonicalPath, started: false, model: '', effort: 'default', permissionMode: 'default',
     status: 'idle', archived: false, createdAt: now, updatedAt: now,
   };
   // A genuine pre-theme workspace verifies migration without touching the user's profile.
   const state: AppState = {
-    version: 1,
+    version: 2,
     settings: { claudePath: path.join(directory, 'uninstalled-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
     projects: [{ id: projectId, name: '界面主题工作室', path: canonicalPath, createdAt: now }],
     sessions: [
-      { ...common, id: chatId, claudeId: randomUUID(), title: '五种主题 · 同样清晰', kind: 'claude', adapter: 'structured', taskState: 'completed' },
-      { ...common, id: shellId, claudeId: randomUUID(), title: '持续运行的终端', kind: 'shell', adapter: 'terminal' },
+      { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, ...common, id: chatId,  title: '五种主题 · 同样清晰', kind: 'agent',  taskState: 'completed' },
+      { execution: { providerId: 'shell', mode: 'terminal' }, ...common, id: shellId,  title: '持续运行的终端', kind: 'shell' },
     ],
     selectedSessionId: shellId,
   };

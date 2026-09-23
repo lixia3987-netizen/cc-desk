@@ -28,16 +28,16 @@ test('native prompt keeps multiline content in one bracketed paste before sendin
 });
 
 test('completed resident CLI is idle while active children and unknown native activity remain busy', () => {
-  const session: Pick<Session, 'kind' | 'adapter' | 'status' | 'taskState' | 'terminalSync' | 'subtasks'> = {
-    kind: 'claude', adapter: 'structured', status: 'running', taskState: 'completed'
+  const session: Pick<Session, 'kind' | 'execution' | 'status' | 'taskState' | 'terminalSync' | 'subtasks'> = {
+    kind: 'agent', execution: {providerId: 'claude', mode: 'structured'}, status: 'running', taskState: 'completed'
   };
   assert.equal(isSessionBusy(session), false);
   assert.equal(isSessionBusy({ ...session, taskState: 'thinking' }), true);
   assert.equal(isSessionBusy({ ...session, taskState: 'waiting_approval' }), true);
   assert.equal(isSessionBusy({ ...session, status: 'stopping' }), true);
-  assert.equal(isSessionBusy({ ...session, adapter: 'terminal', terminalSync: 'synced' }), false);
-  assert.equal(isSessionBusy({ ...session, adapter: 'terminal', terminalSync: 'unsupported' }), true);
-  assert.equal(isSessionBusy({ ...session, kind: 'shell', adapter: 'terminal' }), true);
+  assert.equal(isSessionBusy({ ...session, execution: {...session.execution, mode: 'terminal'}, terminalSync: 'synced' }), false);
+  assert.equal(isSessionBusy({ ...session, execution: {...session.execution, mode: 'terminal'}, terminalSync: 'unsupported' }), true);
+  assert.equal(isSessionBusy({ ...session, kind: 'shell', execution: {providerId: 'shell', mode: 'terminal'} }), true);
   session.subtasks = { turnId: 't1', tasks: [{ id: 'child1', turnId: 't1', source: 'stream', kind: 'agent', description: '仍在执行的子任务', status: 'running', startedAt: '', updatedAt: '' }] };
   assert.equal(hasActiveSubtasks(session), true);
   assert.equal(isSessionBusy(session), true);

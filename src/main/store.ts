@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { AppState } from '../shared/types';
-import { stateSchema } from '../shared/schema';
+import { persistedStateSchema, stateSchema } from '../shared/schema';
 import { isSubtaskActive } from '../shared/subtasks';
 import { DEFAULT_TYPOGRAPHY } from '../shared/fonts';
 
@@ -17,7 +17,11 @@ export class StateStore {
     this.file = path.join(directory, 'workspace.json');
     if (fs.existsSync(this.file)) {
       // Fail closed: never replace corrupt user data with an empty workspace.
-      try { this.state = stateSchema.parse(JSON.parse(fs.readFileSync(this.file, 'utf8'))); }
+      try {
+        const stored = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+        this.state = persistedStateSchema.parse(stored);
+        this.dirty = stored.version !== this.state.version;
+      }
       catch { throw new Error(`工作区数据无法读取，原文件已保留：${this.file}。可从 workspace.json.bak 恢复。`); }
       for (const session of this.state.sessions) {
         if (session.status === 'running' || session.status === 'stopping') session.status = 'stopped';
@@ -29,7 +33,7 @@ export class StateStore {
         }
       }
     } else {
-      this.state = { version: 1, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default', ...DEFAULT_TYPOGRAPHY } };
+      this.state = { version: 2, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default', ...DEFAULT_TYPOGRAPHY } };
     }
   }
   get persistenceError() { return this.writeError; }

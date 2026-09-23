@@ -6,7 +6,8 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { cliInvocation, detectCLI, execFileAsync, findExecutable, resolveNpmLauncher } from '../src/main/commands';
 import { settingsSchema } from '../src/shared/schema';
-import type { Session } from '../src/shared/types';
+import type { Capabilities, Session } from '../src/shared/types';
+import { ClaudeTerminalLauncher } from '../src/main/engines/claude/terminal-launcher';
 
 function fixture(local = false) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-commands-'));
@@ -124,21 +125,23 @@ test('POSIX detection, PTY and structured chat share the explicit npm Node envir
   process.env.CLAUDE_CONFIG_DIR = path.join(f.root, 'isolated-config');
   process.env.BASH_ENV = startup; process.env.ENV = startup;
   const store = new StateStore(path.join(f.root, 'data'));
-  const createSession = (adapter: Session['adapter']): Session => ({
-    id: randomUUID(), projectId: randomUUID(), title: 'POSIX fixture', kind: 'claude', adapter, cwd: f.root,
-    claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+  const createSession = (adapter: Session['execution']['mode']): Session => ({ execution: { providerId: 'claude', mode: adapter, conversationId: randomUUID() },
+    id: randomUUID(), projectId: randomUUID(), title: 'POSIX fixture', kind: 'agent',  cwd: f.root,
+     started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   });
   const terminal = createSession('terminal'); const structured = createSession('structured');
   store.change(state => { state.settings = f.settings; state.sessions = [terminal, structured]; });
   let output = '';
-  const runtime = new Runtime(store, () => {}, chunk => { output += chunk.data; });
+  let launchCapabilities: Capabilities;
+  const runtime = new Runtime(store, () => {}, chunk => { output += chunk.data; }, new ClaudeTerminalLauncher(store, () => launchCapabilities));
   const chat = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 3000, transcriptExists: async () => false });
   try {
     const capabilities = await detectCLI(f.settings);
     assert.equal(capabilities.available, true, capabilities.error);
     assert.equal(capabilities.version, '2.1.278 (POSIX fixture)');
-    await runtime.start(terminal.id, capabilities);
+    launchCapabilities = capabilities;
+    await runtime.start(terminal.id);
     const deadline = Date.now() + 5000;
     while (runtime.activeCount || !output.includes('POSIX PTY complete')) {
       assert.ok(Date.now() < deadline, `PTY fixture did not finish: ${output}`);

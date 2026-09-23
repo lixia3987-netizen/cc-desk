@@ -292,7 +292,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 function setup(options: { initialFailure?: boolean; noTranscript?: boolean } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-chat-'));
   const store = new StateStore(directory);
-  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'claude', adapter: 'structured', cwd: directory, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'agent',  cwd: directory,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.change(state => state.sessions.push(session));
   const script = path.join(directory, 'fixture.cjs'); fs.writeFileSync(script, fixture);
   const record = path.join(directory, 'stdin.jsonl');
@@ -306,7 +306,7 @@ test('CLI update interrupts a running turn and permits explicit conversation res
   const s = setup();
   try {
     const turn = s.runtime.send(s.session.id, 'hang', capabilities);
-    await until(() => s.runtime.taskState(s.session.id) === 'thinking' && s.store.state.sessions[0].claudeId === s.observedId);
+    await until(() => s.runtime.taskState(s.session.id) === 'thinking' && s.store.state.sessions[0].execution.conversationId === s.observedId);
     s.runtime.setMaintenance(true); await s.runtime.disconnectAll();
     assert.equal((await turn).interrupted, true); assert.equal(s.runtime.activeCount, 0);
     await assert.rejects(s.runtime.send(s.session.id, 'blocked', capabilities), /正在更新/);
@@ -319,7 +319,7 @@ test('CLI update interrupts a running turn and permits explicit conversation res
 test('completed reusable processes release idle resources without losing completion or native resume identity', async () => {
   const s=setup();try{
     await s.runtime.send(s.session.id,'first turn',capabilities);
-    const nativeId=s.store.state.sessions[0].claudeId;
+    const nativeId=s.store.state.sessions[0].execution.conversationId;
     assert.equal(s.runtime.isBusy(s.session.id),false);
     assert.equal(s.runtime.has(s.session.id),true);
     assert.equal(s.runtime.snapshot(s.session.id).taskState,'completed');
@@ -329,7 +329,7 @@ test('completed reusable processes release idle resources without losing complet
     assert.equal(s.runtime.has(s.session.id),false);
     assert.equal(s.store.state.sessions[0].taskState,'completed');
     assert.equal(s.runtime.snapshot(s.session.id).taskState,'completed');
-    assert.equal(s.store.state.sessions[0].claudeId,nativeId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId,nativeId);
     assert.equal((await s.runtime.send(s.session.id,'follow up',capabilities)).success,true);
     assert.deepEqual(s.starts,[false,true]);
     assert.equal(s.runtime.snapshot(s.session.id).messages.filter(message=>message.role==='user').length,2);
@@ -393,7 +393,7 @@ test('persistent subprocess streams one assistant message, synchronizes identity
     let snapshot = s.runtime.snapshot(s.session.id);
     assert.equal(snapshot.taskState, 'completed'); assert.equal(snapshot.messages.filter(message => message.role === 'assistant').length, 1);
     assert.equal(snapshot.messages.find(message => message.role === 'assistant')!.text, '你好 🌏');
-    assert.equal(s.store.state.sessions[0].claudeId, s.observedId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     assert.equal(snapshot.usage?.inputTokens, 12); assert.equal(snapshot.mcpServers?.[0].name, 'memory');
     await s.runtime.send(s.session.id, 'second', capabilities); assert.equal(s.starts.length, 1);
     s.runtime.stop(s.session.id); await until(() => !s.runtime.has(s.session.id));
@@ -457,7 +457,7 @@ test('bypass switches restart idle CLI processes, resume identity and retain int
   const s=setup();
   try {
     await s.runtime.send(s.session.id,'first turn',capabilities);
-    const originalId=s.store.state.sessions[0].claudeId;
+    const originalId=s.store.state.sessions[0].execution.conversationId;
     await s.runtime.updateConfig(s.session.id,{permissionMode:'bypassPermissions',model:undefined,effort:undefined});
     assert.equal(s.runtime.has(s.session.id),false);
     assert.equal(s.store.state.sessions[0].permissionMode,'bypassPermissions');
@@ -477,7 +477,7 @@ test('bypass switches restart idle CLI processes, resume identity and retain int
     assert.equal(s.runtime.has(s.session.id),false);
     await s.runtime.send(s.session.id,'after bypass',capabilities);
     assert.deepEqual(s.starts,[false,true,true]);
-    assert.equal(s.store.state.sessions[0].claudeId,originalId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId,originalId);
     assert.equal(s.launches[2][s.launches[2].indexOf('--permission-mode')+1],'plan');
     assert.ok(!s.launches[2].some(value=>/bypass|dangerously/i.test(value)));
     assert.equal(s.runtime.snapshot(s.session.id).permissionMode,'plan');
@@ -540,7 +540,7 @@ test('initialization and authentication failures without a transcript remain ret
     await assert.rejects(s.runtime.send(s.session.id, 'hello', capabilities), /initialize failed/);
     await until(() => !s.runtime.has(s.session.id));
     assert.equal(s.store.state.sessions[0].started, false);
-    assert.equal(s.store.state.sessions[0].claudeId, s.session.claudeId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId, s.session.execution.conversationId);
     const auth = await s.runtime.send(s.session.id, 'crash', capabilities);
     assert.equal(auth.success, false); await until(() => !s.runtime.has(s.session.id));
     assert.equal(s.store.state.sessions[0].started, false);
@@ -557,7 +557,7 @@ test('child session metadata cannot overwrite root settings and unacknowledged l
     await s.runtime.send(s.session.id, 'child-init', capabilities);
     assert.equal(s.runtime.snapshot(s.session.id).model, 'fixture-model');
     assert.equal(s.store.state.sessions[0].permissionMode, 'default');
-    assert.equal(s.store.state.sessions[0].claudeId, s.observedId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'no-ack' }), /超时/);
     await until(() => !s.runtime.has(s.session.id));
     assert.match(s.runtime.snapshot(s.session.id).error!, /配置变更未获 CLI 确认/);
@@ -587,7 +587,7 @@ test('resumed session identity mismatch stops execution and preserves the establ
     s.runtime.stop(s.session.id); await until(() => !s.runtime.has(s.session.id));
     const result = await s.runtime.send(s.session.id, 'wrong-session', capabilities);
     assert.equal(result.success, false); assert.match(result.error!, /不同的会话 ID/);
-    assert.equal(s.store.state.sessions[0].claudeId, s.observedId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     await until(() => !s.runtime.has(s.session.id));
   } finally { await s.cleanup(); }
 });
@@ -609,13 +609,13 @@ test('imported conversation hydrates readonly text/tool history once, with bound
   try {
     process.env.CLAUDE_CONFIG_DIR = path.join(s.directory, 'claude-config');
     const transcripts = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'test-project'); fs.mkdirSync(transcripts, { recursive: true });
-    const file = path.join(transcripts, s.session.claudeId + '.jsonl');
+    const file = path.join(transcripts, s.session.execution.conversationId + '.jsonl');
     const records = [
       { type: 'user', uuid: 'u1', cwd: s.directory, message: { content: '原始提问' }, timestamp: '2026-01-01T00:00:00Z' },
       { type: 'assistant', uuid: 'a1', cwd: s.directory, message: { content: [{ type: 'thinking', thinking: 'hidden' }, { type: 'text', text: '原始回复' }, { type: 'tool_use', id: 't1', name: 'Read', input: { file_path: 'src/a.ts' } }] } },
       { type: 'user', uuid: 'u2', cwd: s.directory, message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'export const a=1;' }] } }
     ].map(record => JSON.stringify(record)).join('\n') + '\n';
-    fs.writeFileSync(file, records); s.store.change(state => { state.sessions[0].imported = true; });
+    fs.writeFileSync(file, records); s.store.change(state => { state.sessions[0].execution.imported = true; });
     await s.runtime.hydrate(s.session.id); const first = s.runtime.snapshot(s.session.id);
     assert.ok(first.messages.some(message => message.text === '原始回复'));
     assert.ok(first.messages.some(message => message.toolName === 'Read'));
@@ -707,10 +707,10 @@ test('idle transcript refresh appends only new source identities after a shared 
   try {
     process.env.CLAUDE_CONFIG_DIR = path.join(s.directory, 'claude-config');
     const transcripts = path.join(process.env.CLAUDE_CONFIG_DIR, 'projects', 'test-project'); fs.mkdirSync(transcripts, { recursive: true });
-    const file = path.join(transcripts, s.session.claudeId + '.jsonl');
+    const file = path.join(transcripts, s.session.execution.conversationId + '.jsonl');
     const record = (type: string, uuid: string, text: string) => JSON.stringify({ type, uuid, cwd: s.directory, message: { content: text } }) + '\n';
     fs.writeFileSync(file, record('user', 'u1', 'original') + record('assistant', 'a1', 'same reply'));
-    s.store.change(state => { state.sessions[0].imported = true; });
+    s.store.change(state => { state.sessions[0].execution.imported = true; });
     await s.runtime.hydrate(s.session.id);
     fs.appendFileSync(file, record('user', 'u2', 'external continuation') + record('assistant', 'a2', 'same reply'));
     await s.runtime.hydrate(s.session.id);
@@ -745,7 +745,7 @@ test('shutdown stops every chat subprocess even when saving the first turn fails
   const s = setup();
   const history = (s.runtime as unknown as { history: ChatHistory }).history;
   const flush = history.flush.bind(history);
-  const second = { ...s.session, id: randomUUID(), claudeId: randomUUID() };
+  const second = { ...s.session, execution: { ...s.session.execution, conversationId: randomUUID() }, id: randomUUID() };
   s.store.change(state => state.sessions.push(second));
   try {
     const firstTurn = s.runtime.send(s.session.id, 'hang', capabilities);
@@ -876,7 +876,7 @@ test('child system events and results track nested work without changing parent 
     const tasks = s.store.state.sessions[0].subtasks!.tasks;
     assert.equal(tasks.length, 2); assert.ok(tasks.every(task => task.status === 'completed'));
     assert.equal(tasks[0].summary, 'Child final report'); assert.equal(tasks[1].parentToolUseId, 'child-agent');
-    assert.equal(s.store.state.sessions[0].claudeId, s.observedId);
+    assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     assert.equal(s.runtime.snapshot(s.session.id).model, 'fixture-model');
     assert.equal(s.store.state.sessions[0].permissionMode, 'default');
   } finally { await s.cleanup(); }
@@ -974,7 +974,7 @@ test('context tracks the latest root request, compaction completion, reports, re
     const history = new ChatHistory(s.directory, () => false);
     assert.equal(history.get(s.session.id).context?.inputTokens, 12000); history.flush();
     await s.runtime.send(s.session.id, '/clear', capabilities);
-    assert.equal(s.store.state.sessions[0].claudeId, '22222222-2222-4222-8222-222222222222');
+    assert.equal(s.store.state.sessions[0].execution.conversationId, '22222222-2222-4222-8222-222222222222');
     assert.equal(s.runtime.snapshot(s.session.id).context?.inputTokens, undefined);
     assert.ok(s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'context-fixture'));
     assert.equal((await s.runtime.send(s.session.id, 'after clear', capabilities)).success, true);

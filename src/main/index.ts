@@ -5,19 +5,20 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
-import { Runtime } from './runtime';
+import { createExecutors } from './execution/create-executors';
+import type { ExecutionRegistry } from './execution/registry';
+import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
 import { detectCLI } from './commands';
 import { CLIUpdater } from './cli-updater';
 import { CLIUpdateService } from './cli-update-service';
 import { openIde } from './ide';
-import { cleanupWorktree, createWorktree, gitInfo } from './git';
-import { sanitizeWorktreeName } from './worktree-paths';
-import { readHistory } from './history';
+import { gitInfo } from './git';
+import { diagnoseEnvironment } from './diagnostics';
+import { readHistory, queryHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
-import type { Capabilities, Project, Session } from '../shared/types';
+import type { Capabilities, Project } from '../shared/types';
 import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
-import { initialSessionTitle } from '../shared/session-title';
 import { FontLibrary } from './font-library';
 import { IMPORTED_FONT_ID } from '../shared/fonts';
 import { allowsLocalFonts, isTrustedRendererUrl } from './renderer-permissions';
@@ -28,7 +29,8 @@ if(profileDirectory) {
   mkdirSync(profileDirectory,{recursive:true,mode:0o700});app.setPath('userData',path.resolve(profileDirectory));
 } else if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
 let window: BrowserWindow | null = null;
-let runtime: Runtime;
+let executors: ExecutionRegistry;
+let sessionCreation: SessionCreation;
 let services: SessionService;
 let tray: Tray | undefined;
 let store: StateStore;
@@ -38,7 +40,6 @@ let closing = false;
 let allowQuit = false;
 let capabilities: Capabilities = { available:false, executable:'', version:'', flags:[], efforts:['default'] };
 let detectionEpoch=0;
-const projectCreations=new Map<string,number>();
 const rendererFile = path.join(__dirname, '../renderer/index.html');
 const devUrl = !app.isPackaged ? process.env.WORKBENCH_DEV_URL : undefined;
 if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Invalid development origin');
@@ -75,7 +76,7 @@ async function addProject(value: string): Promise<Project> {
   store.change(s => s.projects.push(project)); notify(); return project;
 }
 function registerIPC() {
-  handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));
+  handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, executors:executors.descriptors(), cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));
   // Explicit write-only bridge; browser clipboard permissions remain denied.
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
@@ -84,60 +85,18 @@ function registerIPC() {
   });
   handle('project:add',z.string().min(1).max(4096),addProject);
   handle('project:remove',idSchema,id => {
-    if(projectCreations.has(id))throw new Error('项目正在创建会话，请稍后重试。');
+    if(sessionCreation.pending(id))throw new Error('项目正在创建会话，请稍后重试。');
     if (store.state.sessions.some(s => s.projectId === id)) throw new Error('项目包含会话，请保留项目以便恢复历史。');
     store.change(s => { s.projects = s.projects.filter(p => p.id !== id); }); notify();
   });
-  handle('session:create',sessionInputSchema,async input => {
-    const project = store.state.projects.find(p => p.id === input.projectId);
-    if (!project) throw new Error('项目不存在。');
-    if (input.kind === 'shell' && (input.resumeFrom || input.fork)) throw new Error('Shell 会话不能导入 Claude 历史。');
-    if (input.fork && !input.resumeFrom) throw new Error('请指定要分支的会话。');
-    if (input.resumeFrom && !input.fork) {
-      const existing = store.state.sessions.find(s => s.claudeId === input.resumeFrom);
-      if (existing) { store.change(s => { s.sessions.find(x => x.id === existing.id)!.archived = false; }); notify(); return store.state.sessions.find(s => s.id === existing.id)!; }
-    }
-    const id = randomUUID();
-    const source = input.fork ? store.state.sessions.find(s => s.claudeId === input.resumeFrom && s.projectId === project.id) : undefined;
-    const sourcePath = source?.cwd ?? project.path;
-    const title = initialSessionTitle(input);
-    // Capture placement before asynchronous creation; later settings changes affect the next session.
-    const location = store.state.settings.worktreeLocation ?? 'project';
-    const customRoot = store.state.settings.worktreeRoot;
-    projectCreations.set(project.id,(projectCreations.get(project.id)??0)+1);
-    try { return await services.withSessionCreation(sourcePath,input.isolated,async()=>{
-    const worktree = input.isolated ? await createWorktree(sourcePath,store.directory,id,{
-      location, customRoot, projectPath:project.path, projectName:project.name,
-      name:input.worktreeName?.trim() || sanitizeWorktreeName(title.title),
-    }) : undefined;
-    const now = new Date().toISOString();
-    const session: Session = { id, projectId:project.id, ...title, cwd:worktree || sourcePath,
-      kind:input.kind, claudeId:input.resumeFrom && !input.fork ? input.resumeFrom : randomUUID(),
-      resumeFrom:input.fork ? input.resumeFrom : undefined, imported:!!input.resumeFrom && !input.fork, started:!!input.resumeFrom && !input.fork,
-      model:input.model, effort:input.effort, permissionMode:input.permissionMode ?? source?.permissionMode ?? (input.kind==='claude'?store.state.settings.defaultPermissionMode ?? 'default':'default'),
-      adapter:input.kind==='shell'?'terminal':input.adapter ?? 'terminal',taskState:'idle',draft:'',
-      status:'idle',archived:false,createdAt:now,updatedAt:now,worktree,worktreeBase:worktree?sourcePath:undefined };
-    try {store.change(s => s.sessions.unshift(session));}
-    catch(error) {
-      if(worktree) {
-        const cleanup=await cleanupWorktree(sourcePath,worktree,id,false).catch(()=>undefined);
-        if(!cleanup?.ok)throw new Error('会话保存失败；新建的工作目录已保留，请检查磁盘后处理：'+worktree);
-      }
-      throw error;
-    }
-    notify(); return session;
-    },input.isolated && location === 'project' ? project.path : undefined); } finally {
-      const count=(projectCreations.get(project.id)??1)-1;
-      if(count)projectCreations.set(project.id,count);else projectCreations.delete(project.id);
-    }
-  });
+  handle('session:create',sessionInputSchema,input => sessionCreation.create(input));
   services.register(handle);
   handle('session:start',idSchema,id => services.start(id));
   handle('session:stop',idSchema,id => services.stop(id));
   handle('session:interrupt',idSchema,id => services.interrupt(id));
-  handle('terminal:snapshot',idSchema,id => runtime.snapshot(id));
-  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => {cliUpdates.assertIdle();runtime.write(id,data);});
-  handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => runtime.resize(id,cols,rows));
+  handle('terminal:snapshot',idSchema,id => services.runtime.snapshot(id));
+  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => {cliUpdates.assertIdle();services.runtime.write(id,data);});
+  handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => services.runtime.resize(id,cols,rows));
   handle('settings:save',settingsSchema,async settings => {
     for (const key of ['chatFontFamily', 'uiFontFamily'] as const) {
       if (IMPORTED_FONT_ID.test(settings[key]) && settings[key] !== store.state.settings[key] && !fonts.list().some(font => font.id === settings[key])) throw new Error('所选字体已被移除，请重新选择。');
@@ -172,9 +131,9 @@ function registerIPC() {
     if (!project) throw new Error('项目不存在。');
     return readHistory(project.path);
   });
-  handle('git:info',idSchema,id => gitInfo(runtime.getSession(id).cwd));
+  handle('git:info',idSchema,id => gitInfo(executors.getSession(id).cwd));
   handle('folder:open',idSchema,async id => {
-    const cwd = store.state.projects.find(p => p.id === id)?.path ?? runtime.getSession(id).cwd;
+    const cwd = store.state.projects.find(p => p.id === id)?.path ?? executors.getSession(id).cwd;
     const error = await shell.openPath(cwd);
     if (error) throw new Error(error);
   });
@@ -190,7 +149,7 @@ function registerIPC() {
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
   handle('ide:open',idSchema,id => {
-    const cwd = store.state.projects.find(p => p.id === id)?.path ?? runtime.getSession(id).cwd;
+    const cwd = store.state.projects.find(p => p.id === id)?.path ?? executors.getSession(id).cwd;
     return openIde(store.state.settings.idePath,cwd);
   });
 }
@@ -252,8 +211,11 @@ else {
     try {
       store = new StateStore(app.getPath('userData'),{onError:reportPersistenceError});
       fonts = new FontLibrary(store.directory);
-      runtime = new Runtime(store,notify,chunk => { if(window && !window.isDestroyed()) window.webContents.send('terminal:data',chunk); },{onError:reportPersistenceError});
-      services = new SessionService(store,runtime,()=>capabilities,notify,()=>window);
+      executors = createExecutors(store,()=>capabilities,reportPersistenceError);
+      services = new SessionService(store,executors,notify,()=>window,{
+        history:queryHistory, diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),
+      });
+      sessionCreation = new SessionCreation(store,services,notify,'claude');
       const updater = new CLIUpdater(()=>store.state.settings,(url,options)=>net.fetch(url,options));
       cliUpdates = new CLIUpdateService({
         check:()=>updater.check(), verify:async candidate=>{await updater.verify(candidate);},

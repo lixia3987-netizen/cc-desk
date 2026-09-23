@@ -1,17 +1,16 @@
-import { isPermissionMode } from '../shared/permissions';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn as spawnProcess } from 'node:child_process';
+import { execFile, spawn as spawnProcess } from 'node:child_process';
+import { promisify } from 'node:util';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
-import type { Capabilities, Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
-import { claudeArguments, cliInvocation, environment, execFileAsync, shellInvocation } from './commands';
-import { transcriptExists } from './history';
+import type { Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
 import { StateStore } from './store';
-import { createPtyHookBridge, supportsPtyHooks, type PtyHookBridge } from './pty-hooks';
+import type { TerminalLauncher, TerminalLaunchResource } from './execution/terminal-launch';
 import { SubtaskTracker } from './subtask-tracker';
 import { automaticSessionTitlePatch } from '../shared/session-title';
 
+const execFileAsync = promisify(execFile);
 const MEMORY_LIMIT = 1024 * 1024;
 const LOG_LIMIT = 5 * 1024 * 1024;
 export class TerminalBuffer {
@@ -26,7 +25,7 @@ export class TerminalBuffer {
   }
 }
 
-interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; hooks?: PtyHookBridge; hooksClose?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
+interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; token: object; resource?: TerminalLaunchResource; resourceClose?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
   private stopping = new Map<string, ProcessEntry>();
@@ -45,7 +44,7 @@ export class Runtime {
   private shutdownPromise?: Promise<void>;
   private lifecycleError?: Error;
   private subtasks: SubtaskTracker;
-  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
+  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private launcher: TerminalLauncher, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
     this.subtasks = new SubtaskTracker(store, onState);
     fs.mkdirSync(path.join(store.directory,'logs'), { recursive: true, mode: 0o700 });
   }
@@ -54,6 +53,7 @@ export class Runtime {
   get pendingCleanupCount() { return this.cleanups.size; }
   get lastError() { return this.lifecycleError; }
   has(id: string) { return this.running.has(id) || this.starting.has(id) || this.stopping.has(id); }
+  isBusy(id: string) { return this.has(id); }
   private reportError(error: unknown) {
     this.lifecycleError = error instanceof Error ? error : new Error(String(error));
     try { this.options.onError?.(this.lifecycleError); } catch { /* Error reporting must never prevent cleanup. */ }
@@ -65,8 +65,8 @@ export class Runtime {
     void tracked.then(() => this.cleanups.delete(tracked));
     return tracked;
   }
-  private closeHooks(entry: ProcessEntry) {
-    return entry.hooksClose ??= this.trackCleanup(Promise.resolve().then(() => entry.hooks?.close()));
+  private closeResource(entry: ProcessEntry) {
+    return entry.resourceClose ??= this.trackCleanup(Promise.resolve().then(() => entry.resource?.close()));
   }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
@@ -138,57 +138,59 @@ export class Runtime {
     try { for (const [id,data] of pending) this.guard(() => this.emit(id,data)); }
     finally { for (const entry of this.running.values()) if (entry.paused) { entry.paused = false; this.guard(() => entry.process.resume()); } }
   }
-  async start(id: string, capabilities: Capabilities) {
+  async start(id: string) {
     if (this.shuttingDown) throw new Error('工作台正在退出，无法启动新会话。');
-    if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能启动终端。');
+    if (this.maintenance) throw new Error('执行程序正在更新，暂时不能启动终端。');
     const session = this.getSession(id);
     if (this.has(id)) return;
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
     if (session.identityPending) throw new Error('CLI 已切换会话，但新会话身份尚未确认。请从历史记录重新导入目标会话，避免恢复错误的对话。');
-    if (session.kind === 'claude' && session.observedPermissionMode && !isPermissionMode(session.observedPermissionMode)) throw new Error('上次 CLI 使用了客户端启动选项以外的权限模式。请先在会话设置中明确选择受支持的权限模式，再恢复。');
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error(`已达到 ${this.store.state.settings.maxSessions} 个并发会话上限，请先停止一个会话。`);
     this.starting.add(id);
     let finishStart!: () => void;
     this.startCompletions.set(id, new Promise<void>(resolve => { finishStart = resolve; }));
-    let hooks: PtyHookBridge | undefined;
+    const token = {};
+    let resource: TerminalLaunchResource | undefined;
     let spawned: ProcessEntry | undefined;
     try {
       this.guard(() => this.subtasks.end(id, 'interrupted', '会话已重新连接，之前的子任务不再运行。'));
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
-      const env = environment();
-      let file: string; let args: string[];
-      if (session.kind === 'claude') {
-        if (!capabilities.available) throw new Error(capabilities.error || 'Claude Code 尚未就绪，请在设置中检测。');
-        const cli = cliInvocation(this.store.state.settings, env);
-        file = cli.file;
-        args = [...cli.prefix, ...claudeArguments(session, capabilities, await transcriptExists(session.claudeId))];
-        if (supportsPtyHooks(capabilities)) {
-          hooks = await createPtyHookBridge(session.claudeId, patch => {
-            const active = this.running.get(id);
-            if (active && active.hooks === hooks) this.guard(() => this.update(id, active.ending ? { ...patch, taskState: 'interrupted' } : patch));
-          }, event => {
-            const active = this.running.get(id);
-            if (!active || active.ending || active.hooks !== hooks) return;
-            this.guard(() => {
-              if (event.type === 'begin') this.subtasks.begin(id, event.turnId);
-              else if (event.type === 'observe') this.subtasks.observe(id, event.observation);
-              else this.subtasks.end(id, event.status, event.reason);
-            });
-          }, prompt => {
-            const active = this.running.get(id);
-            if (!active || active.ending || active.hooks !== hooks) return;
-            this.guard(() => {
-              const patch = automaticSessionTitlePatch(this.getSession(id), prompt);
-              if (patch) this.update(id, patch);
-            });
+      const launch = await this.launcher.prepare(session, {
+        update: patch => {
+          const active = this.running.get(id);
+          if (!active || active.token !== token) return;
+          this.guard(() => {
+            const { conversationId, ...metadata } = patch;
+            const current = this.getSession(id);
+            this.update(id, { ...metadata,
+              ...(conversationId && conversationId !== current.execution.conversationId
+                ? { execution: { ...current.execution, conversationId } } : {}),
+              ...(active.ending ? { taskState: 'interrupted' } : {}) });
           });
-          args.push('--settings', hooks.settings);
+        },
+        subtask: event => {
+          const active = this.running.get(id);
+          if (!active || active.ending || active.token !== token) return;
+          this.guard(() => {
+            if (event.type === 'begin') this.subtasks.begin(id, event.turnId);
+            else if (event.type === 'observe') this.subtasks.observe(id, event.observation);
+            else this.subtasks.end(id, event.status, event.reason);
+          });
+        },
+        prompt: prompt => {
+          const active = this.running.get(id);
+          if (!active || active.ending || active.token !== token) return;
+          this.guard(() => {
+            const patch = automaticSessionTitlePatch(this.getSession(id), prompt);
+            if (patch) this.update(id, patch);
+          });
         }
-      } else ({ file, args } = shellInvocation(this.store.state.settings));
+      });
+      resource = launch.resource;
       if (this.shuttingDown || this.maintenance || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
-      const child = pty.spawn(file, args, { name: 'xterm-256color', cwd: session.cwd, env, cols: 100, rows: 30 });
-      const entry: ProcessEntry = spawned = { process: child, ending: false, hooks };
+      const child = pty.spawn(launch.file, launch.args, { name: 'xterm-256color', cwd: session.cwd, env: launch.env, cols: 100, rows: 30 });
+      const entry: ProcessEntry = spawned = { process: child, ending: false, token, resource };
       this.running.set(id, entry);
       child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
@@ -196,22 +198,22 @@ export class Runtime {
         // Detach ownership before any fallible persistence, output, or UI callback.
         this.running.delete(id);
         if (process.platform === 'win32') this.releasePty(entry);
-        void this.closeHooks(entry);
+        void this.closeResource(entry);
         this.guard(() => this.subtasks.end(id, entry.ending ? 'interrupted' : exitCode !== 0 ? 'failed' : 'unknown',
           entry.ending ? '会话已停止。' : exitCode !== 0 ? '会话进程异常退出。' : '会话进程已退出，未收到子任务完成通知。'));
         this.guard(() => this.flush());
         this.guard(() => this.emit(id, `\r\n\x1b[90m── 会话进程已退出 · code ${exitCode} ──\x1b[0m\r\n`));
         this.guard(() => this.update(id, { status: entry.ending || exitCode === 0 ? 'stopped' : 'error', exitCode,
           taskState: entry.ending ? 'interrupted' : exitCode !== 0 ? 'error' : this.store.state.sessions.find(session => session.id === id)?.taskState,
-          error: !entry.ending && exitCode !== 0 ? `Claude / Shell 退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
+          error: !entry.ending && exitCode !== 0 ? `会话进程退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
         this.trimBuffers();
       });
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
-        terminalSync: session.kind === 'claude' ? hooks ? 'waiting' : 'unsupported' : undefined });
+        terminalSync: launch.terminalSync });
     } catch (error) {
       // A successful spawn followed by a failed state write still owns a real process.
       if (spawned) await this.beginStop(id, spawned);
-      else { try { await hooks?.close(); } catch (closeError) { this.reportError(closeError); } }
+      else { try { await resource?.close(); } catch (closeError) { this.reportError(closeError); } }
       this.guard(() => this.update(id,{ status: this.cancelledStarts.has(id) || this.shuttingDown ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
       throw error;
     } finally {
@@ -250,7 +252,7 @@ export class Runtime {
         else await this.stopPosixTree(entry);
       } finally {
         this.releasePty(entry);
-        await this.closeHooks(entry);
+        await this.closeResource(entry);
         if (this.stopping.get(id) === entry) this.stopping.delete(id);
         this.trimBuffers();
       }
@@ -327,13 +329,13 @@ export class Runtime {
     this.trimBuffers();
     return result;
   }
-  /** Terminal replay is bounded retention, never represented as the complete Claude conversation. */
+  /** Terminal replay is bounded retention, never represented as the complete conversation. */
   exportLogs(id: string): string {
     this.getSession(id);
     this.flush();
     const files = [this.logPath(id) + '.previous', this.logPath(id)];
     const retained = files.filter(file => fs.existsSync(file)).map(file => fs.readFileSync(file));
-    const header = '# Claude Workbench terminal log\n# Scope: retained terminal output only (previous + current, up to 10 MiB).\n# Older output may have rotated out; this is not a complete Claude transcript.\n# Exported at: ' + new Date().toISOString() + '\n\n';
+    const header = '# cc-desk terminal log\n# Scope: retained terminal output only (previous + current, up to 10 MiB).\n# Older output may have rotated out; this is not a complete conversation transcript.\n# Exported at: ' + new Date().toISOString() + '\n\n';
     return header + Buffer.concat(retained).toString('utf8');
   }
   /** Call before removing session metadata; active processes must be stopped and awaited first. */
@@ -369,7 +371,7 @@ export class Runtime {
       await this.beginStop(id, entry);
       this.releasePty(entry);
     }
-    // Root exit is not proof that descendants, taskkill, or hook servers have finished.
+    // Root exit is not proof that descendants, taskkill, or launcher resources have finished.
     while (this.cleanups.size) await Promise.all([...this.cleanups]);
     this.guard(() => this.flush());
   }

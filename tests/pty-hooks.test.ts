@@ -79,10 +79,10 @@ test('clear/resume await a fresh identity, ignore late old events and allow inte
   assert.equal(ending?.identityPending, true); assert.equal(ending?.terminalSync, 'waiting');
   assert.equal(observer.accept(input(oldId, 'Stop')), null);
   const fresh = observer.accept(input(nextId, 'UserPromptSubmit'));
-  assert.equal(fresh?.claudeId, nextId); assert.equal(fresh?.identityPending, false); assert.equal(fresh?.terminalSync, 'synced');
+  assert.equal(fresh?.conversationId, nextId); assert.equal(fresh?.identityPending, false); assert.equal(fresh?.terminalSync, 'synced');
   assert.equal(observer.accept(input(oldId, 'Stop')), null);
   observer.accept(input(nextId, 'SessionEnd', { reason: 'resume' }));
-  assert.equal(observer.accept(input(oldId, 'UserPromptSubmit'))?.claudeId, oldId);
+  assert.equal(observer.accept(input(oldId, 'UserPromptSubmit'))?.conversationId, oldId);
   observer.accept(input(oldId, 'UserPromptSubmit', { prompt_id: 'new-prompt' }));
   assert.equal(observer.accept(input(oldId, 'Stop', { prompt_id: 'old-prompt' }))?.taskState, undefined);
 });
@@ -156,8 +156,8 @@ test('subagents report lifecycle and approval progress without replacing main-se
 test('resuming the same hook agent within one prompt creates a separate invocation record', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-desk-hook-resume-'));
   const store = new StateStore(directory); const id = randomUUID(); const claudeId = randomUUID(); const now = new Date().toISOString();
-  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'hook resume', kind: 'claude',
-    cwd: directory, claudeId, started: true, model: '', effort: 'default', permissionMode: 'default',
+  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'hook resume', kind: 'agent',
+    cwd: directory, execution: { providerId: 'claude', mode: 'terminal', conversationId: claudeId }, started: true, model: '', effort: 'default', permissionMode: 'default',
     status: 'running', archived: false, createdAt: now, updatedAt: now }));
   const tracker = new SubtaskTracker(store, () => {});
   const observer = new PtyHookObserver(claudeId, event => {
@@ -222,7 +222,7 @@ test('identity switches retire children and inherited hooks cannot resolve an aw
   assert.equal(observer.accept(input(nextId, 'SubagentStart', { agent_id: 'unknown' })), null);
   assert.equal(observer.accept(input(id, 'SubagentStop', { agent_id: 'old' })), null);
   assert.equal(events.length, count);
-  assert.equal(observer.accept(input(nextId, 'UserPromptSubmit'))?.claudeId, nextId);
+  assert.equal(observer.accept(input(nextId, 'UserPromptSubmit'))?.conversationId, nextId);
   const switchedCount = events.length;
   observer.accept(input(id, 'SubagentStart', { agent_id: 'delayed' }));
   observer.accept(input(nextId, 'SubagentStop', { agent_id: 'old' }));

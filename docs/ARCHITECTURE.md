@@ -1,15 +1,50 @@
-# 架构与边界（v0.2）
+# 架构与边界
 
 ## 主进程与隔离
 
-Electron main 是文件、进程、设置和 IPC 的唯一入口。renderer 无 Node 权限；preload 只暴露类型化方法；每次调用校验发送窗口、主 frame、来源与 Zod 输入。拒绝任意导航、窗口弹出和网页权限。
+Electron main 是文件、进程、设置和 IPC 的唯一入口。renderer 无 Node 权限；preload 只暴露类型化方法；每次调用校验发送窗口、主 frame、来源与 Zod 输入。拒绝任意导航和窗口弹出；网页权限默认拒绝，仅允许可信主 frame 为系统字体列表申请 Local Font Access。
 
 SessionService 统一仲裁终端与结构化运行器，管理全局并发、生命周期锁、目录锁、配置、附件、导出和工作流。启动、删除、改配置和 Worktree 操作的锁跨越 await，避免检查后状态改变。进程存在与回合忙碌分别判定；目录操作先持锁确认没有真实任务，再等待空闲结构化进程退出。审批、后台任务、工作流及仍打开的 PTY 继续阻止目录操作。容量不足时可回收空闲结构化进程，回收后重新检查锁和并发额度。
 
-## 两种会话适配器
+## 公共会话身份与执行契约
 
-- Runtime：node-pty + xterm.js，保留 CLI 原生登录和交互。进程状态与观察到的任务状态分开。PTY 输出批量转发，内存与磁盘滚动保留，停止缓存使用有界淘汰。
-- ChatRuntime：通过参数数组启动本机 CLI，stdin/stdout 使用 NDJSON；以 initialize 建立控制通路，使用 can_use_tool 请求、control_response、interrupt、set_model 和 set_permission_mode。解析器处理拆包、粘包、异常 JSON 和大小限制，不拼接 shell 命令。会话显式选择 Bypass 时以 `--permission-mode bypassPermissions` 启动；空闲进程切入或退出 Bypass 时停止进程并在下一轮恢复，其他模式不会预先启用 Bypass。审批和交互提问继续交由用户处理。
+`Session.kind` 区分 `agent` 与 `shell`；`Session.execution` 是唯一的后端身份，不再并行保存 `claudeId`、`resumeFrom`、`imported`、`adapter` 顶层字段。
+
+| 字段 | 职责 |
+| --- | --- |
+| `Session.id` | 稳定的本地 UUID；用于日志、附件、草稿、选中状态与工作流关联 |
+| `execution.providerId` | 执行提供方命名空间；当前注册 `claude` 和 `shell` |
+| `execution.mode` | `structured` 或 `terminal`，决定所需执行接口 |
+| `execution.conversationId` | 提供方的当前对话 ID；可以因 `/clear` 等已确认操作改变 |
+| `execution.forkFrom` | 尚需恢复或分支的来源对话 ID，与当前对话 ID 分开 |
+| `execution.imported` | 此会话是否导入已有提供方对话 |
+
+`getSessionIdentity` 将本地 `sessionId` 与执行身份组合成事件 DTO；同一原生对话的并发占用按 `providerId + conversationId` 判断，不把不同提供方的相同字符串视为同一对话。无对话 ID 的 Shell 不参与此互斥。公共 schema 接受有界的 opaque 对话 ID；Claude 的 UUID 要求由 Claude 适配器单独验证，未注册提供方的已保存身份仍可载入，不会静默切换到 Claude 执行。
+
+`StructuredExecutor` 声明发送回合、审批、命令目录、快照、分页、搜索、配置与导出；`TerminalExecutor` 声明启动、写入、调整尺寸、快照与导出。两者共用 `ExecutionLifecycle` 的占用、忙碌、中断、停止、空闲释放、维护和关闭操作。`send` 必须等待真实回合结果，写入 stdin 不代表任务完成；进程树和句柄未释放时仍应计入占用。
+
+`ExecutionCapabilities` 按功能声明 `structured`、`terminal`、`approvals`、`resume`、`fork`、`commands`、`contextUsage`、`liveConfig`、`attachments`，并独立提供 `available` 与错误信息。主进程路由在发送、启动终端、读取命令、审批、附件和动态配置入口检查对应能力；驻留连接也不能绕过命令能力校验。已有审批可在新的可用性检测失败时继续应答。`Snapshot.executors` 提供注册项及能力，renderer 据此展示可用操作；IPC 校验不依赖按钮是否隐藏。现有 CLI 检测 DTO 仍用于连接设置，CLI flags 不作为公共执行端口的参数。创建或导入元数据不要求执行器当前在线，以保留离线查看历史的能力；Claude 恢复与分支的实际启动仍校验对应 CLI flags。
+
+## 组合与提供方适配器
+
+`index.ts` 调用 `execution/create-executors.ts`，在此创建注册表、具体执行器和终端启动器，再将注册表注入 `SessionService`。服务层不构造 `ChatRuntime`，也不通过提供方名称分支执行；`StructuredExecutions` / `TerminalExecutions` 按已保存身份路由。只读历史与诊断通过 `WorkspaceQueries` 注入。当前产品仍运行本机 Claude Code CLI 和 Shell，测试中的其他提供方只验证接口可替换性。
+
+```mermaid
+flowchart TD
+  Root["createExecutors"] --> Registry["ExecutionRegistry"]
+  Service["SessionService"] --> Registry
+  Service --> Workflow["WorkflowEngine"]
+  Registry --> Structured["ClaudeStructuredExecutor"]
+  Registry --> Terminal["PtyExecutor + Runtime"]
+  Structured --> Protocol["Claude 协议模块"]
+  Terminal --> Launchers["Claude / Shell 启动器"]
+```
+
+Claude 结构化适配器将公共操作映射到 `ChatRuntime`；后者保留回合编排和本地投影，连接、协议事件、流式助手块去重、历史水合分别放在 `engines/claude/`。stdin/stdout 使用 NDJSON；以 initialize 建立控制通路，使用 can_use_tool 请求、control_response、interrupt、set_model 和 set_permission_mode。拆包、粘包、异常 JSON 与大小限制仍由 Claude 协议层处理。
+
+通用 PTY Runtime 只接收 `TerminalLauncher` 准备好的可执行文件、参数、环境与启动资源。Claude 启动器负责 CLI 参数、transcript 与认证 hooks；Shell 启动器负责系统 Shell。两种终端注册共享同一个 `PtyExecutor`，注册表按执行器对象去重统计和调用维护、断开、关闭，避免重复停止同一组 PTY。各驱动的断开与关闭全部尝试后汇总错误；更新期间仍先阻止新任务，再确认所有工作区释放并保存成功。
+
+CLI 和 Shell 均使用独立参数启动，不拼接 shell 命令。会话显式选择 Bypass 时以 `--permission-mode bypassPermissions` 启动；空闲进程切入或退出 Bypass 时停止进程并在下一轮恢复，其他模式不会预先启用 Bypass。审批和交互提问继续交由用户处理。
 
 协议实现依据 Anthropic 官方 Agent SDK 的控制消息结构；没有引入 SDK 认证页面或改写用户凭据。真实 CLI 的控制握手与协议 fixture 测试分别记录。模型账号验收属于另一层。
 
@@ -33,11 +68,15 @@ Windows 使用指定 .exe，macOS 应用包通过 `/usr/bin/open -a` 交给 Laun
 
 ## 数据与恢复
 
-设置和会话元数据仍使用版本 1 JSON，新增字段可选，兼容 v0.1。StateStore 深拷贝、校验、写临时文件、fsync、备份、rename；损坏数据不会被空状态覆盖。重启把活动进程和回合标为停止/中断。
+工作区元数据使用版本 2 JSON。`persistedStateSchema` 仅在读盘时接受版本 1，并将 `kind: claude` 与旧身份字段转换为 `kind: agent` 和单一 `execution` 对象；旧 Shell 变为不含对话 ID 的终端身份。旧版缺少交互模式时保持原先的 terminal 默认值。迁移保留本地会话 ID、历史、草稿、选中状态、worktree 路径和未确认身份标记，不重命名 `chat/`、`logs/` 或附件存储键。
 
-ChatHistory 保存有界 UI 快照和追加式完整工作台事件日志。权限请求不跨进程恢复。CLI 原始 JSONL 仍归 CLI 所有。历史索引按项目过滤后分页，元数据缓存以 mtime/size 失效；全文搜索流式读取匹配项目的文件，不额外复制原始全文数据库。
+迁移后的状态标记为待保存，首次 flush 或状态写入通过现有原子流程持久化；`workspace.json.bak` 保留上次文件。实时修改只接受版本 2 schema，拒绝新旧身份混写，不双写兼容字段。`StateStore` 深拷贝、校验、写临时文件、fsync、备份、rename；损坏数据不会被空状态覆盖。重启把活动进程和回合标为停止/中断。
 
-工作流保存在独立 JSON 文件中，包含固定会话/目录绑定、依赖、状态、次数和摘要产物。取消优先于迟到成功；取消后直到执行器结束仍保留会话独占。重启不自动重放可能有副作用的步骤。
+ChatHistory 保存有界 UI 快照和追加式完整工作台事件日志。`ChatJournalEvent` 使用通用消息、文本增量、状态、用量、结果和审批 DTO，不暴露 Claude 原始协议帧。Claude 路径先成功追加本地事件日志，再发布相应的 `ExecutionEvent`；写入失败不会先广播该条记录。身份变化、会话状态、聊天变化与终端输出也通过同一事件通路交给服务层。
+
+`SessionService` 订阅归一化事件后触发界面刷新和通知，同时保留已有 chat/terminal IPC。`onExecution` 提供公共订阅；其中 journal 的 message/text_delta 不推送到 renderer 事件队列，正文由快照、分页和检索读取，避免大消息在通知通路重复堆积。观察者异常与执行生命周期隔离。权限请求不跨进程恢复。CLI 原始 JSONL 仍归 CLI 所有。历史索引按项目过滤后分页，元数据缓存以 mtime/size 失效；全文搜索流式读取匹配项目的文件，不额外复制原始全文数据库。
+
+工作流保存在独立的版本 1 JSON 文件中，包含固定会话/目录绑定、依赖、状态、次数和摘要产物；其格式版本与 workspace 版本独立。绑定增加 `providerId` 与 `executionMode: structured`，旧工作流读取时补为原有 Claude structured 绑定。每次继续或派发阶段都校验提供方、执行模式、项目与工作目录，不能在同一本地会话更换提供方后继续旧工作流。引擎仅通过 getSession、runStage、cancelSession 端口执行，业务层仍共享会话权限、并发和目录锁。取消优先于迟到成功；取消后直到执行器结束仍保留会话独占。重启不自动重放可能有副作用的步骤。
 
 子任务活动作为独立的 `Session.subtasks` 投影随 workspace.json 原子保存，不依赖有界聊天消息窗口。结构化流和原生 PTY hook 适配器共用 SubtaskTracker：按轮次、来源及 task/tool/agent 标识关联，合并明确别名，保留不同 Agent 调用的身份；重放的开始 / 进度不能覆盖终态，后台启动确认不代表完成。每会话最多 200 条，先淘汰已结束记录并标注截断；实际 CLI 后台等待集合独立于展示上限。
 
@@ -54,6 +93,29 @@ Worktree 所有权记录写入该 worktree 的 Git 私有目录。只允许快�
 项目内创建拒绝已跟踪的保留路径、已有目标及受符号链接重定向的父目录；仅在 Git 本地 exclude 追加精确路径规则。创建与 Git 引用操作串行；项目内 fork 同时锁定来源和目标项目，直到会话持久化完成。失败仅回收本次预留的空目录，exclude 回滚比较原始字节以保留外部编辑。统一根目录允许尚未存在的路径，先解析已有祖先，再校验与项目和 Git 元数据的边界。位置选择器只返回目录，不添加项目；新设置不触发迁移。
 
 诊断仅提供配置存在性、来源、MCP/Skills 元数据和公开认证状态。密钥值、HTTP headers、命令参数、账户标识和原始错误不会经过诊断 IPC。配置存在、认证成功、MCP 运行和模型服务可达分别表达。
+
+## 文件职责与扩展入口
+
+| 路径 | 职责 |
+| --- | --- |
+| `src/shared/execution.ts`、`execution-events.ts` | 公共身份、能力、命令、上下文和事件 DTO |
+| `src/shared/session-commands.ts` | 提供方无关的斜杠输入与命令匹配 |
+| `src/main/execution/` | 执行端口、注册表、路由、事件通路、组合与通用终端适配器 |
+| `src/main/engines/claude/` | Claude 能力、身份验证、启动、连接、协议投影、历史与导出 |
+| `src/main/engines/shell/` | Shell 启动实现 |
+| `src/main/session-service.ts`、`session-creation.ts` | 会话仲裁、锁与创建事务 |
+| `src/main/ipc/` | 按会话、聊天、工作流、工作区职责注册经过校验的 IPC |
+| `src/main/workflows.ts`、`workflow-schema.ts`、`workflow-storage.ts` | 阶段调度、状态/依赖验证、原子存储 |
+| `src/renderer/App.tsx`、`workspace/` | 应用组合与拆分后的工作区组件、草稿、记忆和外观 hooks |
+
+接入新的执行器时：
+
+1. 在自己的 `engines/<provider>/` 实现所需的 `StructuredExecutor` 或 `TerminalExecutor`；PTY 提供方可复用 Runtime，并实现 `TerminalLauncher`。协议、凭据和提供方身份约束留在适配器内。
+2. 在组合入口按 providerId/mode 注册实现、能力查询、身份分配 `createIdentity` 和必要的 `validateSession`。注册表校验分配结果仍属于所选提供方与执行模式；新的会话由提供方决定远端身份格式，不能借用 Claude UUID 规则。
+3. 通过公共事件通路发布已保存事件与状态；准确区分活跃进程、进行中回合和后台任务，保证 stopIdle / disconnectAll 返回时资源已释放或明确失败。
+4. 以非 Claude 测试执行器经过真实 SessionService 验证发送、审批、命令、工作流、提供方身份互斥和维护失败路径，再验证实际协议适配。现有 `execution-contracts.test.ts` 与 `session-identity.test.ts` 是这些边界的回归入口。
+
+本次没有新增模型提供方、独立内置 Agent、网络执行协议或插件装载器，也未改变仓库为 monorepo。新增后端仍需完成自身执行实现、能力验证与产品入口。
 
 ## 后续演进
 

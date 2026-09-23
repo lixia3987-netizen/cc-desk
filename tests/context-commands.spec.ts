@@ -55,8 +55,8 @@ process.stdin.on('end',()=>process.exit(0));
   const cli = path.join(prefix, 'claude.cmd');
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
   const now = new Date().toISOString(), project = { id: randomUUID(), name: 'Context 测试', path: projectPath, createdAt: now };
-  const session: Session = { id: randomUUID(), projectId: project.id, title: '上下文与命令', kind: 'claude', adapter: 'structured', cwd: projectPath, claudeId: randomUUID(), started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
-  const state: AppState = { version: 1, projects: [project], sessions: [session], selectedSessionId: session.id, settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: project.id, title: '上下文与命令', kind: 'agent',  cwd: projectPath,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+  const state: AppState = { version: 2, projects: [project], sessions: [session], selectedSessionId: session.id, settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = () => electron.launch({ args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])], env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: path.join(directory, 'claude-config') } });
   return { launch, log, session, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
@@ -114,7 +114,7 @@ test('context meter uses root request usage, invalidates after compact and clear
     await input.fill('/clear'); await input.press('Escape'); await input.press('Enter');
     await expect(page.locator('.context-meter')).toContainText('等待用量数据');
     await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
-    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].claudeId).toBe('33333333-3333-4333-8333-333333333333');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
     await input.fill('继续'); await input.press('Enter'); await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6');
   } finally { await close(app); await f.dispose(); }
 });

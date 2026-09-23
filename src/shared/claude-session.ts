@@ -1,22 +1,5 @@
-/** Only values reported by the CLI are used; no model-name based window guesses. */
-export interface ContextUsage {
-  model?: string;
-  inputTokens?: number;
-  contextWindow?: number;
-  measuredAt?: string;
-  source?: 'request' | 'context-command';
-  status: 'unknown' | 'ready' | 'compacting' | 'compacted';
-  lastCompaction?: { at: string; trigger?: 'manual' | 'auto'; preTokens?: number };
-}
-
-export interface ClaudeCommand {
-  name: string;
-  description: string;
-  argumentHint: string;
-  aliases: string[];
-  kind: 'builtin' | 'skill' | 'command';
-  disabledReason?: string;
-}
+import type { ContextUsage, SessionCommand } from './execution';
+export type { ContextUsage, SessionCommand, SessionCommand as ClaudeCommand } from './execution';
 
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 export const tokenCount = (value: unknown): number | undefined => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -26,12 +9,12 @@ const commandName = (value: unknown) => typeof value === 'string' && /^\/?[^\s/\
 // These commands replace/exit the process or switch its working directory. The
 // workbench must retain its own session/directory locks; use its existing UI.
 const managedCommands = new Set(['resume', 'fork', 'exit', 'quit', 'worktree', 'add-dir']);
-export function normalizeCommands(value: unknown, previous: ClaudeCommand[] = [], skills: unknown = []): ClaudeCommand[] {
+export function normalizeCommands(value: unknown, previous: SessionCommand[] = [], skills: unknown = []): SessionCommand[] {
   if (!Array.isArray(value)) return previous;
   const skillNames = new Set(Array.isArray(skills) ? skills.map(item => commandName(typeof item === 'string' ? item : record(item).name)).filter(Boolean) : []);
   const old = new Map(previous.map(command => [command.name, command]));
   const hasBuiltinMetadata = value.some(item => typeof record(item).builtin === 'boolean') || previous.some(command => command.kind === 'builtin');
-  const commands = new Map<string, ClaudeCommand>();
+  const commands = new Map<string, SessionCommand>();
   for (const item of value.slice(0, 2048)) {
     const data = record(item), name = commandName(typeof item === 'string' ? item : data.name);
     if (!name) continue;
@@ -46,10 +29,6 @@ export function normalizeCommands(value: unknown, previous: ClaudeCommand[] = []
     });
   }
   return [...commands.values()];
-}
-
-export function invokedCommand(prompt: string): string | undefined {
-  return /^\/([^\s/]+)(?:\s|$)/u.exec(prompt.trimStart())?.[1];
 }
 
 /** Latest main-agent input, not result.usage (a sum across requests). */
@@ -81,22 +60,4 @@ export function contextCapacity(value: unknown, model: string | undefined): numb
   return capacity && capacity > 0 ? capacity : undefined;
 }
 
-/** A slash at the beginning of the prompt, with the caret in its command name. */
-export function slashQuery(value: string, start: number, end: number): string | undefined {
-  if (start !== end) return;
-  const match = /^\s*\/([^\s/]*)/u.exec(value);
-  if (!match || start < match[0].length - match[1].length || start > match[0].length) return;
-  return match[1];
-}
-export function insertCommand(value: string, name: string): { value: string; caret: number } {
-  const match = /^(\s*)\/[^\s/]*/u.exec(value);
-  if (!match) return { value, caret: value.length };
-  const prefix = match[1] + '/' + name + ' ';
-  return { value: prefix + value.slice(match[0].length).replace(/^\s/, ''), caret: prefix.length };
-}
-
-export function matchingCommands(commands: ClaudeCommand[], query: string): ClaudeCommand[] {
-  const needle = query.toLocaleLowerCase();
-  return commands.filter(command => [command.name, command.description, ...command.aliases].some(value => value.toLocaleLowerCase().includes(needle)))
-    .sort((a, b) => Number(b.name.toLocaleLowerCase().startsWith(needle)) - Number(a.name.toLocaleLowerCase().startsWith(needle)) || a.name.localeCompare(b.name));
-}
+export { invokedCommand, slashQuery, insertCommand, matchingCommands } from './session-commands';

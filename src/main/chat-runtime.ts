@@ -1,57 +1,34 @@
 import fs from 'node:fs';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { createHash, randomUUID, type Hash } from 'node:crypto';
+import { ClaudeConnection } from './engines/claude/connection';
+import { randomUUID } from 'node:crypto';
+import { AssistantStream } from './engines/claude/assistant-stream';
+import { ClaudeEvents } from './engines/claude/events';
+import type { Entry } from './engines/claude/entry';
+import type { ChatJournalEvent } from '../shared/execution-events';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
-import { isPermissionMode } from '../shared/permissions';
 import { automaticSessionTitlePatch } from '../shared/session-title';
-import type { ChatApproval, ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatQuestion, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
+import type { ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
-import { findClaudeTranscript, transcriptExists } from './history';
+import { transcriptExists } from './history';
+import { TranscriptHydrator } from './engines/claude/transcript-hydrator';
 import { StateStore } from './store';
 import { ChatHistory } from './chat-history';
 import { ChatArchive } from './chat-archive';
-import { readTranscriptPreview } from './chat-import';
-import { chatArguments, JsonLineDecoder, object, string, userContent, type WireObject } from './chat-protocol';
+import { chatArguments, userContent } from './chat-protocol';
 import { SubtaskTracker } from './subtask-tracker';
-import type { SubtaskStatus } from '../shared/subtasks';
-import { normalizeCommands, invokedCommand, requestContext, reportedContext, contextCapacity, tokenCount, type ClaudeCommand, type ContextUsage } from '../shared/claude-session';
+import { normalizeCommands, invokedCommand, type ContextUsage } from '../shared/claude-session';
 
-interface ControlWaiter { resolve: (value: WireObject) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }
-interface Turn { id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean; command?: string; resetRequested?: boolean; resetApplied?: boolean }
-interface TextBlock { id: string; index: number; length: number; digest: string; hash?: Hash; finalized?: boolean; envelopeId?: string }
-interface AssistantGroup { id: string; sourceId: string; parent?: string; blocks: Map<number, TextBlock>; completed: boolean; stopped?: boolean }
-
-interface Entry {
-  child: ChildProcessWithoutNullStreams; ending: boolean; initialized: boolean;
-  expectedId: string; enforceIdentity: boolean; bypassEnabled: boolean;
-  turn?: Turn; controls: Map<string, ControlWaiter>; approvals: Map<string, ChatApproval>;
-  streams: Map<string, string>; assistants: Map<string, AssistantGroup>; latestRoot?: AssistantGroup; resultIds: Set<string>; tools: Set<string>; tasks: Set<string>;
-  subtaskTools: Map<string, { foreground: boolean; parent?: string }>;
-  approvalTasks: Map<string, string>;
-  finishedTasks: Set<string>;
-  backgroundTaskTools: Map<string, string>;
-  stderr: string; decoder: JsonLineDecoder; killTimer?: NodeJS.Timeout; interruptTimer?: NodeJS.Timeout;
-  waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
-  termination?: Promise<boolean>;
-  commands?: ClaudeCommand[];
-}
 /** Test injection is constructor-only; renderer callers cannot select commands or protocol frames. */
 export interface ChatRuntimeOptions {
   invocation?: (session: Session, capabilities: Capabilities, resumed: boolean) => { file: string; args: string[] };
   transcriptExists?: (id: string) => Promise<boolean>;
   controlTimeoutMs?: number; initializationTimeoutMs?: number;
   backgroundResultTimeoutMs?: number;
+  onEvent?: (id: string, event: ChatJournalEvent) => void;
 }
 const MAX_TEXT = 256 * 1024;
 const now = () => new Date().toISOString();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
-const uuid = (value: unknown): value is string => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
-const number = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
-const terminalTask = (status: string) => ['completed', 'failed', 'stopped', 'interrupted', 'unknown'].includes(status);
-const taskStatus = (value: unknown): SubtaskStatus | undefined => {
-  if (value === 'killed') return 'stopped';
-  return ['pending', 'running', 'paused', 'waiting_approval', 'waiting_input', 'completed', 'failed', 'stopped', 'interrupted', 'unknown'].includes(string(value)) ? value as SubtaskStatus : undefined;
-};
 
 /**
  * One persistent CLI subprocess per structured session. Wire protocol follows
@@ -73,8 +50,8 @@ export class ChatRuntime {
   private archive: ChatArchive;
   private subtasks: SubtaskTracker;
   private notifications = new Map<string, NodeJS.Timeout>();
-  private hydrating = new Map<string, Promise<void>>();
-  private transcriptVersions = new Map<string, string>();
+  private hydrator: TranscriptHydrator;
+  private events: ClaudeEvents;
   constructor(private store: StateStore, private onState: () => void, private onEvents: (sessionId: string) => void, private options: ChatRuntimeOptions = {}) {
     this.subtasks = new SubtaskTracker(store, onState);
     this.history = new ChatHistory(store.directory, id => this.has(id), (id, error) => {
@@ -90,14 +67,25 @@ export class ChatRuntime {
       try { this.update(id, { status: 'error', taskState: 'error', error: snapshot.error }); } catch { /* The disk may also reject workspace writes. */ }
       this.onEvents(id);
     });
+    this.events = new ClaudeEvents({
+      history: this.history, session: id => this.session(id), current: (id, entry) => this.entries.get(id) === entry,
+      update: (id, patch) => this.update(id, patch), append: (id, event) => this.append(id, event),
+      system: (id, text, error) => this.system(id, text, error), message: (id, message, delta) => this.message(id, message, delta),
+      context: (id, context) => this.context(id, context), notify: (id, immediate) => this.notify(id, immediate),
+      activity: (id, entry) => this.activity(id, entry), finish: (id, entry, result) => this.finish(id, entry, result),
+      fail: (id, entry, error) => this.fail(id, entry, error),
+    }, this.subtasks, options.backgroundResultTimeoutMs);
     this.archive = new ChatArchive(this.history.directory);
+    this.hydrator = new TranscriptHydrator(store, this.history, id => this.entries.has(id), {
+      message: (id, message) => this.message(id, message), system: (id, text) => this.system(id, text),
+    });
   }
   get activeCount() { return new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting]).size; }
   has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id); }
   isBusy(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     return this.busy.has(id) || this.starting.has(id) || Boolean(entry &&
-      (entry.turn || entry.tasks.size || entry.approvals.size || entry.controls.size));
+      (entry.turn || entry.tasks.size || entry.approvals.size || entry.connection.controls.size));
   }
   /** Release a reusable idle CLI before changing its working directory or reclaiming a slot. */
   async stopIdle(id: string) {
@@ -115,10 +103,10 @@ export class ChatRuntime {
     const deadline = Date.now() + 5000;
     while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，工作目录未释放，请稍后重试。');
-    if (entry.termination) {
-      entry.killTimer?.ref();
+    if (entry.connection.termination) {
+      entry.connection.killTimer?.ref();
       let timer: NodeJS.Timeout | undefined;
-      const stopped = await Promise.race([entry.termination, new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(1, deadline - Date.now())); })]);
+      const stopped = await Promise.race([entry.connection.termination, new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), Math.max(1, deadline - Date.now())); })]);
       if (timer) clearTimeout(timer);
       if (!stopped) throw new Error('无法确认 CLI 子进程已停止，工作目录操作已取消。请关闭残留的 Claude 进程并重新打开工作台后重试。');
     }
@@ -128,6 +116,7 @@ export class ChatRuntime {
   private session(id: string) {
     const session = this.store.state.sessions.find(item => item.id === id);
     if (!session) throw new Error('会话不存在。');
+    if (session.kind !== 'agent' || session.execution.providerId !== 'claude' || session.execution.mode !== 'structured') throw new Error('此执行器只支持图形化 Claude 会话。');
     return session;
   }
   private update(id: string, patch: Partial<Session>) {
@@ -138,6 +127,10 @@ export class ChatRuntime {
       if (session) Object.assign(session, patch, { updatedAt: now() });
     });
     this.onState();
+  }
+  private append(id: string, event: ChatJournalEvent) {
+    this.history.append(id, event);
+    this.options.onEvent?.(id, structuredClone(event));
   }
   private notify(id: string, immediate = false) {
     this.history.changed(id);
@@ -154,7 +147,7 @@ export class ChatRuntime {
     if (snapshot.taskState === taskState && snapshot.error === error) return;
     snapshot.taskState = taskState; snapshot.error = error;
     this.update(id, { taskState, error });
-    this.history.append(id, { type: 'state', taskState, error });
+    this.append(id, { type: 'state', taskState, error });
     this.notify(id, true);
   }
   private activity(id: string, entry: Entry) {
@@ -162,14 +155,14 @@ export class ChatRuntime {
     this.history.get(id).pending = approvals;
     if (approvals.length) this.state(id, approvals.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval');
     else if (entry.turn) this.state(id, entry.tools.size ? 'tool_running' : 'thinking');
-    this.refreshBackgroundTimeout(id, entry);
+    this.events.refreshBackgroundTimeout(id, entry);
     this.notify(id, true);
   }
   private message(id: string, message: ChatMessage, delta?: string) {
     // Journal the complete event before bounding the UI projection. A delta without
     // a visible block needs its metadata as well, so recovery can recreate it.
     const existing = this.history.getMessage(id, message.id);
-    this.history.append(id, delta === undefined || !existing ? { type: 'message', message } : { type: 'text_delta', id: message.id, text: delta });
+    this.append(id, delta === undefined || !existing ? { type: 'message', message } : { type: 'text_delta', id: message.id, text: delta });
     if (message.text.length > MAX_TEXT) message = { ...message, text: message.text.slice(-MAX_TEXT), truncated: true };
     if (message.input) {
       const serialized = JSON.stringify(message.input);
@@ -190,7 +183,7 @@ export class ChatRuntime {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
     if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能连接会话。');
     const session = this.session(id);
-    if (session.kind !== 'claude' || session.adapter !== 'structured' || session.archived) throw new Error('此功能需要未归档的图形化 Claude 会话。');
+    if (session.kind !== 'agent' || session.execution.providerId !== 'claude' || session.execution.mode !== 'structured' || session.archived) throw new Error('此功能需要未归档的图形化 Claude 会话。');
     if (this.busy.has(id) || this.starting.has(id)) throw new Error('当前会话正在处理任务，请稍后重试。');
     if (this.entries.has(id)) return this.snapshot(id);
     this.busy.add(id);
@@ -204,29 +197,8 @@ export class ChatRuntime {
   }
   private context(id: string, context: ContextUsage) {
     this.history.get(id).context = context;
-    this.history.append(id, { type: 'context', context });
+    this.append(id, { type: 'context', context });
     this.notify(id);
-  }
-  private observeContext(id: string, entry: Entry, payload: WireObject, report?: unknown) {
-    const snapshot = this.history.get(id);
-    const reported = reportedContext(report, snapshot.context, now());
-    // Compaction's summarization request describes the old window.
-    const context = reported ?? (entry.turn?.command === 'compact' || snapshot.context?.status === 'compacting' ? undefined : requestContext(snapshot.context, payload.usage, payload.model || snapshot.model, now()));
-    if (context) this.context(id, context);
-  }
-  private resetConversation(id: string, entry: Entry, nextId: string) {
-    if (!entry.turn?.resetRequested || !uuid(nextId)) throw new Error('CLI 意外切换了会话，已停止以保留原会话。');
-    if (entry.turn.resetApplied) {
-      if (nextId !== entry.expectedId) throw new Error('CLI 重复切换了会话，已停止。');
-      return;
-    }
-    entry.turn.resetApplied = true;
-    const previous = entry.expectedId;
-    entry.expectedId = nextId; entry.enforceIdentity = true;
-    this.update(id, { claudeId: nextId, started: true, resumeFrom: undefined });
-    this.history.get(id).usage = undefined;
-    this.context(id, { model: this.history.get(id).model, status: 'unknown' });
-    this.system(id, '已清空 Claude 上下文。此前的聊天记录仍保留；原 CLI 会话：' + previous);
   }
   async page(id:string,options:ChatPageOptions={}) {
     this.session(id);await this.hydrate(id);
@@ -239,76 +211,28 @@ export class ChatRuntime {
   attention():ChatAttention[] {
     const requests:ChatAttention[]=[];
     for(const [sessionId,entry] of this.entries){
-      if(entry.ending)continue;
+      const session = this.store.state.sessions.find(session => session.id === sessionId);
+      if(entry.connection.ending || session?.execution.providerId !== 'claude' || session.execution.mode !== 'structured')continue;
       for(const approval of this.history.get(sessionId).pending){
         if(entry.approvals.has(approval.requestId))requests.push({sessionId,requestId:approval.requestId,kind:approval.kind,toolName:approval.toolName,createdAt:approval.createdAt});
       }
     }
     return requests.sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
   }
-  async hydrate(id: string): Promise<void> {
-    const session = this.session(id);
-    if (this.entries.has(id) || !(session.imported || session.resumeFrom || session.started)) return;
-    const pending = this.hydrating.get(id); if (pending) return pending;
-    const original = this.history.get(id).messages;
-    const last = original.at(-1); const length = original.length;
-    const operation = (async () => {
-      const sourceId = session.resumeFrom && !session.started ? session.resumeFrom : session.claudeId;
-      const project = this.store.state.projects.find(item => item.id === session.projectId);
-      const source = await findClaudeTranscript(session.cwd, sourceId) ?? (project && project.path !== session.cwd ? await findClaudeTranscript(project.path, sourceId) : undefined);
-      if (!source) return;
-      const before = await fs.promises.stat(source);
-      const version = [source, before.dev, before.ino, before.size, before.mtimeMs].join(':');
-      if (this.transcriptVersions.get(id) === version) return;
-      const preview = await readTranscriptPreview(source);
-      const after = await fs.promises.stat(source);
-      // Only merge a stable transcript into an idle, unchanged projection.
-      // The journal is authoritative while this runtime owns a live CLI process.
-      if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return;
-      if (!this.store.state.sessions.some(item => item.id === id) || this.entries.has(id)) return;
-      const snapshot = this.history.get(id);
-      if (snapshot.messages !== original || snapshot.messages.length !== length || snapshot.messages.at(-1) !== last) return;
-      this.transcriptVersions.set(id, version);
-      let additions = preview.messages;
-      if (length) {
-        // Older snapshots lack source identities. Do not guess from repeated text
-        // or replace valid local history with an unrelated/truncated source tail.
-        const identity = (message: ChatMessage) => JSON.stringify([message.parentToolUseId ?? null, message.sourceId ?? message.id.replace(/^import:/, '')]);
-        const known = new Set(original.map(identity));
-        const tail = [...original].reverse().find(message => message.role !== 'system');
-        if (!tail || tail.role === 'assistant' && tail.turnId !== 'imported' && !tail.sourceId) return;
-        const tailIdentity = identity(tail);
-        let anchor = -1;
-        for (let index = preview.messages.length - 1; index >= 0; index--) {
-          if (identity(preview.messages[index]) === tailIdentity) { anchor = index; break; }
-        }
-        if (anchor < 0) return;
-        additions = preview.messages.slice(anchor + 1).filter(message => !known.has(identity(message)));
-      }
-      for (const message of additions) this.message(id, message);
-      if (!length) {
-        snapshot.truncated = preview.truncated;
-        snapshot.sourceIncomplete = preview.truncated || undefined;
-        if (preview.messages.length || preview.truncated) this.system(id, preview.truncated ? '已载入原始对话的最近部分；Claude 恢复时使用原始会话记录。' : '已载入 Claude 原始对话记录。');
-      }
-      if (additions.length || !length && preview.truncated) this.history.flush();
-    })();
-    this.hydrating.set(id, operation);
-    try { await operation; } finally { this.hydrating.delete(id); }
-  }
+  hydrate(id: string) { this.session(id); return this.hydrator.hydrate(id); }
   exportPath(id: string) { this.session(id); return this.history.exportPath(id); }
   delete(id: string) { this.forget(id); }
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');
     const timer = this.notifications.get(id); if (timer) clearTimeout(timer);
-    this.notifications.delete(id); this.transcriptVersions.delete(id); this.history.delete(id); this.archive.forget(id);
+    this.notifications.delete(id); this.hydrator.forget(id); this.history.delete(id); this.archive.forget(id);
   }
 
   async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = [], titlePrompt = text): Promise<ChatTurnResult> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
     if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能发送任务。');
     const session = this.session(id);
-    if (session.kind !== 'claude' || session.adapter === 'terminal') throw new Error('该会话没有使用结构化适配器。');
+    if (session.kind !== 'agent' || session.execution.providerId !== 'claude' || session.execution.mode === 'terminal') throw new Error('该会话没有使用结构化适配器。');
     if (session.archived) throw new Error('请先取消会话归档。');
     if ((!text.trim() && !attachments.length) || text.length > 128 * 1024) throw new Error('消息为空或超过 128 KiB 上限。');
     const command = invokedCommand(text);
@@ -323,13 +247,13 @@ export class ChatRuntime {
       if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
       const previousState = this.history.get(id).taskState;
       const entry = this.entries.get(id) ?? await this.start(id, capabilities);
-      if (entry.ending || !entry.initialized) throw new Error('会话正在停止或尚未初始化。');
+      if (entry.connection.ending || !entry.initialized) throw new Error('会话正在停止或尚未初始化。');
       const definition = entry.commands?.find(item => item.name === command || item.aliases.includes(command ?? ''));
       if (definition?.disabledReason) { this.state(id, previousState); throw new Error(definition.disabledReason); }
       const commandName = definition?.name ?? command;
       const result = new Promise<ChatTurnResult>(resolve => { entry.turn = { id: randomUUID(), resolve, interrupted: false, command: definition?.kind === 'skill' ? undefined : commandName,
         resetRequested: definition?.kind !== 'skill' && ['clear','reset','new'].includes(commandName ?? '') }; });
-      entry.tools.clear(); entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
+      entry.tools.clear(); entry.assistant.reset(); entry.resultIds.clear();
       entry.subtaskTools.clear(); entry.approvalTasks.clear(); entry.finishedTasks.clear(); entry.backgroundTaskTools.clear();
       this.subtasks.begin(id, entry.turn!.id);
       const userId = randomUUID();
@@ -338,7 +262,7 @@ export class ChatRuntime {
       try {
         // Built-in command parsing expects a prompt string; ordinary multimodal
         // messages continue to use content blocks.
-        this.write(entry, { type: 'user', uuid: userId, message: { role: 'user', content: command ? text.trimStart() : content }, parent_tool_use_id: null, session_id: this.session(id).claudeId });
+        entry.connection.write({ type: 'user', uuid: userId, message: { role: 'user', content: command ? text.trimStart() : content }, parent_tool_use_id: null, session_id: this.session(id).execution.conversationId });
         const title = command ? undefined : automaticSessionTitlePatch(this.session(id), titlePrompt);
         if (title) this.update(id, title);
       } catch (error) { this.fail(id, entry, messageOf(error)); }
@@ -358,8 +282,10 @@ export class ChatRuntime {
     let entry: Entry | undefined;
     try {
       const session = this.session(id);
+      const conversationId = session.execution.conversationId;
+      if (!conversationId) throw new Error('Claude 会话缺少原生会话标识。');
       if (!fs.statSync(session.cwd).isDirectory()) throw new Error('项目目录不存在。');
-      const resumed = await (this.options.transcriptExists ?? transcriptExists)(session.claudeId);
+      const resumed = await (this.options.transcriptExists ?? transcriptExists)(conversationId);
       if (this.shuttingDown || this.maintenance || !this.starting.has(id)) throw new Error('会话启动已取消。');
       const env = environment();
       const invocation = this.options.invocation?.(session, capabilities, resumed) ?? (() => {
@@ -367,470 +293,59 @@ export class ChatRuntime {
         return { file: cli.file, args: [...cli.prefix, ...chatArguments(session, capabilities, resumed)] };
       })();
       this.state(id, 'starting');
-      const child = spawn(invocation.file, invocation.args, { cwd: session.cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
-      entry = { child, ending: false, initialized: false, expectedId: session.claudeId, enforceIdentity: resumed || session.started || session.imported === true, bypassEnabled: session.permissionMode==='bypassPermissions', controls: new Map(), approvals: new Map(), streams: new Map(), assistants: new Map(), resultIds: new Set(), tools: new Set(), tasks: new Set(), subtaskTools: new Map(), approvalTasks: new Map(), finishedTasks: new Set(), backgroundTaskTools: new Map(), stderr: '', decoder: undefined as unknown as JsonLineDecoder };
+      entry = { connection: undefined as unknown as ClaudeConnection, initialized: false, expectedId: conversationId, enforceIdentity: resumed || session.started || session.execution.imported === true, bypassEnabled: session.permissionMode==='bypassPermissions', approvals: new Map(), assistant: undefined as unknown as AssistantStream, resultIds: new Set(), tools: new Set(), tasks: new Set(), subtaskTools: new Map(), approvalTasks: new Map(), finishedTasks: new Set(), backgroundTaskTools: new Map() };
       const current = entry;
-      current.decoder = new JsonLineDecoder(value => this.receive(id, current, value));
-      this.entries.set(id, current);
-      child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-      child.stdout.on('data', (chunk: string) => { if (current.ending) return; try { current.decoder.push(chunk); } catch (error) { this.fail(id, current, messageOf(error)); } });
-      child.stderr.on('data', (chunk: string) => { current.stderr = (current.stderr + chunk).slice(-8000); });
-      child.on('error', error => this.fail(id, current, messageOf(error)));
-      child.stdin.on('error', error => { if (!current.ending) this.fail(id, current, 'CLI 输入连接已关闭：' + error.message); });
-      child.on('close', (code, signal) => {
-        try { this.closed(id, current, code, signal); }
-        catch (error) {
-          this.entries.delete(id); this.starting.delete(id);
-          const message = '记录进程退出状态失败：' + messageOf(error);
-          current.turn?.resolve({ success: false, summary: '', error: message }); current.turn = undefined;
-          const snapshot = this.history.get(id); snapshot.taskState = 'error'; snapshot.error = message; snapshot.pending = [];
-          this.onEvents(id);
-        }
+      current.assistant = new AssistantStream({
+        turnId: () => current.turn?.id, getMessage: key => this.history.getMessage(id, key),
+        message: (message, delta) => this.message(id, message, delta), context: payload => this.events.observeContext(id, current, payload),
+        model: model => { this.history.get(id).model = model; this.notify(id); },
       });
+      current.connection = new ClaudeConnection(invocation, session.cwd, env, {
+        frame: frame => this.events.receive(id, current, frame), error: error => this.fail(id, current, error),
+        close: (code, signal) => {
+          try { this.closed(id, current, code, signal); }
+          catch (error) {
+            this.entries.delete(id); this.starting.delete(id);
+            const message = '记录进程退出状态失败：' + messageOf(error);
+            current.turn?.resolve({ success: false, summary: '', error: message }); current.turn = undefined;
+            const snapshot = this.history.get(id); snapshot.taskState = 'error'; snapshot.error = message; snapshot.pending = [];
+            this.onEvents(id);
+          }
+        },
+      }, this.options.controlTimeoutMs);
+      this.entries.set(id, current);
       this.update(id, { status: 'running', ...(resumed ? { started: true } : {}), error: undefined, exitCode: undefined });
-      const initialization = await this.control(current, { subtype: 'initialize', hooks: null }, this.options.initializationTimeoutMs ?? 60_000);
+      const initialization = await current.connection.control({ subtype: 'initialize', hooks: null }, this.options.initializationTimeoutMs ?? 60_000);
       if (Array.isArray(initialization.commands)) current.commands = normalizeCommands(initialization.commands, [], initialization.skills);
-      if (current.ending || this.shuttingDown) throw new Error('会话初始化已取消。');
+      if (current.connection.ending || this.shuttingDown) throw new Error('会话初始化已取消。');
       current.initialized = true;
       return current;
     } catch (error) {
-      if (entry) this.fail(id, entry, '结构化会话启动失败：' + messageOf(error));
+      if (entry?.connection) this.fail(id, entry, '结构化会话启动失败：' + messageOf(error));
       else { this.state(id, 'error', messageOf(error)); this.update(id, { status: 'error' }); }
       throw error;
     } finally { this.starting.delete(id); }
   }
-  private write(entry: Entry, value: WireObject) {
-    if (entry.ending || entry.child.stdin.destroyed || !entry.child.stdin.writable) throw new Error('CLI 输入连接已关闭。');
-    // Only one user turn is outstanding; control traffic is bounded separately.
-    if (entry.child.stdin.writableLength > 24 * 1024 * 1024) throw new Error('CLI 输入队列已满。');
-    entry.child.stdin.write(JSON.stringify(value) + '\n');
-  }
-  private control(entry: Entry, request: WireObject, timeout = this.options.controlTimeoutMs ?? 15_000): Promise<WireObject> {
-    const requestId = randomUUID();
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { entry.controls.delete(requestId); const error = new Error('CLI 控制请求超时：' + string(request.subtype)); error.name = 'ChatControlTimeoutError'; reject(error); }, timeout);
-      entry.controls.set(requestId, { resolve, reject, timer });
-      try { this.write(entry, { type: 'control_request', request_id: requestId, request }); }
-      catch (error) { clearTimeout(timer); entry.controls.delete(requestId); reject(error); }
-    });
-  }
-  private reply(entry: Entry, requestId: string, response: WireObject, error?: string) {
-    this.write(entry, { type: 'control_response', response: error ? { subtype: 'error', request_id: requestId, error } : { subtype: 'success', request_id: requestId, response } });
-  }
-
-  private receive(id: string, entry: Entry, frame: WireObject) {
-    if (entry.ending || this.entries.get(id) !== entry) return;
-    const type = string(frame.type);
-    this.refreshBackgroundTimeout(id, entry);
-    if (type === 'control_response') {
-      const response = object(frame.response); const requestId = string(response.request_id);
-      const pending = entry.controls.get(requestId); if (!pending) return;
-      entry.controls.delete(requestId); clearTimeout(pending.timer);
-      if (response.subtype === 'error') pending.reject(new Error(string(response.error) || 'CLI 拒绝了控制请求。'));
-      else if (response.subtype === 'success') pending.resolve(object(response.response));
-      else pending.reject(new Error('CLI 控制响应格式不兼容。'));
-      return;
-    }
-    if (type === 'control_request') { this.permission(id, entry, frame); return; }
-    if (type === 'control_cancel_request') {
-      const approval = entry.approvals.get(string(frame.request_id));
-      if (approval) this.subtaskApproval(id, entry, approval, 'running');
-      entry.approvals.delete(string(frame.request_id)); this.activity(id, entry); return;
-    }
-    const parent = string(frame.parent_tool_use_id) || undefined;
-    if (type === 'conversation_reset' && !parent) { this.resetConversation(id, entry, string(frame.new_conversation_id)); return; }
-    if (!parent && (type === 'system' && frame.subtype === 'init' || type === 'result') && uuid(frame.session_id)) {
-      // Older CLIs report /clear's new ID only on the result. All unrelated
-      // identity changes retain the existing fail-closed behavior.
-      if (entry.enforceIdentity && frame.session_id !== entry.expectedId && entry.turn?.resetRequested) this.resetConversation(id, entry, string(frame.session_id));
-      if (entry.enforceIdentity && frame.session_id !== entry.expectedId) throw new Error('CLI 返回了不同的会话 ID，已停止以避免恢复到错误会话。原会话标识已保留。');
-      if (this.session(id).claudeId !== frame.session_id) this.update(id, { claudeId: frame.session_id });
-      entry.expectedId = frame.session_id; entry.enforceIdentity = true;
-    }
-    if (type === 'system') { this.systemEvent(id, entry, frame, parent); return; }
-    if (type === 'stream_event') {
-      if (parent) this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: this.observedSubtaskStatus(entry, parent, 'running'), phase: 'progress' });
-      this.stream(id, entry, object(frame.event), parent); return;
-    }
-    if (type === 'assistant' || type === 'user') {
-      const payload = object(frame.message);
-      if (type === 'assistant' && !parent) this.observeContext(id, entry, payload, frame.context_usage);
-      const blocks = Array.isArray(payload.content) ? payload.content : [];
-      if (!entry.turn) {
-        for (const raw of blocks) { const block = object(raw); if (block.type === 'tool_result') this.subtaskToolResult(id, entry, string(block.tool_use_id), block, object(frame.tool_use_result)); }
-        return;
-      }
-      if (parent) this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: this.observedSubtaskStatus(entry, parent, 'running'), phase: 'progress' });
-      const group = type === 'assistant' ? this.assistantGroup(entry, payload, frame, parent) : undefined;
-      const used = new Set<number>();
-      for (const [index, raw] of blocks.entries()) {
-        const block = object(raw);
-        if (block.type === 'text' && type === 'assistant') {
-          this.completeText(id, entry, group!, index, string(block.text), used, blocks.length === 1, string(frame.uuid));
-        } else if (block.type === 'tool_use') {
-          const toolId = string(block.id); if (!toolId) continue;
-          if (!this.session(id).started) this.update(id, { started: true });
-          entry.tools.add(toolId);
-          this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', text: '', createdAt: now(), toolName: string(block.name), toolUseId: toolId, input: object(block.input), parentToolUseId: parent });
-          if (block.name === 'Agent' || block.name === 'Task') {
-            const input = object(block.input);
-            entry.subtaskTools.set(toolId, { foreground: input.run_in_background === false, parent });
-            const observed = this.session(id).subtasks?.tasks.find(task => task.toolUseId === toolId && task.turnId === entry.turn?.id);
-            this.subtasks.observe(id, { source: 'stream', kind: 'agent', status: observed?.status ?? 'pending', phase: 'start', toolUseId: toolId, parentToolUseId: parent, description: string(input.description) || string(input.subagent_type) || undefined, ...(typeof input.run_in_background === 'boolean' ? { background: input.run_in_background } : {}) });
-          }
-          this.activity(id, entry);
-        } else if (block.type === 'tool_result') {
-          const toolId = string(block.tool_use_id); entry.tools.delete(toolId);
-          const existing = this.history.getMessage(id, 'tool:' + toolId);
-          const text = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? block.content.map(value => {
-            const item = object(value); return item.type === 'text' ? string(item.text) : '[' + string(item.type) + ']';
-          }).join('\n') : '';
-          this.message(id, { id: 'tool:' + toolId, sourceId: 'tool:' + toolId, turnId: entry.turn?.id ?? '', role: 'tool', createdAt: now(), ...existing, text, toolUseId: toolId, isError: block.is_error === true, parentToolUseId: parent });
-          this.subtaskToolResult(id, entry, toolId, block, object(frame.tool_use_result), text);
-          this.activity(id, entry);
-        } else if (block.type === 'text' && parent) {
-          this.message(id, { id: string(frame.uuid) || randomUUID(), turnId: entry.turn?.id ?? '', role: 'user', text: string(block.text), parentToolUseId: parent, createdAt: now() });
-        }
-      }
-      if (group) {
-        group.completed = true;
-        if (!parent && group.blocks.size) entry.latestRoot = group;
-        if (group.stopped) entry.streams.delete(JSON.stringify(parent ?? null));
-        this.pruneAssistants(entry);
-      }
-      return;
-    }
-    if (type === 'result' && parent) {
-      const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
-      this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: failed ? 'failed' : 'completed', phase: 'finish', summary: string(frame.result) || (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : undefined), durationMs: number(frame.duration_ms) });
-      // Child results report a child lifecycle; they cannot end or rewrite the parent turn.
-      this.settleBackgroundTask(id, entry, parent);
-      return;
-    }
-    if (type === 'result' && !parent) {
-      if (!entry.turn) return;
-      const resultId = string(frame.uuid);
-      if (resultId && entry.resultIds.has(resultId)) return;
-      if (resultId) entry.resultIds.add(resultId);
-      const snapshot = this.history.get(id); const usage = object(frame.usage);
-      const capacity = contextCapacity(frame.modelUsage, snapshot.context?.model ?? snapshot.model);
-      if (capacity) this.context(id, { status: 'unknown', ...snapshot.context, contextWindow: capacity });
-      snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
-      const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
-      if (!failed && !this.session(id).started) this.update(id, { started: true });
-      const summary = string(frame.result);
-      const error = failed ? (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : summary || string(frame.subtype) || 'Claude 执行失败。') : undefined;
-      this.history.append(id, { type: 'result', success: !failed, summary, error, usage: snapshot.usage });
-      if (summary && !this.matchesSummary(entry.latestRoot, summary)) this.message(id, { id: randomUUID(), turnId: entry.turn?.id ?? '', role: 'assistant', text: summary, createdAt: now(), isError: failed });
-      entry.latestRoot = undefined;
-      if (entry.tasks.size && !failed && !entry.turn?.interrupted) {
-        entry.waitingBackgroundResult = true;
-        this.system(id, '本轮输出已结束，后台子任务仍在运行。'); this.activity(id, entry); return;
-      }
-      const interrupted = entry.turn?.interrupted === true;
-      this.finish(id, entry, { success: !failed && !interrupted, summary, error, interrupted });
-      return;
-    }
-    if (type === 'error') this.fail(id, entry, string(frame.error) || string(object(frame.error).message) || 'Claude 返回了错误。');
-  }
-  private groupId(entry: Entry, sourceId: string, parent?: string) { return JSON.stringify([entry.turn?.id, parent ?? null, sourceId]); }
-  private group(entry: Entry, sourceId: string, parent?: string): AssistantGroup {
-    const id = this.groupId(entry, sourceId, parent);
-    let group = entry.assistants.get(id);
-    if (!group) { group = { id, sourceId, parent, blocks: new Map(), completed: false }; entry.assistants.set(id, group); }
-    return group;
-  }
-  private digest(text: string) { return createHash('sha256').update(text, 'utf16le').digest('hex'); }
-  private compatible(block: TextBlock, text: string) {
-    return text.length >= block.length && this.digest(text.slice(0, block.length)) === block.digest;
-  }
-  private assistantGroup(entry: Entry, payload: WireObject, frame: WireObject, parent?: string) {
-    const sourceId = string(payload.id);
-    const envelopeId = string(frame.uuid);
-    const knownEnvelope = envelopeId ? entry.assistants.get(this.groupId(entry, envelopeId, parent)) : undefined;
-    if (knownEnvelope) return knownEnvelope;
-    if (sourceId) {
-      const group = this.group(entry, sourceId, parent);
-      if (envelopeId) entry.assistants.set(this.groupId(entry, envelopeId, parent), group);
-      return group;
-    }
-    const streamed = entry.assistants.get(entry.streams.get(JSON.stringify(parent ?? null)) ?? '');
-    const texts = (Array.isArray(payload.content) ? payload.content : []).map(object).filter(block => block.type === 'text');
-    // An envelope without an API message id can only reconcile against the
-    // pending stream in this exact parent/turn scope.
-    if (streamed && !streamed.completed && texts.length && texts.every(block => [...streamed.blocks.values()].some(candidate => this.compatible(candidate, string(block.text))))) {
-      if (envelopeId) entry.assistants.set(this.groupId(entry, envelopeId, parent), streamed);
-      return streamed;
-    }
-    return this.group(entry, string(frame.uuid) || randomUUID(), parent);
-  }
-  private completeText(id: string, entry: Entry, group: AssistantGroup, index: number, text: string, used: Set<number>, singleBlock: boolean, envelopeId: string) {
-    const indexed = group.blocks.get(index);
-    // A completed envelope can contain one block at a time, with indexes relative
-    // to that envelope. Match it to the stream's block before trusting the index.
-    const digest = this.digest(text);
-    const candidates = [...group.blocks.values()].filter(block => !used.has(block.index) && (!block.finalized || !envelopeId || block.envelopeId === envelopeId));
-    const exact = (block: TextBlock) => block.length === text.length && block.digest === digest;
-    const eligibleIndex = indexed && candidates.includes(indexed) ? indexed : undefined;
-    const match = candidates.find(block => !block.finalized && exact(block)) ?? (eligibleIndex && exact(eligibleIndex) ? eligibleIndex : candidates.find(exact))
-      ?? (eligibleIndex && this.compatible(eligibleIndex, text) ? eligibleIndex : candidates.find(block => this.compatible(block, text)));
-    const blockIndex = match?.index ?? (indexed?.finalized && (singleBlock || envelopeId && indexed.envelopeId !== envelopeId) ? Math.max(...group.blocks.keys()) + 1 : index);
-    used.add(blockIndex);
-    const messageId = group.id + ':' + blockIndex;
-    const existing = this.history.getMessage(id, messageId);
-    if (existing && match?.finalized && match.length === text.length && match.digest === digest && (!envelopeId || existing.sourceId === envelopeId)) return;
-    group.blocks.set(blockIndex, { id: messageId, index: blockIndex, length: text.length, digest, finalized: true, envelopeId: envelopeId || undefined });
-    this.message(id, { id: messageId, sourceId: envelopeId || group.sourceId, turnId: entry.turn!.id, role: 'assistant', text, createdAt: existing?.createdAt ?? now(), parentToolUseId: group.parent });
-  }
-  private matchesSummary(group: AssistantGroup | undefined, summary: string) {
-    if (!group) return false;
-    const blocks = [...group.blocks.values()].sort((a, b) => a.index - b.index).filter(block => block.length);
-    if (!blocks.length) return false;
-    // Result text describes the latest root reply, not a new assistant message.
-    // Compare full-content fingerprints, independent of the bounded UI text.
-    const last = blocks[blocks.length - 1];
-    if (last.length === summary.length && last.digest === this.digest(summary)) return true;
-    return ['', '\n', '\n\n'].some(separator => {
-      if (blocks.reduce((length, block) => length + block.length, separator.length * (blocks.length - 1)) !== summary.length) return false;
-      let offset = 0;
-      return blocks.every((block, index) => {
-        if (index) { if (summary.slice(offset, offset + separator.length) !== separator) return false; offset += separator.length; }
-        const part = summary.slice(offset, offset + block.length); offset += block.length;
-        return block.digest === this.digest(part);
-      });
-    });
-  }
-  private stream(id: string, entry: Entry, event: WireObject, parent?: string) {
-    if (!entry.turn) return;
-    const key = JSON.stringify(parent ?? null);
-    if (event.type === 'message_start') {
-      if (!parent) this.observeContext(id, entry, object(event.message));
-      const message = object(event.message); const group = this.group(entry, string(message.id) || randomUUID(), parent);
-      entry.streams.set(key, group.id);
-      if (!parent) { entry.latestRoot = group; if (typeof message.model === 'string') { this.history.get(id).model = message.model; this.notify(id); } }
-      return;
-    }
-    const index = typeof event.index === 'number' ? event.index : 0;
-    const group = entry.assistants.get(entry.streams.get(key) ?? ''); if (!group) return;
-    if (event.type === 'message_stop') { group.stopped = true; for (const block of group.blocks.values()) block.hash = undefined; return; }
-    if (event.type === 'content_block_stop') { const block = group.blocks.get(index); if (block) block.hash = undefined; return; }
-    const content = object(event.content_block); const delta = object(event.delta);
-    const messageId = group.id + ':' + index;
-    if (event.type === 'content_block_start' && content.type === 'text') {
-      const text = string(content.text); const hash = createHash('sha256').update(text, 'utf16le');
-      group.completed = false;
-      group.blocks.set(index, { id: messageId, index, length: text.length, digest: hash.copy().digest('hex'), hash });
-      this.message(id, { id: messageId, sourceId: group.sourceId, turnId: entry.turn.id, role: 'assistant', text, createdAt: now(), parentToolUseId: parent });
-    } else if (event.type === 'content_block_delta' && delta.type === 'text_delta') {
-      const text = string(delta.text);
-      const block = group.blocks.get(index) ?? { id: messageId, index, length: 0, digest: this.digest(''), hash: createHash('sha256') };
-      if (!block.hash) return;
-      block.hash.update(text, 'utf16le'); block.length += text.length; block.digest = block.hash.copy().digest('hex'); group.blocks.set(index, block);
-      const existing = this.history.getMessage(id, messageId);
-      this.message(id, { id: messageId, sourceId: group.sourceId, turnId: entry.turn.id, role: 'assistant', createdAt: now(), parentToolUseId: parent, ...existing, text: (existing?.text ?? '') + text }, text);
-    }
-    // Thinking content is not persisted; its events still reset the idle watchdog.
-  }
-  private pruneAssistants(entry: Entry) {
-    // Retain a bounded identity window for replayed complete envelopes. Active
-    // streams and the root reply needed for result reconciliation stay protected.
-    if (entry.assistants.size <= 1024) return;
-    const active = new Set(entry.streams.values());
-    for (const [key, group] of entry.assistants) {
-      if (entry.assistants.size <= 1024) break;
-      if (group !== entry.latestRoot && !active.has(group.id)) entry.assistants.delete(key);
-    }
-  }
-  private refreshBackgroundTimeout(id: string, entry: Entry) {
-    if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
-    entry.backgroundTimer = undefined;
-    if (!entry.waitingBackgroundResult || !entry.turn || entry.turn.interrupted || entry.tasks.size || entry.approvals.size || entry.ending) return;
-    // This is an inactivity deadline. Progress restarts it and human approval
-    // pauses it, so a long healthy continuation cannot be stopped by wall time.
-    entry.backgroundTimer = setTimeout(() => {
-      entry.backgroundTimer = undefined;
-      if (entry.turn && entry.waitingBackgroundResult && !entry.tasks.size && !entry.approvals.size) this.fail(id, entry, '后台子任务已结束，但 CLI 未返回最终结果。会话已停止，可恢复后继续；工作流没有自动进入下一阶段。');
-    }, this.options.backgroundResultTimeoutMs ?? 120_000);
-  }
-  private settleBackgroundTask(id: string, entry: Entry, toolUseId: string) {
-    this.backgroundTask(entry, undefined, toolUseId, 'completed');
-    for (const task of this.session(id).subtasks?.tasks ?? []) if (task.toolUseId === toolUseId && terminalTask(task.status)) {
-      if (task.taskId) this.backgroundTask(entry, task.taskId, toolUseId, task.status);
-    }
-    this.refreshBackgroundTimeout(id, entry);
-  }
-  private backgroundTask(entry: Entry, taskId: string | undefined, toolUseId: string | undefined, status: SubtaskStatus) {
-    const valid = (value: string | undefined) => !!value && value.length <= 200 && !/[\x00-\x1f\x7f]/.test(value);
-    if (!valid(taskId)) taskId = undefined;
-    if (!valid(toolUseId)) toolUseId = undefined;
-    toolUseId ??= taskId ? entry.backgroundTaskTools.get(taskId) : undefined;
-    if (!taskId && !toolUseId) return;
-    if (taskId && toolUseId) {
-      // A resumed agent can retain its agent id with a fresh tool invocation.
-      // Keep execution keys distinct and do not let an old terminal replay
-      // replace the alias belonging to its newer invocation.
-      if (!terminalTask(status) || !entry.backgroundTaskTools.has(taskId)) entry.backgroundTaskTools.set(taskId, toolUseId);
-      if (entry.backgroundTaskTools.get(taskId) === toolUseId) entry.tasks.delete('task:' + taskId);
-    }
-    const key = toolUseId ? 'tool:' + toolUseId : 'task:' + taskId;
-    if (terminalTask(status)) { entry.tasks.delete(key); entry.finishedTasks.add(key); }
-    else if (!entry.finishedTasks.has(key)) entry.tasks.add(key);
-  }
-  private observedSubtaskStatus(entry: Entry, toolUseId: string | undefined, fallback: SubtaskStatus): SubtaskStatus {
-    if (!toolUseId || terminalTask(fallback)) return fallback;
-    const approvals = [...entry.approvals.values()].filter(approval => entry.approvalTasks.get(approval.requestId) === toolUseId);
-    return approvals.some(approval => approval.kind === 'question') ? 'waiting_input' : approvals.length ? 'waiting_approval' : fallback;
-  }
-  private subtaskToolResult(id: string, entry: Entry, toolUseId: string, block: WireObject, result: WireObject, text = '') {
-    const launched = entry.subtaskTools.get(toolUseId);
-    const previous = this.session(id).subtasks?.tasks.find(task => task.toolUseId === toolUseId && task.kind === 'agent');
-    if (!toolUseId || !launched && !previous) return;
-    const status = block.is_error === true ? 'failed' : taskStatus(result.status) ?? (result.status === 'async_launched' || result.status === 'remote_launched' ? 'running' : launched?.foreground ? 'completed' : undefined);
-    if (!status) return;
-    const report = Array.isArray(result.content) ? result.content.map(object).filter(item => item.type === 'text').map(item => string(item.text)).join('\n') : '';
-    const task = this.subtasks.observe(id, {
-      source: 'stream', kind: 'agent', status, phase: terminalTask(status) ? 'finish' : 'progress', toolUseId,
-      parentToolUseId: launched?.parent, agentId: string(result.agentId) || undefined, taskId: string(result.taskId) || undefined,
-      description: string(result.description) || undefined, summary: terminalTask(status) ? report || text || undefined : undefined,
-      toolUses: number(result.totalToolUseCount), durationMs: number(result.totalDurationMs),
-      ...(result.status === 'async_launched' || result.status === 'remote_launched' ? { background: true } : {}),
-    });
-    const observed = task?.status ?? status;
-    if (result.status === 'async_launched' || result.status === 'remote_launched') this.backgroundTask(entry, string(result.taskId) || string(result.agentId) || undefined, toolUseId, observed);
-    if (terminalTask(observed)) this.settleBackgroundTask(id, entry, toolUseId);
-  }
-  private systemEvent(id: string, entry: Entry, frame: WireObject, parent?: string) {
-    const subtype = string(frame.subtype); const snapshot = this.history.get(id);
-    if (subtype === 'init') {
-      if (parent) return;
-      snapshot.model = string(frame.model) || undefined;
-      snapshot.permissionMode = string(frame.permissionMode) || this.session(id).permissionMode;
-      snapshot.mcpServers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers.map(value => { const item = object(value); return { name: string(item.name), status: string(item.status) }; }) : [];
-      if (Array.isArray(frame.slash_commands)) entry.commands = normalizeCommands(frame.slash_commands, entry.commands, frame.skills);
-      if (isPermissionMode(snapshot.permissionMode)) this.update(id, { permissionMode: snapshot.permissionMode, observedPermissionMode: snapshot.permissionMode });
-      this.history.append(id, { type: 'metadata', model: snapshot.model, permissionMode: snapshot.permissionMode, mcpServers: snapshot.mcpServers });
-      for (const field of ['plugin_errors', 'mcp_server_errors']) if (Array.isArray(frame[field]) && frame[field].length) this.system(id, field + ': ' + JSON.stringify(frame[field]), true);
-      this.notify(id, true);
-    } else if (['task_started', 'task_progress', 'task_notification', 'task_updated'].includes(subtype)) {
-      const patch = subtype === 'task_updated' ? object(frame.patch) : frame;
-      const status = subtype === 'task_started' || subtype === 'task_progress' ? 'running' : taskStatus(patch.status);
-      const taskId = string(frame.task_id); const toolUseId = string(frame.tool_use_id) || undefined;
-      const usage = object(frame.usage);
-      // Description-only task_updated frames have no status transition. Preserve
-      // the observed status rather than inventing a running task from a label.
-      const activity = this.session(id).subtasks;
-      const matches = (activity?.tasks ?? []).filter(task => toolUseId ? task.toolUseId === toolUseId : taskId && (task.taskId === taskId || task.kind === 'agent' && task.agentId === taskId));
-      const current = matches.filter(task => task.turnId === activity?.turnId);
-      const relevant = current.length ? current : matches;
-      const existing = relevant.filter(task => !terminalTask(task.status)).at(-1) ?? relevant.at(-1);
-      const observed = status ?? existing?.status;
-      if (observed) {
-        const kind = /(?:bash|shell|command)/i.test(string(frame.task_type)) ? 'shell' : frame.task_type === 'local_agent' || string(frame.subagent_type) ? 'agent' : undefined;
-        const task = this.subtasks.observe(id, {
-          source: 'stream', kind, status: this.observedSubtaskStatus(entry, toolUseId ?? existing?.toolUseId, observed), phase: subtype === 'task_started' ? 'start' : terminalTask(observed) ? 'finish' : 'progress', taskId: taskId || undefined, toolUseId,
-          parentToolUseId: parent, description: string(patch.description) || undefined,
-          summary: string(patch.summary) || string(patch.error) || undefined, progress: subtype === 'task_progress' ? string(frame.summary) || undefined : undefined,
-          lastTool: string(frame.last_tool_name) || undefined, toolUses: number(usage.tool_uses), totalTokens: number(usage.total_tokens), durationMs: number(usage.duration_ms),
-          ...(typeof patch.is_backgrounded === 'boolean' ? { background: patch.is_backgrounded } : subtype === 'task_started' ? { background: true } : {}),
-        });
-        // Waiting for the CLI must remain correct even when the bounded UI
-        // projection has no room for another task row.
-        if (taskId) this.backgroundTask(entry, taskId, task?.toolUseId ?? toolUseId, task?.status ?? observed);
-      }
-      if (subtype === 'task_started') this.system(id, '子任务开始：' + (string(frame.description) || taskId));
-      else if (subtype === 'task_notification') this.system(id, '子任务 ' + string(frame.status) + '：' + (string(frame.summary) || taskId), frame.status === 'failed');
-      this.refreshBackgroundTimeout(id, entry);
-    } else if (subtype === 'commands_changed' && !parent) {
-      entry.commands = normalizeCommands(frame.commands, entry.commands, frame.skills); this.notify(id);
-    } else if (subtype === 'compact_boundary' && !parent) {
-      const metadata = object(frame.compact_metadata), trigger = metadata.trigger === 'manual' || metadata.trigger === 'auto' ? metadata.trigger : undefined;
-      this.context(id, { ...snapshot.context, status: 'compacted', inputTokens: undefined, measuredAt: undefined,
-        lastCompaction: { at: now(), trigger, preTokens: tokenCount(metadata.pre_tokens) } });
-      this.system(id, (trigger === 'auto' ? '自动' : '') + '上下文压缩已完成，等待下一次请求更新用量。');
-    } else if (subtype === 'local_command_output' && !parent && typeof frame.content === 'string') {
-      this.system(id, frame.content);
-    } else if (subtype === 'api_retry') this.system(id, '模型请求重试 ' + String(frame.attempt ?? '') + '/' + String(frame.max_retries ?? '') + '：' + string(frame.error), true);
-    else if (subtype === 'permission_denied') this.system(id, 'CLI 权限规则拒绝了操作：' + JSON.stringify(frame), true);
-    else if (subtype === 'status' && !parent && frame.status === 'compacting') {
-      this.context(id, { ...snapshot.context, status: 'compacting' }); this.system(id, '正在压缩上下文…');
-    }
-  }
-
-  private permission(id: string, entry: Entry, frame: WireObject) {
-    const requestId = string(frame.request_id); const request = object(frame.request);
-    if (!requestId) throw new Error('CLI 审批请求缺少 request_id。');
-    if (request.subtype !== 'can_use_tool') {
-      this.reply(entry, requestId, {}, 'Unsupported control request: ' + string(request.subtype));
-      this.system(id, '当前客户端不支持 CLI 控制请求：' + string(request.subtype), true); return;
-    }
-    if (!entry.turn || entry.turn.interrupted || entry.approvals.size >= 32) {
-      this.reply(entry, requestId, { behavior: 'deny', message: 'No active turn or permission queue full.' }); return;
-    }
-    if (entry.approvals.has(requestId)) return;
-    const toolName = string(request.tool_name); const input = object(request.input);
-    const questions: ChatQuestion[] | undefined = toolName === 'AskUserQuestion' && Array.isArray(input.questions) ? input.questions.map(value => {
-      const question = object(value);
-      return { question: string(question.question), header: string(question.header), multiSelect: question.multiSelect === true, options: Array.isArray(question.options) ? question.options.map(option => { const item = object(option); return { label: string(item.label), description: string(item.description) }; }) : [] };
-    }) : undefined;
-    const approval: ChatApproval = { requestId, toolName, input: structuredClone(input), kind: toolName === 'AskUserQuestion' ? 'question' : 'permission', questions, createdAt: now(), toolUseId: string(request.tool_use_id) || undefined };
-    entry.approvals.set(requestId, approval);
-    const parent = string(frame.parent_tool_use_id) || string(request.parent_tool_use_id) || (approval.toolUseId && this.history.getMessage(id, 'tool:' + approval.toolUseId)?.parentToolUseId);
-    const taskTool = toolName === 'Agent' || toolName === 'Task' ? approval.toolUseId : parent;
-    if (taskTool) {
-      entry.approvalTasks.set(requestId, taskTool);
-      this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: taskTool, status: approval.kind === 'question' ? 'waiting_input' : 'waiting_approval', phase: 'progress' });
-    }
-    this.history.append(id, { type: 'approval_requested', approval });
-    this.activity(id, entry);
-  }
-  private subtaskApproval(id: string, entry: Entry, approval: ChatApproval, status: 'running' | 'stopped') {
-    const toolUseId = entry.approvalTasks.get(approval.requestId);
-    entry.approvalTasks.delete(approval.requestId);
-    if (!toolUseId) return;
-    const waiting = [...entry.approvals.values()].find(item => item.requestId !== approval.requestId && entry.approvalTasks.get(item.requestId) === toolUseId);
-    const observed = waiting ? waiting.kind === 'question' ? 'waiting_input' : 'waiting_approval'
-      : status === 'running' && (approval.toolName === 'Agent' || approval.toolName === 'Task') ? 'pending' : status;
-    this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId, status: observed, phase: observed === 'stopped' ? 'finish' : 'progress' });
-  }
   respond(id: string, requestId: string, decision: ChatDecision) {
-    const entry = this.entries.get(id); const approval = entry?.approvals.get(requestId);
-    if (!entry || entry.ending || !approval) throw new Error('该审批已失效或已处理，请刷新会话。');
-    if (decision.behavior !== 'allow' && decision.behavior !== 'deny') throw new Error('无效审批决定。');
-    let updatedInput = approval.input;
-    if (approval.kind === 'question' && decision.behavior === 'allow') {
-      if (!approval.questions?.length) throw new Error('问题格式不受支持，请拒绝后让 Claude 重新提问。');
-      const answers: Record<string, string> = Object.create(null) as Record<string, string>;
-      for (const question of approval.questions) {
-        const answer = decision.answers?.[question.question];
-        if (typeof answer !== 'string' || !answer.trim() || answer.length > 16_000) throw new Error('请回答全部问题。');
-        answers[question.question] = answer;
-      }
-      updatedInput = { ...approval.input, answers };
-    }
-    const response = decision.behavior === 'allow' ? { behavior: 'allow', updatedInput } : { behavior: 'deny', message: decision.message?.slice(0, 16_000) || '用户拒绝了这次操作。' };
-    this.reply(entry, requestId, response);
-    entry.approvals.delete(requestId);
-    this.subtaskApproval(id, entry, approval, decision.behavior === 'deny' && (approval.toolName === 'Agent' || approval.toolName === 'Task') ? 'stopped' : 'running');
-    this.history.append(id, { type: 'approval_resolved', requestId, decision });
-    this.activity(id, entry);
+    this.events.respond(id, this.entries.get(id), requestId, decision);
   }
   async interrupt(id: string) {
     const entry = this.entries.get(id);
-    if (!entry?.turn || entry.ending) { if (this.starting.has(id) || this.busy.has(id)) this.stop(id); return; }
+    if (!entry?.turn || entry.connection.ending) { if (this.starting.has(id) || this.busy.has(id)) this.stop(id); return; }
     if (entry.turn.interrupted) return;
     entry.turn.interrupted = true;
-    for (const requestId of entry.approvals.keys()) this.reply(entry, requestId, { behavior: 'deny', message: '用户中断了当前任务。', interrupt: true });
+    for (const requestId of entry.approvals.keys()) entry.connection.reply(requestId, { behavior: 'deny', message: '用户中断了当前任务。', interrupt: true });
     entry.approvals.clear(); this.history.get(id).pending = []; this.notify(id, true);
     this.system(id, '已请求中断，等待 CLI 确认结束当前任务。');
     entry.interruptTimer = setTimeout(() => { if (entry.turn?.interrupted) { this.system(id, 'CLI 未及时结束，正在停止进程。'); this.stop(id); } }, 5000);
-    try { await this.control(entry, { subtype: 'interrupt' }, 5000); }
+    try { await entry.connection.control({ subtype: 'interrupt' }, 5000); }
     catch (error) { if (this.entries.get(id) === entry && entry.turn) { this.system(id, messageOf(error), true); this.stop(id); } }
   }
   async updateConfig(id: string, patch: { model?: string; permissionMode?: PermissionMode; effort?: Effort }) {
     const session = this.session(id); let entry = this.entries.get(id);
     if (this.busy.has(id) || this.starting.has(id) || entry?.approvals.size) throw new Error('请等待当前任务完成后修改模型或权限。');
     if (patch.effort !== undefined && patch.effort !== session.effort && entry) throw new Error('修改推理强度前请先停止会话，然后重新发送以恢复。');
-    if (entry?.ending) throw new Error('请等待会话停止。');
+    if (entry?.connection.ending) throw new Error('请等待会话停止。');
     this.busy.add(id);
     try {
       // Bypass must be enabled when the CLI starts. Restart an idle process when
@@ -845,11 +360,11 @@ export class ChatRuntime {
       }
       if (entry) {
         if (patch.model !== undefined) {
-          await this.control(entry, { subtype: 'set_model', model: patch.model || null });
+          await entry.connection.control({ subtype: 'set_model', model: patch.model || null });
           this.update(id, { model: patch.model }); this.history.get(id).model = patch.model || undefined;
         }
         if (patch.permissionMode !== undefined) {
-          await this.control(entry, { subtype: 'set_permission_mode', mode: patch.permissionMode });
+          await entry.connection.control({ subtype: 'set_permission_mode', mode: patch.permissionMode });
           this.update(id, { permissionMode: patch.permissionMode, observedPermissionMode: patch.permissionMode }); this.history.get(id).permissionMode = patch.permissionMode;
         }
       } else {
@@ -877,7 +392,7 @@ export class ChatRuntime {
     entry.interruptTimer = undefined;
     entry.backgroundTimer = undefined; entry.waitingBackgroundResult = false;
     const turn = entry.turn; entry.turn = undefined; entry.tools.clear(); entry.tasks.clear(); entry.approvals.clear(); entry.approvalTasks.clear();
-    entry.streams.clear(); entry.assistants.clear(); entry.latestRoot = undefined; entry.resultIds.clear();
+    entry.assistant.reset(); entry.resultIds.clear();
     this.history.get(id).pending = [];
     try {
       this.subtasks.end(id, result.interrupted ? 'interrupted' : result.success ? 'unknown' : 'failed', result.error);
@@ -889,7 +404,7 @@ export class ChatRuntime {
     }
   }
   private fail(id: string, entry: Entry, error: string) {
-    if (entry.ending) return;
+    if (entry.connection.ending) return;
     const turn = entry.turn;
     try {
       this.system(id, error, true);
@@ -905,7 +420,7 @@ export class ChatRuntime {
   stop(id: string) {
     if (this.busy.has(id)) this.cancelled.add(id);
     this.starting.delete(id);
-    const entry = this.entries.get(id); if (!entry || entry.ending) return;
+    const entry = this.entries.get(id); if (!entry || entry.connection.ending) return;
     try {
       if (entry.turn) this.finish(id, entry, { success: false, summary: '', interrupted: true });
       else { this.subtasks.end(id, 'interrupted'); if (this.history.get(id).taskState === 'starting') this.state(id, 'interrupted'); }
@@ -913,53 +428,26 @@ export class ChatRuntime {
     } finally { this.terminate(entry); }
   }
   private terminate(entry: Entry) {
-    if (entry.ending) return;
-    entry.ending = true;
+    if (entry.connection.ending) return;
     if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
-    for (const waiter of entry.controls.values()) { clearTimeout(waiter.timer); waiter.reject(new Error('会话进程已停止。')); }
-    entry.controls.clear(); entry.approvals.clear();
-    const signal = (value: NodeJS.Signals): Promise<boolean> => {
-      if (!entry.child.pid) return Promise.resolve(true);
-      if (process.platform === 'win32') {
-        return new Promise(resolve => {
-          const killer = spawn('taskkill', ['/PID', String(entry.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
-          killer.once('close', code => resolve(code === 0));
-          killer.once('error', () => { try { entry.child.kill(value); } catch { /* Already exited. */ } resolve(false); });
-        });
-      }
-      try { process.kill(-entry.child.pid, value); return Promise.resolve(true); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return Promise.resolve(true);
-        try { entry.child.kill(value); } catch { /* Already exited. */ }
-        return Promise.resolve(false);
-      }
-    };
-    const first = signal('SIGTERM');
-    // Keep Windows' root alive until taskkill has found the process tree. Closing
-    // stdin first lets a healthy CLI exit before taskkill can find descendants.
-    void first.then(() => entry.child.stdin.destroy());
-    // Keep escalation even if the CLI root exits before an ignoring descendant.
-    entry.termination = new Promise(resolve => {
-      entry.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(process.platform === 'win32' ? await first || last : last)); }, 1500);
-      entry.killTimer.unref();
-    });
+    entry.approvals.clear();
+    entry.connection.terminate();
     // Keep tracking descendants even after `closed` removes the root entry.
-    const termination = entry.termination;
+    const termination = entry.connection.termination!;
     this.terminations.add(termination);
     void termination.then(stopped => { if (!stopped) this.terminationFailed = true; this.terminations.delete(termination); });
   }
   private closed(id: string, entry: Entry, code: number | null, signal: NodeJS.Signals | null) {
     if (this.entries.get(id) !== entry) return;
-    if (!entry.ending) { try { entry.decoder.finish(); } catch (error) { this.fail(id, entry, messageOf(error)); } }
+    entry.connection.finish();
     this.entries.delete(id); this.starting.delete(id);
-    const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。' + (entry.stderr ? '\n' + entry.stderr.trim() : '');
-    for (const waiter of entry.controls.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(error)); }
-    entry.controls.clear();
+    const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。' + (entry.connection.stderr ? '\n' + entry.connection.stderr.trim() : '');
+    entry.connection.closeControls(error);
     if (entry.interruptTimer) clearTimeout(entry.interruptTimer);
-    if (entry.turn) this.finish(id, entry, { success: false, summary: '', error: entry.ending ? undefined : error, interrupted: entry.ending });
-    else this.subtasks.end(id, entry.ending ? 'interrupted' : 'failed', entry.ending ? undefined : error);
+    if (entry.turn) this.finish(id, entry, { success: false, summary: '', error: entry.connection.ending ? undefined : error, interrupted: entry.connection.ending });
+    else this.subtasks.end(id, entry.connection.ending ? 'interrupted' : 'failed', entry.connection.ending ? undefined : error);
     const previous = this.history.get(id).taskState;
-    this.update(id, { status: previous === 'error' || !entry.ending && code !== 0 ? 'error' : 'stopped', exitCode: code ?? undefined, error: previous === 'error' ? this.history.get(id).error : !entry.ending && code !== 0 ? error : undefined });
+    this.update(id, { status: previous === 'error' || !entry.connection.ending && code !== 0 ? 'error' : 'stopped', exitCode: code ?? undefined, error: previous === 'error' ? this.history.get(id).error : !entry.connection.ending && code !== 0 ? error : undefined });
     this.history.get(id).pending = []; this.notify(id, true);
   }
   async shutdown() {
@@ -969,11 +457,23 @@ export class ChatRuntime {
     for (const id of this.entries.keys()) { try { this.stop(id); } catch (error) { errors.push(error); } }
     const deadline = Date.now() + 2500;
     while (this.entries.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
-    for (const entry of this.entries.values()) { try { entry.child.kill('SIGKILL'); } catch { /* Exited. */ } }
+    for (const entry of this.entries.values()) { try { entry.connection.child.kill('SIGKILL'); } catch { /* Exited. */ } }
+    // Root close does not release its detached process group. Keep the event loop
+    // alive until the tracked escalation has confirmed every descendant stop.
+    let terminationDeadline: NodeJS.Timeout | undefined;
+    try {
+      const stopped = await Promise.race([
+        Promise.all([...this.terminations]).then(results => results.every(Boolean)),
+        new Promise<boolean>(resolve => { terminationDeadline = setTimeout(() => resolve(false), 5000); }),
+      ]);
+      if (!stopped || this.terminationFailed || this.terminations.size || this.entries.size) {
+        errors.push(new Error('无法确认全部聊天子进程已停止，请关闭残留进程后重试退出。'));
+      }
+    } finally { if (terminationDeadline) clearTimeout(terminationDeadline); }
     for (const timer of this.notifications.values()) clearTimeout(timer);
     this.notifications.clear();
     try { this.history.flush(); } catch (error) { errors.push(error); }
-    if (errors.length) throw new AggregateError(errors, '聊天会话退出时部分记录未能保存：' + errors.map(messageOf).join('；'));
+    if (errors.length) throw new AggregateError(errors, '聊天会话退出未完成：' + errors.map(messageOf).join('；'));
   }
   setMaintenance(value: boolean) { this.maintenance = value; }
   async disconnectAll() {

@@ -9,7 +9,12 @@ import type { BrowserWindow } from 'electron';
 import { SessionService } from '../src/main/session-service';
 import { StateStore } from '../src/main/store';
 import { Attachments } from '../src/main/attachments';
-import type { Runtime } from '../src/main/runtime';
+import type { TerminalExecutor } from '../src/main/execution/ports';
+import { ExecutionRegistry } from '../src/main/execution/registry';
+import { ClaudeStructuredExecutor } from '../src/main/engines/claude/structured-executor';
+import { claudeCapabilities } from '../src/main/engines/claude/capabilities';
+import { queryHistory } from '../src/main/history';
+import { diagnoseEnvironment } from '../src/main/diagnostics';
 import { createWorktree, worktreeInfo } from '../src/main/git';
 import { execFileAsync } from '../src/main/commands';
 import type { Capabilities, Session } from '../src/shared/types';
@@ -33,18 +38,24 @@ async function fixture(window:BrowserWindow|null=null) {
     has:(id:string)=>active.has(id),start:async(id:string)=>{active.add(id);},stop:(id:string)=>{active.delete(id);},
     forget:(id:string)=>{active.delete(id);},shutdown:async()=>{active.clear();},get activeCount(){return active.size;},
     setMaintenance:(_value:boolean)=>{},disconnectAll:async()=>{active.clear();}
-  } as unknown as Runtime;
+  } as unknown as TerminalExecutor;
   const caps:Capabilities={available:false,executable:'',version:'',flags:[],efforts:[]};
-  const service=new SessionService(store,runtime,()=>caps,()=>{},()=>window);
+  const registry=new ExecutionRegistry(id=>{const s=store.state.sessions.find(s=>s.id===id);if(!s)throw new Error('Session missing');return s;});
+  const chat=new ClaudeStructuredExecutor(store,()=>caps,registry.events);
+  registry.register({providerId:'claude',mode:'structured',executor:chat,capabilities:()=>claudeCapabilities(caps,'structured')});
+  const terminalCapabilities=()=>({...claudeCapabilities(caps,'terminal'),available:true});
+  registry.register({providerId:'claude',mode:'terminal',executor:runtime,capabilities:terminalCapabilities});
+  registry.register({providerId:'shell',mode:'terminal',executor:runtime,capabilities:terminalCapabilities});
+  const service=new SessionService(store,registry,()=>{},()=>window,{history:queryHistory,diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath)});
   const handlers=new Map<string,(input:unknown)=>unknown>();
   service.register(<T>(name:string,schema:z.ZodType<T>,action:(input:T)=>unknown)=>handlers.set(name,input=>action(schema.parse(input))));
   const call=async<T>(name:string,input:unknown):Promise<T> => await handlers.get(name)!(input) as T;
   const add=(cwd:string, extra:Partial<Session>={})=>{
-    const session:Session={id:randomUUID(),projectId,title:'Test',cwd,kind:'shell',adapter:'terminal',claudeId:randomUUID(),started:false,
+    const session:Session={id:randomUUID(),projectId,title:'Test',cwd,kind:'shell',execution:{providerId:'shell',mode:'terminal'},started:false,
       model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:now,updatedAt:now,...extra};
     store.change(s=>s.sessions.push(session));return session;
   };
-  return {dir,repo,store,service,runtime,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
+  return {dir,repo,store,service,runtime,chat,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
 test('CLI update waits for disconnection, blocks new work and keeps every workspace available afterward', async t => {
@@ -54,7 +65,7 @@ test('CLI update waits for disconnection, blocks new work and keeps every worksp
   const installing = new Promise<void>(resolve => { finish = resolve; });
   let invoked = false;
   try {
-    const shell = f.add(f.repo), other = f.add(f.repo, { kind: 'claude', adapter: 'structured' });
+    const shell = f.add(f.repo), other = f.add(f.repo, { kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()} });
     await f.service.start(shell.id);
     t.mock.method(f.runtime, 'disconnectAll', async () => { await stopped; f.active.clear(); });
     const update = f.service.withDisconnectedWorkspaces(async () => { invoked = true; assert.equal(f.active.size, 0); await installing; });
@@ -74,7 +85,7 @@ test('disconnection and persistence failures abort the update but still stop ind
   try {
     let terminals = 0, chats = 0, installed = 0;
     t.mock.method(f.service.workflows, 'disconnectAll', async () => { throw new Error('disk fault'); });
-    t.mock.method(f.service.chat, 'disconnectAll', async () => { chats++; });
+    t.mock.method(f.chat, 'disconnectAll', async () => { chats++; });
     t.mock.method(f.runtime, 'disconnectAll', async () => { terminals++; });
     await assert.rejects(f.service.withDisconnectedWorkspaces(async () => { installed++; }), /已取消更新/);
     assert.equal(terminals, 1); assert.equal(chats, 1); assert.equal(installed, 0);
@@ -83,7 +94,7 @@ test('disconnection and persistence failures abort the update but still stop ind
 });
 test('worktree creation releases completed structured CLIs under directory locks before invoking Git',async t=>{
   const f=await fixture();try{
-    const session=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
     const physical=new Set([session.id]);let release!:()=>void,entered!:()=>void,created=false;
     const ready=new Promise<void>(resolve=>{entered=resolve;});
     t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
@@ -101,7 +112,7 @@ test('worktree creation releases completed structured CLIs under directory locks
 
 test('worktree operations refuse real structured tasks, workflows, and terminal ownership',async t=>{
   const f=await fixture();try{
-    const session=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
     let busy=true,workflow=false,stops=0,created=false;
     t.mock.method(f.service.chat,'has',()=>true);
     t.mock.method(f.service.chat,'isBusy',()=>busy);
@@ -114,7 +125,7 @@ test('worktree operations refuse real structured tasks, workflows, and terminal 
     assert.equal(created,false);assert.equal(stops,0);
     // A synced native terminal can be idle while still holding cwd and having
     // unreported background shell commands, so give a precise close-terminal hint.
-    f.store.change(state=>{state.sessions[0].adapter='terminal';state.sessions[0].terminalSync='synced';});
+    f.store.change(state=>{state.sessions[0].execution.mode='terminal';state.sessions[0].terminalSync='synced';});
     await assert.rejects(attempt(),/原生 Claude 终端仍打开.*关闭终端/);
     assert.equal(stops,0);
   }finally{t.mock.restoreAll();await f.dispose();}
@@ -122,7 +133,7 @@ test('worktree operations refuse real structured tasks, workflows, and terminal 
 
 test('idle-release failures keep Git unmodified and release management locks for a retry',async t=>{
   const f=await fixture();try{
-    f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
     let physical=true,fail=true,created=false;
     t.mock.method(f.service.chat,'has',()=>physical);
     t.mock.method(f.service.chat,'isBusy',()=>false);
@@ -135,8 +146,8 @@ test('idle-release failures keep Git unmodified and release management locks for
 
 test('idle structured sessions can archive and delete while active tasks retain their records',async t=>{
   const f=await fixture();try{
-    const archived=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
-    const deleted=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
+    const archived=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
+    const deleted=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
     const physical=new Set([archived.id,deleted.id]);let busy=false;
     t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
     t.mock.method(f.service.chat,'isBusy',()=>busy);
@@ -157,7 +168,7 @@ test('idle structured sessions can archive and delete while active tasks retain 
 
 test('concurrency limits reclaim idle structured processes and never evict live tasks',async t=>{
   const f=await fixture();try{
-    const idle=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'}),next=f.add(f.repo);
+    const idle=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'}),next=f.add(f.repo);
     f.store.change(state=>{state.settings.maxSessions=1;});
     const physical=new Set([idle.id]);let busy=true;
     t.mock.method(f.service.chat,'has',(id:string)=>physical.has(id));
@@ -173,9 +184,9 @@ test('concurrency limits reclaim idle structured processes and never evict live 
 
 test('slot reclamation rechecks native conversation ownership after asynchronous release',async t=>{
   const f=await fixture();try{
-    const first=f.add(f.repo,{kind:'claude',adapter:'structured',updatedAt:'2020-01-01T00:00:00.000Z'});
-    const second=f.add(f.repo,{kind:'claude',adapter:'structured',updatedAt:'2021-01-01T00:00:00.000Z'});
-    const a=f.add(f.repo,{kind:'claude',adapter:'terminal'}),b=f.add(f.repo,{kind:'claude',adapter:'terminal',claudeId:a.claudeId});
+    const first=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},updatedAt:'2020-01-01T00:00:00.000Z'});
+    const second=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},updatedAt:'2021-01-01T00:00:00.000Z'});
+    const a=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'terminal',conversationId:randomUUID()}}),b=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'terminal',conversationId:a.execution.conversationId}});
     f.store.change(state=>{state.settings.maxSessions=2;});
     const physical=new Set([first.id,second.id]);let entered!:()=>void,release!:()=>void;
     const ready=new Promise<void>(resolve=>{entered=resolve;});
@@ -186,7 +197,7 @@ test('slot reclamation rechecks native conversation ownership after asynchronous
     await Promise.race([ready,pending]);
     // Another caller claims the native transcript while A is waiting on a slot.
     await f.service.start(b.id);
-    release();await assert.rejects(pending,/同一 Claude 对话/);
+    release();await assert.rejects(pending,/同一提供方的对话/);
     assert.equal(f.active.has(a.id),false);assert.equal(f.active.has(b.id),true);
     assert.equal(physical.has(second.id),true,'identity conflicts must not evict another idle session');
   }finally{t.mock.restoreAll();await f.dispose();}
@@ -194,8 +205,8 @@ test('slot reclamation rechecks native conversation ownership after asynchronous
 
 test('archiving a queued session during idle eviction prevents its pending prompt from starting',async t=>{
   const f=await fixture();try{
-    const idle=f.add(f.repo,{kind:'claude',adapter:'structured',status:'running',taskState:'completed'});
-    const target=f.add(f.repo,{kind:'claude',adapter:'structured'});
+    const idle=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
+    const target=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
     f.store.change(state=>{state.settings.maxSessions=1;});
     const physical=new Set([idle.id]);let entered!:()=>void,release!:()=>void,sent=0;
     const ready=new Promise<void>(resolve=>{entered=resolve;});
@@ -217,9 +228,9 @@ test('archiving a queued session during idle eviction prevents its pending promp
 
 test('workflow turns explicitly pass their user goal for naming without modifying stage instructions',async t=>{
   const f=await fixture();try{
-    const session=f.add(f.repo,{kind:'claude',adapter:'structured',titleSource:'default'});
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},titleSource:'default'});
     const requests:{text:string;titlePrompt?:string}[]=[];
-    t.mock.method(f.service.chat,'send',async(_id:string,text:string,_capabilities:Capabilities,_attachments?:string[],titlePrompt?:string)=>{
+    t.mock.method(f.service.chat,'send',async(_id:string,text:string,_attachments?:string[],titlePrompt?:string)=>{
       requests.push({text,titlePrompt});return {success:true,summary:'done'};
     });
     const run=f.service.workflows.create({sessionId:session.id,goal:'修复登录状态恢复',stages:[{id:'inspect',title:'检查',instruction:'仅检查实现',dependsOn:[]}]});
@@ -231,7 +242,7 @@ test('workflow turns explicitly pass their user goal for naming without modifyin
 
 test('panel drafts merge independent sections, survive restart and disappear with the owning session',async()=>{
   const f=await fixture();try{
-    const a=f.add(f.repo,{kind:'claude',adapter:'structured',draft:'main draft'}),b=f.add(f.repo);
+    const a=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},draft:'main draft'}),b=f.add(f.repo);
     const workflow={...emptyWorkflowDraft(),goal:'next task',editing:'run:plan',instructions:{'run:plan':'unsaved instruction'},maxAttempts:3};
     const git={...emptyGitReviewDraft(),selected:'one.txt',staged:true,feedback:{'one.txt':'first review','two.txt':'second review'}};
     await f.call('session:panel-drafts',{id:a.id,patch:{workflow}});
@@ -393,13 +404,13 @@ test('failed fork registration releases both source and destination project rese
 test('session diagnostics inspect the actual worktree and session deletion purges its inactive workflows', async()=>{
   const f=await fixture();try {
     const id=randomUUID(), tree=await createWorktree(f.repo,f.dir,id);
-    const session=f.add(tree,{id,kind:'claude',adapter:'structured',worktree:tree,worktreeBase:f.repo});
+    const session=f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo});
     await fs.writeFile(path.join(tree,'.mcp.json'),JSON.stringify({mcpServers:{'worktree-only':{command:'fixture'}}}));
     const diagnostics=await f.call<EnvironmentDiagnostics>('cli:diagnostics',session.id);
     assert.equal(diagnostics.cwd,tree);
     assert.ok(diagnostics.mcp.some(entry=>entry.name==='worktree-only'));
     assert.ok(diagnostics.configs.some(entry=>entry.path===path.join(tree,'.mcp.json')));
-    const plain=f.add(f.repo,{kind:'claude',adapter:'structured'});
+    const plain=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
     f.service.workflows.create({sessionId:plain.id,goal:'Retained draft'});
     await f.call('session:delete',plain.id);
     assert.equal(f.service.workflows.list(plain.id).length,0);
@@ -409,7 +420,7 @@ test('session diagnostics inspect the actual worktree and session deletion purge
 
 test('failed turns keep attachment drafts and successful turns clear them without deleting referenced bytes', async t=>{
   const f=await fixture();try {
-    const session=f.add(f.repo,{kind:'claude',adapter:'structured'});
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
     const attachments=(f.service as unknown as {attachments:Attachments}).attachments;
     const source=path.join(f.dir,'context.txt');await fs.writeFile(source,'context');
     const [attachment]=await attachments.add(session.id,[source]);
@@ -426,7 +437,7 @@ test('failed turns keep attachment drafts and successful turns clear them withou
 
 test('attachment bookkeeping failure reports completed execution without repeating the turn', async t=>{
   const f=await fixture();try {
-    const session=f.add(f.repo,{kind:'claude',adapter:'structured'});
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
     const attachments=(f.service as unknown as {attachments:Attachments}).attachments;
     const source=path.join(f.dir,'context.txt');await fs.writeFile(source,'context');
     const [attachment]=await attachments.add(session.id,[source]);
@@ -443,11 +454,11 @@ test('attachment bookkeeping failure reports completed execution without repeati
 test('shutdown attempts both runtimes after persistence failures and permits a successful retry', async t=>{
   const f=await fixture();try {
     const workflowsShutdown=f.service.workflows.shutdown.bind(f.service.workflows);
-    const chatShutdown=f.service.chat.shutdown.bind(f.service.chat);
+    const chatShutdown=f.chat.shutdown.bind(f.chat);
     const runtimeShutdown=f.runtime.shutdown.bind(f.runtime);
     let workflowCalls=0,chatCalls=0,runtimeCalls=0;
     t.mock.method(f.service.workflows,'shutdown',async()=>{if(++workflowCalls===1)throw new Error('workflow disk error');await workflowsShutdown();});
-    t.mock.method(f.service.chat,'shutdown',async()=>{if(++chatCalls===1)throw new Error('chat disk error');await chatShutdown();});
+    t.mock.method(f.chat,'shutdown',async()=>{if(++chatCalls===1)throw new Error('chat disk error');await chatShutdown();});
     t.mock.method(f.runtime,'shutdown',async()=>{runtimeCalls++;await runtimeShutdown();});
     await assert.rejects(f.service.shutdown(),/workflow disk error\nchat disk error/);
     assert.deepEqual([workflowCalls,chatCalls,runtimeCalls],[1,1,1]);
@@ -482,7 +493,7 @@ test('notification navigation emits intent even for the selected session and ign
 
 test('conversation history IPC validates message cursors and restricts reads to structured sessions',async()=>{
   const f=await fixture();try{
-    const structured=f.add(f.repo,{kind:'claude',adapter:'structured'}),terminal=f.add(f.repo);
+    const structured=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}}),terminal=f.add(f.repo);
     await assert.rejects(f.call('chat:page',{id:terminal.id}),/图形化/);
     await assert.rejects(f.call('chat:search',{id:terminal.id,query:'test'}),/图形化/);
     for(const options of [{before:'one',after:'two'},{around:'x'.repeat(4097)},{query:'x'.repeat(501)}])await assert.rejects(f.call('chat:page',{id:structured.id,...options}));

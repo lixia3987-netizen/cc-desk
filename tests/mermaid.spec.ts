@@ -15,14 +15,14 @@ async function workspace(texts: string[], toolIndexes: number[] = []) {
   await fs.mkdir(projectPath);
   await fs.mkdir(path.join(data, 'chat'), { recursive: true });
   const canonicalPath = await fs.realpath(projectPath);
-  const session: Session = {
-    id: sessionId, projectId, cwd: canonicalPath, claudeId: randomUUID(), title: 'Mermaid 会话',
-    kind: 'claude', adapter: 'structured', started: false, model: '', effort: 'default',
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
+    id: sessionId, projectId, cwd: canonicalPath,  title: 'Mermaid 会话',
+    kind: 'agent',  started: false, model: '', effort: 'default',
     permissionMode: 'default', status: 'idle', taskState: 'completed', archived: false,
     createdAt: now, updatedAt: now,
   };
   const state: AppState = {
-    version: 1, projects: [{ id: projectId, name: 'Mermaid 测试项目', path: canonicalPath, createdAt: now }],
+    version: 2, projects: [{ id: projectId, name: 'Mermaid 测试项目', path: canonicalPath, createdAt: now }],
     sessions: [session], selectedSessionId: sessionId,
     settings: { claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, theme: 'forest' },
   };

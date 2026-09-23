@@ -142,11 +142,11 @@ test('custom configuration directory does not blend the default account MCP conf
 });
 
 test('a previously started session cannot silently become a new session when transcript is missing', () => {
-  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'resume', kind: 'claude', cwd: '/tmp', claudeId: randomUUID(), started: true,
+  const session: Session = { execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'resume', kind: 'agent', cwd: '/tmp',  started: true,
     model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: '', updatedAt: '' };
   const capabilities = parseCapabilities('--session-id UUID\n--resume ID\n--permission-mode default', 'claude', '2.1.278');
   assert.throws(() => claudeArguments(session, capabilities, false), /未找到原会话记录/);
   assert.equal(claudeArguments(session, capabilities, true)[0], '--resume');
-  session.resumeFrom = randomUUID();
+  session.execution.forkFrom = randomUUID();
   assert.throws(() => claudeArguments(session, capabilities, false), /不会自动创建空白会话/);
 });

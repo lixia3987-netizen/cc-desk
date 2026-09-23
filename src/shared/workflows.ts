@@ -30,9 +30,11 @@ export interface WorkflowStage {
   error?: string;
 }
 
-/** A workflow keeps one conversation and one working directory throughout its life. */
+/** A workflow keeps one local session, executor, and working directory throughout its life. */
 export interface WorkflowBinding {
   sessionId: string;
+  providerId: string;
+  executionMode: 'structured';
   projectId: string;
   cwd: string;
   worktree?: string;

@@ -10,16 +10,16 @@ import { StateStore } from '../src/main/store';
 import type { Session } from '../src/shared/types';
 
 test('only blank names on new Claude conversations opt into automatic naming', () => {
-  assert.deepEqual(initialSessionTitle({ title: '  ', kind: 'claude' }), { title: '新的开发会话', titleSource: 'default' });
-  assert.deepEqual(initialSessionTitle({ title: '  登录修复  ', kind: 'claude' }), { title: '登录修复', titleSource: 'manual' });
-  assert.equal(initialSessionTitle({ title: '新的开发会话', kind: 'claude' }).titleSource, 'manual');
+  assert.deepEqual(initialSessionTitle({ title: '  ', kind: 'agent' }), { title: '新的开发会话', titleSource: 'default' });
+  assert.deepEqual(initialSessionTitle({ title: '  登录修复  ', kind: 'agent' }), { title: '登录修复', titleSource: 'manual' });
+  assert.equal(initialSessionTitle({ title: '新的开发会话', kind: 'agent' }).titleSource, 'manual');
   for (const input of [
     { title: '', kind: 'shell' as const },
-    { title: '', kind: 'claude' as const, resumeFrom: randomUUID() },
-    { title: '', kind: 'claude' as const, fork: true }
+    { title: '', kind: 'agent' as const, conversationId: randomUUID() },
+    { title: '', kind: 'agent' as const, fork: true }
   ]) assert.equal(initialSessionTitle(input).titleSource, 'manual');
   assert.equal(initialSessionTitle({ title: '', kind: 'shell' }).title, '项目终端');
-  const input = { projectId: randomUUID(), title: '  ', kind: 'claude', model: '', effort: 'default', isolated: false };
+  const input = { projectId: randomUUID(), title: '  ', kind: 'agent', model: '', effort: 'default', isolated: false };
   assert.equal(sessionInputSchema.parse(input).title, '');
   assert.equal(sessionInputSchema.safeParse({ ...input, title: 'a'.repeat(121) }).success, false);
 });
@@ -40,8 +40,8 @@ test('commands, code-only payloads and blank attachment messages leave naming av
     '```ts\nconst secret = "value";\n```', '{\n "code": "value"\n}', 'import x from "x";\nexport const y = x;', '![screenshot](attachment.png)']) {
     assert.equal(titleFromPrompt(prompt), undefined, prompt);
   }
-  assert.equal(automaticSessionTitlePatch({ kind: 'claude', titleSource: 'default' }, '/clear'), undefined);
-  assert.deepEqual(automaticSessionTitlePatch({ kind: 'claude', titleSource: 'default' }, '检查接口'), { title: '检查接口', titleSource: 'auto' });
+  assert.equal(automaticSessionTitlePatch({ kind: 'agent', titleSource: 'default', execution: {providerId:'claude',mode:'structured'} }, '/clear'), undefined);
+  assert.deepEqual(automaticSessionTitlePatch({ kind: 'agent', titleSource: 'default', execution: {providerId:'claude',mode:'structured'} }, '检查接口'), { title: '检查接口', titleSource: 'auto' });
 });
 
 test('automatic labels are short, single-line and retain complete Unicode graphemes', () => {
@@ -59,12 +59,12 @@ test('automatic labels are short, single-line and retain complete Unicode graphe
 
 test('auto naming never changes manual, legacy, shell, imported, forked or already named sessions', () => {
   for (const session of [
-    { kind: 'claude' as const },
-    { kind: 'claude' as const, titleSource: 'manual' as const },
-    { kind: 'claude' as const, titleSource: 'auto' as const },
-    { kind: 'shell' as const, titleSource: 'default' as const },
-    { kind: 'claude' as const, titleSource: 'default' as const, imported: true },
-    { kind: 'claude' as const, titleSource: 'default' as const, resumeFrom: randomUUID() }
+    { kind: 'agent' as const, execution: {providerId:'claude',mode:'structured' as const} },
+    { kind: 'agent' as const, titleSource: 'manual' as const, execution: {providerId:'claude',mode:'structured' as const} },
+    { kind: 'agent' as const, titleSource: 'auto' as const, execution: {providerId:'claude',mode:'structured' as const} },
+    { kind: 'shell' as const, titleSource: 'default' as const, execution: {providerId:'shell',mode:'terminal' as const} },
+    { kind: 'agent' as const, titleSource: 'default' as const, execution: {providerId:'claude',mode:'structured' as const,imported:true} },
+    { kind: 'agent' as const, titleSource: 'default' as const, execution: {providerId:'claude',mode:'structured' as const,forkFrom:randomUUID()} }
   ]) assert.equal(automaticSessionTitlePatch(session, '后续请求不应覆盖名称'), undefined);
 });
 
@@ -73,10 +73,10 @@ test('title provenance and generated labels survive persistence without renaming
   try {
     const store = new StateStore(directory);
     const timestamp = new Date().toISOString();
-    const legacy: Session = { id: randomUUID(), projectId: randomUUID(), claudeId: randomUUID(), cwd: directory, title: '新的开发会话',
-      kind: 'claude', adapter: 'structured', started: false, model: '', effort: 'default', permissionMode: 'default',
+    const legacy: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(),  cwd: directory, title: '新的开发会话',
+      kind: 'agent',  started: false, model: '', effort: 'default', permissionMode: 'default',
       status: 'idle', archived: false, createdAt: timestamp, updatedAt: timestamp };
-    const pending: Session = { ...legacy, id: randomUUID(), claudeId: randomUUID(), titleSource: 'default' };
+    const pending: Session = { ...legacy, execution: { ...legacy.execution, conversationId: randomUUID() }, id: randomUUID(),  titleSource: 'default' };
     store.change(state => state.sessions.push(legacy, pending));
     const restored = new StateStore(directory);
     assert.equal(restored.state.sessions[0].titleSource, undefined);

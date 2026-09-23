@@ -13,8 +13,8 @@ async function workspace() {
   const data = path.join(directory,'data'), projectPath = path.join(directory,'project'), now = new Date().toISOString();
   await fs.mkdir(path.join(data,'chat'), {recursive:true}); await fs.mkdir(projectPath);
   const project = {id:randomUUID(),name:'字体与阅读体验',path:await fs.realpath(projectPath),createdAt:now};
-  const session: Session = {id:randomUUID(),projectId:project.id,cwd:project.path,claudeId:randomUUID(),title:'清晰阅读，自由设置',kind:'claude',adapter:'structured',started:false,model:'',effort:'default',permissionMode:'default',status:'idle',taskState:'completed',archived:false,createdAt:now,updatedAt:now};
-  const state: AppState = {version:1,projects:[project],sessions:[session],selectedSessionId:session.id,settings:{claudePath:path.join(directory,'unavailable-claude'),shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}};
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },id:randomUUID(),projectId:project.id,cwd:project.path,title:'清晰阅读，自由设置',kind:'agent',started:false,model:'',effort:'default',permissionMode:'default',status:'idle',taskState:'completed',archived:false,createdAt:now,updatedAt:now};
+  const state: AppState = {version: 2,projects:[project],sessions:[session],selectedSessionId:session.id,settings:{claudePath:path.join(directory,'unavailable-claude'),shellPath:'',maxSessions:4,fontSize:14,scrollback:8000}};
   const chat: ChatSnapshot = {sessionId:session.id,taskState:'completed',pending:[],messages:[
     {id:'user',turnId:'turn',role:'user',createdAt:now,text:'让聊天和菜单使用不同的字体，并立即看到效果。'},
     {id:'assistant',turnId:'turn',role:'assistant',createdAt:now,text:'### 让每一行都清晰易读\n\n聊天正文、输入框与菜单可以分别设置。选择适合你的字号，不需要重启工作台。\n\n```typescript\nconst typography = { chat: 18, menu: 15 };\n```\n\n保存后，下次打开仍会保留。'},

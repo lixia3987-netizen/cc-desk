@@ -9,28 +9,30 @@ import type { SubtaskActivity } from './subtasks';
 import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
 import type { CLIUpdateState } from './cli-update';
+import type { SessionExecution, ExecutionMode, ExecutionDescriptor } from './execution';
+import type { ExecutionEvent } from './execution-events';
 export type { PermissionMode } from './permissions';
 export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Session {
-  id: string; projectId: string; title: string; kind: 'claude' | 'shell';
+  id: string; projectId: string; title: string; kind: 'agent' | 'shell';
   titleSource?: SessionTitleSource;
-  cwd: string; claudeId: string; resumeFrom?: string; imported?: boolean; started: boolean;
+  cwd: string; execution: SessionExecution; started: boolean;
   model: string; effort: Effort; permissionMode: PermissionMode;
   status: SessionStatus; archived: boolean; createdAt: string; updatedAt: string;
   worktree?: string; worktreeBase?: string; exitCode?: number; error?: string;
-  adapter?: 'terminal' | 'structured'; taskState?: TaskState; draft?: string;
+  taskState?: TaskState; draft?: string;
   terminalSync?: 'waiting' | 'synced' | 'unsupported'; identityPending?: boolean;
   observedPermissionMode?: 'default' | 'plan' | 'acceptEdits' | 'auto' | 'dontAsk' | 'bypassPermissions';
   panelDrafts?: PanelDrafts;
   subtasks?: SubtaskActivity;
 }
 export interface Settings extends TypographySettings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
-export interface AppState { version: 1; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
+export interface AppState { version: 2; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
-export interface Snapshot { state: AppState; capabilities: Capabilities; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'claude' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; resumeFrom?: string; fork?: boolean; adapter?: 'terminal' | 'structured' }
+export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
+export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalChunk { sessionId: string; seq: number; data: string }
@@ -106,5 +108,6 @@ export interface DesktopAPI {
   onError(callback: (message: string) => void): () => void;
   onNavigate(callback: (sessionId: string) => void): () => void;
   onCapabilities(callback: (capabilities: Capabilities) => void): () => void;
+  onExecution(callback: (event: ExecutionEvent) => void): () => void;
   onTerminal(callback: (chunk: TerminalChunk) => void): () => void;
 }
