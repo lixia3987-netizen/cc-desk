@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { extractFile } from '@electron/asar';
 
 type Target = { format: string; artifact: string; executable: string; arch: string };
 const manifest = process.env.WORKBENCH_PACKAGED_TARGETS;
@@ -78,10 +79,8 @@ for (const target of targets) {
         }
         return true;
       })).toBe(true);
-      const notices = await app!.evaluate(async ({app}) => {
-        const fs = await import('node:fs/promises'), path = await import('node:path');
-        return Promise.all(['noto-sans-sc','noto-serif-sc','jetbrains-mono'].map(family=>fs.readFile(path.join(app.getAppPath(),'dist','renderer','font-licenses',family+'-OFL.txt'),'utf8')));
-      });
+      const archivePath = await app!.evaluate(({app}) => app.getAppPath());
+      const notices = ['noto-sans-sc','noto-serif-sc','jetbrains-mono'].map(family => extractFile(archivePath,'dist/renderer/font-licenses/'+family+'-OFL.txt').toString('utf8'));
       for (const notice of notices) expect(notice).toContain('SIL OPEN FONT LICENSE');
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
       // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
