@@ -1,7 +1,8 @@
-import { useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell, Check, FolderCog, FolderOpen, Layers, Loader2, Palette, Plug, RefreshCw, Trash2, Upload } from 'lucide-react';
 import type { Capabilities, Settings } from '../shared/types';
-import { DEFAULT_TYPOGRAPHY, fontFamily, typography, type FontId, type ImportedFont } from '../shared/fonts';
+import { DEFAULT_TYPOGRAPHY, fontFamily, systemFontFamily, typography, type FontId, type ImportedFont, type SystemFont } from '../shared/fonts';
+import { listSystemFonts } from './system-fonts';
 import { settingsSchema } from '../shared/schema';
 import { normalizeThemeId } from '../shared/theme';
 import { PermissionModeField } from './PermissionModeField';
@@ -23,18 +24,21 @@ interface Props {
   onSave(detect: boolean): void; onClose(): void; onChooseIde(): void; onChooseWorktree(): void;
 }
 
-function FontControl({scope, value, fonts, disabled, onChange}: {scope: 'chat' | 'ui'; value: Settings; fonts: ImportedFont[]; disabled: boolean; onChange(value: Settings): void}) {
+function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoaded, disabled, onChange}: {scope: 'chat' | 'ui'; value: Settings; fonts: ImportedFont[]; systemFonts: SystemFont[]; systemQuery: string; systemLoaded: boolean; disabled: boolean; onChange(value: Settings): void}) {
   const settings = typography(value), isChat = scope === 'chat', title = isChat ? '聊天' : '菜单';
   const familyKey = isChat ? 'chatFontFamily' : 'uiFontFamily', sizeKey = isChat ? 'chatFontSize' : 'uiFontSize';
   const family = settings[familyKey], size = value[sizeKey] ?? DEFAULT_TYPOGRAPHY[sizeKey], maximum = isChat ? 28 : 20;
-  const found = family === 'system' || fonts.some(font => font.id === family);
+  const found = family === 'system' || fonts.some(font => font.id === family) || systemFonts.some(font => font.id === family);
+  const systemName = systemFontFamily(family);
+  const matches = systemFonts.filter(font => font.id === family || font.name.toLocaleLowerCase().includes(systemQuery.trim().toLocaleLowerCase()));
   return <section className="font-control" aria-label={title + '字体设置'}>
     <div className="settings-card-heading"><h4>{isChat ? '聊天内容' : '菜单与界面'}</h4><button type="button" className="text-button" disabled={disabled} aria-label={'重置' + title + '字体'} onClick={() => onChange({...value, [familyKey]: DEFAULT_TYPOGRAPHY[familyKey], [sizeKey]: DEFAULT_TYPOGRAPHY[sizeKey]})}>恢复默认</button></div>
     <p className="settings-description">{isChat ? '正文、输入框与工具内容；代码保留等宽字体。' : '侧栏、菜单、工具栏与设置；辅助文字按比例缩放。'}</p>
     <label>{title}字体<select aria-label={title + '字体'} value={family} disabled={disabled} onChange={event => onChange({...value, [familyKey]: event.target.value as FontId})}>
       <option value="system">系统默认</option>
+      {!!matches.length && <optgroup label="系统已安装">{matches.map(font => <option key={font.id} value={font.id}>{font.name}</option>)}</optgroup>}
       {!!fonts.length && <optgroup label="已导入字体">{fonts.map(font => <option key={font.id} value={font.id}>{font.name}</option>)}</optgroup>}
-      {!found && <option value={family}>字体不可用 · 请重新选择</option>}
+      {!found && <option value={family}>{systemName ? systemName + (systemLoaded ? ' · 未检测到，使用系统默认' : ' · 系统字体') : '字体不可用 · 请重新选择'}</option>}
     </select></label>
     <label htmlFor={scope + '-font-size'}>{title}字号 <span className="settings-field-unit">px</span></label>
     <div className="font-size-control"><input type="range" aria-label={title + '字号滑块'} min={11} max={maximum} step={1} value={settings[sizeKey]} disabled={disabled} onChange={event => onChange({...value, [sizeKey]: Number(event.target.value)})}/><input id={scope + '-font-size'} aria-label={title + '字号'} type="number" min={11} max={maximum} step={1} required disabled={disabled} value={size} onChange={event => onChange({...value, [sizeKey]: Number(event.target.value)})}/></div>
@@ -47,6 +51,23 @@ function FontControl({scope, value, fonts, disabled, onChange}: {scope: 'chat' |
 export function SettingsPanel(props: Props) {
   const {value, saved, onChange, page, onPage, fonts, busy, error, capabilities: cap, platform, dataPath} = props;
   const [validation, setValidation] = useState('');
+  const [systemFonts, setSystemFonts] = useState<SystemFont[]>([]);
+  const [systemQuery, setSystemQuery] = useState('');
+  const [systemLoading, setSystemLoading] = useState(false);
+  const [systemLoaded, setSystemLoaded] = useState(false);
+  const [systemError, setSystemError] = useState('');
+  const systemRequest = useRef(0);
+  const refreshSystemFonts = useCallback(async () => {
+    const request = ++systemRequest.current;
+    setSystemLoading(true); setSystemError('');
+    try {
+      const next = await listSystemFonts();
+      if (request === systemRequest.current) { setSystemFonts(next); setSystemLoaded(true); }
+    } catch {
+      if (request === systemRequest.current) setSystemError('读取系统字体失败，请刷新重试。你仍可使用系统默认或导入字体。');
+    } finally { if (request === systemRequest.current) setSystemLoading(false); }
+  }, []);
+  useEffect(() => { void refreshSystemFonts(); return () => { systemRequest.current++; }; }, [refreshSystemFonts]);
   const content = useRef<HTMLDivElement>(null);
   const selected = pages.find(item => item.id === page)!;
   const dirty = (Object.keys({...saved,...value}) as (keyof Settings)[]).some(key => value[key] !== saved[key]);
@@ -74,11 +95,17 @@ export function SettingsPanel(props: Props) {
       <div ref={content} className="settings-content" role="tabpanel" id={'settings-page-' + page} aria-labelledby={'settings-tab-' + page}>
         <div className="settings-page-heading"><h3>{selected.title}</h3><p>{selected.description}</p></div>
         {page === 'appearance' && <>
-          <div className="font-controls"><FontControl scope="chat" value={value} fonts={fonts} disabled={busy} onChange={onChange}/><FontControl scope="ui" value={value} fonts={fonts} disabled={busy} onChange={onChange}/></div>
+          <section className="system-font-picker" aria-label="系统字体">
+            <div className="settings-card-heading"><h4>系统已安装字体</h4><button type="button" className="secondary compact" disabled={busy || systemLoading} onClick={()=>void refreshSystemFonts()}><RefreshCw size={15}/>刷新系统字体</button></div>
+            <p className="settings-description" role="status">{systemLoading ? '正在读取系统字体…' : systemError || (systemLoaded ? `已读取 ${systemFonts.length} 款字体，可在下方分别选择。` : '读取本机已安装字体后，可分别用于聊天和菜单。')}</p>
+            <input type="search" aria-label="搜索系统字体" placeholder="搜索系统字体名称" value={systemQuery} disabled={busy || !systemLoaded} onChange={event=>setSystemQuery(event.target.value)}/>
+            {systemQuery.trim() && !systemFonts.some(font=>font.name.toLocaleLowerCase().includes(systemQuery.trim().toLocaleLowerCase())) && <p className="settings-description">没有匹配的系统字体。已选字体仍保留在选项中。</p>}
+          </section>
+          <div className="font-controls"><FontControl scope="chat" value={value} fonts={fonts} systemFonts={systemFonts} systemQuery={systemQuery} systemLoaded={systemLoaded} disabled={busy} onChange={onChange}/><FontControl scope="ui" value={value} fonts={fonts} systemFonts={systemFonts} systemQuery={systemQuery} systemLoaded={systemLoaded} disabled={busy} onChange={onChange}/></div>
           <section className="settings-section font-library" aria-label="字体库">
             <div className="settings-card-heading"><h4>本机字体库</h4><button type="button" className="secondary compact" disabled={busy} onClick={props.onImport}><Upload size={15}/>导入字体</button></div>
             <p className="settings-description">支持 TTF、OTF、WOFF、WOFF2，单个最多 20 MiB。导入后可在聊天和菜单中选择，无需安装到系统。</p>
-            {fonts.length ? <ul className="imported-fonts">{fonts.map(font => <li key={font.id}><div><strong>{font.name}</strong><small>{font.format.toUpperCase()} · {(font.bytes / 1024 / 1024).toFixed(2)} MiB{[value.chatFontFamily,value.uiFontFamily].includes(font.id) ? ' · 当前已选' : ''}</small></div><button type="button" className="icon-button danger" aria-label={'移除字体 ' + font.name} title="移除后，使用此字体的区域恢复系统默认；原文件不受影响。" disabled={busy} onClick={() => props.onRemove(font.id)}><Trash2 size={16}/></button></li>)}</ul> : <p className="font-library-empty">还没有导入字体。当前可使用系统默认字体，也可以导入本机字体文件。</p>}
+            {fonts.length ? <ul className="imported-fonts">{fonts.map(font => <li key={font.id}><div><strong>{font.name}</strong><small>{font.format.toUpperCase()} · {(font.bytes / 1024 / 1024).toFixed(2)} MiB{[value.chatFontFamily,value.uiFontFamily].includes(font.id) ? ' · 当前已选' : ''}</small></div><button type="button" className="icon-button danger" aria-label={'移除字体 ' + font.name} title="移除后，使用此字体的区域恢复系统默认；原文件不受影响。" disabled={busy} onClick={() => props.onRemove(font.id)}><Trash2 size={16}/></button></li>)}</ul> : <p className="font-library-empty">还没有导入字体。可在上方选择系统字体，也可以导入本机字体文件。</p>}
             <p className="settings-description">字体库的导入、移除会立即保存；只管理应用内副本，不修改原文件。关闭设置只撤销尚未保存的字体选择、字号与主题。</p>
           </section>
           <ThemePicker value={normalizeThemeId(value.theme)} disabled={busy} onChange={theme => onChange({...value, theme})}/>

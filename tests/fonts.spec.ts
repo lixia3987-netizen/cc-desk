@@ -5,7 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { AppState, Session } from '../src/shared/types';
 import type { ChatSnapshot } from '../src/shared/chat';
-import { importedFamily } from '../src/shared/fonts';
+import { importedFamily, normalizeSystemFonts } from '../src/shared/fonts';
 import { fontFixture } from './fixtures/font';
 
 async function workspace() {
@@ -52,7 +52,8 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     await expect.poll(chatSize).toBe('12px'); await expect.poll(menuSize).toBe('13px');
     let settings = await openSettings(page);
     for (const label of ['聊天字体','菜单字体']) {
-      await expect(settings.getByLabel(label,{exact:true}).locator('option')).toHaveText(['系统默认']);
+      await expect(settings.getByLabel(label,{exact:true})).toHaveValue('system');
+      await expect(settings.getByLabel(label,{exact:true}).locator('option[value="system"]')).toHaveText('系统默认');
     }
     await picker(app,f.source); await settings.getByRole('button',{name:'导入字体',exact:true}).click();
     await expect(settings.locator('.imported-fonts li')).toHaveCount(1);
@@ -95,6 +96,80 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     const saved = (await page.evaluate(()=>window.desktop.snapshot())).state.settings;
     expect(saved.chatFontFamily).toBe('system'); expect(saved.uiFontFamily).toBe(font.id);
     expect(saved.fontSize).toBe(14);
+  } finally {await app.close();await f.dispose();}
+});
+
+test('fonts: installed system fonts enumerate, filter, preview independently and persist after restart', async ({},testInfo) => {
+  const f = await workspace(); let app = await f.launch();
+  try {
+    let page = await app.firstWindow(), settings = await openSettings(page);
+    const fonts = normalizeSystemFonts(await page.evaluate(async () => {
+      if (!window.queryLocalFonts) throw new Error('Local Font Access API unavailable');
+      return (await window.queryLocalFonts()).map(font=>({family:font.family}));
+    }));
+    expect(fonts.length).toBeGreaterThan(1);
+    await expect(settings.getByRole('status')).toContainText(`已读取 ${fonts.length} 款字体`);
+    await expect(settings.getByLabel('聊天字体',{exact:true}).locator('optgroup[label="系统已安装"] option')).toHaveCount(fonts.length);
+    const chat = fonts.find(font=>/sans/i.test(font.name)) ?? fonts[0];
+    const ui = fonts.find(font=>font.id!==chat.id && /serif/i.test(font.name)) ?? fonts.find(font=>font.id!==chat.id)!;
+    await settings.getByLabel('搜索系统字体').fill(chat.name);
+    await settings.getByLabel('聊天字体',{exact:true}).selectOption(chat.id);
+    await expect(settings.getByLabel('菜单字体',{exact:true})).toHaveValue('system');
+    await expect.poll(()=>page.locator('.message-markdown').first().evaluate(el=>getComputedStyle(el).fontFamily)).toContain(chat.name);
+    await settings.getByLabel('搜索系统字体').fill('no-font-matches-this-query');
+    await expect(settings.getByText('没有匹配的系统字体。已选字体仍保留在选项中。')).toBeVisible();
+    await expect(settings.getByLabel('聊天字体',{exact:true})).toHaveValue(chat.id);
+    await settings.getByLabel('搜索系统字体').fill('');
+    await settings.getByLabel('菜单字体',{exact:true}).selectOption(ui.id);
+    await expect.poll(()=>page.locator('html').evaluate(el=>getComputedStyle(el).fontFamily)).toContain(ui.name);
+    await settings.getByRole('button',{name:'取消',exact:true}).click();
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontFamily).toBe('system');
+    await expect.poll(()=>page.locator('html').evaluate(el=>getComputedStyle(el).fontFamily)).not.toContain(ui.name);
+    settings = await openSettings(page);
+    await expect(settings.getByRole('status')).toContainText(`已读取 ${fonts.length} 款字体`);
+    await settings.getByLabel('聊天字体',{exact:true}).selectOption(chat.id);
+    await settings.getByLabel('菜单字体',{exact:true}).selectOption(ui.id);
+    await settings.getByLabel('聊天字号',{exact:true}).fill('19');
+    await settings.getByRole('button',{name:'保存设置',exact:true}).click();
+    await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.uiFontFamily).toBe(ui.id);
+    await app.close(); app = await f.launch(); page = await app.firstWindow();
+    await expect.poll(()=>page.locator('.message-markdown').first().evaluate(el=>getComputedStyle(el).fontFamily)).toContain(chat.name);
+    await expect(page.locator('.message-markdown').first()).toHaveCSS('font-size','19px');
+    await expect.poll(()=>page.locator('html').evaluate(el=>getComputedStyle(el).fontFamily)).toContain(ui.name);
+    expect(await page.evaluate(()=>window.desktop.listFonts())).toEqual([]);
+    settings = await openSettings(page);
+    await expect(settings.getByRole('status')).toContainText(`已读取 ${fonts.length} 款字体`);
+    await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(980,680));
+    await expect(settings.getByRole('button',{name:'保存设置',exact:true})).toBeInViewport({ratio:1});
+    expect(await settings.locator('.settings-content').evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
+    await page.screenshot({path:testInfo.outputPath('system-font-settings.png')});
+    const permission = await page.evaluate(async()=> (await navigator.permissions.query({name:'geolocation'})).state);
+    expect(permission).toBe('denied');
+  } finally {await app.close();await f.dispose();}
+});
+
+test('fonts: system fonts refresh failures and missing families preserve selected settings', async () => {
+  const f = await workspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), settings = await openSettings(page);
+    await expect(settings.getByRole('status')).toContainText(/已读取 \d+ 款字体/);
+    const option = settings.getByLabel('聊天字体',{exact:true}).locator('optgroup[label="系统已安装"] option').first();
+    const id = (await option.getAttribute('value'))!;
+    await settings.getByLabel('聊天字体',{exact:true}).selectOption(id);
+    await settings.getByRole('button',{name:'保存设置',exact:true}).click();
+    await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontFamily).toBe(id);
+    await expect(settings.getByRole('button',{name:'保存设置',exact:true})).toBeEnabled();
+    await page.evaluate(()=>{window.queryLocalFonts=async()=>{throw new DOMException('Denied','NotAllowedError');};});
+    await settings.getByRole('button',{name:'刷新系统字体',exact:true}).click();
+    await expect(settings.getByRole('status')).toContainText('读取系统字体失败');
+    await expect(settings.getByLabel('聊天字体',{exact:true})).toHaveValue(id);
+    await page.evaluate(()=>{window.queryLocalFonts=async()=>[];});
+    await settings.getByRole('button',{name:'刷新系统字体',exact:true}).click();
+    await expect(settings.getByRole('status')).toContainText('已读取 0 款字体');
+    await expect(settings.getByLabel('聊天字体',{exact:true})).toHaveValue(id);
+    await expect(settings.getByLabel('聊天字体',{exact:true}).locator('option:checked')).toContainText('未检测到');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontFamily).toBe(id);
+    await expect(settings.getByRole('button',{name:'导入字体',exact:true})).toBeEnabled();
   } finally {await app.close();await f.dispose();}
 });
 
