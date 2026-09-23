@@ -9,6 +9,7 @@ import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
 import { SubtaskPanel } from './SubtaskPanel';
 import { PromptEditor } from './PromptEditor';
 import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
+import { ContextMeter } from './ContextMeter';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
@@ -53,6 +54,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
 }) {
   const [snapshot,setSnapshot]=useState<ChatSnapshot>(), [sending,setSending]=useState(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false),sendInFlight=useRef(false);
+  const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
   const initialReading=useRef(readingPositions.get(session.id));
   const [archive,setArchive]=useState<ChatPage>(),[paging,setPaging]=useState(false),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
@@ -86,6 +88,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
   const load=useCallback(async()=>{const seq=++request.current;const value=await window.desktop.chatSnapshot(session.id);if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}},[session.id,approvalDrafts]);
+  const prepareCommands=useCallback(()=>{
+    if(commandsLoading.current)return commandsLoading.current;
+    const pending=window.desktop.prepareChatCommands(session.id).then(async()=>{if(mounted.current)await load();});
+    commandsLoading.current=pending;
+    const clear=()=>{if(commandsLoading.current===pending)commandsLoading.current=undefined;};
+    void pending.then(clear,clear);
+    return pending;
+  },[session.id,load]);
   useEffect(()=>{
     mounted.current=true;let timer:ReturnType<typeof setTimeout>|undefined;
     void load().catch(onError);
@@ -122,10 +132,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
   const task=snapshot?.taskState??session.taskState??'idle', running=sending||isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
   const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
   const send=async()=>{
-    if((!draft.trim()&&!attachments.length)||running||sendInFlight.current||session.archived)return;
+    if((!draft.trim()&&!attachments.length)||(running&&!commandsLoading.current)||sendInFlight.current||session.archived)return;
     if(draft.length>60000){onError(new Error('单次提示词请控制在 60,000 个字符以内。'));return;}
     sendInFlight.current=true;setSending(true);jumpToLatest();
     try{
+      // Opening / may still be initializing the idle CLI. A quick explicit send
+      // waits for that handshake; the main process still rejects active turns.
+      await commandsLoading.current;
       const result=await window.desktop.sendChat(session.id,draft.trim(),attachments.map(file=>file.path));
       if(result.success)onSent(draft);
       if(result.success)onAttachmentsSent(attachments.map(file=>file.path));
@@ -151,8 +164,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
     <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
+    <ContextMeter context={snapshot?.context}/>
     <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={running} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
-      <PromptEditor placeholder="描述任务… Enter 发送，Ctrl / ⌘ + Enter 换行" value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}/>
+      <PromptEditor placeholder="描述任务，或输入 / 选择命令与 Skills…" value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
+        commands={snapshot?.commands} loadCommands={prepareCommands}/>
       <div><button className="icon-button" title="添加图片、PDF 或文件附件" aria-label="添加附件" disabled={running} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；草稿自动保存">Enter 发送 · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running?<button className="secondary compact" disabled={session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>:<button className="primary compact" disabled={(!draft.trim()&&!attachments.length)||session.archived} onClick={()=>void send()}><CornerDownLeft size={14}/>发送任务</button>}</div>
     </div>
   </div>;
