@@ -49,6 +49,7 @@ export interface DesktopAPI {
   setSelection(id: string): Promise<void>;
   deleteSession(id: string): Promise<void>;
   chatSnapshot(id: string): Promise<ChatSnapshot>;
+  prepareChatCommands(id: string): Promise<ChatSnapshot>;
   chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   searchChat(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   chatAttention(): Promise<ChatAttention[]>;
