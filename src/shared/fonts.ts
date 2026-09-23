@@ -1,4 +1,4 @@
-export const BUILTIN_FONT_IDS = ['system', 'noto-sans-sc', 'noto-serif-sc', 'jetbrains-mono'] as const;
+export const BUILTIN_FONT_IDS = ['system', 'noto-sans-sc', 'jetbrains-mono'] as const;
 export type BuiltinFontId = typeof BUILTIN_FONT_IDS[number];
 export type FontId = BuiltinFontId | `imported:${string}`;
 export interface ImportedFont { id: FontId; name: string; format: 'ttf' | 'otf' | 'woff' | 'woff2'; bytes: number }
@@ -11,7 +11,6 @@ export const SYSTEM_FONT_STACK = '-apple-system, BlinkMacSystemFont, "Segoe UI",
 export const BUILTIN_FONTS = [
   { id: 'system', name: '系统默认', family: '', description: '使用当前系统的界面字体' },
   { id: 'noto-sans-sc', name: 'Noto Sans SC · 思源黑体', family: 'Noto Sans SC Variable', description: '简体中文无衬线，适合界面与日常阅读' },
-  { id: 'noto-serif-sc', name: 'Noto Serif SC · 思源宋体', family: 'Noto Serif SC Variable', description: '简体中文衬线，适合长文阅读' },
   { id: 'jetbrains-mono', name: 'JetBrains Mono · 等宽', family: 'JetBrains Mono Variable', description: '拉丁字符等宽，中文使用内置黑体补齐' },
 ] as const;
 export function isFontId(value: unknown): value is FontId {
