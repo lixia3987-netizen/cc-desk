@@ -75,6 +75,19 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     if(terminal.current){terminal.current.options.fontSize=settings.fontSize;terminal.current.options.scrollback=settings.scrollback;}
     if(active)requestAnimationFrame(() => {fit.current?.fit();if(terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});
   },[active,settings.fontSize,settings.scrollback,session.status,session.id,onError]);
-  useEffect(()=>{if(active)requestAnimationFrame(()=>terminal.current?.focus());},[active]);
+  useEffect(()=>{
+    if(!active)return;
+    // Activation is deferred until xterm is laid out. A user may already have
+    // moved to the composer (or another control) before that frame runs.
+    const focused=document.activeElement;
+    let keepFocus=focused instanceof HTMLElement && (focused.matches('input, textarea, select') || focused.isContentEditable);
+    const moved=()=>{keepFocus=true;};
+    document.addEventListener('focusin',moved);
+    const frame=requestAnimationFrame(()=>{
+      document.removeEventListener('focusin',moved);
+      if(!keepFocus)terminal.current?.focus();
+    });
+    return ()=>{cancelAnimationFrame(frame);document.removeEventListener('focusin',moved);};
+  },[active]);
   return <div className="terminal-host" ref={host} aria-label={`${session.title}终端`}/>;
 });

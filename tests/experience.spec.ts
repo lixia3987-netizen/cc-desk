@@ -205,6 +205,46 @@ test('experience: new-session project, template append, terminal selection and r
 });
 
 
+test('experience: delayed terminal activation cannot steal composer input or lose an appended draft',async()=>{
+  const f=await workspace(2),app=await f.launch();
+  try{
+    const page=await app.firstWindow();
+    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
+    // Hold animation frames during selection so input can arrive before terminal activation.
+    await page.evaluate(()=>{
+      const request=window.requestAnimationFrame,cancel=window.cancelAnimationFrame;
+      const queued=new Map<number,FrameRequestCallback>();let sequence=0;
+      window.requestAnimationFrame=callback=>{const id=--sequence;queued.set(id,callback);return id;};
+      window.cancelAnimationFrame=id=>{if(id<0)queued.delete(id);else cancel(id);};
+      (window as Window & {releaseFrames?:()=>number}).releaseFrames=()=>{
+        window.requestAnimationFrame=request;window.cancelAnimationFrame=cancel;
+        const callbacks=[...queued.values()];queued.clear();
+        for(const callback of callbacks)callback(performance.now());
+        return callbacks.length;
+      };
+      const row=Array.from(document.querySelectorAll<HTMLElement>('.session-row')).find(row=>row.textContent?.includes('CLI 终端 B'))!;
+      row.click();
+    });
+    const editor=page.getByLabel('提示词编辑器',{exact:true});
+    await expect(page.getByRole('heading',{name:'CLI 终端 B',exact:true})).toBeVisible();
+    await expect(page.locator('.terminal-host .xterm-helper-textarea')).toHaveCount(1);
+    await editor.focus();await expect(editor).toBeFocused();
+    expect(await page.evaluate(()=>(window as Window & {releaseFrames?:()=>number}).releaseFrames!())).toBeGreaterThan(0);
+    await expect(editor).toBeFocused();
+    await page.keyboard.insertText('保留现有草稿');await expect(editor).toHaveValue('保留现有草稿');
+    await tab(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
+    await expect(editor).toHaveValue(/^保留现有草稿\n\n请完成以下任务/);
+    // Ordinary terminal selection still focuses the active terminal by default.
+    await select(page,'Shell B');
+    await expect(page.locator('.terminal-slot:visible .xterm-helper-textarea')).toBeFocused();
+    await select(page,'CLI 终端 B');
+    await expect(page.locator('.terminal-slot:visible .xterm-helper-textarea')).toBeFocused();
+    await expect(editor).toHaveValue(/^保留现有草稿\n\n请完成以下任务/);
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.sessions.every(session=>!session.started)).toBe(true);
+  }finally{await app.close();await f.dispose();}
+});
+
+
 test('experience: permission defaults persist while sessions, forks and import overrides keep their own modes',async()=>{
   const f=await workspace(2),probe=await cliProbe(f.directory,'permission-fixture');
   const file=path.join(f.data,'workspace.json'),initial=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
