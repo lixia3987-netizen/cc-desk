@@ -63,13 +63,19 @@ export function SessionContextPanel({
     </button>
     <button className="text-button danger archive-button" disabled={busy || (structured ? activeBusy : ['running', 'stopping'].includes(active.status))} onClick={() => setDeleteConfirm(active.id)}>删除会话</button>
     {deleteConfirm === active.id && <div className="action-confirm">
-      <p>删除工作台中的会话记录。原始 CLI 历史会保留；隔离目录需要先清理。</p>
+      <p>删除工作台中的会话记录，原始 CLI 历史会保留。</p>
+      {active.worktree && <>
+        <p>仅删除会话会保留隔离目录中的全部文件和 Git 分支，包括未提交、未合并及被忽略的文件。之后请手动管理此目录；如需一并移除目录，请先到“变更”面板安全清理。</p>
+        <p className="panel-note">保留目录：{active.worktree}</p>
+        <button className="secondary compact" disabled={busy} onClick={() => void perform(() => window.desktop.openFolder(active.id))}>打开隔离目录</button>
+        <button className="secondary compact" disabled={busy} onClick={() => void perform(async () => { await window.desktop.copyText(active.worktree!); setNotice('隔离目录路径已复制'); })}>复制隔离目录路径</button>
+      </>}
       <button className="secondary compact" onClick={() => setDeleteConfirm('')}>取消</button>
       <button className="secondary compact danger" disabled={busy} onClick={() => void perform(async () => {
         flushDrafts();
-        await window.desktop.deleteSession(active.id);
+        await window.desktop.deleteSession(active.id, active.worktree ? { preserveWorktree: true } : undefined);
         selectSession('');
-      })}>确认删除会话</button>
+      })}>{active.worktree ? '仅删除会话，保留隔离目录' : '确认删除会话'}</button>
     </div>}
   </div>;
 }

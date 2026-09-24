@@ -194,9 +194,10 @@ async function ownership(basePath: string, worktreePath: string, sessionId: stri
 }
 
 export async function worktreeInfo(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeInfo> {
-  const result: WorktreeInfo = { owned: false, path: worktreePath, basePath, clean: false, baseClean: false, merged: false, canMerge: false, canCleanup: false, reasons: [] };
+  const result: WorktreeInfo = { owned: false, path: worktreePath, basePath, clean: false, baseClean: false, merged: false, canMerge: false, canCleanup: false, reasons: [], cleanupReasons: [] };
+  const cleanupBlocked = (message: string) => { result.reasons.push(message); result.cleanupReasons.push(message); };
   const owner = await ownership(basePath, worktreePath, sessionId);
-  if (!owner) { result.reasons.push('此工作区缺少匹配的应用所有权记录，不能自动合并或清理。'); return result; }
+  if (!owner) { cleanupBlocked('此工作区缺少匹配的应用所有权记录，不能自动合并或清理。'); return result; }
   result.owned = true; result.branch = owner.branch; result.baseBranch = owner.baseBranch;
   try {
     const [status, baseStatus, baseBranch, ignored] = await Promise.all([
@@ -207,15 +208,19 @@ export async function worktreeInfo(basePath: string, worktreePath: string, sessi
     const targetMatches = baseBranch.trim() === owner.baseBranch;
     result.merged = await git(basePath, ['merge-base', '--is-ancestor', owner.branch, `refs/heads/${owner.baseBranch}`]).then(() => true, () => false);
     const forward = await git(basePath, ['merge-base', '--is-ancestor', `refs/heads/${owner.baseBranch}`, owner.branch]).then(() => true, () => false);
-    if (running) result.reasons.push('请先停止使用此工作区的所有会话。');
-    if (!result.clean) result.reasons.push('工作区存在未提交或未跟踪文件，请先处理。');
+    if (running) cleanupBlocked('请先停止使用此工作区及来源目录的所有会话。');
+    if (!result.clean) cleanupBlocked('工作区存在未提交或未跟踪文件，请先提交或移走需要保留的文件。');
     if (!result.baseClean) result.reasons.push('主项目存在未提交更改，不能自动合并。');
     if (!targetMatches) result.reasons.push(`主项目已切换分支；请切回 ${owner.baseBranch} 后操作。`);
     if (!result.merged && !forward) result.reasons.push('分支已经分叉，请手动合并并解决冲突；自动合并仅允许快进。');
-    if (ignored) result.reasons.push('工作区含被 Git 忽略的文件，清理前请移走或自行删除。');
+    if (!result.merged) cleanupBlocked(`隔离分支的提交尚未合入 ${owner.baseBranch}，请先合并后再清理。`);
+    if (ignored) {
+      const files = ignored.split('\0').filter(Boolean);
+      cleanupBlocked(`工作区含 ${files.length} 个被 Git 忽略的文件（${files.slice(0, 5).map(file => file.slice(0, 200)).join('、')}${files.length > 5 ? '…' : ''}），清理前请移走或自行删除。`);
+    }
     result.canMerge = !running && result.clean && result.baseClean && targetMatches && (forward || result.merged);
     result.canCleanup = !running && result.clean && result.merged && !ignored;
-  } catch (error) { result.reasons.push(errorMessage(error)); }
+  } catch (error) { cleanupBlocked(errorMessage(error)); }
   return result;
 }
 
@@ -238,7 +243,7 @@ export async function mergeWorktree(basePath: string, worktreePath: string, sess
 export async function cleanupWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {
   return mutate(basePath, async () => {
     const info = await worktreeInfo(basePath, worktreePath, sessionId, running);
-    if (!info.canCleanup) return { ok: false, status: 'blocked', message: info.reasons.join('\n') || '工作区提交尚未合并，不能清理。' };
+    if (!info.canCleanup) return { ok: false, status: 'blocked', message: info.cleanupReasons.join('\n') || '工作区提交尚未合并，不能清理。' };
     try {
       await git(basePath, ['worktree', 'remove', '--', worktreePath]);
       return { ok: true, status: 'removed', message: '已移除干净且已合并的工作区；分支保留，可手动删除。' };

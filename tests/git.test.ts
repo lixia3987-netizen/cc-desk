@@ -87,6 +87,9 @@ test('worktree lifecycle refuses running, dirty, unmerged and ignored-data remov
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     assert.equal((await mergeWorktree(f.repo, tree, id)).ok, false);
     await git(tree, 'add', '.'); await git(tree, 'commit', '-m', 'Feature');
+    const unmerged = await worktreeInfo(f.repo, tree, id);
+    assert.equal(unmerged.canMerge, true);
+    assert.match(unmerged.cleanupReasons.join('\n'), /尚未合入 main/);
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     await fs.writeFile(path.join(f.repo, 'dirty.txt'), 'keep');
     assert.equal((await mergeWorktree(f.repo, tree, id)).ok, false);
@@ -94,12 +97,27 @@ test('worktree lifecycle refuses running, dirty, unmerged and ignored-data remov
     assert.equal((await mergeWorktree(f.repo, tree, id)).status, 'merged');
     assert.equal(await fs.readFile(path.join(f.repo, 'new.txt'), 'utf8'), 'worktree data');
     await fs.writeFile(path.join(tree, 'ignored.txt'), 'must survive');
+    assert.match((await worktreeInfo(f.repo, tree, id)).cleanupReasons.join('\n'), /被 Git 忽略.*ignored\.txt/);
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     assert.equal(await fs.readFile(path.join(tree, 'ignored.txt'), 'utf8'), 'must survive');
     await fs.unlink(path.join(tree, 'ignored.txt'));
     assert.equal((await cleanupWorktree(f.repo, tree, id)).status, 'removed');
     await assert.rejects(fs.stat(tree));
     assert.ok(await git(f.repo, 'rev-parse', '--verify', `refs/heads/workbench/${id.slice(0, 8)}`));
+  } finally { await f.dispose(); }
+});
+
+test('a dirty source prevents merge but does not invent a cleanup blocker for a safe child', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    await fs.writeFile(path.join(f.repo, 'local.txt'), 'source changes stay');
+    const info = await worktreeInfo(f.repo, tree, id);
+    assert.equal(info.canMerge, false);
+    assert.equal(info.canCleanup, true);
+    assert.deepEqual(info.cleanupReasons, []);
+    assert.match(info.reasons.join('\n'), /主项目存在未提交/);
+    assert.equal((await cleanupWorktree(f.repo, tree, id)).status, 'removed');
+    assert.equal(await fs.readFile(path.join(f.repo, 'local.txt'), 'utf8'), 'source changes stay');
   } finally { await f.dispose(); }
 });
 

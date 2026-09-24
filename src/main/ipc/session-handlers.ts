@@ -28,6 +28,7 @@ const updateSchema = z.object({
   model: sessionInputSchema.shape.model.optional(), effort: sessionInputSchema.shape.effort.optional(),
   permissionMode: sessionInputSchema.shape.permissionMode.optional(),
 });
+const deleteSchema = z.union([idSchema, z.object({ id: idSchema, preserveWorktree: z.literal(true) }).strict()]);
 
 export function registerSessionHandlers(handle: Register, ports: SessionPorts): void {
   handle('session:panel-drafts', z.object({ id: idSchema, patch: panelDraftsSchema }), ({ id, patch }) => {
@@ -69,21 +70,25 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
     else save();
     ports.onState();
   });
-  handle('session:delete', idSchema, id => ports.manage(id, async () => {
-    const session = ports.session(id);
-    if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
-    if (session.worktree) throw new Error('请先在 Git 面板检查并清理独立 worktree。');
-    await ports.chat.stopIdle(id);
-    ports.workflows.removeSession(id);
-    ports.runtime.forget(id);
-    ports.chat.forget(id);
-    ports.forgetQueue(id);
-    await ports.attachments.remove(id);
-    ports.store.change(state => {
-      state.sessions = state.sessions.filter(session => session.id !== id);
-      if (state.selectedSessionId === id) state.selectedSessionId = '';
+  handle('session:delete', deleteSchema, input => {
+    const id = typeof input === 'string' ? input : input.id;
+    const preserveWorktree = typeof input !== 'string' && input.preserveWorktree;
+    return ports.manage(id, async () => {
+      const session = ports.session(id);
+      if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
+      if (session.worktree && !preserveWorktree) throw new Error('请先在 Git 面板检查并清理独立 worktree，或选择“仅删除会话，保留隔离目录”。');
+      await ports.chat.stopIdle(id);
+      ports.workflows.removeSession(id);
+      ports.runtime.forget(id);
+      ports.chat.forget(id);
+      ports.forgetQueue(id);
+      await ports.attachments.remove(id);
+      ports.store.change(state => {
+        state.sessions = state.sessions.filter(session => session.id !== id);
+        if (state.selectedSessionId === id) state.selectedSessionId = '';
+      });
+      ports.onState();
     });
-    ports.onState();
-  }));
+  });
   handle('session:export', idSchema, id => ports.export(id));
 }

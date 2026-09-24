@@ -59,6 +59,54 @@ async function fixture(window:BrowserWindow|null=null) {
   return {dir,repo,store,service,runtime,chat,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
+test('context recovery holds the lifecycle lock and preserves a paused queue while rejecting racing sends and workflows', async t => {
+  const f = await fixture();
+  let release!: () => void, entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, started: true });
+    t.mock.method(f.service.chat, 'recoverContext', async () => { entered(); await waiting; });
+    const recovering = f.call('chat:recover-context', session.id);
+    await ready;
+    assert.equal(f.service.queue.snapshot(session.id).paused, true);
+    await assert.rejects(f.call('chat:recover-context', session.id), /管理操作/);
+    await assert.rejects(f.call('chat:send', { id: session.id, text: 'racing prompt' }), /管理操作/);
+    await assert.rejects(f.call('chat:submit', { id: session.id, text: 'racing queue' }), /管理操作/);
+    assert.throws(() => f.service.workflows.create({ sessionId: session.id, goal: 'racing workflow', pauseAfterEachStage: false, maxAttempts: 2 }), /管理操作/);
+    release(); await recovering;
+    assert.equal(f.service.queue.snapshot(session.id).paused, true);
+    // Releasing the lifecycle lock restores ordinary user operations.
+    await f.call('session:draft', { id: session.id, text: 'preserved draft' });
+    assert.equal(f.store.state.sessions[0].draft, 'preserved draft');
+  } finally { release?.(); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('context recovery refuses active queue work, workflow ownership and an admitted send', async t => {
+  const f = await fixture();
+  let finish!: () => void, entered!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, started: true });
+    let calls = 0, queueBusy = true, workflowBusy = false;
+    t.mock.method(f.service.chat, 'recoverContext', async () => { calls++; });
+    t.mock.method(f.service.queue, 'hasActive', () => queueBusy);
+    t.mock.method(f.service.workflows, 'isSessionBusy', () => workflowBusy);
+    await assert.rejects(f.call('chat:recover-context', session.id), /停止正在执行/);
+    queueBusy = false; workflowBusy = true;
+    await assert.rejects(f.call('chat:recover-context', session.id), /停止正在执行/);
+    workflowBusy = false;
+    t.mock.method(f.service.chat, 'send', async () => { entered(); await new Promise<void>(resolve => { finish = resolve; }); return { success: true, summary: 'done' }; });
+    const sending = f.call('chat:send', { id: session.id, text: 'admitted prompt' });
+    await ready;
+    await assert.rejects(f.call('chat:recover-context', session.id), /停止正在执行/);
+    assert.equal(calls, 0);
+    finish(); await sending;
+    await f.call('chat:recover-context', session.id);
+    assert.equal(calls, 1);
+  } finally { finish?.(); t.mock.restoreAll(); await f.dispose(); }
+});
+
 test('CLI update waits for disconnection, blocks new work and keeps every workspace available afterward', async t => {
   const f = await fixture();
   let release!: () => void, finish!: () => void;
@@ -295,6 +343,73 @@ test('cleanup preserves a worktree referenced as another worktree source', async
     assert.equal(changes.available,false);
     assert.match(changes.error,/工作目录已清理/);
   }finally{await f.dispose();}
+});
+
+test('a resume error alone does not prevent safe cleanup of an unchanged worktree',async()=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo,status:'error',taskState:'error',started:true,error:'无法恢复会话：未找到原会话记录。'});
+    assert.equal((await f.call<WorktreeInfo>('worktree:info',id)).canCleanup,true);
+    assert.equal((await f.call<{ok:boolean}>('worktree:cleanup',id)).ok,true);
+    await f.call('session:delete',id);
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+    await assert.rejects(fs.stat(tree));
+  }finally{await f.dispose();}
+});
+
+test('explicit record-only deletion preserves every worktree file, branch and dependent session after a resume error', async()=>{
+  const f=await fixture();try {
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    const session=f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo,status:'error',taskState:'error',started:true,error:'无法恢复会话：未找到原会话记录。'});
+    const git=async(...args:string[])=>(await execFileAsync('git',args,{cwd:tree})).stdout.trim();
+    await fs.writeFile(path.join(tree,'.gitignore'),'ignored.txt\n');
+    await fs.writeFile(path.join(tree,'committed.txt'),'unmerged feature');
+    await git('add','.');await git('commit','-m','Unmerged feature');
+    await fs.writeFile(path.join(tree,'initial.txt'),'uncommitted content');
+    await fs.writeFile(path.join(tree,'untracked.txt'),'untracked content');
+    await fs.writeFile(path.join(tree,'ignored.txt'),'ignored content');
+    const dependent=f.add(tree,{title:'Retained dependent session'});
+    const head=await git('rev-parse','HEAD'),status=await git('status','--porcelain=v1','--ignored');
+    const info=await f.call<WorktreeInfo>('worktree:info',id);
+    assert.equal(info.canCleanup,false);
+    assert.match(info.cleanupReasons.join('\n'),/未提交/);
+    assert.match(info.cleanupReasons.join('\n'),/尚未合入/);
+    assert.match(info.cleanupReasons.join('\n'),/ignored\.txt/);
+    assert.match(info.cleanupReasons.join('\n'),/依赖/);
+    await assert.rejects(f.call('session:delete',id),/保留隔离目录/);
+    await assert.rejects(f.call('session:delete',{id,preserveWorktree:false}));
+    assert.ok(f.store.state.sessions.find(s=>s.id===session.id));
+    await f.call('session:delete',{id,preserveWorktree:true});
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+    assert.equal(f.store.state.sessions.find(s=>s.id===dependent.id)?.cwd,tree);
+    assert.equal(await git('rev-parse','HEAD'),head);
+    assert.equal(await git('status','--porcelain=v1','--ignored'),status);
+    for(const [name,contents] of [['committed.txt','unmerged feature'],['initial.txt','uncommitted content'],['untracked.txt','untracked content'],['ignored.txt','ignored content']]){
+      assert.equal(await fs.readFile(path.join(tree,name),'utf8'),contents);
+    }
+    assert.equal((await worktreeInfo(f.repo,tree,id)).owned,true);
+    assert.equal(await git('rev-parse',`refs/heads/workbench/${id.slice(0,8)}`),head);
+  }finally{await f.dispose();}
+});
+
+test('record-only deletion still requires the current task and worker to stop',async t=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo,status:'running',taskState:'thinking'});
+    let busy=true,physical=true,releaseFails=true;
+    t.mock.method(f.service.chat,'has',()=>physical);
+    t.mock.method(f.service.chat,'isBusy',()=>busy);
+    t.mock.method(f.service.chat,'stopIdle',async()=>{if(releaseFails)throw new Error('worker still exiting');physical=false;});
+    await assert.rejects(f.call('session:delete',{id,preserveWorktree:true}),/停止会话/);
+    busy=false;
+    await assert.rejects(f.call('session:delete',{id,preserveWorktree:true}),/worker still exiting/);
+    assert.ok(f.store.state.sessions.find(s=>s.id===id));
+    assert.ok(await fs.stat(tree));
+    releaseFails=false;await f.call('session:delete',{id,preserveWorktree:true});
+    assert.equal(physical,false);
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+    assert.ok(await fs.stat(tree));
+  }finally{t.mock.restoreAll();await f.dispose();}
 });
 
 test('busy checks cover source and target subdirectories but permit independent linked worktrees', async()=>{

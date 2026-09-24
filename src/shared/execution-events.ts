@@ -10,6 +10,7 @@ export type ChatJournalEvent =
   | { type: 'context'; context: ContextUsage }
   | { type: 'metadata'; model?: string; permissionMode?: string; mcpServers?: ChatSnapshot['mcpServers'] }
   | { type: 'result'; success: boolean; summary: string; error?: string; usage?: ChatUsage }
+  | { type: 'conversation_recovered'; previousConversationId: string; conversationId: string }
   | { type: 'approval_requested'; approval: ChatApproval }
   | { type: 'approval_resolved'; requestId: string; decision: ChatDecision };
 

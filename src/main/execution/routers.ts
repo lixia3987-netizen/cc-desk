@@ -23,6 +23,11 @@ export class StructuredExecutions {
     return this.get(id).send(id, text, attachments, titlePrompt);
   }
   prepareCommands(id: string) { this.registry.require(id, 'commands'); return this.get(id).prepareCommands(id); }
+  recoverContext(id: string) {
+    const executor = this.get(id);
+    if (!executor.recoverContext) throw new Error('此提供方不支持重建上下文。');
+    return executor.recoverContext(id);
+  }
   respond(id: string, requestId: string, decision: ChatDecision) { this.registry.require(id, 'approvals', false); return this.get(id).respond(id, requestId, decision); }
   updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) {
     if (this.has(id)) this.registry.require(id, 'liveConfig');

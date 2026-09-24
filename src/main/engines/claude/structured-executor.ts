@@ -44,6 +44,7 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
     return this.runtime.send(id, text, this.capabilities(), attachments, titlePrompt);
   }
   prepareCommands(id: string) { validateClaudeSession(this.session(id)); return this.runtime.prepareCommands(id, this.capabilities()); }
+  recoverContext(id: string) { return this.runtime.recoverContext(id); }
   respond(id: string, requestId: string, decision: ChatDecision) { return this.runtime.respond(id, requestId, decision); }
   updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) { return this.runtime.updateConfig(id, config); }
   interrupt(id: string) { return this.runtime.interrupt(id); }

@@ -50,9 +50,10 @@ export interface DesktopAPI {
   saveDraft(id: string, text: string): Promise<void>;
   savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;
   setSelection(id: string): Promise<void>;
-  deleteSession(id: string): Promise<void>;
+  deleteSession(id: string, options?: { preserveWorktree: true }): Promise<void>;
   chatSnapshot(id: string): Promise<ChatSnapshot>;
   prepareChatCommands(id: string): Promise<ChatSnapshot>;
+  recoverChatContext(id: string): Promise<void>;
   chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   searchChat(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   chatAttention(): Promise<ChatAttention[]>;

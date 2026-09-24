@@ -300,6 +300,7 @@ export class SessionService {
       structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
       requireCommands: id => { this.execution.require(id, 'commands'); },
       reserve: id => this.reserve(id), releaseAdmission: id => { this.admissions.delete(id); this.queue.wake(id); },
+      manage: (id, action) => this.manage(id, action),
       runChat: (id, text, attachments) => this.runChat(id, text, attachments), getWindow: this.getWindow,
     });
     registerWorkspaceHandlers(handle, {

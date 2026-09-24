@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs/promises';
 import { chatQueueWorkspace, closeQueueApp } from './fixtures/chat-queue-fixture';
 
 const editor = (page: Page) => page.getByLabel('提示词编辑器', { exact: true });
@@ -20,6 +21,50 @@ const remove = async (page: Page, text: string) => {
   await row.getByRole('button', { name: /^移除排队消息/ }).click();
   await expect(row).toHaveCount(0);
 };
+
+test('context recovery: cancel preserves the missing identity; confirmation keeps history and drafts and requires manual queue continuation', async () => {
+  const f = await chatQueueWorkspace(); let app = await f.launch();
+  try {
+    let page = await app.firstWindow(); const [session] = f.sessions;
+    await submit(page, '保留此前聊天');
+    await expect.poll(() => f.prompts(session)).toEqual(['保留此前聊天']);
+    await f.signal(session, 'complete');
+    await expect.poll(async () => (await snapshot(page, session.id)).queue?.items ?? []).toEqual([]);
+    await page.evaluate(id => window.desktop.stopSession(id), session.id);
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].status).toBe('stopped');
+    await fs.rm(path.join(f.configDirectory, 'projects', 'fixture', session.execution.conversationId! + '.jsonl'));
+    await submit(page, '恢复后再发送这条消息');
+    const recover = page.getByRole('button', { name: '重建空白上下文', exact: true });
+    await expect(recover).toBeVisible();
+    await expect.poll(async () => (await snapshot(page, session.id)).queue?.paused).toBe(true);
+    await editor(page).fill('尚未提交的草稿');
+    await recover.click();
+    const dialog = page.getByRole('dialog', { name: '重建空白上下文', exact: true });
+    await expect(dialog).toContainText('此操作不能恢复原来的 Claude 上下文');
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe(session.execution.conversationId);
+    await expect(editor(page)).toHaveValue('尚未提交的草稿');
+    await recover.click(); await dialog.getByRole('button', { name: '确认重建', exact: true }).click();
+    await expect(dialog).toHaveCount(0); await expect(recover).toHaveCount(0);
+    const renewed = (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0];
+    expect(renewed.execution.conversationId).not.toBe(session.execution.conversationId);
+    expect(renewed.cwd).toBe(session.cwd); expect(renewed.started).toBe(false);
+    await expect(editor(page)).toHaveValue('尚未提交的草稿');
+    await expect(page.locator('.chat-message.user').filter({ hasText: '保留此前聊天' })).toBeVisible();
+    expect((await snapshot(page, session.id)).queue?.paused).toBe(true);
+    expect(await queueTexts(page, session.id)).toEqual(['恢复后再发送这条消息']);
+    expect(await f.prompts(renewed)).toEqual([]);
+    await page.getByRole('button', { name: '继续发送队列', exact: true }).click();
+    await expect.poll(() => f.prompts(renewed)).toEqual(['恢复后再发送这条消息']);
+    await f.signal(renewed, 'complete');
+    await expect.poll(async () => (await snapshot(page, session.id)).queue?.items ?? []).toEqual([]);
+    await closeQueueApp(app); app = await f.launch(); page = await app.firstWindow();
+    await expect(editor(page)).toHaveValue('尚未提交的草稿');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe(renewed.execution.conversationId);
+    await expect(page.locator('.chat-message.user').filter({ hasText: '保留此前聊天' })).toBeVisible();
+  } finally { await closeQueueApp(app); await f.dispose(); }
+});
 
 test('chat queue: accepted messages clear immediately, Enter is deduplicated, FIFO preserves the next draft and queued attachments', async () => {
   const f = await chatQueueWorkspace(), app = await f.launch();

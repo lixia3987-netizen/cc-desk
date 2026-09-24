@@ -12,6 +12,8 @@ import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 import { ContextMeter } from './ContextMeter';
 import { ChatQueue } from './ChatQueue';
 import { useChatSubmission } from './useChatSubmission';
+import { Dialog } from './Dialog';
+import { isMissingTranscriptError } from '../shared/session-recovery';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
@@ -55,6 +57,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
   session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;
 }) {
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
+  const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
@@ -134,6 +137,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
   const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
   const composerDisabled=disabled||session.archived;
+  const recoveryAvailable=session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
+  const recoverContext=async()=>{
+    if(recovering)return;
+    setRecovering(true);
+    try { await window.desktop.recoverChatContext(session.id);if(mounted.current){setConfirmRecovery(false);await load();jumpToLatest();} }
+    catch(error){onError(error);}finally{if(mounted.current)setRecovering(false);}
+  };
   const queued=running||!!snapshot?.queue?.items.length;
   const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments,disabled:composerDisabled,
     onAccepted:jumpToLatest,onSent,onAttachmentsSent,onError,refresh:load});
@@ -149,6 +159,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message}/>)}
       {visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
+      {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的 Claude 上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{session.status==='stopping'?'正在停止':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} queue={snapshot?.queue} disabled={composerDisabled} onError={onError} refresh={load}/>}
     </div></div>
@@ -157,6 +168,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
     <SubtaskPanel session={session}/>
     <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
     <ContextMeter context={snapshot?.context}/>
+    {confirmRecovery&&<Dialog label="重建空白上下文" onClose={()=>setConfirmRecovery(false)} closeDisabled={recovering}>
+      <h2>重建空白上下文</h2>
+      <p>此操作不能恢复原来的 Claude 上下文。将创建新的 Claude 会话标识，之前的聊天不会自动发送给 Claude。</p>
+      <p>本地聊天记录、草稿、附件和独立 worktree 都会保留。排队消息将保持暂停，需检查后手动继续。</p>
+      <p className="panel-note">如果需要找回原上下文，请取消并检查 Claude 配置目录或重新导入历史记录。</p>
+      <div className="modal-actions"><button className="secondary" disabled={recovering} onClick={()=>setConfirmRecovery(false)}>取消</button><button className="primary" disabled={recovering||composerDisabled||running||!recoveryAvailable} onClick={()=>void recoverContext()}>{recovering?'重建中…':'确认重建'}</button></div>
+    </Dialog>}
     <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={composerDisabled||submitting} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
       <PromptEditor placeholder={queued?'继续输入，发送后加入队列…':'描述任务，或输入 / 选择命令与 Skills…'} value={draft} disabled={composerDisabled} onChange={onDraft} onSend={()=>void send()}
         commands={snapshot?.commands} loadCommands={prepareCommands}/>
