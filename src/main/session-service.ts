@@ -293,6 +293,8 @@ export class SessionService {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),
       manage: (id, action) => this.manage(id, action), select: id => this.select(id), export: id => this.export(id), onState: this.onState,
+      manageWorktree: (id, action) => this.manageWorktree(id, action), worktreeBase: session => this.worktreeBase(session),
+      cleanupDependencies: session => this.cleanupDependencies(session),
       forgetQueue: id => this.queue.delete(id),
     });
     registerChatHandlers(handle, {

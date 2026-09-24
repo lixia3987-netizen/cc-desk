@@ -250,3 +250,71 @@ export async function cleanupWorktree(basePath: string, worktreePath: string, se
     } catch (error) { return { ok: false, status: 'blocked', message: `工作区未被强制删除。${errorMessage(error)}` }; }
   });
 }
+
+function containsDirectory(root: string, target: string): boolean {
+  const relative = path.relative(process.platform === 'win32' ? root.toLowerCase() : root, process.platform === 'win32' ? target.toLowerCase() : target);
+  return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
+}
+
+/** Check ignored and untracked directories too: a nested repository is separate user data. */
+async function assertNoNestedRepositories(root: string): Promise<void> {
+  const pending = [root], deadline = Date.now() + 30000;
+  let inspected = 0;
+  while (pending.length) {
+    const directory = pending.pop()!;
+    const entries = await fs.readdir(directory, { withFileTypes: true });
+    inspected += entries.length;
+    if (inspected > 500000 || Date.now() > deadline) throw new Error('隔离目录内容过多，无法完成嵌套仓库检查；请先手动移走较大的子目录后重试。');
+    if (directory !== root) {
+      const names = new Map(entries.map(entry => [entry.name.toLowerCase(), entry]));
+      const bare = names.get('head')?.isFile() && names.get('objects')?.isDirectory() &&
+        (names.get('refs')?.isDirectory() || names.get('reftable')?.isDirectory());
+      if (names.has('.git') || bare) throw new Error(`隔离目录内包含独立 Git 仓库或子模块，请先移走后再删除：${directory}`);
+    }
+    // Never descend through symlinks (including Windows junctions), or into the
+    // current worktree's .git metadata. git worktree remove owns the actual removal.
+    for (const entry of entries) {
+      if (entry.isDirectory() && entry.name.toLowerCase() !== '.git') pending.push(path.join(directory, entry.name));
+    }
+  }
+}
+
+/** Explicit destructive choice: discard worktree files, but never delete its branch. */
+export async function forceCleanupWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {
+  return mutate(basePath, async () => {
+    if (running) return { ok: false, status: 'blocked', message: '请先停止使用此工作区及来源目录的所有会话。' };
+    try {
+      const [base, target, common, directory, root, entry] = await Promise.all([
+        fs.realpath(basePath), fs.realpath(worktreePath),
+        git(basePath, ['rev-parse', '--path-format=absolute', '--git-common-dir']).then(value => fs.realpath(value.trim())),
+        gitDirectory(worktreePath).then(value => fs.realpath(value)), gitWorktreeRoot(worktreePath), fs.lstat(worktreePath),
+      ]);
+      if (!entry.isDirectory() || entry.isSymbolicLink() || target !== root) throw new Error('只能删除会话登记的完整 worktree 根目录，不能删除链接或子目录。');
+      if (containsDirectory(target, base) || containsDirectory(target, common) || containsDirectory(target, directory)) {
+        throw new Error('隔离目录包含来源目录或 Git 元数据，不能强制删除。');
+      }
+      if (!await ownership(base, target, sessionId)) throw new Error('此工作区缺少匹配的应用所有权记录，不能强制删除。');
+      const registered = await git(base, ['worktree', 'list', '--porcelain', '-z']);
+      for (const record of registered.split('\0').filter(value => value.startsWith('worktree '))) {
+        const registeredPath = path.resolve(record.slice(9));
+        const resolved = await fs.realpath(registeredPath).catch(() => registeredPath);
+        if (resolved !== target && (containsDirectory(target, resolved) || containsDirectory(target, registeredPath))) {
+          throw new Error(`隔离目录内还登记了其他 worktree，请先处理：${registeredPath}`);
+        }
+      }
+      await assertNoNestedRepositories(target);
+      // External tools can move a worktree while inspection is in progress.
+      const current = await fs.lstat(target);
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== entry.dev || current.ino !== entry.ino ||
+          await gitWorktreeRoot(target) !== target || !await ownership(base, target, sessionId)) {
+        throw new Error('工作区在检查过程中发生变化，请刷新后重试。');
+      }
+      // Exactly one --force: Git still refuses locked worktrees. Never unlock,
+      // double-force, prune registrations or fall back to recursive fs removal.
+      await git(base, ['worktree', 'remove', '--force', '--', target]);
+      return { ok: true, status: 'removed', message: '已强制移除隔离目录及其中的未提交文件；Git 分支和已提交记录保留。' };
+    } catch (error) {
+      return { ok: false, status: 'blocked', message: `隔离目录未完成强制删除；不会绕过 Git 保护或递归删除目录。${errorMessage(error)}` };
+    }
+  });
+}

@@ -412,6 +412,99 @@ test('record-only deletion still requires the current task and worker to stop',a
   }finally{t.mock.restoreAll();await f.dispose();}
 });
 
+test('force deletion requires the confirmed worktree path, removes dirty files and preserves unmerged commits on the branch', async()=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:f.repo});
+    const git=async(...args:string[])=>(await execFileAsync('git',args,{cwd:tree})).stdout.trim();
+    await fs.writeFile(path.join(tree,'.gitignore'),'ignored.txt\n');
+    await fs.writeFile(path.join(tree,'committed.txt'),'unmerged feature');
+    await git('add','.');await git('commit','-m','Unmerged feature');
+    const head=await git('rev-parse','HEAD');
+    await fs.writeFile(path.join(tree,'initial.txt'),'discard modified file');
+    await fs.writeFile(path.join(tree,'untracked.txt'),'discard untracked file');
+    await fs.writeFile(path.join(tree,'ignored.txt'),'discard ignored file');
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true}));
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true,preserveWorktree:true,worktreePath:tree}));
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true,worktreePath:f.repo}),/目录已改变/);
+    assert.equal(await fs.readFile(path.join(tree,'ignored.txt'),'utf8'),'discard ignored file');
+    await f.call('session:delete',{id,forceWorktree:true,worktreePath:tree});
+    await assert.rejects(fs.stat(tree));
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+    assert.equal((await execFileAsync('git',['rev-parse',`refs/heads/workbench/${id.slice(0,8)}`],{cwd:f.repo})).stdout.trim(),head);
+    assert.equal(await fs.readFile(path.join(f.repo,'initial.txt'),'utf8'),'initial\n');
+  }finally{await f.dispose();}
+});
+
+test('force deletion refuses directory dependents and Git locks without removing the session or files',async()=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:f.repo});
+    await fs.writeFile(path.join(tree,'keep.txt'),'keep on rejection');
+    const dependent=f.add(tree);
+    const request={id,forceWorktree:true,worktreePath:tree};
+    await assert.rejects(f.call('session:delete',request),/依赖/);
+    await f.call('session:delete',dependent.id);
+    const childId=randomUUID(),childTree=await createWorktree(tree,f.dir,childId);
+    const child=f.add(childTree,{id:childId,worktree:childTree,worktreeBase:tree});
+    await assert.rejects(f.call('session:delete',request),/依赖/);
+    await f.call('session:delete',{id:child.id,preserveWorktree:true});
+    await execFileAsync('git',['worktree','lock',tree],{cwd:f.repo});
+    await assert.rejects(f.call('session:delete',request));
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'keep on rejection');
+    assert.ok(f.store.state.sessions.find(s=>s.id===id));
+    await execFileAsync('git',['worktree','unlock',tree],{cwd:f.repo});
+  }finally{await f.dispose();}
+});
+
+test('force deletion waits for worker release under directory locks and rejects active source sessions',async t=>{
+  const f=await fixture();let release!:()=>void;try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo});
+    const source=f.add(f.repo),request={id,forceWorktree:true,worktreePath:tree};
+    f.active.add(source.id);
+    await assert.rejects(f.call('session:delete',request),/全部会话/);
+    f.active.clear();
+    let physical=true,failRelease=true,entered!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    const waiting=new Promise<void>(resolve=>{release=resolve;});
+    t.mock.method(f.service.chat,'has',(target:string)=>target===id&&physical);
+    t.mock.method(f.service.chat,'stopIdle',async()=>{if(failRelease)throw new Error('worker still exiting');entered();await waiting;physical=false;});
+    await assert.rejects(f.call('session:delete',request),/worker still exiting/);
+    assert.ok(await fs.stat(tree));
+    failRelease=false;
+    const deleting=f.call('session:delete',request);
+    await ready;
+    await assert.rejects(f.service.start(source.id),/管理操作/);
+    await assert.rejects(f.service.withSessionCreation(tree,false,async()=>{}),/管理操作/);
+    await assert.rejects(f.call('session:delete',{id,preserveWorktree:true}),/管理操作/);
+    assert.ok(await fs.stat(tree));
+    release();await deleting;
+    await assert.rejects(fs.stat(tree));
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+  }finally{release?.();t.mock.restoreAll();await f.dispose();}
+});
+
+test('a record-removal failure after force cleanup leaves an archived record that can be deleted without its missing directory',async t=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:f.repo});
+    const original=Attachments.prototype.remove;
+    let fail=true;
+    t.mock.method(Attachments.prototype,'remove',function(this:Attachments,sessionId:string){
+      if(fail)return Promise.reject(new Error('fixture attachment deletion failed'));
+      return original.call(this,sessionId);
+    });
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true,worktreePath:tree}),/目录已强制删除.*记录未完全删除/);
+    await assert.rejects(fs.stat(tree));
+    const retained=f.store.state.sessions.find(s=>s.id===id)!;
+    assert.equal(retained.worktree,undefined);assert.equal(retained.archived,true);
+    assert.equal(new StateStore(f.store.directory).state.sessions.find(s=>s.id===id)?.worktree,undefined);
+    fail=false;await f.call('session:delete',id);
+    assert.equal(f.store.state.sessions.some(s=>s.id===id),false);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
 test('busy checks cover source and target subdirectories but permit independent linked worktrees', async()=>{
   const f=await fixture();try {
     const id=randomUUID(), source=path.join(f.repo,'src'), tree=await createWorktree(source,f.dir,id);

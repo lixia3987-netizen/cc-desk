@@ -247,3 +247,59 @@ test('worktree location: blocked cleanup explains why and record-only deletion p
     await expect(page.locator('.error-banner')).toHaveText([]);
   } finally { await app.close(); await f.dispose(); }
 });
+
+test('worktree location: force deletion requires a typed second confirmation, cancel preserves data, and removal keeps the branch and project', async () => {
+  const f = await workspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await form.getByLabel('会话名称', { exact: true }).fill('Force delete temporary tree');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Force delete temporary tree', exact: true })).toBeVisible();
+    const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Force delete temporary tree')!;
+    const git = (...args: string[]) => execFileSync('git', args, { cwd: created.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    await fs.writeFile(path.join(created.cwd, '.gitignore'), 'ignored.txt\n');
+    await fs.writeFile(path.join(created.cwd, 'committed.txt'), 'Keep this unmerged commit\n');
+    git('add', '.'); git('commit', '-m', 'Retained branch commit');
+    const branch = `refs/heads/workbench/${created.id.slice(0, 8)}`, head = git('rev-parse', 'HEAD');
+    await fs.writeFile(path.join(created.cwd, 'README.md'), 'Uncommitted edit\n');
+    await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Untracked data\n');
+    await fs.writeFile(path.join(created.cwd, 'ignored.txt'), 'Ignored data\n');
+    const status = git('status', '--porcelain=v1', '--ignored');
+    const context = page.getByRole('region', { name: '上下文面板', exact: true });
+    if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
+    await context.getByRole('button', { name: '删除会话', exact: true }).click();
+    const forceOption = context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true });
+    await forceOption.click();
+    const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
+    const typed = dialog.getByLabel('输入“删除”以确认', { exact: true }), confirm = dialog.getByRole('button', { name: '确认强制删除', exact: true });
+    await expect(dialog).toContainText(created.cwd);
+    await expect(dialog).toContainText('未提交修改、未跟踪文件和被忽略的文件都会丢失');
+    await expect(dialog).toContainText('Git 分支和其中已经提交的内容会保留');
+    await expect(confirm).toBeDisabled();
+    await typed.fill('delete'); await expect(confirm).toBeDisabled();
+    await typed.fill('删除'); await expect(confirm).toBeEnabled();
+    await dialog.getByRole('button', { name: '取消', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(true);
+    expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
+    expect(await fs.readFile(path.join(created.cwd, 'ignored.txt'), 'utf8')).toBe('Ignored data\n');
+    await forceOption.click();
+    await expect(typed).toHaveValue(''); await expect(confirm).toBeDisabled();
+    await typed.fill('删除');
+    await page.screenshot({ path: test.info().outputPath('force-worktree-confirmation.png') });
+    await confirm.click();
+    await expect(dialog).toHaveCount(0);
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
+    expect(await fs.stat(created.cwd).then(() => true, () => false)).toBe(false);
+    expect(f.git('worktree', 'list', '--porcelain')).not.toContain(created.cwd.replaceAll('\\', '/'));
+    expect(f.git('rev-parse', branch)).toBe(head);
+    expect(f.git('show', `${branch}:committed.txt`)).toBe('Keep this unmerged commit');
+    expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Original project content\n');
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally { await app.close(); await f.dispose(); }
+});
