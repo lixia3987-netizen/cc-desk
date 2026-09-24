@@ -3,7 +3,13 @@ import type { ClaudeCommand } from '../../../shared/claude-session';
 import type { AssistantStream } from './assistant-stream';
 import type { ClaudeConnection } from './connection';
 
-interface Turn { id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean; command?: string; resetRequested?: boolean; resetApplied?: boolean }
+interface Turn {
+  id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean;
+  command?: string; resetRequested?: boolean; resetApplied?: boolean;
+  /** Fixed when this turn is dispatched or its first model metadata arrives. */
+  contextModel?: string;
+  configuredModel?: string;
+}
 
 export interface Entry {
   connection: ClaudeConnection; initialized: boolean;
@@ -17,7 +23,7 @@ export interface Entry {
   interruptTimer?: NodeJS.Timeout;
   waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
   commands?: ClaudeCommand[];
-  /** Actual API identity observed in this process, never a /context label. */
-  requestModel?: string;
+  /** CLI selection for the next turn; never replaced by an assistant response model. */
+  selectionModel?: string;
   contextRequest?: { id: string; usage: Record<string, unknown> };
 }

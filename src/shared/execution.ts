@@ -41,7 +41,7 @@ export interface ExecutionDescriptor {
 /** Only values reported by the provider are used; no model-name based window guesses. */
 export interface ContextUsage {
   model?: string;
-  /** Model identity from actual root requests; a /context display label is not an identity. */
+  /** Model selected when the turn starts; response routing names and report labels do not replace it. */
   requestModel?: string;
   /** Provider's selected model/alias, retained across process restarts. */
   selectionModel?: string;

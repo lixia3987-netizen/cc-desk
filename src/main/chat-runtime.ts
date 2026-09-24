@@ -254,7 +254,7 @@ export class ChatRuntime {
       const result = new Promise<ChatTurnResult>(resolve => { entry.turn = { id: randomUUID(), resolve, interrupted: false, command: definition?.kind === 'skill' ? undefined : commandName,
         resetRequested: definition?.kind !== 'skill' && ['clear','reset','new'].includes(commandName ?? '') }; });
       entry.tools.clear(); entry.assistant.reset(); entry.resultIds.clear();
-      entry.contextRequest = undefined;
+      this.events.context.begin(id, entry, session.model);
       entry.subtaskTools.clear(); entry.approvalTasks.clear(); entry.finishedTasks.clear(); entry.backgroundTaskTools.clear();
       this.subtasks.begin(id, entry.turn!.id);
       const userId = randomUUID();
@@ -298,7 +298,7 @@ export class ChatRuntime {
       const current = entry;
       current.assistant = new AssistantStream({
         turnId: () => current.turn?.id, getMessage: key => this.history.getMessage(id, key),
-        message: (message, delta) => this.message(id, message, delta), context: payload => this.events.observeContext(id, current, payload),
+        message: (message, delta) => this.message(id, message, delta), context: payload => this.events.context.observe(id, current, payload),
         model: model => { this.history.get(id).model = model; this.notify(id); },
       });
       current.connection = new ClaudeConnection(invocation, session.cwd, env, {
@@ -357,9 +357,10 @@ export class ChatRuntime {
   async updateConfig(id: string, patch: { model?: string; permissionMode?: PermissionMode; effort?: Effort }) {
     const session = this.session(id); let entry = this.entries.get(id);
     const invalidateModelContext = () => {
-      if (patch.model === undefined || patch.model === session.model) return;
-      if (entry) { entry.contextRequest = undefined; entry.requestModel = undefined; }
-      this.context(id, { status: 'unknown' });
+      if (patch.model === undefined) return;
+      const previousModel = entry?.selectionModel ?? session.model;
+      if (entry) { entry.contextRequest = undefined; entry.selectionModel = patch.model || undefined; }
+      if (patch.model !== previousModel) this.context(id, { status: 'unknown' });
     };
     if (this.busy.has(id) || this.starting.has(id) || entry?.approvals.size) throw new Error('请等待当前任务完成后修改模型或权限。');
     if (patch.effort !== undefined && patch.effort !== session.effort && entry) throw new Error('修改推理强度前请先停止会话，然后重新发送以恢复。');

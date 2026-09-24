@@ -33,8 +33,8 @@ export function normalizeCommands(value: unknown, previous: SessionCommand[] = [
 
 /** Latest main-agent input, not result.usage (a sum across requests). */
 export function requestContext(previous: ContextUsage | undefined, usage: unknown, model: unknown, at: string): ContextUsage | undefined {
-  // A report label is not an API identity. Bind new reports on the first actual
-  // request, and also invalidate a known identity change without usage metadata.
+  // The caller supplies the model bound at turn start, never a routed response
+  // name. A changed starting model invalidates usage even without new metadata.
   const knownModel = previous?.requestModel ?? (previous?.source === 'request' ? previous.model : undefined);
   const nextModel = typeof model === 'string' && model ? model : knownModel;
   const changed = knownModel && nextModel && knownModel !== nextModel;

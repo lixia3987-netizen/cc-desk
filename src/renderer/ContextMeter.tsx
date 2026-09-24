@@ -20,7 +20,7 @@ export function ContextMeter({ context }: { context?: ContextUsage }) {
     </summary>
     <div className="context-details">
       <span>{context?.source === 'context-command' ? '来自最近一次 /context 报告。' : '最近一次主会话请求的输入 token，包含缓存读取和缓存写入。'} 新输入及工具结果在下一次请求后更新。</span>
-      {context?.model && <span>模型：{context.model}</span>}
+      {(context?.requestModel || context?.model) && <span>上下文计算模型：{context.requestModel ?? context.model}</span>}
       {context?.measuredAt && <span>更新时间：{new Date(context.measuredAt).toLocaleString()}</span>}
       {!capacity && <span>CLI 尚未报告窗口容量，暂不计算占比。</span>}
       {context?.lastCompaction && <span>最近压缩：{new Date(context.lastCompaction.at).toLocaleString()}{context.lastCompaction.trigger === 'auto' ? ' · 自动' : context.lastCompaction.trigger === 'manual' ? ' · 手动' : ''}{context.lastCompaction.preTokens !== undefined ? ` · 压缩前 ${count(context.lastCompaction.preTokens)} tokens` : ''}</span>}

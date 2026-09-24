@@ -20,7 +20,7 @@ test('context counts the latest input plus both cache components without accumul
   assert.equal(reportedContext({ total_tokens: 32000, raw_max_tokens: 200000, model: 'main' }, next, 'report')?.source, 'context-command');
 });
 
-test('context report labels and absent model metadata retain capacity until the actual request model changes', () => {
+test('context report labels and absent metadata retain capacity until the bound starting model changes', () => {
   for (const model of ['Sonnet 4.6', undefined]) {
     const report = reportedContext({ total_tokens: 30000, raw_max_tokens: 200000, model }, undefined, 'report');
     const missingModel = requestContext(report, { input_tokens: 1000 }, undefined, 'no model');
