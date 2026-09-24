@@ -1,6 +1,6 @@
 # Claude Code CLI 更新
 
-这项功能更新 cc-desk 当前连接的本机 Claude Code CLI。它已加入源码，尚未包含在 v0.3.0 安装包中。
+这项功能自 cc-desk v0.4.0 提供，更新当前连接的本机 Claude Code CLI；v0.3.0 安装包不包含此功能。cc-desk 桌面应用自身仍需手动下载安装新版本。
 
 ## 使用方式
 
@@ -20,5 +20,11 @@
 - Homebrew、WinGet、apt 等包管理器安装依赖其更新机制；如果 `claude update` 未升级当前可执行路径，应用会提示失败，并引导使用对应包管理器，再回到设置重新检测。cc-desk 不改写这些包管理器的安装目录。
 - cc-desk 启动的 Claude 会话关闭 CLI 后台自动更新，让应用内更新经过确认；不会改写 Claude 的全局配置。外部终端中单独启动的 Claude 及其更新行为不受 cc-desk 管理。
 - 检查有网络超时，更新命令有 10 分钟超时；超时会终止更新进程树。失败后工作区保持断开，可检查网络、安装权限或 CLI 路径后重新检查。命令的原始输出不会透传到界面，避免暴露仓库凭据或代理信息。
+
+## 已知网络限制
+
+更新检查不会将 Claude `settings.json` 的 `env` 中配置的代理转发给版本查询。这些设置仍可能由 Claude 会话自身读取，因此“对话正常，但更新检查失败”可能同时发生。npm 版本查询使用 npm 自身配置及 cc-desk 进程继承的环境；原生安装的版本查询由应用网络层执行。仅在 Claude 配置中填写代理，不能保证两条更新检查路径可达。
+
+v0.4.0 未修复这项限制。检查失败时可在原有终端或包管理器中按既有方式更新 CLI，再回到工作台重新检测；失败不会触发安装或断开工作区。
 
 官方依据：[Claude Code 安装与更新](https://code.claude.com/docs/en/setup#update-claude-code)、[官方变更记录](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)。
