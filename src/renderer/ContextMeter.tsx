@@ -1,4 +1,4 @@
-import type { ContextUsage } from '../shared/claude-session';
+import type { ContextUsage } from '../shared/execution';
 
 const count = (value: number) => value.toLocaleString();
 export function ContextMeter({ context }: { context?: ContextUsage }) {

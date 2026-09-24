@@ -33,22 +33,30 @@ export function normalizeCommands(value: unknown, previous: SessionCommand[] = [
 
 /** Latest main-agent input, not result.usage (a sum across requests). */
 export function requestContext(previous: ContextUsage | undefined, usage: unknown, model: unknown, at: string): ContextUsage | undefined {
+  // A report label is not an API identity. Bind new reports on the first actual
+  // request, and also invalidate a known identity change without usage metadata.
+  const knownModel = previous?.requestModel ?? (previous?.source === 'request' ? previous.model : undefined);
+  const nextModel = typeof model === 'string' && model ? model : knownModel;
+  const changed = knownModel && nextModel && knownModel !== nextModel;
+  const invalidated: ContextUsage | undefined = changed ? { status: 'unknown', model: nextModel, requestModel: nextModel, selectionModel: previous?.selectionModel } : undefined;
+  const identityOnly = invalidated ?? (!knownModel && nextModel ? { status: 'unknown' as const, ...previous, requestModel: nextModel } : undefined);
   const data = record(usage), input = tokenCount(data.input_tokens);
-  if (input === undefined) return;
+  if (input === undefined) return identityOnly;
   const cacheRead = data.cache_read_input_tokens === undefined ? 0 : tokenCount(data.cache_read_input_tokens);
   const cacheWrite = data.cache_creation_input_tokens === undefined ? 0 : tokenCount(data.cache_creation_input_tokens);
-  if (cacheRead === undefined || cacheWrite === undefined) return;
+  if (cacheRead === undefined || cacheWrite === undefined) return identityOnly;
   const inputTokens = tokenCount(input + cacheRead + cacheWrite);
-  if (inputTokens === undefined) return;
-  const nextModel = typeof model === 'string' && model ? model : previous?.model;
-  return { ...previous, model: nextModel, contextWindow: nextModel === previous?.model ? previous?.contextWindow : undefined,
+  if (inputTokens === undefined) return identityOnly;
+  return { ...(invalidated ?? previous), model: nextModel, requestModel: nextModel,
     inputTokens, measuredAt: at, source: 'request', status: 'ready' };
 }
 
 export function reportedContext(value: unknown, previous: ContextUsage | undefined, at: string): ContextUsage | undefined {
   const data = record(value), inputTokens = tokenCount(data.total_tokens), contextWindow = tokenCount(data.raw_max_tokens);
   if (inputTokens === undefined || !contextWindow) return;
-  return { ...previous, model: text(data.model, 240) || previous?.model, inputTokens, contextWindow, measuredAt: at, source: 'context-command', status: 'ready' };
+  // The caller may bind this fresh report to a request observed in the current
+  // process. A previous process's API identity need not match today's alias.
+  return { ...previous, model: text(data.model, 240) || previous?.model, requestModel: undefined, inputTokens, contextWindow, measuredAt: at, source: 'context-command', status: 'ready' };
 }
 
 export function contextCapacity(value: unknown, model: string | undefined): number | undefined {

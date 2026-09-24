@@ -25,7 +25,8 @@ export class StructuredExecutions {
   prepareCommands(id: string) { this.registry.require(id, 'commands'); return this.get(id).prepareCommands(id); }
   respond(id: string, requestId: string, decision: ChatDecision) { this.registry.require(id, 'approvals', false); return this.get(id).respond(id, requestId, decision); }
   updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) {
-    this.registry.require(id, 'liveConfig'); return this.get(id).updateConfig(id, config);
+    if (this.has(id)) this.registry.require(id, 'liveConfig');
+    return this.get(id).updateConfig(id, config);
   }
   interrupt(id: string) { return this.get(id).interrupt(id); }
   stop(id: string) { return this.get(id).stop(id); }

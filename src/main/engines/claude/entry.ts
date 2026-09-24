@@ -17,4 +17,7 @@ export interface Entry {
   interruptTimer?: NodeJS.Timeout;
   waitingBackgroundResult?: boolean; backgroundTimer?: NodeJS.Timeout;
   commands?: ClaudeCommand[];
+  /** Actual API identity observed in this process, never a /context label. */
+  requestModel?: string;
+  contextRequest?: { id: string; usage: Record<string, unknown> };
 }

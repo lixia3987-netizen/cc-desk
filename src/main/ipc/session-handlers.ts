@@ -56,7 +56,7 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
       if (ports.runtime.has(session.id)) throw new Error('终端模式请停止会话后修改启动配置。');
       await ports.manage(session.id, async () => {
         if (input.archived && ports.chat.has(session.id)) await ports.chat.stopIdle(session.id);
-        if (ports.chat.has(session.id)) {
+        if (session.execution.mode === 'structured') {
           await ports.chat.updateConfig(session.id, { model: input.model, effort: input.effort, permissionMode: input.permissionMode });
         }
         save();
