@@ -32,7 +32,7 @@ const {_electron:electron,expect}=require('@playwright/test');
   const page=await app.firstWindow(),errors=[];page.on('pageerror',error=>errors.push(error.message));
   await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1600,1000));
   await expect(page.getByRole('heading',{name:'对话体验与界面打磨',exact:true})).toBeVisible();
-  await page.getByRole('tab',{name:'变更',exact:true}).click();await page.locator('.changed-files button').filter({hasText:'src/chat-history.ts'}).click();
+  await page.getByRole('button',{name:'变更',exact:true}).click();await page.locator('.changed-files button').filter({hasText:'src/chat-history.ts'}).click();
   await expect(page.getByLabel('代码差异')).toContainText('+export const PAGE_SIZE = 50;');
   await page.getByLabel('代码审阅反馈').fill('分页后继续保持阅读位置；切换会话时不要丢失未发送草稿。');
   await page.evaluate(()=>document.fonts.ready.then(()=>undefined));

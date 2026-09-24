@@ -6,6 +6,7 @@ import { readCachedTheme } from './theme-preferences';
 import { applyTypography, readCachedTypography } from './typography';
 import './themes.css';
 import './style.css';
+import './inspector.css';
 import './settings.css';
 import type { DesktopAPI } from '../shared/types';
 declare global { interface Window { desktop: DesktopAPI } }

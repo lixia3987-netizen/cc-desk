@@ -123,7 +123,6 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .composer>div{display:flex;align-items:center;justify-content:space-between;padding:7px 10px 10px;gap:12px}
 .composer>div>span{font-size:calc(9px * var(--ui-font-scale));color:var(--text-muted)}
 .composer button{font-size:calc(10px * var(--ui-font-scale));padding:6px 9px;min-height:29px;flex-shrink:0}
-.inspector{width:249px;flex-shrink:0;border-left:1px solid var(--line);background:var(--panel);padding:20px 17px;overflow:auto}
 .inspector .section-label{margin:0 0 12px;font-size:calc(10px * var(--ui-font-scale));letter-spacing:1px}
 .detail-block{display:flex;flex-direction:column;gap:6px;border-bottom:1px solid var(--line);padding:1px 0 20px;margin-bottom:17px}
 .detail-block label{font-size:calc(9px * var(--ui-font-scale));color:var(--text-muted);margin-top:9px}
@@ -186,7 +185,6 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 ::-webkit-scrollbar-thumb{background:var(--scrollbar);border-radius:4px}
 ::-webkit-scrollbar-track{background:transparent}
 @media(max-width:1200px){.sidebar{width:237px}
-.inspector{width:220px;padding:17px 14px}
 .welcome{padding:50px 35px 25px}
 .welcome h1{font-size:calc(34px * var(--ui-font-scale))}
 .composer>div>span{font-size:calc(8px * var(--ui-font-scale))}
@@ -195,14 +193,8 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .welcome-foot>span{display:none}}
 
 /* v0.2 structured workbench */
-.inspector{width:320px;padding:0;display:flex;flex-direction:column;overflow:hidden}
-.inspector[hidden]{display:none}
 .inspector-toggle{flex-shrink:0}
 .inspector-toggle.active{background:var(--selected);color:var(--text-strong)}
-.inspector.git-expanded{width:410px}
-.inspector-tabs{display:flex;flex-shrink:0;border-bottom:1px solid var(--line);padding:6px;gap:3px}
-.inspector-tabs button{flex:1;font-size:calc(11px * var(--ui-font-scale));padding:10px 4px;border-radius:5px;color:var(--text-muted)}
-.inspector-tabs button.active{background:var(--selected);color:var(--mint)}
 .panel-content{overflow:auto;padding:18px 16px;min-height:0;flex:1}
 .panel-content h4{font-size:calc(12px * var(--ui-font-scale));font-weight:500;margin:19px 0 12px;color:var(--text-secondary)}
 .panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -405,9 +397,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .workflow-stage textarea{font-size:calc(10px * var(--ui-font-scale))}
 .workflow-stages{margin-top:19px}
 .history-list{margin-top:12px}
-@media(max-width:1200px){.inspector{width:285px}
-.inspector.git-expanded{width:340px}
-.chat-scroll{padding:15px 18px}
+@media(max-width:1200px){.chat-scroll{padding:15px 18px}
 .topbar{padding:8px 16px;gap:10px}
 .session-header h1{font-size:calc(16px * var(--ui-font-scale))}
 .session-title-line{gap:7px}
@@ -415,9 +405,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .sidebar{width:224px}
 .session-actions{gap:5px}
 .session-actions .compact{font-size:calc(10px * var(--ui-font-scale));padding:7px 9px}}
-@media(max-width:980px){.inspector{width:250px}
-.inspector.git-expanded{width:310px}
-.sidebar{width:200px;padding:22px 10px 0}
+@media(max-width:980px){.sidebar{width:200px;padding:22px 10px 0}
 .brand{font-size:calc(10px * var(--ui-font-scale))}
 .brand small{font-size:calc(8px * var(--ui-font-scale))}
 .chat-meta .usage{max-width:140px}}

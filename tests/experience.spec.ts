@@ -48,7 +48,10 @@ async function workspace(historyCount=90) {
 }
 
 const select=(page:Page,title:string)=>page.locator('.session-row').filter({hasText:title}).click();
-const tab=(page:Page,name:string)=>page.getByRole('tab',{name,exact:true}).click();
+async function openPanel(page:Page,name:string){
+  const toggle=page.getByRole('button',{name,exact:true});
+  if(await toggle.getAttribute('aria-pressed')!=='true')await toggle.click();
+}
 
 async function settleReading(page:Page){
   await page.evaluate(()=>document.fonts.ready.then(()=>undefined));
@@ -118,33 +121,33 @@ test('experience: project groups preserve navigation and drafts with a compact h
   }finally{await app.close();await f.dispose();}
 });
 
-test('experience: panel drafts keep session/file identity, tab state and unsaved edits across restart',async()=>{
+test('experience: panel drafts keep session/file identity, open panels and unsaved edits across restart',async()=>{
   const f=await workspace();let app=await f.launch();
   try{
     let page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
-    await tab(page,'工作流');await page.getByLabel('工作流目标').fill('已提交的工作流目标');
+    await openPanel(page,'工作流');await page.getByLabel('工作流目标').fill('已提交的工作流目标');
     await page.getByRole('button',{name:'创建工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(1);
     await expect(page.getByLabel('工作流目标')).toHaveValue('');
     await page.getByLabel('工作流目标').fill('下一项任务的草稿');
     await page.getByLabel('每阶段结束后由我确认继续').uncheck();await page.getByLabel('最大尝试次数').selectOption('3');
     await page.getByRole('button',{name:'编辑阶段指令',exact:true}).first().click();await page.getByLabel('阶段指令').fill('尚未保存的阶段指令');
     await fs.writeFile(path.join(f.projects[1].path,'one.txt'),'changed one\n');await fs.writeFile(path.join(f.projects[1].path,'two.txt'),'changed two\n');
-    await tab(page,'变更');await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();
+    await openPanel(page,'变更');await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();
     await page.getByLabel('代码审阅反馈').fill('one 的审阅意见');
     await page.locator('.changed-files button').filter({hasText:'two.txt'}).click();await expect(page.getByLabel('代码审阅反馈')).toHaveValue('');
     await page.getByLabel('代码审阅反馈').fill('two 的审阅意见');await page.getByRole('button',{name:'已暂存',exact:true}).click();
-    await tab(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
+    await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
     await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');await expect(page.getByLabel('最大尝试次数')).toHaveValue('3');
     await expect(page.getByLabel('每阶段结束后由我确认继续')).not.toBeChecked();
     await select(page,'短对话 B');await expect(page.getByLabel('工作流目标')).toHaveValue('');
     await expect(page.getByLabel('每阶段结束后由我确认继续')).toBeChecked();await expect(page.getByLabel('最大尝试次数')).toHaveValue('2');
     await page.getByLabel('工作流目标').fill('另一个会话的草稿');await select(page,'长对话 B');
-    await tab(page,'变更');await expect(page.getByLabel('代码审阅反馈')).toHaveValue('two 的审阅意见');
+    await openPanel(page,'变更');await expect(page.getByLabel('代码审阅反馈')).toHaveValue('two 的审阅意见');
     await expect(page.getByRole('button',{name:'已暂存',exact:true})).toHaveClass(/chosen/);
     await page.getByLabel('代码审阅反馈').fill('编辑后立即退出也保留');
     await app.close();app=await f.launch();page=await app.firstWindow();
-    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();await tab(page,'变更');
+    await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();await openPanel(page,'变更');
     await expect(page.getByLabel('代码审阅反馈')).toHaveValue('编辑后立即退出也保留');
     await expect(page.locator('.changed-files .selected')).toContainText('two.txt');await expect(page.getByRole('button',{name:'已暂存',exact:true})).toHaveClass(/chosen/);
     await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();await expect(page.getByLabel('代码审阅反馈')).toHaveValue('one 的审阅意见');
@@ -152,7 +155,7 @@ test('experience: panel drafts keep session/file identity, tab state and unsaved
     await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
     await expect(page.getByText('该文件已不在变更列表中，审阅草稿已保留。',{exact:true})).toBeVisible();
     await expect(page.getByLabel('代码审阅反馈')).toHaveValue('one 的审阅意见');
-    await tab(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
+    await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
     await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
     await page.getByRole('button',{name:'保存指令',exact:true}).click();await expect(page.getByLabel('阶段指令')).toHaveCount(0);
     const saved=await page.evaluate(async id=>(await window.desktop.workflows(id))[0].stages[0].instruction,f.sessions[0].id);
@@ -194,7 +197,7 @@ test('experience: new-session project, template append, terminal selection and r
     await select(page,'短对话 B');await select(page,'长对话 B');await settleReading(page);
     expect(await page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(2);
     await select(page,'CLI 终端 B');await expect(page.locator('.error-banner')).toHaveCount(0);
-    await page.getByLabel('提示词编辑器').fill('保留现有草稿');await tab(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
+    await page.getByLabel('提示词编辑器').fill('保留现有草稿');await openPanel(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
     const text=await page.getByLabel('提示词编辑器').inputValue();expect(text).toMatch(/^保留现有草稿\n\n请完成以下任务/);
     await select(page,'Shell B');await expect(page.locator('.error-banner')).toHaveCount(0);
     await select(page,'CLI 终端 B');await expect(page.getByLabel('提示词编辑器')).toHaveValue(text);await expect(page.locator('.error-banner')).toHaveCount(0);
@@ -232,7 +235,7 @@ test('experience: delayed terminal activation cannot steal composer input or los
     expect(await page.evaluate(()=>(window as Window & {releaseFrames?:()=>number}).releaseFrames!())).toBeGreaterThan(0);
     await expect(editor).toBeFocused();
     await page.keyboard.insertText('保留现有草稿');await expect(editor).toHaveValue('保留现有草稿');
-    await tab(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
+    await openPanel(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
     await expect(editor).toHaveValue(/^保留现有草稿\n\n请完成以下任务/);
     // Ordinary terminal selection still focuses the active terminal by default.
     await select(page,'Shell B');
