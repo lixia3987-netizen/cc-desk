@@ -41,7 +41,7 @@ test('public declarations serve chat and event consumers without desktop or plat
     getNewLine: () => '\n',
   }));
   const sources = program.getSourceFiles();
-  const standardLibRoot = path.dirname(ts.getDefaultLibFilePath({ target: ts.ScriptTarget.ES2022 }));
+  const standardLibRoot = path.dirname(path.resolve(ts.getDefaultLibFilePath({ target: ts.ScriptTarget.ES2022 })));
   for (const source of sources) {
     const filename = path.resolve(source.fileName);
     const relative = path.relative(packageRoot, filename);

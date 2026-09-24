@@ -21,6 +21,8 @@
 | 迁移后干净 `npm ci` | 成功；真实运行 native postinstall |
 | 迁移后 `npm run check` | 成功；桌面 382 项中 381 通过、1 跳过；契约新增 3 项全部通过；类型检查和构建通过 |
 | 测试发现清单 | 保留全部 39 个基线单测文件、14 个源码 spec（55 项）和 1 个 packaged spec |
+| Linux 源码桌面回归 | 55 项全部通过，运行 7.4 分钟 |
+| 根命令参数转发 | `npm run typecheck -- --pretty false` 实际传入 TypeScript 并通过 |
 | 锁文件比对 | 已有第三方依赖版本没有变化，新增本地 workspace 链接 |
 | 独立审查 | 参数转发缺陷已修复，复核未发现其他迁移缺陷 |
 
@@ -28,7 +30,7 @@
 
 ## 安装包与数据身份验收
 
-完整三平台验收尚待执行，结果以本阶段 PR 和 GitHub Actions 的候选提交记录为准，不能把本地构建通过视为安装包通过。
+候选 `1dc5f17` 的 [PR 快速检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36034548378) 已通过。[首轮三平台验收](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36034704893) 发现新增契约测试在 Windows 下未统一路径分隔符，误将 TypeScript 标准库判为外部依赖。现已在比较前用 `path.resolve()` 统一路径，保持全部边界断言，修复后的契约 3 项测试通过。完整矩阵需在修复候选上重新执行，首轮不能作为修复后代码的验收证据。
 
 安装包测试保留 PTY、持久化、旧 version-1 数据、第二实例、正常退出和包内资源检查；增加包内 manifest、应用名称/版本断言。额外默认 userData 探针仅在一次性 GitHub Actions 用户下运行：不设置 `--user-data-dir`，验证平台默认路径与固定应用身份、实际工作区数据路径一致。探针拒绝使用已有目录，确认进程退出及目录归属后才清理新建目录；本地运行明确跳过此探针，原有隔离数据目录测试继续运行。
 
