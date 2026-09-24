@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import fs from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -31,7 +32,7 @@ for (const target of targets) {
       HOME: isolatedHome, USERPROFILE: isolatedHome, APPDATA: config,
       LOCALAPPDATA: localAppData, XDG_CONFIG_HOME: config, CLAUDE_CONFIG_DIR: claudeConfig,
     });
-    const args = [`--user-data-dir=${profile}`, ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])];
+    const args = electronLaunchArgs([`--user-data-dir=${profile}`]);
     let app: ElectronApplication | undefined;
     let launchedProcess: ReturnType<ElectronApplication['process']> | undefined;
     const errors: string[] = [];

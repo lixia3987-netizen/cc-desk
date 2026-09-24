@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -111,7 +112,7 @@ if (mode === 'structured') {
   const state: AppState = { version: 2, projects: [project], sessions: [], settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = () => electron.launch({
-    args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])],
+    args: electronLaunchArgs(),
     env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: claudeConfig },
   });
   const sent: string[] = [];

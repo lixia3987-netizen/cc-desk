@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -41,8 +42,8 @@ async function workspace(historyCount=90) {
     if(index===1&&historyCount>400)snapshot.truncated=true;
     await fs.writeFile(path.join(data,'chat',sessions[index].id+'.json'),JSON.stringify(snapshot));
   }
-  const launch=()=>electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],
-    env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
+  const launch=(env:Record<string,string>={})=>electron.launch({args:electronLaunchArgs(),
+    env:{...process.env,...env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
   return {directory,data,projects,sessions,launch,dispose:()=>fs.rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100})};
 }
 
@@ -280,7 +281,9 @@ else process.exitCode=1;`);
 test('experience: save-and-detect probes the edited npm CLI path, including an unchanged-path retry',async()=>{
   const f=await workspace();const a=await cliProbe(f.directory,'fixture-A'),b=await cliProbe(f.directory,'fixture-B');
   const file=path.join(f.data,'workspace.json');const state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
-  state.settings.claudePath=a.cli;state.sessions[0].started=true;await fs.writeFile(file,JSON.stringify(state));const app=await f.launch();
+  state.settings.claudePath=a.cli;state.sessions[0].started=true;await fs.writeFile(file,JSON.stringify(state));
+  // Count only save-and-detect probes; the updater legitimately performs its own version check.
+  const app=await f.launch({DISABLE_UPDATES:'1'});
   try{
     const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'连接与终端',exact:true}).click();
     await expect(page.locator('.connection-box')).toContainText('fixture-A');

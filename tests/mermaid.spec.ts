@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -36,7 +37,7 @@ async function workspace(texts: string[], toolIndexes: number[] = []) {
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   await fs.writeFile(path.join(data, 'chat', sessionId + '.json'), JSON.stringify(snapshot));
   const launch = () => electron.launch({
-    args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])],
+    args: electronLaunchArgs(),
     env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data },
   });
   return { snapshot, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };

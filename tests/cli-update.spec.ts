@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,7 +23,7 @@ async function workspace() {
     claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system',
   } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
-  const launch = () => electron.launch({ args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])],
+  const launch = () => electron.launch({ args: electronLaunchArgs(),
     env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: fixture.config } });
   const calls = async () => (await fs.readFile(fixture.log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { kind: string; autoUpdater?: string });
   return { ...fixture, root, sessions, launch, calls, dispose: () => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };

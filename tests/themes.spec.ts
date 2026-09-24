@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -89,7 +90,7 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
   await fs.writeFile(path.join(dataPath, 'chat', chatId + '.json'), JSON.stringify(snapshot));
   await fs.mkdir('docs/themes', { recursive: true });
   const launch = () => electron.launch({
-    args: ['.', ...(process.platform === 'linux' ? ['--no-sandbox', `--ozone-platform=${process.env.DISPLAY ? 'x11' : 'headless'}`, '--disable-gpu'] : [])],
+    args: electronLaunchArgs(),
     env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: dataPath },
   });
   let app = await launch();

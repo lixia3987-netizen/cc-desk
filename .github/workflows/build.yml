@@ -45,10 +45,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           node --import tsx scripts/verify-windows-npm.ts (Join-Path $claudeNpmPrefix 'claude.cmd')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - if: runner.os == 'Linux'
-        run: xvfb-run -a npm run test:e2e
-      - if: runner.os != 'Linux'
-        run: npm run test:e2e
+      - run: npm run test:e2e
       - if: runner.os == 'Windows'
         run: npm run dist:win
       - if: runner.os == 'macOS'
