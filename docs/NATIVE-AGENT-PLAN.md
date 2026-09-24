@@ -3,7 +3,7 @@
 日期：2026-09-24（北京时间）  
 代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，当前应用版本 `0.5.0`。  
 开发分支：`dev/native-agent`，从上述提交创建。  
-状态：开发计划；本次只创建分支和本文档，未实施结构迁移或 Agent 功能。
+状态：阶段一 monorepo 迁移已实现，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。Agent 运行时仍按后续阶段推进，全部开发暂留 `dev/native-agent`。
 
 ## 1. 目标与实施原则
 

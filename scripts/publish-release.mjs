@@ -4,15 +4,17 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 
-const { version } = JSON.parse(await fs.readFile('package.json', 'utf8'));
+const repoRoot = fileURLToPath(new URL('../', import.meta.url));
+const { version } = JSON.parse(await fs.readFile(path.join(repoRoot, 'apps', 'desktop', 'package.json'), 'utf8'));
 const repository = process.env.GITHUB_REPOSITORY;
 const commit = process.env.GITHUB_SHA;
 if (!/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(version) || !/^[\w.-]+\/[\w.-]+$/.test(repository ?? '') || !/^[a-f0-9]{40}$/.test(commit ?? '')) {
   throw new Error('Release version, repository or source commit is invalid.');
 }
 const tag = `v${version}`;
-const directory = path.resolve('release-assets');
+const directory = path.join(repoRoot, 'release-assets');
 const names = (await fs.readdir(directory)).sort();
 const prefix = `cc-desk-${version}-`;
 const expected = [
@@ -37,7 +39,7 @@ for (const name of names) {
 await fs.writeFile(path.join(directory, 'SHA256SUMS.txt'), checksums.join('\n') + '\n');
 names.push('SHA256SUMS.txt');
 
-const gh = args => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
+const gh = args => execFileSync('gh', args, { cwd: repoRoot, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 });
 const api = endpoint => JSON.parse(gh(['api', `repos/${repository}/${endpoint}`]));
 const optional = endpoint => {
   try { return api(endpoint); }
@@ -63,7 +65,7 @@ if (release && (!release.draft || release.target_commitish !== commit)) throw ne
 
 const notesDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-release-'));
 try {
-  const notes = await fs.readFile(`docs/releases/${tag}.md`, 'utf8');
+  const notes = await fs.readFile(path.join(repoRoot, 'docs', 'releases', `${tag}.md`), 'utf8');
   if (!release) {
     const payloadFile = path.join(notesDirectory, 'release.json');
     await fs.writeFile(payloadFile, JSON.stringify({

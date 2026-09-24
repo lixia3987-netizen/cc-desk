@@ -1,0 +1,14 @@
+import { createServer } from 'vite';
+import { build } from 'esbuild';
+import { spawn } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import electron from 'electron';
+const desktopRoot = fileURLToPath(new URL('../', import.meta.url));
+await build({ absWorkingDir: desktopRoot, entryPoints: ['src/main/index.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: 'dist/main/index.cjs', external: ['electron', 'node-pty'], sourcemap: true });
+await build({ absWorkingDir: desktopRoot, entryPoints: ['src/preload/index.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: 'dist/preload/index.cjs', external: ['electron'] });
+const server = await createServer({ configFile: path.join(desktopRoot, 'vite.config.ts') });
+await server.listen();
+const child = spawn(electron, [desktopRoot], { cwd: desktopRoot, stdio: 'inherit', env: { ...process.env, WORKBENCH_DEV_URL: 'http://127.0.0.1:5173' } });
+child.on('exit', async code => { await server.close(); process.exit(code ?? 0); });
+process.on('SIGINT', () => child.kill());
