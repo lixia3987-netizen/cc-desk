@@ -2,6 +2,7 @@ const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:
 const {randomUUID}=require('node:crypto'),{execFileSync}=require('node:child_process');
 const {_electron:electron,expect}=require('@playwright/test');
 (async()=>{
+ if(process.platform==='linux'&&!process.env.DISPLAY?.trim())throw new Error('Linux 界面截图需要 X11 DISPLAY，请安装 xvfb/xauth 后运行 xvfb-run -a node scripts/capture-layout.cjs。');
  const repository=path.resolve(__dirname,'..'),root=path.join(repository,'docs/screenshots'),workspace=await fs.mkdtemp(path.join(os.tmpdir(),'cc-desk-layout-'));
  await fs.mkdir(root,{recursive:true});
  const project=path.join(workspace,'cc-desk'),data=path.join(workspace,'data');
@@ -27,7 +28,7 @@ const {_electron:electron,expect}=require('@playwright/test');
  {id:'preview-assistant',turnId:'preview',role:'assistant',createdAt:now,text:['### 对话检索与待处理入口','通过上方的 **查找消息** 定位历史内容；读取旧消息时保留当前位置，点击 **跳到最新消息** 恢复跟随。','- **会话内查找**：支持消息正文和工具内容，点击结果直达原消息。\n- **历史记录分页**：每页最多 50 条，切换会话后继续阅读。\n- **统一待处理**：顶栏集中显示各项目的审批与提问。','```typescript\nconst readingOptions = {\n  pageSize: 50,\n  preservePosition: true,\n  followLatest: false,\n};\n```','右侧可以查看文件差异并填写审阅意见，意见会加入当前会话草稿。'].join('\n\n')}]}));
  let app;
  try{
-  app=await electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],cwd:repository,env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
+  app=await electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox','--ozone-platform=x11','--disable-gpu']:[])],cwd:repository,env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
   const page=await app.firstWindow(),errors=[];page.on('pageerror',error=>errors.push(error.message));
   await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1600,1000));
   await expect(page.getByRole('heading',{name:'对话体验与界面打磨',exact:true})).toBeVisible();

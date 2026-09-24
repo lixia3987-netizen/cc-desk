@@ -99,7 +99,7 @@ npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
-Linux 编译 node-pty 需要 Python 3、make、C++ 工具链；无图形桌面的 CI 使用 `xvfb-run -a npm run test:e2e`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
+Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
 
 GitHub Actions 构建仅手动触发；日常提交、推送、PR 和 `release:` 提交均不会自动启动构建。需要安装包时，在 Actions → Verify and package desktop → Run workflow 手动运行；默认只验证和打包，产物保存在 Artifacts。
 

@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -23,7 +24,7 @@ async function workspace() {
   await fs.writeFile(path.join(data,'chat',session.id+'.json'),JSON.stringify(chat));
   const source = path.join(directory,'My imported font.woff2');
   await fs.writeFile(source,fontFixture);
-  const launch = () => electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
+  const launch = () => electron.launch({args:electronLaunchArgs(),env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:data}});
   return {directory,data,source,launch,dispose:()=>fs.rm(directory,{recursive:true,force:true,maxRetries:10,retryDelay:100})};
 }
 async function openSettings(page: Page) {

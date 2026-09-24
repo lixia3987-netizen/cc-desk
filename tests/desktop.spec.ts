@@ -1,3 +1,4 @@
+import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -7,7 +8,7 @@ import { execFileSync } from 'node:child_process';
 test('desktop: real terminal, session switching, rename/archive, persistence and settings',async()=>{
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-desktop-'));
   const project=path.join(directory,'项目 with spaces');await fs.mkdir(project);
-  const launch=()=>electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:path.join(directory,'data')}});
+  const launch=()=>electron.launch({args:electronLaunchArgs(),env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:path.join(directory,'data')}});
   let app=await launch();
   try{
     let page=await app.firstWindow();
@@ -91,7 +92,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   if(m.type==='control_response'&&pending&&m.response.request_id===pending.id){const response=m.response.response;const text=response.behavior==='deny'?'已拒绝':pending.question?'选择：'+response.updatedInput.answers['使用哪个数据库？']:'已批准';pending=undefined;done(text);}
 });
 `,{mode:0o755});
-  const launch=()=>electron.launch({args:['.',...(process.platform==='linux'?['--no-sandbox',`--ozone-platform=${process.env.DISPLAY?'x11':'headless'}`,'--disable-gpu']:[])],env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:path.join(directory,'data')}});
+  const launch=()=>electron.launch({args:electronLaunchArgs(),env:{...process.env,WORKBENCH_TEST_MODE:'1',WORKBENCH_DATA_DIR:path.join(directory,'data')}});
   let app=await launch();
   try{
     let page=await app.firstWindow();const rendererErrors:string[]=[];page.on('pageerror',error=>rendererErrors.push(error.message));
