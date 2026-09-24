@@ -23,8 +23,23 @@ async function workspace() {
     claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system',
   } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
-  const launch = () => electron.launch({ args: electronLaunchArgs(),
-    env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: fixture.config } });
+  const launch = async () => {
+    const app = await electron.launch({ args: electronLaunchArgs(),
+      env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: fixture.config } });
+    await app.evaluate(() => {
+      const globals = globalThis as typeof globalThis & { updateSignalErrors?: unknown[] };
+      globals.updateSignalErrors = [];
+      const kill = process.kill.bind(process);
+      process.kill = (pid, signal) => {
+        try { return kill(pid, signal); }
+        catch (error) {
+          globals.updateSignalErrors!.push({ pid, signal, code: (error as NodeJS.ErrnoException).code });
+          throw error;
+        }
+      };
+    });
+    return app;
+  };
   const calls = async () => (await fs.readFile(fixture.log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { kind: string; autoUpdater?: string });
   return { ...fixture, root, sessions, launch, calls, dispose: () => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
@@ -35,7 +50,11 @@ async function confirmation(app: ElectronApplication, response: number) {
   }, response);
 }
 async function close(app: ElectronApplication) { await confirmation(app, 1); await app.close(); }
-const phase = (page: Page) => page.evaluate(async () => (await window.desktop.snapshot()).cliUpdate.phase);
+async function updateState(app: ElectronApplication, page: Page) {
+  const state = await page.evaluate(async () => (await window.desktop.snapshot()).cliUpdate);
+  const signalErrors = await app.evaluate(() => (globalThis as typeof globalThis & { updateSignalErrors?: unknown[] }).updateSignalErrors);
+  return { phase: state.phase, message: state.message, signalErrors };
+}
 const banner = (page: Page) => page.getByRole('region', { name: 'Claude Code CLI 更新' });
 
 test('startup checks each launch; postpone and cancel never stop a live workspace or install', async () => {
@@ -47,7 +66,7 @@ test('startup checks each launch; postpone and cancel never stop a live workspac
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
     await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '连接与终端' }).click();
     await confirmation(app, 0); await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
-    await expect.poll(() => phase(page)).toBe('available');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(s => s.id === id)?.status, f.sessions[2].id)).toBe('running');
     expect((await f.calls()).filter(call => call.kind === 'update')).toHaveLength(0);
     const dialog = await app.evaluate(() => (globalThis as typeof globalThis & { updateDialog: Electron.MessageBoxOptions }).updateDialog);
@@ -69,13 +88,13 @@ test('confirmed update drains all workspaces, terminals, workflows and descendan
     }, f.sessions);
     await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).state.sessions.filter(s => s.status === 'running').length)).toBe(3);
     await confirmation(app, 1); await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
-    await expect.poll(() => phase(page)).toBe('updating');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'updating' });
     const attempts = await page.evaluate(async id => {
       const results = await Promise.allSettled([window.desktop.startSession(id), window.desktop.updateCLI(), window.desktop.saveSettings({ ...(await window.desktop.snapshot()).state.settings, claudePath: 'different-cli' })]);
       return results.map(result => result.status);
     }, f.sessions[2].id);
     expect(attempts).toEqual(['rejected', 'rejected', 'rejected']);
-    await expect.poll(() => phase(page)).toBe('updated'); await expect(banner(page)).toContainText('2.1.10');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'updated' }); await expect(banner(page)).toContainText('2.1.10');
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
     expect(snapshot.state.projects).toHaveLength(2); expect(snapshot.state.sessions).toHaveLength(3);
     expect(snapshot.state.sessions.every(session => session.status === 'stopped')).toBe(true);
@@ -99,12 +118,13 @@ for (const mode of ['fail', 'noop']) test(`updater ${mode} is reported honestly 
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
     await fs.writeFile(f.mode, mode); await confirmation(app, 1);
     await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
-    await expect.poll(() => phase(page)).toBe('error'); await expect(banner(page)).toContainText('工作区保持断开');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'error', message: expect.stringContaining('工作区保持断开') });
+    await expect(banner(page)).toContainText('工作区保持断开');
     await expect(banner(page)).not.toContainText('secret');
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
     expect(snapshot.capabilities.version).toContain('2.1.9'); expect(snapshot.state.sessions[2].status).toBe('stopped');
     await fs.writeFile(f.mode, 'success'); await banner(page).getByRole('button', { name: '重新检查' }).click();
-    await expect.poll(() => phase(page)).toBe('available');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
   } finally { await close(app); await f.dispose(); }
 });
@@ -112,11 +132,11 @@ for (const mode of ['fail', 'noop']) test(`updater ${mode} is reported honestly 
 test('offline startup check does not interrupt normal use and can be retried from settings', async () => {
   const f = await workspace(); await fs.writeFile(f.mode, 'offline'); const app = await f.launch();
   try {
-    const page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible(); await expect.poll(() => phase(page)).toBe('error'); await expect(banner(page)).toHaveCount(0);
+    const page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible(); await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'error' }); await expect(banner(page)).toHaveCount(0);
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
     await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '连接与终端' }).click();
     await expect(banner(page)).toContainText('检查更新失败');
-    await fs.writeFile(f.mode, 'success'); await banner(page).getByRole('button', { name: '重新检查' }).click(); await expect.poll(() => phase(page)).toBe('available');
+    await fs.writeFile(f.mode, 'success'); await banner(page).getByRole('button', { name: '重新检查' }).click(); await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     await page.setViewportSize({ width: 980, height: 680 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('cli-update-settings.png') });

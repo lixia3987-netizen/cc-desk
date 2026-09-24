@@ -10,8 +10,9 @@ import type { Subtask } from '../src/shared/subtasks';
 /** Use the same standard npm layout as a real installation, including on Windows. */
 async function protocolFixture(directory: string) {
   const prefix = path.join(directory, 'npm CLI'), pkg = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
+  const npm = path.join(prefix, 'node_modules', 'npm', 'bin'), config = path.join(directory, 'claude-config');
   const commands = path.join(directory, 'commands.json'), acknowledged = path.join(directory, 'acknowledged.txt');
-  await fs.mkdir(pkg, { recursive: true });
+  await Promise.all([fs.mkdir(pkg, { recursive: true }), fs.mkdir(npm, { recursive: true }), fs.mkdir(config)]);
   await fs.writeFile(commands, '[]');
   const node = path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node');
   if (process.platform === 'win32') await fs.copyFile(process.execPath, node);
@@ -64,8 +65,13 @@ process.stdin.on('end', () => { clearInterval(interval); process.exit(0); });
 `);
   const cli = path.join(prefix, 'claude.cmd');
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
+  // Keep the real update banner visible without depending on an external npm registry.
+  const npmScript = "console.log(JSON.stringify('2.1.10'));\n";
+  await fs.writeFile(path.join(npm, 'npm-cli.js'), npmScript);
+  await fs.writeFile(path.join(prefix, 'npm.cmd'), '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
+  if (process.platform !== 'win32') await fs.writeFile(path.join(prefix, 'npm'), '#!/usr/bin/env node\n' + npmScript, { mode: 0o755 });
   const sent: string[] = [];
-  return { cli, signal: async (command: string) => {
+  return { cli, config, signal: async (command: string) => {
     sent.push(command); await fs.writeFile(commands, JSON.stringify(sent));
     await expect.poll(() => fs.readFile(acknowledged, 'utf8').then(Number, () => 0)).toBe(sent.length);
   } };
@@ -92,7 +98,7 @@ async function workspace() {
   await fs.writeFile(stateFile, JSON.stringify(state));
   const launch = () => electron.launch({
     args: electronLaunchArgs(),
-    env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data },
+    env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: fixture.config },
   });
   return { ...fixture, directory, data, state, stateFile, first, second, terminal, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
@@ -116,7 +122,15 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     let page = await app.firstWindow();
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
+    // 652 px is the content height of a 680 px macOS window, excluding its title bar.
+    await app.evaluate(({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      window.setMinimumSize(980, 652);
+      window.setContentSize(980, 652);
+    });
+    expect(await page.evaluate(() => innerHeight)).toBe(652);
+    const updateBanner = page.getByRole('region', { name: 'Claude Code CLI 更新', exact: true });
+    await expect(updateBanner).toContainText('2.1.10');
     await page.getByLabel('提示词编辑器', { exact: true }).fill('并行检查接口与界面');
     await page.getByRole('button', { name: '发送任务', exact: true }).click();
     await counts(page, 2, 2, 0);
@@ -128,6 +142,8 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('.chat-composer')).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: testInfo.outputPath('subtasks-narrow-inspector-open.png') });
     await page.getByRole('button', { name: '收起子任务', exact: true }).click();
     await page.getByRole('button', { name: '收起右侧面板', exact: true }).click();
@@ -155,6 +171,10 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('.chat-composer')).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(updateBanner).toBeInViewport({ ratio: 1 });
+    expect(await panel.locator('.subtask-list').evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('subtasks-progress.png') });
 
     await page.locator('.session-row').filter({ hasText: f.second.title }).click();

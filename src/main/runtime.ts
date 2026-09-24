@@ -7,8 +7,10 @@ import type { IPty } from 'node-pty';
 import type { Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
 import { StateStore } from './store';
 import type { TerminalLauncher, TerminalLaunchResource } from './execution/terminal-launch';
+import { releaseWindowsPty } from './execution/windows-pty-resources';
 import { SubtaskTracker } from './subtask-tracker';
 import { automaticSessionTitlePatch } from '../shared/session-title';
+import { signalPosixGroup } from './posix-process-group';
 
 const execFileAsync = promisify(execFile);
 const MEMORY_LIMIT = 1024 * 1024;
@@ -25,7 +27,7 @@ export class TerminalBuffer {
   }
 }
 
-interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; token: object; resource?: TerminalLaunchResource; resourceClose?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
+interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; token: object; resource?: TerminalLaunchResource; resourceClose?: Promise<void>; release?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
   private stopping = new Map<string, ProcessEntry>();
@@ -197,7 +199,7 @@ export class Runtime {
         if (this.running.get(id) !== entry) return;
         // Detach ownership before any fallible persistence, output, or UI callback.
         this.running.delete(id);
-        if (process.platform === 'win32') this.releasePty(entry);
+        if (process.platform === 'win32') void this.releasePty(id, entry);
         void this.closeResource(entry);
         this.guard(() => this.subtasks.end(id, entry.ending ? 'interrupted' : exitCode !== 0 ? 'failed' : 'unknown',
           entry.ending ? '会话已停止。' : exitCode !== 0 ? '会话进程异常退出。' : '会话进程已退出，未收到子任务完成通知。'));
@@ -251,9 +253,9 @@ export class Runtime {
         if (process.platform === 'win32') await this.stopWindowsTree(entry);
         else await this.stopPosixTree(entry);
       } finally {
-        this.releasePty(entry);
+        await this.releasePty(id, entry);
         await this.closeResource(entry);
-        if (this.stopping.get(id) === entry) this.stopping.delete(id);
+        if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
         this.trimBuffers();
       }
     })());
@@ -276,11 +278,21 @@ export class Runtime {
       killer.once('close', code => finish(code === 0 ? undefined : new Error('无法确认会话进程树已完全停止。')));
     });
   }
-  private releasePty(entry: ProcessEntry) {
-    if (entry.released) return;
-    entry.released = true;
-    // External taskkill can leave node-pty's ConPTY worker alive after the root exits.
-    try { entry.process.kill(); } catch { /* Native handle is already closed. */ }
+  private releasePty(id: string, entry: ProcessEntry): Promise<void> {
+    if (entry.release) return entry.release;
+    this.stopping.set(id, entry);
+    entry.release = this.trackCleanup((async () => {
+      try {
+        if (process.platform === 'win32') await releaseWindowsPty(entry.process);
+        else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
+        entry.released = true;
+      } finally {
+        // Natural Windows exits also retain ownership until the worker is gone.
+        if (entry.released && !entry.cleanup && this.stopping.get(id) === entry) this.stopping.delete(id);
+        this.trimBuffers();
+      }
+    })());
+    return entry.release;
   }
   private async stopPosixTree(entry: ProcessEntry) {
     const ids = new Set([entry.process.pid]);
@@ -291,19 +303,19 @@ export class Runtime {
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
     } catch { /* Fall back to the owned process group. */ }
     let failure: unknown;
-    const signal = (name: NodeJS.Signals) => {
+    const signal = async (name: NodeJS.Signals) => {
       for (const pid of [...ids].reverse()) {
         try { process.kill(pid,name); }
         catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
       }
-      try { process.kill(-entry.process.pid,name); }
+      try { await signalPosixGroup(entry.process.pid, name); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
     };
-    signal('SIGTERM');
+    await signal('SIGTERM');
     // Keep this cleanup even when the root exits before an ignoring descendant.
     // This is a tracked Promise, independent of the root PTY's exit event.
     await new Promise<void>(resolve => setTimeout(resolve,1500));
-    signal('SIGKILL');
+    await signal('SIGKILL');
     if (failure) throw failure;
   }
   snapshot(id: string): TerminalSnapshot {
@@ -352,6 +364,7 @@ export class Runtime {
     await (this.shutdownPromise ??= this.performShutdown());
     // Resource cleanup is idempotent, but saving must be retried after a disk fault.
     this.store.flush();
+    if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程和资源已释放，请检查残留进程后重试。', { cause: this.cleanupError });
   }
   setMaintenance(value: boolean) { this.maintenance = value; }
   async disconnectAll() {
@@ -369,7 +382,7 @@ export class Runtime {
     while ((this.running.size || this.starting.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve,50));
     for (const [id, entry] of this.running) {
       await this.beginStop(id, entry);
-      this.releasePty(entry);
+      await this.releasePty(id, entry);
     }
     // Root exit is not proof that descendants, taskkill, or launcher resources have finished.
     while (this.cleanups.size) await Promise.all([...this.cleanups]);

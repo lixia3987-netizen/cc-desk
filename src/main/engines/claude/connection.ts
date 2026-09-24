@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { JsonLineDecoder, object, string, type WireObject } from '../../chat-protocol';
+import { signalPosixGroup } from '../../posix-process-group';
 
 interface ControlWaiter { resolve(value: WireObject): void; reject(error: Error): void; timer: NodeJS.Timeout }
 interface ConnectionEvents {
@@ -75,12 +76,10 @@ export class ClaudeConnection {
           killer.once('error', () => { try { this.child.kill(value); } catch { /* Already exited. */ } resolve(false); });
         });
       }
-      try { process.kill(-this.child.pid, value); return Promise.resolve(true); }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ESRCH') return Promise.resolve(true);
+      return signalPosixGroup(this.child.pid, value).then(() => true, () => {
         try { this.child.kill(value); } catch { /* Already exited. */ }
-        return Promise.resolve(false);
-      }
+        return false;
+      });
     };
     const first = signal('SIGTERM');
     // Keep Windows' root alive until taskkill has found the process tree. Closing

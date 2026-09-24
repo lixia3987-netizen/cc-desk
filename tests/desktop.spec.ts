@@ -150,7 +150,13 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('等待继续');await expect(page.locator('.workflow-stage.completed')).toHaveCount(1);await page.getByRole('button',{name:'继续',exact:true}).click();
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(2);await page.getByRole('button',{name:'继续',exact:true}).click();await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('已完成');await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
     await page.screenshot({path:'docs/screenshots/workflow.png'});
-    const workflowExport=path.join(directory,'workflow-export.json');await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},workflowExport);await page.getByRole('button',{name:'导出',exact:true}).click();await expect(page.getByRole('status')).toContainText('工作流记录已导出');expect(JSON.parse(await fs.readFile(workflowExport,'utf8')).runs[0].stages).toHaveLength(3);
+    const workflowPanel=page.locator('#session-inspector .panel-content').filter({has:page.getByLabel('全部工作流记录',{exact:true})});
+    const workflowExport=path.join(directory,'workflow-export.json');
+    await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},workflowExport);
+    await workflowPanel.getByRole('button',{name:'导出',exact:true}).click();
+    // Other regions, including the CLI update banner, can report status at the same time.
+    await expect(workflowPanel.getByRole('status')).toHaveText('工作流记录已导出');
+    expect(JSON.parse(await fs.readFile(workflowExport,'utf8')).runs[0].stages).toHaveLength(3);
     await page.keyboard.press(process.platform==='darwin'?'Meta+k':'Control+k');await expect(page.getByRole('dialog',{name:'命令面板'})).toBeVisible();await page.getByLabel('查找命令与会话').fill('会话 B');await page.locator('.palette-results button').filter({hasText:'会话 B'}).click();await expect(page.getByRole('heading',{name:'会话 B',exact:true})).toBeVisible();
     await page.getByLabel('全部工作流记录').check();await expect(page.locator('.workflow-run')).toHaveCount(1);await page.getByRole('button',{name:'删除记录',exact:true}).click();await page.getByRole('button',{name:'确认删除工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(0);
     await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(project,'example.ts'));
