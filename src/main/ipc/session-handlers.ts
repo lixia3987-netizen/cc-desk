@@ -20,6 +20,7 @@ interface SessionPorts {
   select(id: string): void;
   export(id: string): Promise<string | null>;
   onState(): void;
+  forgetQueue(id: string): void;
 }
 
 const updateSchema = z.object({
@@ -76,6 +77,7 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
     ports.workflows.removeSession(id);
     ports.runtime.forget(id);
     ports.chat.forget(id);
+    ports.forgetQueue(id);
     await ports.attachments.remove(id);
     ports.store.change(state => {
       state.sessions = state.sessions.filter(session => session.id !== id);

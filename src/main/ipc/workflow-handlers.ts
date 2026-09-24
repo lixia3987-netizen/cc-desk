@@ -12,6 +12,7 @@ interface WorkflowPorts {
   structured(id: string): Session;
   assertUnlocked(session: Session): void;
   hasPendingTask(id: string): boolean;
+  pauseQueue(id: string): void;
   getWindow(): BrowserWindow | null;
 }
 
@@ -35,7 +36,14 @@ export function registerWorkflowHandlers(handle: Register, ports: WorkflowPorts)
   handle('workflow:start', idSchema, id => { workflowReady(id); return ports.workflows.start(id); });
   handle('workflow:continue', idSchema, id => { workflowReady(id); return ports.workflows.continue(id); });
   handle('workflow:retry', idSchema, id => { workflowReady(id); return ports.workflows.retry(id); });
-  handle('workflow:cancel', idSchema, id => ports.workflows.cancel(id));
+  handle('workflow:cancel', idSchema, async id => {
+    const run = ports.workflows.list().find(run => run.id === id);
+    let failure: unknown;
+    if (run) { try { ports.pauseQueue(run.sessionId); } catch (error) { failure = error; } }
+    const result = await ports.workflows.cancel(id);
+    if (failure) throw failure;
+    return result;
+  });
   handle('workflow:delete', idSchema, id => ports.workflows.remove(id));
   handle('workflow:export', idSchema, async id => {
     // Capture a stable, inactive record before showing a modal save dialog.

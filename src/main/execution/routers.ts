@@ -29,6 +29,15 @@ export class StructuredExecutions {
     return this.get(id).updateConfig(id, config);
   }
   interrupt(id: string) { return this.get(id).interrupt(id); }
+  async interruptAndWait(id: string) {
+    const executor = this.get(id);
+    if (executor.interruptAndWait) return executor.interruptAndWait(id);
+    await executor.interrupt(id);
+    const deadline = Date.now() + 10_000;
+    while (executor.isBusy(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (executor.isBusy(id)) throw new Error('上一轮尚未完全停止，请稍后重试。');
+    await executor.stopIdle(id);
+  }
   stop(id: string) { return this.get(id).stop(id); }
   async stopIdle(id: string) {
     // Callers also release directories containing terminal sessions.

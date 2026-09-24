@@ -60,6 +60,11 @@ export function App() {
   const toggleInspector = () => { const next = !inspectorOpen; setInspectorOpen(next); saveInspectorOpen(next); };
   const [filePicker, setFilePicker] = useState('');
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
+  const attachmentRevisions = useRef(new Map<string, number>());
+  const changeAttachments = useCallback((id: string, change: (files: Attachment[]) => Attachment[]) => {
+    attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
+    setAttachments(old => ({ ...old, [id]: change(old[id] ?? []) }));
+  }, []);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [paletteQuery, setPaletteQuery] = useState('');
   const [dataPath, setDataPath] = useState('');
@@ -148,7 +153,12 @@ export function App() {
 
   useEffect(() => {
     if (!activeId || !structured) return; let cancelled = false;
-    void window.desktop.listAttachments(activeId).then(files => { if (!cancelled) setAttachments(old => ({ ...old, [activeId]: files })); }).catch(error => { if (!cancelled) report(error); });
+    const revision = attachmentRevisions.current.get(activeId) ?? 0;
+    void window.desktop.listAttachments(activeId).then(files => {
+      // A delayed refresh must not restore an accepted chip or replace files
+      // added while switching back to this session.
+      if (!cancelled && revision === (attachmentRevisions.current.get(activeId) ?? 0)) setAttachments(old => ({ ...old, [activeId]: files }));
+    }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
   }, [activeId, structured, report]);
   const openNew = (kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string) => {
@@ -192,7 +202,8 @@ export function App() {
   </main>;
   const addAttachments = (id: string) => perform(async () => {
     const files = await window.desktop.pickAttachments(id);
-    setAttachments(old => ({ ...old, [id]: [...new Map([...(old[id] ?? []), ...files].map(file => [file.path, file])).values()] }));
+    if (!files.length) return;
+    changeAttachments(id, current => [...new Map([...current, ...files].map(file => [file.path, file])).values()]);
   });
   const appendReview = (text: string) => active ? appendDraft(active.id, text) : false;
   const activePanels = active ? (panelDrafts.current.get(active.id) ?? active.panelDrafts ?? {}) : {};
@@ -221,13 +232,19 @@ export function App() {
         {active.error && <div className="inline-warning">{active.error}</div>}
         <div className="session-content" inert={cliUpdateBusy(cliUpdate)}>
           <SessionViewport state={state} active={active} structured={structured} themeId={themeId} composer={composer} onDraft={setComposer} onSent={expected => clearSentDraft(active.id, expected)} report={report} onClearError={() => setError('')}>
-            {structured && <ChatPane key={active.id} session={active} draft={composer}
+            {structured && <ChatPane key={active.id} session={active} draft={composer} disabled={cliUpdateBusy(cliUpdate)}
               onDraft={value => saveDraftFor(active.id, value)} onSent={expected => clearSentDraft(active.id, expected)}
               onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id)} onProjectFiles={() => setFilePicker(active.id)}
               approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current}
               attentionTarget={attentionTarget?.sessionId === active.id ? attentionTarget : undefined} onAttentionHandled={() => setAttentionTarget(undefined)}
-              onRemoveAttachment={path => void perform(async () => { await window.desktop.removeAttachment(active.id, path); setAttachments(old => ({ ...old, [active.id]: (old[active.id] ?? []).filter(file => file.path !== path) })); })}
-              onAttachmentsSent={paths => setAttachments(old => ({ ...old, [active.id]: (old[active.id] ?? []).filter(file => !paths.includes(file.path)) }))} />}
+              onRemoveAttachment={path => void perform(async () => { await window.desktop.removeAttachment(active.id, path); changeAttachments(active.id, files => files.filter(file => file.path !== path)); })}
+              onAttachmentsSent={files => {
+                if (!files.length) return;
+                // Every picker import has a fresh staged path, even when the
+                // same source file is selected again while acceptance is pending.
+                const submittedPaths = new Set(files.map(file => file.path));
+                changeAttachments(active.id, current => current.filter(file => !submittedPaths.has(file.path)));
+              }} />}
           </SessionViewport>
           <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy} inspectorOpen={inspectorOpen}
             perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}

@@ -43,7 +43,16 @@ export interface ChatSnapshot {
   error?: string; truncated?: boolean;
   /** The CLI transcript was imported only in part; the local journal cannot supply that missing prefix. */
   sourceIncomplete?: boolean;
+  /** Durable main-process submissions, independent of the current CLI turn. */
+  queue?: ChatQueueSnapshot;
 }
+export interface QueuedChatMessage {
+  id: string; text: string; attachments: string[]; createdAt: string;
+  attachmentNames?: string[];
+  status: 'queued' | 'sending';
+}
+export interface ChatQueueSnapshot { items: QueuedChatMessage[]; paused: boolean; error?: string }
+export interface ChatSubmission { messageId: string }
 export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean }
 
 export interface ChatPageOptions { before?: string; after?: string; around?: string; query?: string }

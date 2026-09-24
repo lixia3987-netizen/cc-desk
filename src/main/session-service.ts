@@ -9,6 +9,7 @@ import { sameConversation } from '../shared/execution';
 import { exportSession } from './execution/export-session';
 import { Attachments } from './attachments';
 import { WorkflowEngine } from './workflows';
+import { ChatQueue } from './chat-queue';
 import type { WorkspaceQueries } from './workspace-queries';
 import { gitWorktreeRoot } from './git';
 import { isSessionBusy } from '../shared/session-activity';
@@ -25,11 +26,14 @@ export class SessionService {
   readonly chat: StructuredExecutions;
   readonly runtime: TerminalExecutions;
   readonly workflows: WorkflowEngine;
+  readonly queue: ChatQueue;
   private attachments: Attachments;
   private admissions = new Set<string>();
+  private cancellations = new Map<string, number>();
   private lifecycle = new Set<string>();
   private directoryLocks = new Set<string>();
   private notified = new Map<string,string>();
+  private workflowStates = new Map<string,string>();
   private stopping = false;
   private maintenance = false;
   constructor(private store: StateStore, readonly execution: ExecutionRegistry,
@@ -45,6 +49,7 @@ export class SessionService {
       if (event.type === 'terminal.data') window?.webContents.send('terminal:data', event.chunk);
       if (event.type !== 'conversation.changed') return;
       const id = event.identity.sessionId, state = event.taskState;
+      this.queue?.wake(id);
       window?.webContents.send('chat:changed', id, state);
       const old = this.notified.get(id); this.notified.set(id,state);
       if (old !== state && store.state.settings.notifications && ['waiting_approval','waiting_input','completed','error'].includes(state) && Notification.isSupported()) {
@@ -58,8 +63,34 @@ export class SessionService {
     this.workflows = new WorkflowEngine(store.directory,{
       getSession:id => { const s = this.structured(id); if(s.archived) throw new Error('请先取消会话归档。'); this.assertUnlocked(s); return {sessionId:s.id,projectId:s.projectId,cwd:s.cwd,worktree:s.worktree,providerId:s.execution.providerId,executionMode:'structured'}; },
       runStage:(id,prompt,titlePrompt) => this.runChat(id,prompt,[],titlePrompt),
-      cancelSession:id => this.chat.interrupt(id),
-      onChange:() => this.getWindow()?.webContents.send('workflow:changed')
+      cancelSession:id => {
+        this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
+        return this.chat.interrupt(id);
+      },
+      onChange:runs => {
+        this.getWindow()?.webContents.send('workflow:changed');
+        for (const run of runs) {
+          const previous = this.workflowStates.get(run.id); this.workflowStates.set(run.id, run.status);
+          if (previous !== run.status && ['failed', 'interrupted', 'cancelled'].includes(run.status) && this.queue && !this.queue.isPrioritizing(run.sessionId)) {
+            try { this.queue.pause(run.sessionId, '工作流已停止，待发送消息需要手动继续。'); }
+            catch { /* Keep the in-memory pause without preventing workflow cancellation. */ }
+          }
+          this.queue?.wake(run.sessionId);
+        }
+      }
+    });
+    for (const run of this.workflows.list()) this.workflowStates.set(run.id, run.status);
+    this.queue = new ChatQueue(store.directory, {
+      assertAvailable: id => {
+        const session = this.structured(id); this.assertUnlocked(session);
+        if (session.archived) throw new Error('请先取消会话归档。');
+        if (this.runtime.has(id)) throw new Error('此会话已有终端进程。');
+      },
+      blocked: id => this.admissions.has(id) || this.chat.isBusy(id) || this.workflows.isSessionBusy(id),
+      acceptAttachments: (id, files, commit) => this.attachments.acceptQueued(id, files, commit),
+      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true),
+      interrupt: id => this.interruptForQueue(id),
+      changed: id => this.getWindow()?.webContents.send('chat:changed', id, this.chat.taskState(id)),
     });
   }
   private navigateFromNotification(id:string) {
@@ -85,7 +116,7 @@ export class SessionService {
     if(!p) throw new Error('项目不存在。'); return p;
   }
   private occupied(id: string) { return this.runtime.has(id) || this.chat.has(id) || this.admissions.has(id); }
-  private taskOccupied(id: string) { return this.runtime.has(id) || this.chat.isBusy(id) || this.admissions.has(id) || this.workflows.isSessionBusy(id); }
+  private taskOccupied(id: string) { return this.runtime.has(id) || this.chat.isBusy(id) || this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id); }
   private pathKey(value: string): string {
     let current = path.resolve(value);
     const missing: string[] = [];
@@ -120,7 +151,8 @@ export class SessionService {
   }
   private async manage<T>(id: string, action: () => T | Promise<T>): Promise<T> {
     this.assertUnlocked(this.session(id));
-    if(this.admissions.has(id) || this.workflows.isSessionBusy(id)) throw new Error('请先停止正在执行的任务。');
+    if(this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id)) throw new Error('请先停止正在执行的任务。');
+    if (this.session(id).execution.mode === 'structured') this.queue.pause(id);
     this.lifecycle.add(id);
     try { return await action(); } finally { this.lifecycle.delete(id); }
   }
@@ -206,35 +238,54 @@ export class SessionService {
     try { this.assertAvailable(); await this.runtime.start(id); } finally { this.admissions.delete(id); }
   }
   async stop(id: string) {
-    if(this.workflows.isSessionBusy(id)) {
-      for(const run of this.workflows.list(id)) if(run.status==='running') await this.workflows.cancel(run.id);
-    }
-    if(this.session(id).execution.mode==='structured') await this.chat.stop(id); else await this.runtime.stop(id);
+    this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
+    const errors: unknown[] = [];
+    if (this.session(id).execution.mode === 'structured') { try { this.queue.pause(id); } catch (error) { errors.push(error); } }
+    for(const run of this.workflows.list(id)) if(run.status==='running') { try { await this.workflows.cancel(run.id); } catch (error) { errors.push(error); } }
+    try { if(this.session(id).execution.mode==='structured') await this.chat.stop(id); else await this.runtime.stop(id); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : String(error)).join('\n'));
   }
   async interrupt(id: string) {
-    if(this.workflows.isSessionBusy(id)) {
-      for(const run of this.workflows.list(id)) if(run.status === 'running') await this.workflows.cancel(run.id);
-      return;
-    }
-    if(this.session(id).execution.mode === 'structured') await this.chat.interrupt(id); else await this.runtime.interrupt(id);
+    this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
+    const errors: unknown[] = [];
+    if (this.session(id).execution.mode === 'structured') { try { this.queue.pause(id); } catch (error) { errors.push(error); } }
+    for(const run of this.workflows.list(id)) if(run.status === 'running') { try { await this.workflows.cancel(run.id); } catch (error) { errors.push(error); } }
+    try { if(this.session(id).execution.mode === 'structured') await this.chat.interrupt(id); else await this.runtime.interrupt(id); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : String(error)).join('\n'));
   }
-  private async runChat(id: string, text: string, attachments: string[] = [], titlePrompt?: string) {
+  private async interruptForQueue(id: string) {
+    this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
+    const owned = this.workflows.list(id).filter(run => ['running', 'cancelled'].includes(run.status));
+    for (const run of owned) if (run.status === 'running') await this.workflows.cancel(run.id);
+    await this.chat.interruptAndWait(id);
+    await Promise.all(owned.map(run => this.workflows.wait(run.id)));
+    const deadline = Date.now() + 10_000;
+    while (this.admissions.has(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (this.admissions.has(id) || this.workflows.isSessionBusy(id)) throw new Error('上一轮任务尚未完全释放会话，请稍后重试。');
+  }
+  private async runChat(id: string, text: string, attachments: string[] = [], titlePrompt?: string, queued = false) {
+    const epoch = this.cancellations.get(id) ?? 0;
     const s = this.structured(id);
     if(s.archived) throw new Error('请先取消会话归档。');
     if(this.runtime.has(id)) throw new Error('此会话已有终端进程。');
+    if (!queued && titlePrompt === undefined && this.queue.hasPending(id)) throw new Error('请先处理排队消息，再直接发送。');
+    if (queued && this.queue.snapshot(id).paused) throw new Error('队列已暂停，消息没有发送。');
     if(BUSY.has(this.chat.taskState(id))) throw new Error('请等待当前回合完成，或先中断。');
     await this.reserve(id);
     try {
       await this.attachments.retain(id,attachments);
+      if (queued) await this.attachments.markSent(id, attachments);
       this.assertAvailable();
+      if (epoch !== (this.cancellations.get(id) ?? 0)) throw new Error('消息发送已取消。');
+      if (queued && this.queue.snapshot(id).paused) throw new Error('队列已暂停，消息没有发送。');
       const result=await this.chat.send(id,text,attachments,titlePrompt);
-      if(result.success) {
+      if(result.success && !queued) {
         try { await this.attachments.markSent(id,attachments); }
         catch (error) { throw new Error(`本轮任务已完成，但附件草稿状态保存失败；附件副本仍保留，请勿重复执行本轮任务。${error instanceof Error?error.message:String(error)}`); }
       }
       return result;
     }
-    finally { this.admissions.delete(id); }
+    finally { this.admissions.delete(id); this.queue.wake(id); }
   }
   select(id: string) { if(id) this.session(id); this.store.change(s => {s.selectedSessionId=id;}); this.onState(); }
   register(handle: Register) {
@@ -242,12 +293,13 @@ export class SessionService {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),
       manage: (id, action) => this.manage(id, action), select: id => this.select(id), export: id => this.export(id), onState: this.onState,
+      forgetQueue: id => this.queue.delete(id),
     });
     registerChatHandlers(handle, {
-      chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
+      chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments, queue: this.queue,
       structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
       requireCommands: id => { this.execution.require(id, 'commands'); },
-      reserve: id => this.reserve(id), releaseAdmission: id => { this.admissions.delete(id); },
+      reserve: id => this.reserve(id), releaseAdmission: id => { this.admissions.delete(id); this.queue.wake(id); },
       runChat: (id, text, attachments) => this.runChat(id, text, attachments), getWindow: this.getWindow,
     });
     registerWorkspaceHandlers(handle, {
@@ -259,13 +311,15 @@ export class SessionService {
     });
     registerWorkflowHandlers(handle, {
       workflows: this.workflows, structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
-      hasPendingTask: id => this.admissions.has(id) || BUSY.has(this.chat.taskState(id)), getWindow: this.getWindow,
+      hasPendingTask: id => this.admissions.has(id) || BUSY.has(this.chat.taskState(id)) || this.queue.hasPending(id),
+      pauseQueue: id => this.queue.pause(id), getWindow: this.getWindow,
     });
   }
   private export(id: string) { return exportSession(this.execution, id, this.getWindow()); }
   async shutdown() {
     this.stopping=true;
     const errors:unknown[]=[];
+    try { this.queue.pauseAll('工作台已退出，待发送消息需要手动继续。'); } catch (error) { errors.push(error); }
     try { await this.workflows.shutdown(); } catch(error) { errors.push(error); }
     // A persistence failure must not prevent another runtime from terminating.
     // Keep retries live: a later quit attempt must be able to flush after recovery.
@@ -280,7 +334,7 @@ export class SessionService {
     try {
       this.execution.setMaintenance(true);
       // Stop each runner even when another runner cannot save or terminate.
-      const results = await Promise.allSettled([this.workflows.disconnectAll(), this.execution.disconnectAll()]);
+      const results = await Promise.allSettled([Promise.resolve().then(() => this.queue.pauseAll('CLI 更新已暂停队列，请手动继续。')), this.workflows.disconnectAll(), this.execution.disconnectAll()]);
       const deadline = Date.now() + 10_000;
       while (this.admissions.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
       if (results.some(result => result.status === 'rejected') || this.activeCount || this.admissions.size) throw new Error('未能断开全部工作区或保存记录，已取消更新。请检查会话进程、磁盘空间和目录权限后重试。');

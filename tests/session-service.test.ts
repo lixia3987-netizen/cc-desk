@@ -21,6 +21,7 @@ import type { Capabilities, Session } from '../src/shared/types';
 import type { WorktreeInfo } from '../src/shared/git';
 import type { EnvironmentDiagnostics } from '../src/shared/diagnostics';
 import { emptyGitReviewDraft, emptyWorkflowDraft } from '../src/shared/panel-drafts';
+import type { ChatSnapshot, ChatSubmission, ChatTurnResult } from '../src/shared/chat';
 
 async function fixture(window:BrowserWindow|null=null) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-service-'));
@@ -501,4 +502,79 @@ test('conversation history IPC validates message cursors and restricts reads to 
     const page=await f.call<{messages:unknown[]}>('chat:page',{id:structured.id});assert.deepEqual(page.messages,[]);
     assert.deepEqual(await f.call('chat:attention',undefined),[]);
   }finally{await f.dispose();}
+});
+
+async function until(predicate:()=>boolean) {
+  const deadline=Date.now()+3000;
+  while(!predicate()&&Date.now()<deadline)await new Promise(resolve=>setTimeout(resolve,5));
+  assert.equal(predicate(),true,'condition did not become true');
+}
+
+test('submission IPC acknowledges durable ownership and detaches attachment drafts before a turn finishes',async t=>{
+  const f=await fixture();let finish!: (result:ChatTurnResult)=>void;
+  try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    const attachments=(f.service as unknown as {attachments:Attachments}).attachments;
+    const source=path.join(f.dir,'queue-context.txt');await fs.writeFile(source,'queued context');
+    const [attachment]=await attachments.add(session.id,[source]);
+    let sends=0;
+    t.mock.method(f.service.chat,'send',async()=>{sends++;return new Promise<ChatTurnResult>(resolve=>{finish=resolve;});});
+    const requestId=randomUUID();
+    const accepted=await f.call<ChatSubmission>('chat:submit',{id:session.id,text:'first',attachments:[attachment.path],requestId});
+    assert.equal(typeof accepted.messageId,'string');
+    assert.deepEqual(await f.call('files:attachments',session.id),[]);
+    assert.equal(await fs.readFile(attachment.path,'utf8'),'queued context');
+    await assert.rejects(f.call('files:remove-attachment',{id:session.id,path:attachment.path}),/正在被排队或执行/);
+    assert.deepEqual(await f.call('chat:submit',{id:session.id,text:'first',attachments:[attachment.path],requestId}),accepted);
+    await until(()=>sends===1);
+    const snapshot=await f.call<ChatSnapshot>('chat:snapshot',session.id);
+    assert.equal(snapshot.queue?.items[0].status,'sending');
+    assert.deepEqual(snapshot.queue?.items[0].attachmentNames,['queue-context.txt']);
+    finish({success:true,summary:'done'});await until(()=>!f.service.queue.hasActive(session.id));
+    assert.equal(sends,1);assert.equal(f.service.queue.snapshot(session.id).items.length,0);
+  } finally {finish?.({success:true,summary:''});t.mock.restoreAll();await f.dispose();}
+});
+
+test('stop cancels a queue admission awaiting attachment IO without dispatching the accepted prompt later',async t=>{
+  const f=await fixture();let release!:()=>void;
+  try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    const attachments=(f.service as unknown as {attachments:Attachments}).attachments;
+    let pending=false,sends=0;
+    t.mock.method(attachments,'retain',async()=>{pending=true;await new Promise<void>(resolve=>{release=resolve;});});
+    t.mock.method(f.service.chat,'send',async()=>{sends++;return {success:true,summary:''};});
+    await f.call('chat:submit',{id:session.id,text:'must remain queued'});
+    await until(()=>pending);await f.service.stop(session.id);release();
+    await until(()=>!f.service.queue.hasActive(session.id));
+    assert.equal(sends,0);
+    const queue=f.service.queue.snapshot(session.id);assert.equal(queue.paused,true);assert.equal(queue.items[0].status,'queued');
+  } finally {release?.();t.mock.restoreAll();await f.dispose();}
+});
+
+test('a queue persistence error does not prevent explicit runtime stop or interruption',async t=>{
+  const f=await fixture();try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    let stopped=0,interrupted=0;
+    t.mock.method(f.service.queue,'pause',()=>{throw new Error('queue disk error');});
+    t.mock.method(f.service.chat,'stop',async()=>{stopped++;});
+    t.mock.method(f.service.chat,'interrupt',async()=>{interrupted++;});
+    await assert.rejects(f.service.stop(session.id),/queue disk error/);
+    await assert.rejects(f.service.interrupt(session.id),/queue disk error/);
+    assert.deepEqual([stopped,interrupted],[1,1]);
+  } finally {t.mock.restoreAll();await f.dispose();}
+});
+
+test('workflow cancellation invalidates a stage admission before it can become a model request',async t=>{
+  const f=await fixture();let release!:()=>void;
+  try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    const attachments=(f.service as unknown as {attachments:Attachments}).attachments;
+    let pending=false,sends=0;
+    t.mock.method(attachments,'retain',async()=>{pending=true;await new Promise<void>(resolve=>{release=resolve;});});
+    t.mock.method(f.service.chat,'send',async()=>{sends++;return {success:true,summary:''};});
+    const run=f.service.workflows.create({sessionId:session.id,goal:'cancel pending stage',stages:[{id:'one',title:'one',instruction:'one',dependsOn:[]}]});
+    f.service.workflows.start(run.id);await until(()=>pending);
+    await f.call('workflow:cancel',run.id);release();await f.service.workflows.wait(run.id);
+    assert.equal(sends,0);assert.equal(f.service.workflows.isSessionBusy(session.id),false);
+  } finally {release?.();t.mock.restoreAll();await f.dispose();}
 });

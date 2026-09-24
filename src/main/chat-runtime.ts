@@ -342,6 +342,18 @@ export class ChatRuntime {
     try { await entry.connection.control({ subtype: 'interrupt' }, 5000); }
     catch (error) { if (this.entries.get(id) === entry && entry.turn) { this.system(id, messageOf(error), true); this.stop(id); } }
   }
+  /** Priority sends must outlive both interrupt acknowledgement and process cleanup. */
+  async interruptAndWait(id: string) {
+    const entry = this.entries.get(id) ?? this.releasing.get(id);
+    if (entry) this.releasing.set(id, entry);
+    await this.interrupt(id);
+    const deadline = Date.now() + 10_000;
+    while (this.isBusy(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    // Closing an interrupted connection also discards any delayed old-turn frames.
+    await this.stopAndWait(id);
+    while (this.busy.has(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (this.busy.has(id) || this.has(id)) throw new Error('上一轮尚未完全停止，排队消息没有发送。');
+  }
   async updateConfig(id: string, patch: { model?: string; permissionMode?: PermissionMode; effort?: Effort }) {
     const session = this.session(id); let entry = this.entries.get(id);
     const invalidateModelContext = () => {
