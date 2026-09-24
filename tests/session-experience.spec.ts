@@ -181,6 +181,10 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await page.getByRole('button', { name: '重命名', exact: true }).click();
     await page.getByLabel('新的会话名称', { exact: true }).fill('登录校验专项');
     await page.getByRole('button', { name: '保存', exact: true }).click();
+    // Saving crosses IPC; the dialog keeps background inputs inert until it closes.
+    // Playwright fill/press can otherwise target the still-focused name field.
+    await expect(page.getByRole('dialog', { name: '重命名会话', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '登录校验专项', exact: true })).toBeVisible();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('继续补充接口验证');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
     // A resumed conversation initially shows the previous turn's completion.
