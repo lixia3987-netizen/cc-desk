@@ -52,6 +52,7 @@ export function App() {
   const [notice, setNotice] = useState('');
   const [operationBusy, setBusy] = useState(false);
   const busy = operationBusy || cliUpdateBusy(cliUpdate);
+  const latestBusy = useRef(busy); latestBusy.current = busy;
   const latestState = useRef(state); latestState.current = state;
   const selection = useRef(new SessionSelection());
   const stateEvents = useRef(0);
@@ -61,6 +62,8 @@ export function App() {
   const [filePicker, setFilePicker] = useState('');
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const attachmentRevisions = useRef(new Map<string, number>());
+  const pendingAttachmentImports = useRef(new Set<string>());
+  const [attachmentImports, setAttachmentImports] = useState<Set<string>>(() => new Set());
   const changeAttachments = useCallback((id: string, change: (files: Attachment[]) => Attachment[]) => {
     attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
     setAttachments(old => ({ ...old, [id]: change(old[id] ?? []) }));
@@ -200,11 +203,34 @@ export function App() {
     <h2>Claude Workbench</h2>
     <p>{error || '正在打开你的工作台…'}</p>
   </main>;
-  const addAttachments = (id: string) => perform(async () => {
-    const files = await window.desktop.pickAttachments(id);
-    if (!files.length) return;
-    changeAttachments(id, current => [...new Map([...current, ...files].map(file => [file.path, file])).values()]);
-  });
+  const addAttachments = async (id: string, choose: () => Promise<Attachment[]>) => {
+    const session = latestState.current?.sessions.find(session => session.id === id);
+    if (latestBusy.current || pendingAttachmentImports.current.has(id) || !session || session.archived || session.execution.mode !== 'structured') return;
+    // Reserve before invoking the picker/preload so Enter cannot race a copy,
+    // even before React renders the pending indicator.
+    pendingAttachmentImports.current.add(id); setAttachmentImports(new Set(pendingAttachmentImports.current));
+    attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
+    setError(''); let failed = false;
+    try {
+      try {
+        const files = await choose();
+        if (files.length && latestState.current?.sessions.some(session => session.id === id)) {
+          changeAttachments(id, current => [...new Map([...current, ...files].map(file => [file.path, file])).values()]);
+        }
+      } catch (error) { failed = true; report(error); }
+      if (latestState.current?.sessions.some(session => session.id === id)) {
+        const revision = attachmentRevisions.current.get(id) ?? 0;
+        // Include older drafts even if their initial load was overtaken by this
+        // import. Apply to the originating session after a selection change.
+        try {
+          const files = await window.desktop.listAttachments(id);
+          if (revision === (attachmentRevisions.current.get(id) ?? 0) && latestState.current?.sessions.some(session => session.id === id)) changeAttachments(id, () => files);
+        } catch (error) { if (!failed) report(error); }
+      }
+    } finally {
+      pendingAttachmentImports.current.delete(id); setAttachmentImports(new Set(pendingAttachmentImports.current));
+    }
+  };
   const appendReview = (text: string) => active ? appendDraft(active.id, text) : false;
   const activePanels = active ? (panelDrafts.current.get(active.id) ?? active.panelDrafts ?? {}) : {};
   const liveCount = state.sessions.filter(s => s.status === 'running' || s.status === 'stopping').length;
@@ -234,7 +260,9 @@ export function App() {
           <SessionViewport state={state} active={active} structured={structured} themeId={themeId} composer={composer} onDraft={setComposer} onSent={expected => clearSentDraft(active.id, expected)} report={report} onClearError={() => setError('')}>
             {structured && <ChatPane key={active.id} session={active} draft={composer} disabled={cliUpdateBusy(cliUpdate)}
               onDraft={value => saveDraftFor(active.id, value)} onSent={expected => clearSentDraft(active.id, expected)}
-              onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id)} onProjectFiles={() => setFilePicker(active.id)}
+              onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id, () => window.desktop.pickAttachments(active.id))} onProjectFiles={() => setFilePicker(active.id)}
+              onDropFiles={files => void addAttachments(active.id, () => window.desktop.addDroppedAttachments(active.id, files))}
+              attachmentBusy={attachmentImports.has(active.id)} attachmentDisabled={busy} isAttachmentImporting={() => pendingAttachmentImports.current.has(active.id)}
               approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current}
               attentionTarget={attentionTarget?.sessionId === active.id ? attentionTarget : undefined} onAttentionHandled={() => setAttentionTarget(undefined)}
               onRemoveAttachment={path => void perform(async () => { await window.desktop.removeAttachment(active.id, path); changeAttachments(active.id, files => files.filter(file => file.path !== path)); })}

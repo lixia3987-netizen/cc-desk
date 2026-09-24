@@ -64,6 +64,7 @@ export interface DesktopAPI {
   resumeChatQueue(id: string): Promise<void>;
   respondChat(id: string, requestId: string, decision: ChatDecision): Promise<void>;
   pickAttachments(id: string): Promise<Attachment[]>;
+  addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
   onChat(callback: (sessionId: string, taskState?: TaskState) => void): () => void;
