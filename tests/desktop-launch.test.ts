@@ -58,7 +58,7 @@ test('desktop runner forwards Playwright list selection directly when DISPLAY is
   });
   assert.equal(result.error, undefined);
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /Total: 3 tests in 1 file/);
+  assert.match(result.stdout, /Total: 4 tests in 1 file/);
   assert.doesNotMatch(result.stdout, /desktop\.spec\.ts:/);
 });
 

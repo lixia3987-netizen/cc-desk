@@ -11,7 +11,7 @@ async function close(app: ElectronApplication) {
   await app.close();
 }
 
-async function workspace(options: { preserveReportedContext?: boolean } = {}) {
+async function workspace(options: { preserveReportedContext?: boolean; routedModelResponses?: boolean } = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-context-')));
   const data = path.join(directory, 'data'), projectPath = path.join(directory, 'project');
   const prefix = path.join(directory, 'npm'), pkg = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
@@ -20,7 +20,7 @@ async function workspace(options: { preserveReportedContext?: boolean } = {}) {
   const node = path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node');
   if (process.platform === 'win32') await fs.copyFile(process.execPath, node); else await fs.symlink(process.execPath, node);
   await fs.writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-code', bin: { claude: 'cli.js' } }));
-  await fs.writeFile(path.join(pkg, 'cli.js'), `const log = ${JSON.stringify(log)};\nconst preserveReportedContext = ${JSON.stringify(options.preserveReportedContext ?? false)};\n` + String.raw`
+  await fs.writeFile(path.join(pkg, 'cli.js'), `const log = ${JSON.stringify(log)};\nconst preserveReportedContext = ${JSON.stringify(options.preserveReportedContext ?? false)};\nconst routedModelResponses = ${JSON.stringify(options.routedModelResponses ?? false)};\n` + String.raw`
 const readline = require('node:readline'), fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('Claude Code fixture 2.1.280'); process.exit(0); }
 if (process.argv.includes('--help')) { console.log('--session-id --resume --permission-mode --model --effort --print --input-format --output-format --verbose --permission-prompt-tool --include-partial-messages'); process.exit(0); }
@@ -31,8 +31,8 @@ const transcriptDir = require('node:path').join(process.env.CLAUDE_CONFIG_DIR,'p
 fs.mkdirSync(transcriptDir,{recursive:true});
 const commands = [{ name:'compact', description:'压缩当前会话上下文', argumentHint:'[保留内容]', builtin:true }, { name:'context', description:'查看上下文分布', builtin:true }, { name:'clear', description:'清空上下文', builtin:true }, { name:'team:review', description:'项目代码检查', argumentHint:'<检查目标>', builtin:false }];
 const output = value => process.stdout.write(JSON.stringify(value)+'\n');
-const model = preserveReportedContext ? 'claude-sonnet-4-6' : 'fixture-model';
-const done = result => output({ type:'result', subtype:'success', session_id:session, result, ...(preserveReportedContext ? {} : {usage:{input_tokens:900000},modelUsage:{'fixture-model':{contextWindow:200000}}}), num_turns:1 });
+const model = preserveReportedContext || routedModelResponses ? 'claude-sonnet-4-6' : 'fixture-model';
+const done = (result, modelUsage) => output({ type:'result', subtype:'success', session_id:session, result, ...(routedModelResponses ? {usage:{input_tokens:900000}, ...(modelUsage ? {modelUsage} : {})} : preserveReportedContext ? {} : {usage:{input_tokens:900000},modelUsage:{'fixture-model':{contextWindow:200000}}}), num_turns:1 });
 readline.createInterface({input:process.stdin}).on('line', line => {
   const frame = JSON.parse(line);
   if (frame.type === 'control_request') { output({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{commands}}}); return; }
@@ -48,6 +48,21 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   if (text==='/clear') { session='33333333-3333-4333-8333-333333333333';output({type:'conversation_reset',new_conversation_id:session,session_id:session});done('上下文已清空');return; }
   if (text.startsWith('/team:review')) { commands.push({name:'new-skill',description:'新加载的 Skill',builtin:false});output({type:'system',subtype:'commands_changed',commands});done('已执行项目 Skill');return; }
   if (text==='/context') { output({type:'assistant',context_usage:{model:preserveReportedContext?'Sonnet 4.6':model,total_tokens:30000,raw_max_tokens:200000},message:{id:'report-'+turn,content:[{type:'text',text:'详细上下文报告'}]}});done('详细上下文报告');return; }
+  if (routedModelResponses) {
+    const missingUsage = text === '路由响应省略全部用量';
+    const usage = missingUsage ? undefined : {input_tokens:2000,cache_read_input_tokens:9000,cache_creation_input_tokens:1000};
+    const continuationUsage = missingUsage ? undefined : text === '路由响应省略窗口' ? {input_tokens:6000,cache_read_input_tokens:10000,cache_creation_input_tokens:2000} : {input_tokens:3000,cache_read_input_tokens:10000,cache_creation_input_tokens:1000};
+    const toolId = 'read-'+turn;
+    output({type:'stream_event',event:{type:'message_start',message:{id:'routed-'+turn,model,usage}}});
+    output({type:'assistant',message:{id:'routed-'+turn,model:'routed-main',usage,content:[{type:'tool_use',id:toolId,name:'Read',input:{file_path:'README.md'}}]}});
+    output({type:'user',message:{content:[{type:'tool_result',tool_use_id:toolId,content:'fixture project'}]}});
+    output({type:'stream_event',event:{type:'message_start',message:{id:'continuation-'+turn,model:'routed-continuation',usage:continuationUsage}}});
+    output({type:'assistant',message:{id:'continuation-'+turn,model:'routed-continuation-final',usage:continuationUsage,content:[{type:'text',text:'完成路由请求'}]}});
+    output({type:'assistant',parent_tool_use_id:'child-'+turn,message:{model:'child-model',usage:{input_tokens:800000},content:[]}});
+    output({type:'result',parent_tool_use_id:'child-'+turn,subtype:'success',result:'子任务已完成',modelUsage:{'child-model':{contextWindow:1000000}}});
+    const modelUsage = text === '路由响应携带冲突窗口' ? {[model]:{contextWindow:200000},'routed-main':{contextWindow:64000},'routed-continuation':{contextWindow:64000},'routed-continuation-final':{contextWindow:64000},'child-model':{contextWindow:1000000}} : undefined;
+    done('完成路由请求',modelUsage);return;
+  }
   const usage = preserveReportedContext && text==='省略用量元数据' ? undefined : {input_tokens:2000,cache_read_input_tokens:9000,cache_creation_input_tokens:1000};
   output({type:'stream_event',event:{type:'message_start',message:{id:'message-'+turn,model,usage}}});
   output({type:'assistant',message:{id:'message-'+turn,model,usage,content:[{type:'text',text:'完成请求'}]}});
@@ -169,5 +184,54 @@ test('context reports retain capacity through alias changes, metadata gaps and s
     await send('清空后的普通对话');
     await expect(page.locator('.context-meter')).toContainText('12,000 / 未知容量');
     await expect(page.getByRole('progressbar', { name: '上下文占用' })).not.toHaveAttribute('aria-valuenow');
+  } finally { await close(app); await f.dispose(); }
+});
+
+test('context capacity follows the starting model across routed responses, tool continuations and later turns', async () => {
+  const f = await workspace({ routedModelResponses: true }), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), input = page.getByLabel('提示词编辑器');
+    const send = async (text: string) => {
+      await input.fill(text);
+      if (text.startsWith('/')) await input.press('Escape');
+      await input.press('Enter');
+      await expect(input).toHaveValue('');
+      // An unchanged percentage or the previous turn's completed state cannot
+      // establish that this prompt has run; include its journal and queue state.
+      await expect.poll(() => page.evaluate(async ({ id, text }) => {
+        const snapshot = await window.desktop.chatSnapshot(id);
+        return {
+          received: snapshot.messages.some(message => message.role === 'user' && message.text === text),
+          state: snapshot.taskState,
+          queued: snapshot.queue?.items.length ?? 0,
+        };
+      }, { id: f.session.id, text })).toEqual({ received: true, state: 'completed', queued: 0 });
+    };
+    const expectUsage = async (tokens: string, percentage: string) => {
+      const meter = page.locator('.context-meter');
+      await expect(meter.getByRole('progressbar', { name: '上下文占用' })).toHaveAttribute('aria-valuenow', percentage);
+      await expect(meter).toContainText(`${tokens} / 200,000`);
+      const context = await page.evaluate(async id => (await window.desktop.chatSnapshot(id)).context, f.session.id);
+      expect(context).toMatchObject({ requestModel: 'claude-sonnet-4-6', selectionModel: 'claude-sonnet-4-6', contextWindow: 200000 });
+    };
+
+    await send('/context');
+    await expectUsage('30,000', '15');
+
+    // The last root request uses 14k tokens. Neither the 900k result aggregate,
+    // 800k child input nor routed/child window entries belong to this baseline.
+    await send('路由响应携带冲突窗口');
+    await expectUsage('14,000', '7');
+
+    // The process remains selected on Claude even though its previous response
+    // names another model; absent modelUsage must retain the reported 200k.
+    await send('路由响应省略窗口');
+    await expectUsage('18,000', '9');
+    await send('路由响应省略全部用量');
+    await expectUsage('18,000', '9');
+
+    expect((await fs.readFile(f.log, 'utf8')).trim().split('\n').map(line => JSON.parse(line).text)).toEqual([
+      '/context', '路由响应携带冲突窗口', '路由响应省略窗口', '路由响应省略全部用量',
+    ]);
   } finally { await close(app); await f.dispose(); }
 });

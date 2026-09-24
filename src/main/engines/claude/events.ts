@@ -4,11 +4,12 @@ import type { ChatApproval, ChatDecision, ChatMessage, ChatQuestion, ChatTurnRes
 import type { ChatJournalEvent } from '../../../shared/execution-events';
 import type { SubtaskStatus } from '../../../shared/subtasks';
 import { isPermissionMode } from '../../../shared/permissions';
-import { normalizeCommands, requestContext, reportedContext, contextCapacity, tokenCount, type ContextUsage } from '../../../shared/claude-session';
+import { normalizeCommands, tokenCount, type ContextUsage } from '../../../shared/claude-session';
 import { object, string, type WireObject } from '../../chat-protocol';
 import type { ChatHistory } from '../../chat-history';
 import type { SubtaskTracker } from '../../subtask-tracker';
 import type { Entry } from './entry';
+import { ClaudeContext } from './context-tracker';
 
 interface EventOutput {
   history: Pick<ChatHistory, 'get' | 'getMessage'>;
@@ -36,22 +37,9 @@ const taskStatus = (value: unknown): SubtaskStatus | undefined => {
 
 /** Translates Claude protocol frames into normalized chat, approval and child-task state. */
 export class ClaudeEvents {
-  constructor(private output: EventOutput, private subtasks: SubtaskTracker, private backgroundResultTimeoutMs = 120_000) {}
-  observeContext(id: string, entry: Entry, payload: WireObject, report?: unknown) {
-    const snapshot = this.output.history.get(id);
-    const reported = reportedContext(report, snapshot.context, now());
-    // Compaction's summarization request describes the old window.
-    if (reported) { this.output.context(id, { ...reported, requestModel: entry.requestModel }); return; }
-    if (entry.turn?.command === 'compact' || snapshot.context?.status === 'compacting') return;
-    const messageId = string(payload.id), incoming = object(payload.usage);
-    const model = string(payload.model);
-    if (model) entry.requestModel = model;
-    // Final assistant frames can omit cache components from the same message_start.
-    const hasUsage = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].some(key => incoming[key] !== undefined);
-    const usage = !hasUsage ? undefined : messageId && entry.contextRequest?.id === messageId ? { ...entry.contextRequest.usage, ...incoming } : incoming;
-    const context = requestContext(snapshot.context, usage, model, now());
-    if (context && messageId && usage) entry.contextRequest = { id: messageId, usage };
-    if (context) this.output.context(id, context);
+  readonly context: ClaudeContext;
+  constructor(private output: EventOutput, private subtasks: SubtaskTracker, private backgroundResultTimeoutMs = 120_000) {
+    this.context = new ClaudeContext(output.history, output.context);
   }
   private resetConversation(id: string, entry: Entry, nextId: string) {
     if (!entry.turn?.resetRequested || !uuid(nextId)) throw new Error('CLI 意外切换了会话，已停止以保留原会话。');
@@ -61,12 +49,11 @@ export class ClaudeEvents {
     }
     entry.turn.resetApplied = true;
     entry.contextRequest = undefined;
-    entry.requestModel = undefined;
     const previous = entry.expectedId;
     entry.expectedId = nextId; entry.enforceIdentity = true;
     this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: nextId, forkFrom: undefined, imported: undefined }, started: true });
     this.output.history.get(id).usage = undefined;
-    this.output.context(id, { model: this.output.history.get(id).model, status: 'unknown' });
+    this.output.context(id, { model: entry.turn.contextModel ?? entry.selectionModel, status: 'unknown' });
     this.output.system(id, '已清空 Claude 上下文。此前的聊天记录仍保留；原 CLI 会话：' + previous);
   }
   receive(id: string, entry: Entry, frame: WireObject) {
@@ -97,7 +84,7 @@ export class ClaudeEvents {
     }
     if (type === 'assistant' || type === 'user') {
       const payload = object(frame.message);
-      if (type === 'assistant' && !parent) this.observeContext(id, entry, payload, frame.context_usage);
+      if (type === 'assistant' && !parent) this.context.observe(id, entry, payload, frame.context_usage);
       const blocks = Array.isArray(payload.content) ? payload.content : [];
       if (!entry.turn) {
         for (const raw of blocks) { const block = object(raw); if (block.type === 'tool_result') this.subtaskToolResult(id, entry, string(block.tool_use_id), block, object(frame.tool_use_result)); }
@@ -156,8 +143,7 @@ export class ClaudeEvents {
       if (resultId && entry.resultIds.has(resultId)) return;
       if (resultId) entry.resultIds.add(resultId);
       const snapshot = this.output.history.get(id); const usage = object(frame.usage);
-      const capacity = contextCapacity(frame.modelUsage, snapshot.context?.requestModel ?? snapshot.context?.model ?? snapshot.model);
-      if (capacity) this.output.context(id, { status: 'unknown', ...snapshot.context, contextWindow: capacity });
+      this.context.capacity(id, entry, frame.modelUsage);
       snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
       if (!failed && !this.output.session(id).started) this.output.update(id, { started: true });
@@ -239,13 +225,7 @@ export class ClaudeEvents {
     if (subtype === 'init') {
       if (parent) return;
       const model = string(frame.model);
-      if (model && snapshot.context?.selectionModel && model !== snapshot.context.selectionModel) {
-        entry.contextRequest = undefined;
-        entry.requestModel = undefined;
-        this.output.context(id, { status: 'unknown', selectionModel: model });
-      } else if (model && model !== snapshot.context?.selectionModel) {
-        this.output.context(id, { status: 'unknown', ...snapshot.context, selectionModel: model });
-      }
+      this.context.selection(id, entry, model);
       snapshot.model = string(frame.model) || undefined;
       snapshot.permissionMode = string(frame.permissionMode) || this.output.session(id).permissionMode;
       snapshot.mcpServers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers.map(value => { const item = object(value); return { name: string(item.name), status: string(item.status) }; }) : [];
