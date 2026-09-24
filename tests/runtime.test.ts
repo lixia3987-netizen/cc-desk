@@ -13,6 +13,7 @@ import { ShellTerminalLauncher } from '../src/main/engines/shell/terminal-launch
 import type { TerminalLauncher, TerminalLaunchCallbacks } from '../src/main/execution/terminal-launch';
 import { createWorktree, gitInfo } from '../src/main/git';
 import { execFileAsync } from '../src/main/commands';
+import { fileURLToPath } from 'node:url';
 
 async function until(check:()=>boolean, phase: string, diagnostics: () => string = () => '', timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -162,6 +163,66 @@ test('terminal runtime accepts another provider and isolates identity observatio
     fs.rmSync(f.root, { recursive: true, force: true });
   }
   assert.equal(resourcesClosed, 2);
+});
+
+test('a process owning silent PTYs exits after natural exit, update disconnect and shutdown', { timeout: 25000 }, async () => {
+  const runtimeModule = new URL('../src/main/runtime.ts', import.meta.url).href;
+  const storeModule = new URL('../src/main/store.ts', import.meta.url).href;
+  const script = `
+    import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+    import { randomUUID } from 'node:crypto'; import assert from 'node:assert/strict';
+    const { Runtime } = await import(${JSON.stringify(runtimeModule)}).then(module => module.default ?? module);
+    const { StateStore } = await import(${JSON.stringify(storeModule)}).then(module => module.default ?? module);
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-silent-owner-'));
+    const store = new StateStore(root), id = randomUUID(), now = new Date().toISOString();
+    store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'silent', kind: 'agent',
+      execution: { providerId: 'silent', mode: 'terminal' }, cwd: root, started: false,
+      model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now }));
+    let program = 'process.exit(0)';
+    const runtime = new Runtime(store, () => {}, () => {}, { prepare: async () => ({
+      file: process.execPath, args: ['-e', program], env: process.env,
+    }) });
+    try {
+      await runtime.start(id);
+      const deadline = Date.now() + 5000;
+      while (runtime.activeCount) {
+        assert.ok(Date.now() < deadline, 'natural exit must release its worker');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      assert.equal(runtime.lastError, undefined);
+      program = 'setInterval(() => {}, 1000)';
+      await runtime.start(id);
+      runtime.setMaintenance(true); await runtime.disconnectAll();
+      assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+      runtime.setMaintenance(false); await runtime.start(id); await runtime.shutdown();
+      assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+    } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true }); }
+    console.log('silent PTY owner released');
+  `;
+  const result = await execFileAsync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
+    cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 20000, windowsHide: true, maxBuffer: 256 * 1024,
+  });
+  assert.match(result.stdout, /silent PTY owner released/);
+});
+
+test('shutdown reports launch-resource failure even when the terminal process already exited', { timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const failure = new Error('Launch resource could not close');
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async () => ({
+    file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'],
+    env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+    resource: { close: async () => { throw failure; } },
+  }) });
+  try {
+    await runtime.start(f.session.id);
+    await assert.rejects(runtime.shutdown(), error => error instanceof Error && error.cause === failure);
+    assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+    assert.equal(runtime.lastError, failure);
+    await assert.rejects(runtime.shutdown(), /资源已释放/, 'failed resource cleanup cannot be reported as successful on retry');
+  } finally {
+    await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
 });
 
 test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async () => {

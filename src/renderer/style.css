@@ -307,8 +307,9 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .slash-name small{margin-left:7px;font-weight:400;color:var(--text-muted)}
 .slash-kind{align-self:start;color:var(--accent);font-size:calc(9px * var(--ui-font-scale))}
 .slash-description{grid-column:1/-1;font-size:calc(10px * var(--ui-font-scale));font-weight:400;color:var(--text-muted);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.subtask-panel{margin:6px 18px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface);flex-shrink:0;min-width:0;overflow:hidden}
-.subtask-toggle{width:100%;min-height:35px;padding:8px 10px;gap:8px;justify-content:flex-start;text-align:left;font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
+/* Let task details yield height to the composer when banners or small windows reduce the chat area. */
+.subtask-panel{display:flex;flex-direction:column;margin:6px 18px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface);flex-shrink:1;min-width:0;min-height:37px;overflow:hidden}
+.subtask-toggle{width:100%;min-height:35px;flex-shrink:0;padding:8px 10px;gap:8px;justify-content:flex-start;text-align:left;font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
 .subtask-toggle:hover{background:var(--hover)}
 .subtask-toggle>svg{flex-shrink:0;color:var(--text-muted)}
 .subtask-scope{font-weight:500;white-space:nowrap}
@@ -321,11 +322,12 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .subtask-toggle-chevron{margin-left:auto;transition:transform .15s}
 .subtask-toggle[aria-expanded=true] .subtask-toggle-chevron{transform:rotate(180deg)}
 .subtask-body{border-top:1px solid var(--border)}
-.subtask-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 10px;color:var(--text-muted);font-size:calc(9px * var(--ui-font-scale))}
+.subtask-body:not([hidden]){display:flex;flex-direction:column;min-height:0}
+.subtask-toolbar{display:flex;align-items:center;justify-content:space-between;flex-shrink:0;gap:8px;padding:7px 10px;color:var(--text-muted);font-size:calc(9px * var(--ui-font-scale))}
 .subtask-toolbar>div{display:flex;gap:3px;flex-shrink:0}
 .subtask-toolbar button{font-size:calc(9px * var(--ui-font-scale));padding:3px 6px;border-radius:4px}
 .subtask-toolbar button[aria-pressed=true]{color:var(--text);background:var(--selected)}
-.subtask-list{max-height:min(230px,27vh);overflow:auto;overscroll-behavior:contain;padding:0 7px 7px}
+.subtask-list{min-height:0;max-height:min(230px,27vh);overflow:auto;overscroll-behavior:contain;padding:0 7px 7px}
 .subtask-row{border:1px solid transparent;border-radius:6px;color:var(--text-secondary);margin-top:3px}
 .subtask-row[open]{border-color:var(--border);background:var(--background)}
 .subtask-row>summary{display:flex;align-items:center;gap:8px;padding:8px 6px;cursor:pointer;list-style:none;min-width:0;font-size:calc(10px * var(--ui-font-scale));border-radius:5px}
