@@ -12,6 +12,9 @@ async function fixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-git-'));
   const repo = path.join(dir, 'repo'); await fs.mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Workbench Tests'); await git(repo, 'config', 'user.email', 'tests@example.invalid');
+  // Worktree checkout must preserve this fixture's exact LF bytes regardless
+  // of the runner's Git defaults. Never change the user's global Git config.
+  await git(repo, 'config', '--local', 'core.autocrlf', 'false');
   await fs.writeFile(path.join(repo, 'file.txt'), 'initial\n');
   await fs.writeFile(path.join(repo, '.gitignore'), 'ignored.txt\n');
   await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'Initial');
@@ -308,7 +311,11 @@ test('malformed existing gitfiles and missing source repositories are preserved 
   const f = await fixture(); try {
     const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
     const broken = 'gitdir: /missing/other/repository\n';
-    await fs.writeFile(path.join(tree, '.git'), broken);
+    // Git hides this existing file on Windows, where opening it with 'w' can
+    // fail. Corrupt its bytes through r+ without replacing it or its attributes.
+    const gitfile = await fs.open(path.join(tree, '.git'), 'r+');
+    try { await gitfile.truncate(0); await gitfile.writeFile(broken); }
+    finally { await gitfile.close(); }
     const existing = await forceCleanupWorktree(f.repo, tree, id);
     assert.equal(existing.ok, false); assert.match(existing.message, /\.git 信息已损坏/);
     assert.match(existing.message, /仅删除会话/); assert.doesNotMatch(existing.message, /Command failed|fatal:/);

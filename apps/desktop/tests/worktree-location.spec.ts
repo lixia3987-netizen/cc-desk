@@ -47,6 +47,43 @@ async function pickerResult(app: ElectronApplication, selected: string | null) {
   }, selected);
 }
 
+interface SnapshotReadGate {
+  captured: boolean;
+  rejection?: string;
+  release?: () => void;
+  restore: () => void;
+}
+
+/** Delay one real IPC read so deletion cannot depend on platform timing. */
+async function gateSnapshotRead(app: ElectronApplication, sessionId: string, failure?: string) {
+  await app.evaluate(({ ipcMain, BrowserWindow }, { sessionId, failure }) => {
+    const handlers = ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> };
+    const original = handlers._invokeHandlers.get('chat:snapshot');
+    if (!original) throw new Error('The real chat:snapshot handler is missing.');
+    const globals = globalThis as typeof globalThis & { snapshotReadGate?: SnapshotReadGate };
+    const gate: SnapshotReadGate = {
+      captured: false,
+      restore: () => { ipcMain.removeHandler('chat:snapshot'); ipcMain.handle('chat:snapshot', original); },
+    };
+    globals.snapshotReadGate = gate;
+    ipcMain.removeHandler('chat:snapshot');
+    ipcMain.handle('chat:snapshot', async (event, id: string) => {
+      if (id !== sessionId || gate.captured) return original(event, id);
+      gate.captured = true;
+      await new Promise<void>(resolve => { gate.release = resolve; });
+      try {
+        if (failure) throw new Error(failure);
+        return await original(event, id);
+      } catch (error) {
+        gate.rejection = error instanceof Error ? error.message : String(error);
+        throw error;
+      }
+    });
+    BrowserWindow.getAllWindows()[0].webContents.send('chat:changed', sessionId, 'idle');
+  }, { sessionId, failure });
+  await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.captured)).toBe(true);
+}
+
 test('worktree location: picker edits a draft; custom and project settings survive restart', async ({}, testInfo) => {
   const f = await workspace();
   let app = await f.launch();
@@ -361,3 +398,40 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
     } finally { await app.close(); await f.dispose(); }
   });
 }
+
+test('session deletion: stale snapshot failures do not replace the workspace, while active read failures remain visible', async () => {
+  const f = await workspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+    const created = await page.evaluate(async projectId => {
+      const session = await window.desktop.createSession({ projectId, title: 'Snapshot lifecycle', kind: 'agent', providerId: 'claude', mode: 'structured', model: '', effort: 'default', isolated: false });
+      await window.desktop.setSelection(session.id);
+      return session;
+    }, f.project.id);
+    await expect(page.getByRole('heading', { name: created.title, exact: true })).toBeVisible();
+    const activeFailure = 'Active snapshot read failed';
+    await gateSnapshotRead(app, created.id, activeFailure);
+    await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
+    await expect(page.locator('.error-banner')).toHaveText(activeFailure);
+    await page.getByRole('button', { name: '关闭错误', exact: true }).click();
+    await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.restore());
+
+    await gateSnapshotRead(app, created.id);
+    const context = page.getByRole('region', { name: '上下文面板', exact: true });
+    await context.getByRole('button', { name: '删除会话', exact: true }).click();
+    await context.getByRole('button', { name: '确认删除会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: created.title, exact: true })).toHaveCount(0);
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
+    await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.rejection)).toBe('会话不存在。');
+    // Round-trip after the rejected response, then allow React to commit. This
+    // proves the obsolete catch ran; an immediate absence assertion could race it.
+    await page.evaluate(async () => {
+      await window.desktop.snapshot();
+      await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    });
+    await expect(page.locator('.error-banner')).toHaveText([]);
+    await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.restore());
+  } finally { await app.close(); await f.dispose(); }
+});

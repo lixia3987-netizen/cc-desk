@@ -94,7 +94,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     const key=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'&&!event.isComposing&&!document.querySelector('[role=dialog]')){event.preventDefault();setShowSearch(true);}};
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
-  const load=useCallback(async()=>{const seq=++request.current;const value=await window.desktop.chatSnapshot(session.id);if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}},[session.id,approvalDrafts]);
+  const load=useCallback(async()=>{
+    const seq=++request.current;
+    try{
+      const value=await window.desktop.chatSnapshot(session.id);
+      if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}
+    }catch(error){if(mounted.current&&seq===request.current)throw error;}
+  },[session.id,approvalDrafts]);
   const prepareCommands=useCallback(()=>{
     if(commandsLoading.current)return commandsLoading.current;
     const pending=window.desktop.prepareChatCommands(session.id).then(async()=>{if(mounted.current)await load();});
