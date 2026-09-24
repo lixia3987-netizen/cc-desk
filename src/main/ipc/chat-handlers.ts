@@ -1,4 +1,5 @@
 import { dialog, type BrowserWindow } from 'electron';
+import path from 'node:path';
 import { z } from 'zod';
 import type { Session } from '../../shared/types';
 import type { ChatTurnResult } from '../../shared/chat';
@@ -38,6 +39,11 @@ const searchSchema = z.object({
 const sendSchema = z.object({
   id: idSchema, text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8).optional(),
 });
+const droppedFilesSchema = z.object({
+  id: idSchema,
+  paths: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value), '附件必须来自有效的本机绝对路径。'))
+    .min(1, '请拖入本机文件。').max(8, '一次最多添加 8 个附件。'),
+}).strict();
 const responseSchema = z.object({
   id: idSchema, requestId: shortId,
   decision: z.object({
@@ -47,6 +53,11 @@ const responseSchema = z.object({
 });
 
 export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
+  const assertCanStageAttachments = (id: string) => {
+    const session = ports.structured(id);
+    if (session.archived) throw new Error('请先取消会话归档，再添加附件。');
+    ports.assertUnlocked(session);
+  };
   handle('chat:snapshot', idSchema, async id => {
     ports.structured(id);
     await ports.chat.hydrate(id);
@@ -100,12 +111,21 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.chat.respond(id, requestId, decision);
   });
   handle('files:pick', idSchema, async id => {
-    ports.structured(id);
+    assertCanStageAttachments(id);
     const result = await dialog.showOpenDialog(ports.getWindow()!, {
       title: '添加上下文附件', properties: ['openFile', 'multiSelections'],
       filters: [{ name: '文本、图片与 PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'py', 'yaml', 'yml', 'html', 'css', 'xml', 'log'] }],
     });
-    return result.canceled ? [] : ports.attachments.add(id, result.filePaths);
+    if (result.canceled) return [];
+    // A native picker may outlive deletion, archiving or maintenance of its source session.
+    assertCanStageAttachments(id);
+    return ports.attachments.add(id, result.filePaths);
+  });
+  handle('files:add-dropped', droppedFilesSchema, ({ id, paths }) => {
+    assertCanStageAttachments(id);
+    // Only stage private copies. Model execution and content interpretation stay
+    // in the existing explicit send/queue flow, even while another turn is running.
+    return ports.attachments.add(id, paths);
   });
   handle('files:attachments', idSchema, async id => {
     ports.structured(id);

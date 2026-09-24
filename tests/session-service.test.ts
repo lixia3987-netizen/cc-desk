@@ -17,7 +17,7 @@ import { queryHistory } from '../src/main/history';
 import { diagnoseEnvironment } from '../src/main/diagnostics';
 import { createWorktree, worktreeInfo } from '../src/main/git';
 import { execFileAsync } from '../src/main/commands';
-import type { Capabilities, Session } from '../src/shared/types';
+import type { Attachment, Capabilities, Session } from '../src/shared/types';
 import type { WorktreeInfo } from '../src/shared/git';
 import type { EnvironmentDiagnostics } from '../src/shared/diagnostics';
 import { emptyGitReviewDraft, emptyWorkflowDraft } from '../src/shared/panel-drafts';
@@ -757,6 +757,88 @@ test('failed turns keep attachment drafts and successful turns clear them withou
     assert.equal((await attachments.list(session.id)).length,0);
     assert.equal(await fs.readFile(attachment.path,'utf8'),'context');
   }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('dropped files only stage durable session attachments until an explicit send', async t=>{
+  const f=await fixture();try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'thinking'});
+    const source=path.join(f.dir,'待发送的资料.pdf');
+    const original=Buffer.from('Opaque PDF bytes: copying must not try to parse this draft.');
+    await fs.writeFile(source,original);
+    let sends=0,prepared=0,hydrated=0;let sentFiles:string[]=[];
+    t.mock.method(f.service.chat,'prepareCommands',async()=>{prepared++;throw new Error('unexpected CLI startup');});
+    t.mock.method(f.service.chat,'hydrate',async()=>{hydrated++;});
+    t.mock.method(f.service.chat,'send',async(_id:string,_text:string,files:string[])=>{sends++;sentFiles=files;return {success:true,summary:'done'};});
+    const before=structuredClone(f.store.state);
+    const [attachment]=await f.call<Attachment[]>('files:add-dropped',{id:session.id,paths:[source]});
+    assert.equal(attachment.name,'待发送的资料.pdf');
+    assert.notEqual(attachment.path,source);
+    assert.deepEqual(await fs.readFile(attachment.path),original);
+    assert.deepEqual(f.store.state,before);
+    assert.deepEqual([sends,prepared,hydrated],[0,0,0]);
+    assert.deepEqual(f.service.queue.snapshot(session.id).items,[]);
+    assert.deepEqual(await new Attachments(f.store.directory).list(session.id),[attachment]);
+    await fs.writeFile(source,'source changed after drop');
+    assert.deepEqual(await fs.readFile(attachment.path),original);
+    await f.call('chat:send',{id:session.id,text:'Use the attachment now',attachments:[attachment.path]});
+    assert.equal(sends,1);assert.deepEqual(sentFiles,[attachment.path]);
+    assert.deepEqual(await f.call('files:attachments',session.id),[]);
+    assert.deepEqual(await fs.readFile(attachment.path),original);
+  }finally{t.mock.restoreAll();await f.dispose();}
+});
+
+test('drop IPC rejects invalid paths, sessions and unsupported batches without leaving partial drafts',async()=>{
+  const f=await fixture();try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    const shell=f.add(f.repo),archived=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},archived:true});
+    const source=path.join(f.dir,'valid.txt');await fs.writeFile(source,'valid');
+    const unsupported=path.join(f.dir,'unsupported.exe');await fs.writeFile(unsupported,'unsupported');
+    const call=(paths:string[],id=session.id)=>f.call('files:add-dropped',{id,paths});
+    for(const paths of [[],['relative.txt'],[source+'\0'],['https://example.invalid/file.txt'],Array(9).fill(source)])await assert.rejects(call(paths));
+    await assert.rejects(call([source],randomUUID()),/Session missing|会话不存在/);
+    await assert.rejects(call([source],shell.id),/图形化会话/);
+    await assert.rejects(call([source],archived.id),/归档/);
+    await assert.rejects(call([source,f.repo]),/文件夹/);
+    await assert.rejects(call([source,unsupported]),/类型不受支持/);
+    const big=path.join(f.dir,'large.txt'),handle=await fs.open(big,'w');await handle.truncate(9*1024*1024);await handle.close();
+    await assert.rejects(call([source,big]),/8 MiB/);
+    const medium=path.join(f.dir,'medium.txt'),mediumHandle=await fs.open(medium,'w');await mediumHandle.truncate(6*1024*1024);await mediumHandle.close();
+    await assert.rejects(call([medium,medium,medium]),/16 MiB/);
+    assert.deepEqual(await f.call('files:attachments',session.id),[]);
+    assert.deepEqual((await fs.readdir(path.join(f.store.directory,'attachments',session.id))).filter(name=>name.startsWith('.staged-')),[]);
+    assert.equal(await fs.readFile(source,'utf8'),'valid');
+    await f.service.withSessionCreation(f.repo,false,async()=>{
+      await assert.rejects(call([source]),/管理操作/);
+    });
+    assert.deepEqual(await f.call('files:attachments',session.id),[]);
+  }finally{await f.dispose();}
+});
+
+test('session deletion waits for an in-flight drop and rejects new drops without recreating orphan attachments',async t=>{
+  const f=await fixture();let release!:()=>void;
+  try {
+    const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
+    const source=path.join(f.dir,'slow-copy.txt');await fs.writeFile(source,'copy in progress');
+    let entered!:()=>void,deleted=false;
+    const ready=new Promise<void>(resolve=>{entered=resolve;});
+    const copying=new Promise<void>(resolve=>{release=resolve;});
+    const copyFile=fs.copyFile;
+    t.mock.method(fs,'copyFile',async(...args:Parameters<typeof fs.copyFile>)=>{
+      if(args[0]===source){entered();await copying;}
+      return copyFile(...args);
+    });
+    const adding=f.call<Attachment[]>('files:add-dropped',{id:session.id,paths:[source]});
+    await Promise.race([ready,adding]);
+    const deleting=f.call('session:delete',session.id).then(()=>{deleted=true;});
+    await assert.rejects(f.call('files:add-dropped',{id:session.id,paths:[source]}),/管理操作/);
+    assert.equal(deleted,false);
+    release();const [attachment]=await adding;await deleting;
+    assert.equal(f.store.state.sessions.some(item=>item.id===session.id),false);
+    await assert.rejects(fs.stat(attachment.path),{code:'ENOENT'});
+    await assert.rejects(fs.stat(path.join(f.store.directory,'attachments',session.id)),{code:'ENOENT'});
+    await assert.rejects(f.call('files:add-dropped',{id:session.id,paths:[source]}),/Session missing|会话不存在/);
+    assert.equal(await fs.readFile(source,'utf8'),'copy in progress');
+  }finally{release?.();t.mock.restoreAll();await f.dispose();}
 });
 
 test('attachment bookkeeping failure reports completed execution without repeating the turn', async t=>{

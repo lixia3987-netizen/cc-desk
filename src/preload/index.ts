@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
@@ -26,6 +26,17 @@ const api: DesktopAPI = {
   resumeChatQueue:id => ipcRenderer.invoke('chat:queue-resume',id),
   respondChat:(id,requestId,decision) => ipcRenderer.invoke('chat:respond',{id,requestId,decision}),
   pickAttachments:id => ipcRenderer.invoke('files:pick',id),
+  addDroppedAttachments:async(id,files) => {
+    if(!Array.isArray(files)||!files.length)throw new Error('请拖入本机文件。');
+    if(files.length>8)throw new Error('一次最多添加 8 个附件。');
+    const paths=files.map(file=>{
+      let path:string;
+      try {path=webUtils.getPathForFile(file);}catch {throw new Error('仅支持从本机拖入的文件，请先将文件保存到磁盘。');}
+      if(!path)throw new Error('无法读取拖入文件的本机路径，请先将文件保存到磁盘。');
+      return path;
+    });
+    return ipcRenderer.invoke('files:add-dropped',{id,paths});
+  },
   listAttachments:id => ipcRenderer.invoke('files:attachments',id),
   removeAttachment:(id,path) => ipcRenderer.invoke('files:remove-attachment',{id,path}),
   queryHistory:(projectId,options) => ipcRenderer.invoke('history:query',{projectId,...options}),

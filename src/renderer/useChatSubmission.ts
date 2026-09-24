@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import type { Attachment } from '../shared/types';
 
 /** Submission ends at durable acceptance; the turn continues independently. */
-export function useChatSubmission({ sessionId, draft, attachments, disabled, onAccepted, onSent, onAttachmentsSent, onError, refresh }: {
+export function useChatSubmission({ sessionId, draft, attachments, disabled, isBlocked, onAccepted, onSent, onAttachmentsSent, onError, refresh }: {
   sessionId: string; draft: string; attachments: Attachment[]; disabled: boolean;
+  isBlocked?: () => boolean;
   onAccepted: () => void; onSent: (expectedDraft: string) => void;
   onAttachmentsSent: (files: Attachment[]) => void; onError: (error: unknown) => void;
   refresh: () => Promise<void>;
@@ -14,7 +15,7 @@ export function useChatSubmission({ sessionId, draft, attachments, disabled, onA
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   const submit = async () => {
-    if (disabled || inFlight.current || (!draft.trim() && !attachments.length)) return;
+    if (disabled || isBlocked?.() || inFlight.current || (!draft.trim() && !attachments.length)) return;
     if (draft.length > 60000) { onError(new Error('单次提示词请控制在 60,000 个字符以内。')); return; }
     // Keep the accepted draft/attachment identity even if the user edits while
     // IPC is pending or switches to another session before it acknowledges.
