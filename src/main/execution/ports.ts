@@ -24,6 +24,8 @@ export interface SessionExport {
 }
 
 export interface StructuredExecutor extends ExecutionLifecycle {
+  /** Optional graceful-interrupt barrier; routers safely close older executors. */
+  interruptAndWait?(id: string): Promise<void>;
   taskState(id: string): TaskState;
   hydrate(id: string): Promise<void>;
   snapshot(id: string): ChatSnapshot;

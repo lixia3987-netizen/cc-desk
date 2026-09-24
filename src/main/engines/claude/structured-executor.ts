@@ -47,6 +47,7 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   respond(id: string, requestId: string, decision: ChatDecision) { return this.runtime.respond(id, requestId, decision); }
   updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) { return this.runtime.updateConfig(id, config); }
   interrupt(id: string) { return this.runtime.interrupt(id); }
+  interruptAndWait(id: string) { return this.runtime.interruptAndWait(id); }
   stop(id: string) { return this.runtime.stop(id); }
   stopIdle(id: string) { return this.runtime.stopIdle(id); }
   forget(id: string) { this.runtime.forget(id); }

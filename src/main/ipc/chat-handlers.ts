@@ -6,12 +6,15 @@ import { idSchema } from '../../shared/schema';
 import type { StructuredExecutions, TerminalExecutions } from '../execution/routers';
 import type { Attachments } from '../attachments';
 import type { WorkflowEngine } from '../workflows';
+import type { ChatQueue } from '../chat-queue';
+import { invokedCommand } from '../../shared/session-commands';
 import type { Register } from './registration';
 
 interface ChatPorts {
   chat: Pick<StructuredExecutions, 'has' | 'hydrate' | 'snapshot' | 'prepareCommands' | 'page' | 'search' | 'attention' | 'respond'>;
   runtime: Pick<TerminalExecutions, 'has'>;
   workflows: Pick<WorkflowEngine, 'isSessionBusy'>;
+  queue: ChatQueue;
   attachments: Pick<Attachments, 'validate' | 'add' | 'list' | 'removeFile'>;
   structured(id: string): Session;
   assertUnlocked(session: Session): void;
@@ -46,17 +49,17 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   handle('chat:snapshot', idSchema, async id => {
     ports.structured(id);
     await ports.chat.hydrate(id);
-    return ports.chat.snapshot(id);
+    return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
   });
   handle('chat:commands', idSchema, async id => {
     const session = ports.structured(id);
     if (session.archived) throw new Error('请先取消会话归档。');
     ports.assertUnlocked(session);
     ports.requireCommands(id);
-    if (ports.chat.has(id)) return ports.chat.snapshot(id);
+    if (ports.chat.has(id)) return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
     if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id)) throw new Error('请先结束当前会话任务。');
     await ports.reserve(id);
-    try { return await ports.chat.prepareCommands(id); }
+    try { return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
     finally { ports.releaseAdmission(id); }
   });
   handle('chat:page', pageSchema, ({ id, ...options }) => {
@@ -76,6 +79,15 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流已开始，请先取消后再发送。');
     return ports.runChat(id, text, approved);
   });
+  handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId }) => {
+    ports.structured(id);
+    if (invokedCommand(text) && attachments?.length) throw new Error('执行斜杠命令时请先移除附件，再单独发送命令。');
+    return ports.queue.submit(id, text, attachments, requestId);
+  });
+  const queueMessage = z.object({ id: idSchema, messageId: z.string().uuid() });
+  handle('chat:queue-now', queueMessage, ({ id, messageId }) => { ports.structured(id); return ports.queue.sendNow(id, messageId); });
+  handle('chat:queue-remove', queueMessage, ({ id, messageId }) => { ports.structured(id); return ports.queue.remove(id, messageId); });
+  handle('chat:queue-resume', idSchema, id => { ports.structured(id); return ports.queue.resume(id); });
   handle('chat:respond', responseSchema, ({ id, requestId, decision }) => {
     ports.structured(id);
     return ports.chat.respond(id, requestId, decision);
@@ -88,12 +100,12 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     });
     return result.canceled ? [] : ports.attachments.add(id, result.filePaths);
   });
-  handle('files:attachments', idSchema, id => {
+  handle('files:attachments', idSchema, async id => {
     ports.structured(id);
-    return ports.attachments.list(id);
+    return (await ports.attachments.list(id)).filter(file => !ports.queue.references(id, file.path));
   });
   handle('files:remove-attachment', z.object({ id: idSchema, path: z.string().min(1).max(4096) }), ({ id, path }) => {
     ports.structured(id);
-    return ports.attachments.removeFile(id, path);
+    return ports.queue.removeAttachment(id, path, () => ports.attachments.removeFile(id, path));
   });
 }

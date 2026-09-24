@@ -101,6 +101,20 @@ export class Attachments {
     if(!files.length)return;const wanted=new Set(files);
     await this.save(id,(await this.load(id)).map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,retained:true,draft:false}:item));
   });}
+  /** Move picker drafts into durable submission ownership before returning its ack. */
+  acceptQueued(id:string,files:string[],commit:(names:string[])=>void):Promise<void> {return this.serial(id,async()=>{
+    await this.validateFiles(id,files);
+    const previous=await this.load(id),wanted=new Set(files);
+    if(files.some(file=>!previous.some(item=>item.draft&&path.join(this.folder(id),item.file)===file)))throw new Error('附件已发送或不在当前草稿中，请重新添加附件。');
+    // Keep drafts visible until queue ownership is durable. A crash between these
+    // commits can leave an extra draft flag, never a hidden unaccepted attachment.
+    if(files.length)await this.save(id,previous.map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,retained:true}:item));
+    commit(files.map(file=>previous.find(item=>path.join(this.folder(id),item.file)===file)!.name));
+    if(files.length) {
+      try { await this.save(id,(await this.load(id)).map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,draft:false}:item)); }
+      catch { /* Queue owns the files now. IPC filters them; dispatch retries the durable flag before sending. */ }
+    }
+  });}
   removeFile(id:string,file:string):Promise<void> {return this.serial(id,async()=>{
     const items=await this.load(id),item=items.find(item=>path.join(this.folder(id),item.file)===file);
     if(!item)throw new Error('附件不属于当前会话。');

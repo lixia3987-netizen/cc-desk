@@ -1,0 +1,369 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { ChatQueue } from '../src/main/chat-queue';
+import type { ChatQueueStorage } from '../src/main/chat-queue-storage';
+import type { ChatTurnResult, QueuedChatMessage } from '../src/shared/chat';
+
+type Options = ConstructorParameters<typeof ChatQueue>[1];
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+const tick = () => new Promise<void>(resolve => setImmediate(resolve));
+async function until(condition: () => boolean) {
+  const deadline = Date.now() + 2000;
+  while (!condition()) {
+    assert.ok(Date.now() < deadline, 'timed out waiting for queue state');
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+}
+const success: ChatTurnResult = { success: true, summary: 'finished' };
+const interrupted: ChatTurnResult = { success: false, summary: '', interrupted: true };
+
+function fixture(overrides: Partial<Options> = {}, directory = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-chat-queue-'))) {
+  const runs: { sessionId: string; item: QueuedChatMessage; result: ReturnType<typeof deferred<ChatTurnResult>> }[] = [];
+  const active = new Set<string>();
+  const interruptions: string[] = [];
+  const changed: string[] = [];
+  const queue = new ChatQueue(directory, {
+    assertAvailable: () => {}, blocked: () => false,
+    acceptAttachments: async (_id, _files, commit) => commit(),
+    run: async (sessionId, item) => {
+      assert.equal(active.has(sessionId), false, 'two turns must never run concurrently in one session');
+      active.add(sessionId);
+      const result = deferred<ChatTurnResult>();
+      runs.push({ sessionId, item: structuredClone(item), result });
+      try { return await result.promise; } finally { active.delete(sessionId); }
+    },
+    interrupt: async id => { interruptions.push(id); },
+    changed: id => { changed.push(id); },
+    ...overrides,
+  });
+  return {
+    directory, queue, runs, active, interruptions, changed,
+    async close() {
+      queue.pauseAll();
+      for (const run of runs) run.result.resolve(interrupted);
+      await until(() => runs.every(run => !queue.hasActive(run.sessionId)));
+      await tick();
+      fs.rmSync(directory, { recursive: true, force: true });
+    },
+  };
+}
+
+test('queue accepts messages before turn completion and executes accepted messages once in FIFO order', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  try {
+    const first = await f.queue.submit(sessionId, 'first');
+    const second = await f.queue.submit(sessionId, 'second', ['/tmp/second.txt']);
+    const third = await f.queue.submit(sessionId, 'third');
+    await tick();
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.runs[0].item.id, first.messageId);
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => [item.text, item.status]), [
+      ['first', 'sending'], ['second', 'queued'], ['third', 'queued'],
+    ]);
+    f.runs[0].result.resolve(success);
+    await until(() => f.runs.length === 2);
+    assert.equal(f.runs[1].item.id, second.messageId);
+    assert.deepEqual(f.runs[1].item.attachments, ['/tmp/second.txt']);
+    f.runs[1].result.resolve(success);
+    await until(() => f.runs.length === 3);
+    assert.equal(f.runs[2].item.id, third.messageId);
+    f.runs[2].result.resolve(success);
+    await until(() => !f.queue.hasPending(sessionId));
+    assert.equal(f.queue.hasPending(sessionId), false);
+    assert.deepEqual(f.queue.snapshot(sessionId).items, []);
+  } finally { await f.close(); }
+});
+
+test('queues isolate sessions while permitting independent sessions to run concurrently', async () => {
+  const f = fixture(), first = randomUUID(), second = randomUUID();
+  try {
+    await f.queue.submit(first, 'first active');
+    await f.queue.submit(first, 'first waiting');
+    await f.queue.submit(second, 'second active');
+    await tick();
+    assert.deepEqual(f.runs.map(run => run.item.text), ['first active', 'second active']);
+    f.runs[1].result.resolve(success);
+    await until(() => !f.queue.hasPending(second));
+    assert.equal(f.queue.hasPending(second), false);
+    assert.equal(f.queue.snapshot(first).items.length, 2);
+    assert.equal(f.runs.length, 2);
+  } finally { await f.close(); }
+});
+
+test('send now promotes the selected message and waits for both interrupt acknowledgment and the active turn to settle', async () => {
+  const interruptAck = deferred<void>();
+  const f = fixture({ interrupt: async id => { f.interruptions.push(id); await interruptAck.promise; } });
+  const sessionId = randomUUID();
+  try {
+    await f.queue.submit(sessionId, 'active');
+    await f.queue.submit(sessionId, 'waiting first');
+    const priority = await f.queue.submit(sessionId, 'urgent');
+    await f.queue.submit(sessionId, 'waiting last');
+    await tick();
+    const promotion = f.queue.sendNow(sessionId, priority.messageId);
+    await tick();
+    assert.deepEqual(f.interruptions, [sessionId]);
+    assert.equal(f.runs.length, 1);
+    interruptAck.resolve();
+    await tick();
+    // An interrupt control acknowledgment alone does not release runtime.busy.
+    assert.equal(f.runs.length, 1);
+    f.runs[0].result.resolve(interrupted);
+    await promotion;
+    await until(() => f.runs.length === 2);
+    assert.deepEqual(f.runs.map(run => run.item.text), ['active', 'urgent']);
+    f.runs[1].result.resolve(success);
+    await until(() => f.runs.length === 3);
+    assert.equal(f.runs[2].item.text, 'waiting first');
+    f.runs[2].result.resolve(success);
+    await until(() => f.runs.length === 4);
+    assert.equal(f.runs[3].item.text, 'waiting last');
+  } finally { interruptAck.resolve(); await f.close(); }
+});
+
+test('explicit pause wins over a late successful result and requires a requested resume', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  try {
+    await f.queue.submit(sessionId, 'active');
+    await f.queue.submit(sessionId, 'waiting');
+    await tick();
+    f.queue.pause(sessionId);
+    f.runs[0].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
+    f.queue.wake(sessionId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => item.text), ['waiting']);
+    await f.queue.resume(sessionId);
+    await until(() => f.runs.length === 2);
+    assert.equal(f.runs[1].item.text, 'waiting');
+  } finally { await f.close(); }
+});
+
+test('maintenance pauses all queues, rejects new submissions, and does not automatically dispatch when maintenance ends', async () => {
+  let maintenance = false;
+  const f = fixture({
+    assertAvailable: () => { if (maintenance) throw new Error('maintenance'); },
+    blocked: () => maintenance,
+  });
+  const first = randomUUID(), second = randomUUID();
+  try {
+    await f.queue.submit(first, 'active one');
+    await f.queue.submit(first, 'waiting one');
+    await f.queue.submit(second, 'active two');
+    await f.queue.submit(second, 'waiting two');
+    await tick();
+    maintenance = true;
+    f.queue.pauseAll();
+    await assert.rejects(f.queue.submit(first, 'during update'), /maintenance/);
+    for (const run of f.runs) run.result.resolve(interrupted);
+    await tick();
+    maintenance = false;
+    f.queue.wake(first); f.queue.wake(second);
+    await tick();
+    assert.equal(f.runs.length, 2);
+    assert.equal(f.queue.snapshot(first).paused, true);
+    assert.equal(f.queue.snapshot(second).paused, true);
+    assert.ok(f.queue.snapshot(first).items.some(item => item.text === 'waiting one'));
+    assert.ok(f.queue.snapshot(second).items.some(item => item.text === 'waiting two'));
+  } finally { await f.close(); }
+});
+
+test('failed turns retain accepted messages and pause before any following message can execute', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  try {
+    await f.queue.submit(sessionId, 'failed prompt');
+    await f.queue.submit(sessionId, 'next prompt');
+    await tick();
+    f.runs[0].result.resolve({ success: false, summary: 'partial work', error: 'connection closed' });
+    await until(() => !f.queue.hasActive(sessionId));
+    const snapshot = f.queue.snapshot(sessionId);
+    assert.equal(snapshot.paused, true);
+    assert.match(snapshot.error ?? '', /connection closed/);
+    assert.deepEqual(snapshot.items.map(item => [item.text, item.status]), [
+      ['failed prompt', 'queued'], ['next prompt', 'queued'],
+    ]);
+    f.queue.wake(sessionId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+  } finally { await f.close(); }
+});
+
+test('restart preserves pending and uncertain in-flight messages in a paused queue without replaying them', async () => {
+  const original = fixture(), sessionId = randomUUID(), deliveredRequestId = randomUUID();
+  const restoredDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-chat-queue-restore-'));
+  let restored: ReturnType<typeof fixture> | undefined;
+  try {
+    const delivered = await original.queue.submit(sessionId, 'already delivered', [], deliveredRequestId);
+    await tick();
+    original.runs[0].result.resolve(success);
+    await until(() => !original.queue.hasActive(sessionId));
+    await original.queue.submit(sessionId, 'possibly sent');
+    await original.queue.submit(sessionId, 'not sent');
+    await until(() => original.runs.length === 2);
+    fs.cpSync(original.directory, restoredDirectory, { recursive: true });
+    restored = fixture({}, restoredDirectory);
+    const snapshot = restored.queue.snapshot(sessionId);
+    await tick();
+    restored.queue.wake(sessionId);
+    await tick();
+    assert.equal(restored.runs.length, 0);
+    assert.equal(snapshot.paused, true);
+    assert.ok(snapshot.error, 'recovery must explain why replay needs user action');
+    assert.deepEqual(snapshot.items.map(item => [item.text, item.status]), [
+      ['possibly sent', 'queued'], ['not sent', 'queued'],
+    ]);
+    const retry = await restored.queue.submit(sessionId, 'already delivered', [], deliveredRequestId);
+    assert.equal(retry.messageId, delivered.messageId, 'receipts must survive restart after the original message left the queue');
+    await tick();
+    assert.equal(restored.runs.length, 0);
+  } finally {
+    await original.close();
+    if (restored) await restored.close(); else fs.rmSync(restoredDirectory, { recursive: true, force: true });
+  }
+});
+
+test('submission receipts deduplicate IPC retries even after completion, while deliberate identical messages remain distinct', async () => {
+  const f = fixture(), sessionId = randomUUID(), requestId = randomUUID();
+  try {
+    const [first, duplicate] = await Promise.all([
+      f.queue.submit(sessionId, 'same text', [], requestId),
+      f.queue.submit(sessionId, 'same text', [], requestId),
+    ]);
+    assert.equal(first.messageId, duplicate.messageId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+    f.runs[0].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
+    assert.equal((await f.queue.submit(sessionId, 'same text', [], requestId)).messageId, first.messageId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+    const distinct = await f.queue.submit(sessionId, 'same text', [], randomUUID());
+    await until(() => f.runs.length === 2);
+    assert.notEqual(distinct.messageId, first.messageId);
+    assert.equal(f.runs.length, 2);
+  } finally { await f.close(); }
+});
+
+test('removing a queued message leaves the active turn and remaining FIFO order intact', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  try {
+    await f.queue.submit(sessionId, 'active');
+    const removed = await f.queue.submit(sessionId, 'remove me');
+    await f.queue.submit(sessionId, 'keep me');
+    await tick();
+    await f.queue.remove(sessionId, removed.messageId);
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => item.text), ['active', 'keep me']);
+    assert.deepEqual(f.interruptions, []);
+    f.runs[0].result.resolve(success);
+    await until(() => f.runs.length === 2);
+    assert.deepEqual(f.runs.map(run => run.item.text), ['active', 'keep me']);
+  } finally { await f.close(); }
+});
+
+test('completion persistence failure pauses consumption and retains uncertain work for explicit review', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  const storage = (f.queue as unknown as { storage: ChatQueueStorage }).storage;
+  const save = storage.save.bind(storage);
+  try {
+    const first = await f.queue.submit(sessionId, 'work completed but not committed');
+    await f.queue.submit(sessionId, 'must wait');
+    await until(() => f.runs.length === 1);
+    storage.save = (id, state) => {
+      if (!state.items.some(item => item.id === first.messageId)) throw new Error('disk full on completion');
+      save(id, state);
+    };
+    f.runs[0].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
+    const snapshot = f.queue.snapshot(sessionId);
+    assert.equal(snapshot.paused, true);
+    assert.match(snapshot.error ?? '', /disk full on completion/);
+    assert.deepEqual(snapshot.items.map(item => [item.text, item.status]), [
+      ['work completed but not committed', 'queued'], ['must wait', 'queued'],
+    ]);
+    const durable = JSON.parse(fs.readFileSync(path.join(f.directory, 'chat-queue', sessionId + '.json'), 'utf8'));
+    assert.equal(durable.items[0].status, 'sending', 'last durable state must preserve uncertain execution evidence');
+    f.queue.wake(sessionId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+  } finally { storage.save = save; await f.close(); }
+});
+
+test('failed priority persistence never marks the running message as replaced or discards it after interruption', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  const storage = (f.queue as unknown as { storage: ChatQueueStorage }).storage;
+  const save = storage.save.bind(storage);
+  try {
+    const original = await f.queue.submit(sessionId, 'original work');
+    const urgent = await f.queue.submit(sessionId, 'urgent work');
+    await until(() => f.runs.length === 1);
+    storage.save = (id, state) => {
+      if (state.items[0]?.id === urgent.messageId) throw new Error('disk full on promotion');
+      save(id, state);
+    };
+    await assert.rejects(f.queue.sendNow(sessionId, urgent.messageId), /disk full on promotion/);
+    storage.save = save;
+    assert.deepEqual(f.interruptions, [], 'interruption must follow a durable priority decision');
+    f.runs[0].result.resolve(interrupted);
+    await until(() => !f.queue.hasActive(sessionId));
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => item.id), [original.messageId, urgent.messageId]);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    assert.equal(f.runs.length, 1);
+  } finally { storage.save = save; await f.close(); }
+});
+
+test('a stop while attachment acceptance is pending keeps the subsequently accepted message paused', async () => {
+  const entered = deferred<void>(), releaseAttachments = deferred<void>();
+  const f = fixture({ acceptAttachments: async (_id, _files, commit) => {
+    entered.resolve();
+    await releaseAttachments.promise;
+    commit(['evidence.txt']);
+  } });
+  const sessionId = randomUUID();
+  try {
+    const submission = f.queue.submit(sessionId, 'inspect file', ['/attachment/evidence.txt']);
+    await entered.promise;
+    f.queue.pause(sessionId);
+    releaseAttachments.resolve();
+    await submission;
+    f.queue.wake(sessionId);
+    await tick();
+    assert.equal(f.runs.length, 0);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => [item.text, item.status]), [['inspect file', 'queued']]);
+  } finally { releaseAttachments.resolve(); await f.close(); }
+});
+
+test('a user stop after send now takes precedence when the interruption eventually settles', async () => {
+  const ack = deferred<void>();
+  const f = fixture({ interrupt: async id => { f.interruptions.push(id); await ack.promise; } });
+  const sessionId = randomUUID();
+  try {
+    await f.queue.submit(sessionId, 'active');
+    const priority = await f.queue.submit(sessionId, 'urgent');
+    await f.queue.submit(sessionId, 'later');
+    await until(() => f.runs.length === 1);
+    const promotion = f.queue.sendNow(sessionId, priority.messageId);
+    await until(() => f.interruptions.length === 1);
+    f.queue.pause(sessionId);
+    f.runs[0].result.resolve(interrupted);
+    ack.resolve();
+    await promotion;
+    await until(() => !f.queue.hasActive(sessionId));
+    f.queue.wake(sessionId);
+    await tick();
+    assert.equal(f.runs.length, 1);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => item.text), ['urgent', 'later']);
+  } finally { ack.resolve(); await f.close(); }
+});
