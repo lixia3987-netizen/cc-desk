@@ -1,7 +1,6 @@
 import { Activity, GitBranch, Stethoscope, Workflow } from 'lucide-react';
-import type { CSSProperties } from 'react';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../../shared/panel-drafts';
-import { inspectorPanelIds } from '../layout-preferences';
+import { inspectorPanelIds, type InspectorPanelId } from '../layout-preferences';
 import { DiagnosticsPanel, GitPanel } from '../ProjectPanels';
 import { WorkflowPanel } from '../WorkflowPanel';
 import { InspectorPanel } from './InspectorPanel';
@@ -9,7 +8,7 @@ import { SessionContextPanel, type SessionContextPanelProps } from './SessionCon
 import { useInspectorPanels } from './useInspectorPanels';
 
 interface Props extends SessionContextPanelProps {
-  inspectorOpen: boolean; appendReview: (text: string) => boolean; activePanels: PanelDrafts;
+  appendReview: (text: string) => boolean; activePanels: PanelDrafts;
   updatePanel: <K extends keyof PanelDrafts>(id: string, key: K, update: (value: NonNullable<PanelDrafts[K]>) => NonNullable<PanelDrafts[K]>) => void;
 }
 
@@ -19,34 +18,34 @@ const panels = {
 };
 
 export function SessionInspector(props: Props) {
-  const { active, inspectorOpen, report, appendReview, activePanels, updatePanel } = props;
+  const { active, report, appendReview, activePanels, updatePanel } = props;
   const layout = useInspectorPanels();
-  // CSS changes the column count without reparenting panels or remounting editors.
-  const rows = (columns: number) => layout.open.reduce<string[]>((tracks, id, index) => {
-    const row = Math.floor(index / columns);
-    tracks[row] = tracks[row] === 'minmax(240px, 1fr)' || !layout.collapsed.includes(id) ? 'minmax(240px, 1fr)' : 'max-content';
-    return tracks;
-  }, []).join(' ');
-  const style = { '--panel-rows': rows(1), '--panel-wide-rows': rows(2) } as CSSProperties;
-  const visible = (id: typeof inspectorPanelIds[number]) => inspectorOpen && layout.open.includes(id) && !layout.collapsed.includes(id);
+  const close = (id: InspectorPanelId) => {
+    layout.close(id);
+    document.getElementById(`inspector-toggle-${id}`)?.focus();
+  };
 
-  return <aside id="session-inspector" aria-label="会话详情" hidden={!inspectorOpen} className="inspector" data-empty={!layout.open.length} data-multiple={layout.open.length > 1} data-git={layout.open.includes('git')}>
-    <div className="inspector-tools" role="group" aria-label="会话面板">
-      {inspectorPanelIds.map(id => {
-        const { title, icon: Icon } = panels[id];
-        return <button key={id} id={`inspector-toggle-${id}`} aria-label={title} aria-pressed={layout.open.includes(id)} aria-controls={`inspector-${id}`} title={`${layout.open.includes(id) ? '关闭' : '打开'}${title}面板`} onClick={() => layout.toggle(id)}>
-          <Icon size={14} /><span>{title}</span>
-        </button>;
-      })}
-    </div>
-    <div className="inspector-grid" style={style} hidden={!layout.open.length}>
-      {inspectorPanelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.open.includes(id)} collapsed={layout.collapsed.includes(id)}
-        onClose={() => { layout.toggle(id); document.getElementById(`inspector-toggle-${id}`)?.focus(); }} onCollapse={() => layout.collapse(id)}>
+  return <aside id="session-inspector" aria-label="会话详情" className="inspector" data-empty={layout.activePanel === null} data-active={layout.activePanel ?? ''} onKeyDown={event => {
+    if (event.key !== 'Escape' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || event.nativeEvent.isComposing || !layout.activePanel) return;
+    if (document.querySelector('[role="dialog"]') || !(event.target instanceof Element) || !event.target.closest('.inspector-panel')) return;
+    event.preventDefault(); event.stopPropagation(); close(layout.activePanel);
+  }}>
+    <div className="inspector-dock" hidden={layout.activePanel === null}>
+      {inspectorPanelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.activePanel === id} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
-        {id === 'git' && <GitPanel session={active} visible={visible(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
+        {id === 'git' && <GitPanel session={active} visible={layout.activePanel === id} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
         {id === 'workflows' && <WorkflowPanel session={active} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
         {id === 'diagnostics' && <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} />}
       </InspectorPanel>)}
+    </div>
+    <div className="inspector-tools" role="group" aria-label="会话面板">
+      {inspectorPanelIds.map(id => {
+        const { title, icon: Icon } = panels[id];
+        const open = layout.activePanel === id;
+        return <button key={id} id={`inspector-toggle-${id}`} aria-label={title} aria-pressed={open} aria-expanded={open} aria-controls={`inspector-${id}`} title={`${open ? '关闭' : '打开'}${title}面板`} onClick={() => layout.toggle(id)}>
+          <Icon size={18} /><span>{title}</span>
+        </button>;
+      })}
     </div>
   </aside>;
 }

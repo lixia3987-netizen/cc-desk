@@ -122,6 +122,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     let page = await app.firstWindow();
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
+    await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
     // 652 px is the content height of a 680 px macOS window, excluding its title bar.
     await app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0];
@@ -146,8 +147,8 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     await expect(page.getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: testInfo.outputPath('subtasks-narrow-inspector-open.png') });
     await page.getByRole('button', { name: '收起子任务', exact: true }).click();
-    await page.getByRole('button', { name: '收起右侧面板', exact: true }).click();
-    await expect(page.locator('#session-inspector')).toBeHidden();
+    await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
+    await expect(page.locator('#session-inspector .inspector-dock')).toBeHidden();
     await expect(panel).toBeInViewport({ ratio: 1 });
     const expand = page.getByRole('button', { name: '展开子任务', exact: true });
     await expect(expand).toHaveAttribute('aria-expanded', 'false');
@@ -188,7 +189,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     await close(app); app = await f.launch(); page = await app.firstWindow();
     page.on('pageerror', error => errors.push(error.message));
     await counts(page, 2, 0, 2);
-    await expect(page.locator('#session-inspector')).toBeHidden();
+    await expect(page.locator('#session-inspector .inspector-dock')).toBeHidden();
     await page.getByRole('button', { name: '展开子任务', exact: true }).focus();
     await page.keyboard.press('Space');
     await expect(page.locator('.subtask-row[data-subtask-status="completed"]')).toHaveCount(2);
@@ -241,12 +242,12 @@ test('subtasks: recovered activity distinguishes interruption from completion an
     expect(recovered.subtasks?.tasks.find(value => value.id === 'latest-active')?.status).toBe('interrupted');
     expect(recovered.subtasks?.tasks.find(value => value.id === 'latest-complete')?.summary).toBe('完成确认应保留。');
 
-    await page.getByRole('button', { name: '收起右侧面板', exact: true }).click();
+    await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
     await page.locator('.session-row').filter({ hasText: f.terminal.title }).click();
     await counts(page, 2, 0, 1);
     await expect(page.locator('.subtask-counts')).toContainText('失败 1');
     await expect(page.locator('.terminal-host')).toBeVisible();
-    await expect(page.locator('#session-inspector')).toBeHidden();
+    await expect(page.locator('#session-inspector .inspector-dock')).toBeHidden();
     await page.getByRole('button', { name: '展开子任务', exact: true }).click();
     await expect(page.locator('.subtask-row')).toHaveCount(2);
     await expect(page.locator('.subtask-row').filter({ hasText: '已完成的检查' })).toHaveCount(0);

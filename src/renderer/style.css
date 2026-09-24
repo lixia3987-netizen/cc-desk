@@ -193,8 +193,6 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .welcome-foot>span{display:none}}
 
 /* v0.2 structured workbench */
-.inspector-toggle{flex-shrink:0}
-.inspector-toggle.active{background:var(--selected);color:var(--text-strong)}
 .panel-content{overflow:auto;padding:18px 16px;min-height:0;flex:1}
 .panel-content h4{font-size:calc(12px * var(--ui-font-scale));font-weight:500;margin:19px 0 12px;color:var(--text-secondary)}
 .panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
