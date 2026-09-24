@@ -12,6 +12,7 @@ import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 import { ContextMeter } from './ContextMeter';
 import { ChatQueue } from './ChatQueue';
 import { useChatSubmission } from './useChatSubmission';
+import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
 import { isMissingTranscriptError } from '../shared/session-recovery';
 export { MessageText } from './MessageText';
@@ -53,8 +54,9 @@ const ChatMessageRow=memo(function ChatMessageRow({message}:{message:ChatMessage
   return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?'Claude':'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
 },(previous,next)=>sameMessage(previous.message,next.message));
 
-export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjectFiles,attachments,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,disabled=false}:{
+export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,disabled=false}:{
   session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;
+  onDropFiles:(files:File[])=>void;attachmentBusy:boolean;attachmentDisabled:boolean;isAttachmentImporting:()=>boolean;
 }) {
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
@@ -145,9 +147,12 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
     catch(error){onError(error);}finally{if(mounted.current)setRecovering(false);}
   };
   const queued=running||!!snapshot?.queue?.items.length;
-  const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments,disabled:composerDisabled,
+  const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
     onAccepted:jumpToLatest,onSent,onAttachmentsSent,onError,refresh:load});
-  return <div className="chat-pane">
+  const attachmentsBlocked=composerDisabled||attachmentDisabled||attachmentBusy||submitting;
+  const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
+  return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
+    {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给 Claude。</span></div>}
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
       {(snapshot?.truncated||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={paging||!!archive&&!archive.before||!visible?.messages.length||exhaustedBefore===visible?.messages[0]?.id} onClick={()=>void openPage({before:archive?.before??visible?.messages[0]?.id}).catch(onError)}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>本页 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
@@ -175,10 +180,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onProjec
       <p className="panel-note">如果需要找回原上下文，请取消并检查 Claude 配置目录或重新导入历史记录。</p>
       <div className="modal-actions"><button className="secondary" disabled={recovering} onClick={()=>setConfirmRecovery(false)}>取消</button><button className="primary" disabled={recovering||composerDisabled||running||!recoveryAvailable} onClick={()=>void recoverContext()}>{recovering?'重建中…':'确认重建'}</button></div>
     </Dialog>}
-    <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={composerDisabled||submitting} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
+    <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={attachmentsBlocked} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
+      {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={queued?'继续输入，发送后加入队列…':'描述任务，或输入 / 选择命令与 Skills…'} value={draft} disabled={composerDisabled} onChange={onDraft} onSend={()=>void send()}
         commands={snapshot?.commands} loadCommands={prepareCommands}/>
-      <div className="chat-composer-actions"><button className="icon-button" title="添加图片、PDF 或文件附件" aria-label="添加附件" disabled={composerDisabled} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；草稿自动保存">Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={composerDisabled||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||(!draft.trim()&&!attachments.length)||composerDisabled} onClick={()=>void send()}>{submitting?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
+      <div className="chat-composer-actions"><button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；文件可拖入聊天区成为待发送附件；草稿自动保存">Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={composerDisabled||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!attachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
     </div>
   </div>;
 }

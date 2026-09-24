@@ -13,7 +13,7 @@ const manifestSchema = z.object({ version:z.literal(1), items:z.array(z.object({
 })).max(10000) });
 type Item = z.infer<typeof manifestSchema>['items'][number];
 
-/** Only native-picker copies recorded in the private manifest can be sent. */
+/** Only native-picker/drop copies recorded in the private manifest can be sent. */
 export class Attachments {
   private entries = new Map<string, Item[]>();
   private operations = new Map<string, Promise<unknown>>();
@@ -64,7 +64,9 @@ export class Attachments {
       try {
         for(const file of selected) {
           const source=await fs.realpath(file), stat=await fs.stat(source), ext=path.extname(source).toLowerCase();
-          if(!stat.isFile()||stat.size>MAX_FILE||!EXTENSIONS.has(ext))throw new Error('附件须为支持的文本、图片或 PDF，单个不超过 8 MiB。');
+          if(!stat.isFile())throw new Error('附件必须是文件，暂不支持添加文件夹。');
+          if(!EXTENSIONS.has(ext))throw new Error('附件类型不受支持，请选择文本、图片或 PDF。');
+          if(stat.size>MAX_FILE)throw new Error('单个附件不能超过 8 MiB。');
           total+=stat.size; if(total>MAX_TOTAL)throw new Error('附件合计不能超过 16 MiB。');
           const item:Item={file:'.staged-'+randomUUID()+ext,name:path.basename(file),bytes:stat.size,retained:false,draft:true};
           added.push(item);
