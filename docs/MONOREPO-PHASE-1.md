@@ -6,7 +6,7 @@
 
 总体计划：[NATIVE-AGENT-PLAN.md](NATIVE-AGENT-PLAN.md)。
 
-状态：任务分析完成，以下实施任务均未开始；本次仅增加此文档。
+状态：阶段一实现已落入 `refactor/monorepo-foundation`，集成目标为 `dev/native-agent`；当前验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。暂不合入 main。
 
 ## 1. 阶段交付物
 

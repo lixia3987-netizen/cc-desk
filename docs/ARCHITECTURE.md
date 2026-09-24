@@ -1,5 +1,13 @@
 # 架构与边界
 
+## 工作区结构
+
+仓库由 npm workspaces 管理，根目录维护唯一 lockfile 和统一命令。`apps/desktop` 包含 Electron main/preload、React、桌面测试和打包配置，保留现有应用名称、appId 和数据位置；`packages/contracts` 输出无平台依赖的 ESM 与类型声明。桌面构建会将契约编入现有 CJS/renderer 产物，安装包不依赖仓库的 workspace 链接。
+
+公共契约包含执行身份、能力、聊天消息、审批、事件以及 `SessionStatus` / `TerminalChunk`。桌面 `shared/execution.ts`、`chat.ts`、`execution-events.ts` 保留单向再导出；会话存储、执行器接口与实现、CLI 配置、字体和主题仍属于桌面包。根 `build/typecheck/test/dev` 先编译 contracts；业务代码不得从公共包反向导入桌面源码。
+
+桌面源码和配置位于 `apps/desktop/`；下文 `src/` 路径均相对此工作区。根目录保留 `docs/`、`release/` 和 `test-results/`。结构迁移没有修改 workspace v2 或引擎行为，下一阶段计划见 [阶段一任务与验收](MONOREPO-PHASE-1.md)。
+
 ## 主进程与隔离
 
 Electron main 是文件、进程、设置和 IPC 的唯一入口。renderer 无 Node 权限；preload 只暴露类型化方法；每次调用校验发送窗口、主 frame、来源与 Zod 输入。拒绝任意导航和窗口弹出；网页权限默认拒绝，仅允许可信主 frame 为系统字体列表申请 Local Font Access。
@@ -125,7 +133,7 @@ Worktree 所有权记录写入该 worktree 的 Git 私有目录。只允许快�
 3. 通过公共事件通路发布已保存事件与状态；准确区分活跃进程、进行中回合和后台任务，保证 stopIdle / disconnectAll 返回时资源已释放或明确失败。
 4. 以非 Claude 测试执行器经过真实 SessionService 验证发送、审批、命令、工作流、提供方身份互斥和维护失败路径，再验证实际协议适配。现有 `execution-contracts.test.ts` 与 `session-identity.test.ts` 是这些边界的回归入口。
 
-本次没有新增模型提供方、独立内置 Agent、网络执行协议或插件装载器，也未改变仓库为 monorepo。新增后端仍需完成自身执行实现、能力验证与产品入口。
+当前 monorepo 改造已建立公共契约包，尚未新增模型提供方、独立内置 Agent、网络执行协议或插件装载器。新增后端仍需完成自身执行实现、能力验证与产品入口。
 
 ## 后续演进
 

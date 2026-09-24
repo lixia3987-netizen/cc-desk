@@ -90,6 +90,8 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 需要 Node.js 22.12+、npm、Git；使用 Claude 会话还需要安装并登录 Claude Code CLI。推荐原生 CLI 安装。
 
+仓库使用 npm workspaces：`apps/desktop` 是桌面应用，`packages/contracts` 提供公共执行身份、消息和事件契约。只在根目录安装依赖，维护一个 `package-lock.json`；以下命令也从根目录运行。根命令先构建契约，再检查或构建桌面应用。契约和主进程改动后需重新启动 `npm run dev`。
+
 ```sh
 npm ci
 npm run dev
@@ -100,7 +102,7 @@ npm run dev
 ```sh
 npm run check        # TypeScript、单元/集成测试、生产构建
 npm run test:e2e     # Electron UI + 真实 Shell / Claude 协议测试进程
-npm start           # 启动已有 dist
+npm start           # 启动已有 apps/desktop/dist
 npm run dist:win    # Windows 上构建 NSIS 安装包、单文件便携 EXE、ZIP
 npm run dist:mac    # macOS 上构建 DMG、免安装 ZIP
 npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
@@ -109,9 +111,9 @@ npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
 
-GitHub Actions 构建仅手动触发；日常提交、推送、PR 和 `release:` 提交均不会自动启动构建。需要安装包时，在 Actions → Verify and package desktop → Run workflow 手动运行；默认只验证和打包，产物保存在 Artifacts。
+PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。三平台安装包仍仅手动触发：在 Actions → Verify and package desktop → Run workflow 选择待验证的分支；默认只验证和打包，产物保存在 Artifacts。测试报告位于根 `test-results/`，安装包位于根 `release/`。
 
-维护者发布版本时，先更新 `package.json` / 锁文件版本及对应的 `docs/releases/v<版本>.md`。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
+维护者发布版本时，先更新 `apps/desktop/package.json` 的应用版本、根锁文件中的对应 workspace 元数据及 `docs/releases/v<版本>.md`。根编排包和内部契约包的版本不作为应用发布版本。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 
 ## 主要流程
 

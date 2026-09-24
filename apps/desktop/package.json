@@ -1,0 +1,118 @@
+{
+  "name": "claude-workbench",
+  "productName": "Claude Workbench",
+  "version": "0.5.0",
+  "private": true,
+  "description": "A Chinese desktop workspace for Claude Code with projects, sessions, workflows, worktrees, and live subtask progress",
+  "author": "Claude Workbench contributors",
+  "license": "MIT",
+  "main": "dist/main/index.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
+    "test:e2e": "node scripts/run-desktop-tests.mjs",
+    "check": "npm run typecheck && npm test && npm run build",
+    "dist:win": "npm run build && npm run package:win",
+    "dist:mac": "npm run build && npm run package:mac",
+    "dist:linux": "npm run build && npm run package:linux",
+    "test:packaged": "node scripts/verify-packaged.mjs",
+    "package:win": "electron-builder --win nsis portable zip --x64 --publish never",
+    "package:mac": "electron-builder --mac dmg zip --arm64 --publish never",
+    "package:linux": "electron-builder --linux AppImage tar.gz --publish never"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "dompurify": "3.4.15",
+    "lucide-react": "0.468.0",
+    "mermaid": "12.0.0",
+    "node-pty": "1.1.0",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "react-markdown": "10.1.0",
+    "rehype-highlight": "7.0.2",
+    "remark-gfm": "4.0.1",
+    "zod": "4.1.12",
+    "@cc-desk/contracts": "0.0.0"
+  },
+  "devDependencies": {
+    "@electron/asar": "3.4.1",
+    "@playwright/test": "1.58.2",
+    "@types/node": "24.10.1",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "@vitejs/plugin-react": "5.1.1",
+    "electron": "44.4.3",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.25.12",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
+  },
+  "build": {
+    "npmRebuild": false,
+    "appId": "io.local.claude-workbench",
+    "directories": {
+      "output": "../../release"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraFiles": [
+      {
+        "from": "../../README.md",
+        "to": "README.zh-CN.md"
+      },
+      {
+        "from": "../../docs/VALIDATION.md",
+        "to": "VALIDATION.md"
+      }
+    ],
+    "asarUnpack": [
+      "node_modules/node-pty/**/*"
+    ],
+    "win": {
+      "target": [
+        "nsis",
+        "portable",
+        "zip"
+      ],
+      "artifactName": "cc-desk-${version}-windows-${arch}-portable.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "artifactName": "cc-desk-${version}-windows-${arch}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "cc-desk-${version}-windows-${arch}-portable.${ext}"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "artifactName": "cc-desk-${version}-macos-${arch}-portable.${ext}"
+    },
+    "dmg": {
+      "artifactName": "cc-desk-${version}-macos-${arch}-setup.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "tar.gz"
+      ],
+      "artifactName": "cc-desk-${version}-linux-${arch}-portable.${ext}",
+      "category": "Development"
+    },
+    "appImage": {
+      "artifactName": "cc-desk-${version}-linux-${arch}-portable.${ext}"
+    }
+  }
+}
