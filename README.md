@@ -12,9 +12,17 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 - **开发连贯**：项目文件引用、附件、Git diff 审阅和可配置位置的 worktree；使用指定的 VS Code、WebStorm 或定制 IDE 打开工作目录。
 - **执行可控**：按需审批、Plan、接受编辑与 Bypass，支持默认权限设置；工作流按阶段推进，可确认、取消、重试与恢复。
 
-[下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.4.0 版本说明](docs/releases/v0.4.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
+[下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.5.0 版本说明](docs/releases/v0.5.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
 客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
+
+## v0.5.0 更新：消息队列、独立面板与稳定的上下文读数
+
+- **发送后即可继续输入**：结构化消息保存成功后立即清空对应输入和附件，任务执行期间可继续发送，按会话依次排队。悬停或聚焦排队消息，点击「立即发送」可中断当前任务并优先执行该消息，其余消息保留顺序。停止、失败或重启后队列暂停并保留，检查已产生的操作后可手动继续。
+- **右侧面板独立打开**：「上下文 / 变更 / 工作流 / 诊断」可以同时显示、分别折叠或关闭；根据可用宽度自动采用双列或纵向布局。显示偏好重启后保留，调整布局不会丢失当前输入或重启终端。
+- **上下文按发起模型计算**：每条消息开始执行时绑定当前选择的模型，整轮按该模型查询窗口容量；ccSwitch 等路由返回不同模型名时，不再因此丢失占比。主请求用量持续刷新，缺失字段保留有效读数，详情可查看「上下文计算模型」。
+
+完整改动、下载与使用边界见 [v0.5.0 版本说明](docs/releases/v0.5.0.md)。
 
 ## v0.4.0 更新：CLI 更新、上下文用量、命令与字体
 
@@ -52,13 +60,13 @@ v0.3.0 整合 v0.2.2 之后的功能与体验改进：
 
 ## 下载安装包与便携包
 
-打开 [最新 Release](https://github.com/lixia3987-netizen/cc-desk/releases/latest)，在 **Assets** 中选择对应系统的文件。v0.4.0 的安装包与便携包文件名如下：
+打开 [最新 Release](https://github.com/lixia3987-netizen/cc-desk/releases/latest)，在 **Assets** 中选择对应系统的文件。v0.5.0 的安装包与便携包文件名如下：
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.4.0-windows-x64-setup.exe` | `cc-desk-0.4.0-windows-x64-portable.exe`，或 `cc-desk-0.4.0-windows-x64-portable.zip` |
-| macOS arm64 | `cc-desk-0.4.0-macos-arm64-setup.dmg` | `cc-desk-0.4.0-macos-arm64-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.4.0-linux-x86_64-portable.AppImage`，或 `cc-desk-0.4.0-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-0.5.0-windows-x64-setup.exe` | `cc-desk-0.5.0-windows-x64-portable.exe`，或 `cc-desk-0.5.0-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-0.5.0-macos-arm64-setup.dmg` | `cc-desk-0.5.0-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-0.5.0-linux-x86_64-portable.AppImage`，或 `cc-desk-0.5.0-linux-x64-portable.tar.gz` |
 
 共 7 个安装 / 便携文件，另附 `SHA256SUMS.txt`，用于校验下载文件；GitHub 自动提供的源码压缩包不是桌面应用。
 
