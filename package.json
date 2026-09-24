@@ -1,7 +1,7 @@
 {
   "name": "claude-workbench",
   "productName": "Claude Workbench",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "A Chinese desktop workspace for Claude Code with projects, sessions, workflows, worktrees, and live subtask progress",
   "author": "Claude Workbench contributors",
