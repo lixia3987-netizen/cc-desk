@@ -51,7 +51,11 @@ export class ClaudeEvents {
     entry.contextRequest = undefined;
     const previous = entry.expectedId;
     entry.expectedId = nextId; entry.enforceIdentity = true;
-    this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: nextId, forkFrom: undefined, imported: undefined }, started: true });
+    // A confirmed reset creates an empty identity. Claude may not write its
+    // transcript until the next prompt, so it cannot require --resume yet.
+    // An unchanged ID provides no evidence that the old history was discarded.
+    this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: nextId, forkFrom: undefined, imported: undefined },
+      ...(nextId !== previous ? { started: false } : {}) });
     this.output.history.get(id).usage = undefined;
     this.output.context(id, { model: entry.turn.contextModel ?? entry.selectionModel, status: 'unknown' });
     this.output.system(id, '已清空 Claude 上下文。此前的聊天记录仍保留；原 CLI 会话：' + previous);
@@ -146,7 +150,9 @@ export class ClaudeEvents {
       this.context.capacity(id, entry, frame.modelUsage);
       snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
-      if (!failed && !this.output.session(id).started) this.output.update(id, { started: true });
+      // /context is a local report and may also leave a fresh identity without
+      // any transcript. Real prompts and tool calls still establish history.
+      if (!failed && !entry.turn.resetApplied && entry.turn.command !== 'context' && !this.output.session(id).started) this.output.update(id, { started: true });
       const summary = string(frame.result);
       const error = failed ? (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : summary || string(frame.subtype) || 'Claude 执行失败。') : undefined;
       this.output.append(id, { type: 'result', success: !failed, summary, error, usage: snapshot.usage });

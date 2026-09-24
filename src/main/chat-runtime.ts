@@ -17,6 +17,7 @@ import { ChatArchive } from './chat-archive';
 import { chatArguments, userContent } from './chat-protocol';
 import { SubtaskTracker } from './subtask-tracker';
 import { normalizeCommands, invokedCommand, type ContextUsage } from '../shared/claude-session';
+import { isMissingTranscriptError } from '../shared/session-recovery';
 
 /** Test injection is constructor-only; renderer callers cannot select commands or protocol frames. */
 export interface ChatRuntimeOptions {
@@ -221,6 +222,41 @@ export class ChatRuntime {
   }
   hydrate(id: string) { this.session(id); return this.hydrator.hydrate(id); }
   exportPath(id: string) { this.session(id); return this.history.exportPath(id); }
+  /** User-confirmed recovery only; normal resume never falls back to a blank conversation. */
+  async recoverContext(id: string): Promise<void> {
+    const assertReady = () => {
+      if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
+      const session = this.session(id);
+      if (session.archived) throw new Error('请先取消会话归档。');
+      if (this.has(id)) throw new Error('请先停止会话，再重建上下文。');
+      if (!session.started || !session.execution.conversationId ||
+        ![session.error, this.history.get(id).error].some(isMissingTranscriptError)) throw new Error('只有缺失原始记录的会话可以重建空白上下文。');
+      return session;
+    };
+    const previous = assertReady();
+    if (this.busy.has(id)) throw new Error('当前会话正在处理任务，请稍后重试。');
+    this.busy.add(id);
+    try {
+      const previousConversationId = previous.execution.conversationId!;
+      if (await (this.options.transcriptExists ?? transcriptExists)(previousConversationId)) throw new Error('已找到原会话记录，请重新发送消息恢复原上下文。');
+      const session = assertReady();
+      if (session.execution.conversationId !== previousConversationId) throw new Error('会话标识已改变，请刷新后重试。');
+      const conversationId = randomUUID();
+      // Preserve the old identity durably before changing workspace metadata.
+      // If saving that metadata fails, its original ID and resume guard remain intact.
+      this.history.flush();
+      this.append(id, { type: 'conversation_recovered', previousConversationId, conversationId });
+      this.update(id, { execution: { ...session.execution, conversationId, forkFrom: undefined, imported: undefined },
+        started: false, status: 'stopped', taskState: 'idle', error: undefined, exitCode: undefined });
+      const snapshot = this.history.get(id);
+      snapshot.context = undefined; snapshot.usage = undefined;
+      this.hydrator.forget(id);
+      this.state(id, 'idle');
+      this.system(id, '已重建空白上下文。本地聊天记录、草稿和工作目录已保留；之前的聊天不会自动发送给 Claude。原 CLI 会话：' + previousConversationId + '；新 CLI 会话：' + conversationId);
+      this.history.flush();
+      this.notify(id, true);
+    } finally { this.busy.delete(id); }
+  }
   delete(id: string) { this.forget(id); }
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');

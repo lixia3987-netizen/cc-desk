@@ -54,11 +54,13 @@ export function registerWorkspaceHandlers(handle: Register, ports: WorkspacePort
     const blocked = directories ? ports.directoriesBusy(directories) : true;
     const info = await worktreeInfo(ports.worktreeBase(session), session.worktree ?? session.cwd, id, blocked);
     if (directories && ports.idleTerminalBlock(directories)) {
-      info.reasons.push('原生 Claude 终端仍打开，请先关闭终端释放工作目录。');
+      const reason = '原生 Claude 终端仍打开，请先关闭终端释放工作目录。';
+      info.reasons.push(reason); info.cleanupReasons.push(reason);
     }
     if (ports.cleanupDependencies(session)) {
       info.canCleanup = false;
-      info.reasons.push('其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。');
+      const reason = '其他会话的工作目录或 worktree 来源依赖此目录，请先处理这些会话。';
+      info.reasons.push(reason); info.cleanupReasons.push(reason);
     }
     return info;
   });

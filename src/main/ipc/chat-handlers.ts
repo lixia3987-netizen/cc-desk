@@ -11,7 +11,7 @@ import { invokedCommand } from '../../shared/session-commands';
 import type { Register } from './registration';
 
 interface ChatPorts {
-  chat: Pick<StructuredExecutions, 'has' | 'hydrate' | 'snapshot' | 'prepareCommands' | 'page' | 'search' | 'attention' | 'respond'>;
+  chat: Pick<StructuredExecutions, 'has' | 'hydrate' | 'snapshot' | 'prepareCommands' | 'page' | 'search' | 'attention' | 'respond' | 'recoverContext'>;
   runtime: Pick<TerminalExecutions, 'has'>;
   workflows: Pick<WorkflowEngine, 'isSessionBusy'>;
   queue: ChatQueue;
@@ -21,6 +21,7 @@ interface ChatPorts {
   requireCommands(id: string): void;
   reserve(id: string): Promise<void>;
   releaseAdmission(id: string): void;
+  manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
   runChat(id: string, text: string, attachments: string[]): Promise<ChatTurnResult>;
   getWindow(): BrowserWindow | null;
 }
@@ -62,6 +63,12 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     try { return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
     finally { ports.releaseAdmission(id); }
   });
+  handle('chat:recover-context', idSchema, id => ports.manage(id, async () => {
+    const session = ports.structured(id);
+    if (session.archived) throw new Error('请先取消会话归档。');
+    if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id) || ports.queue.hasActive(id)) throw new Error('请先停止正在执行的任务。');
+    await ports.chat.recoverContext(id);
+  }));
   handle('chat:page', pageSchema, ({ id, ...options }) => {
     ports.structured(id);
     return ports.chat.page(id, options);

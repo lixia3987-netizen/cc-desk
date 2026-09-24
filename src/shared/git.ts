@@ -46,6 +46,7 @@ export interface WorktreeInfo {
   canMerge: boolean;
   canCleanup: boolean;
   reasons: string[];
+  cleanupReasons: string[];
 }
 
 export interface WorktreeActionResult {

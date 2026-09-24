@@ -133,7 +133,19 @@ test('context meter uses root request usage, invalidates after compact and clear
     await expect(page.locator('.context-meter')).toContainText('等待用量数据');
     await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].started).toBe(false);
+    // The CLI has not written the new transcript yet. Relaunching immediately
+    // after /clear must start that fresh identity rather than require --resume.
+    await close(app); app = await f.launch(); page = await app.firstWindow(); input = page.getByLabel('提示词编辑器');
+    await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
     await input.fill('继续'); await input.press('Enter'); await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6');
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].started).toBe(true);
+    await close(app); app = await f.launch(); page = await app.firstWindow(); input = page.getByLabel('提示词编辑器');
+    await input.fill('恢复清空后的新记录'); await input.press('Enter');
+    await expect.poll(async () => (await fs.readFile(f.log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).at(-1)?.text).toBe('恢复清空后的新记录');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
   } finally { await close(app); await f.dispose(); }
 });
 

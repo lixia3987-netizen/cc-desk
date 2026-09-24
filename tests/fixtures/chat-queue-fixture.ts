@@ -94,7 +94,7 @@ process.stdin.on('end', () => { clearInterval(timer); process.exit(0); });
   const records = async (): Promise<QueueRecord[]> => (await fs.readFile(log, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   const sent: Array<{ id: string; session: string; action: string }> = [];
   return {
-    sessions, attachment,
+    sessions, attachment, configDirectory: path.join(directory, 'claude-config'),
     launch: () => electron.launch({ args: electronLaunchArgs(), env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: path.join(directory, 'claude-config') } }),
     records,
     prompts: async (session: Session) => (await records()).filter(value => value.event === 'prompt' && value.session === session.execution.conversationId).map(value => value.text),

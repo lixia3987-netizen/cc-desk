@@ -6,6 +6,7 @@ import type { StructuredExecutions, TerminalExecutions } from '../execution/rout
 import type { Attachments } from '../attachments';
 import type { WorkflowEngine } from '../workflows';
 import type { Register } from './registration';
+import { forceCleanupWorktree } from '../git';
 
 interface SessionPorts {
   store: Pick<StateStore, 'state' | 'change'>;
@@ -17,6 +18,9 @@ interface SessionPorts {
   taskOccupied(id: string): boolean;
   admissionPending(id: string): boolean;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
+  manageWorktree<T>(id: string, action: (session: Session) => Promise<T>): Promise<T>;
+  worktreeBase(session: Session): string;
+  cleanupDependencies(session: Session): boolean;
   select(id: string): void;
   export(id: string): Promise<string | null>;
   onState(): void;
@@ -28,8 +32,27 @@ const updateSchema = z.object({
   model: sessionInputSchema.shape.model.optional(), effort: sessionInputSchema.shape.effort.optional(),
   permissionMode: sessionInputSchema.shape.permissionMode.optional(),
 });
+const deleteSchema = z.union([
+  idSchema,
+  z.object({ id: idSchema, preserveWorktree: z.literal(true) }).strict(),
+  z.object({ id: idSchema, forceWorktree: z.literal(true), worktreePath: z.string().min(1).max(4096).refine(path => !/[\x00-\x1f\x7f]/.test(path)) }).strict(),
+]);
 
 export function registerSessionHandlers(handle: Register, ports: SessionPorts): void {
+  const removeRecord = async (id: string) => {
+    if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
+    await ports.chat.stopIdle(id);
+    ports.workflows.removeSession(id);
+    ports.runtime.forget(id);
+    ports.chat.forget(id);
+    ports.forgetQueue(id);
+    await ports.attachments.remove(id);
+    ports.store.change(state => {
+      state.sessions = state.sessions.filter(session => session.id !== id);
+      if (state.selectedSessionId === id) state.selectedSessionId = '';
+    });
+    ports.onState();
+  };
   handle('session:panel-drafts', z.object({ id: idSchema, patch: panelDraftsSchema }), ({ id, patch }) => {
     ports.session(id);
     const changed = ports.store.change(state => {
@@ -69,21 +92,39 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
     else save();
     ports.onState();
   });
-  handle('session:delete', idSchema, id => ports.manage(id, async () => {
-    const session = ports.session(id);
-    if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
-    if (session.worktree) throw new Error('请先在 Git 面板检查并清理独立 worktree。');
-    await ports.chat.stopIdle(id);
-    ports.workflows.removeSession(id);
-    ports.runtime.forget(id);
-    ports.chat.forget(id);
-    ports.forgetQueue(id);
-    await ports.attachments.remove(id);
-    ports.store.change(state => {
-      state.sessions = state.sessions.filter(session => session.id !== id);
-      if (state.selectedSessionId === id) state.selectedSessionId = '';
+  handle('session:delete', deleteSchema, input => {
+    const id = typeof input === 'string' ? input : input.id;
+    if (typeof input !== 'string' && 'forceWorktree' in input) {
+      // Use the same directory locks and worker-release barrier as safe cleanup.
+      // Force only relaxes Git's clean/merged checks, never resource ownership.
+      return ports.manageWorktree(id, async session => {
+        if (session.worktree !== input.worktreePath) throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
+        if (ports.cleanupDependencies(session)) throw new Error('其他会话的工作目录或 worktree 来源依赖此目录，不能强制删除。');
+        const result = await forceCleanupWorktree(ports.worktreeBase(session), session.worktree!, id);
+        if (!result.ok) throw new Error(result.message);
+        try {
+          // Record the completed filesystem step so a later attachment/history
+          // removal failure can be retried as ordinary record-only deletion.
+          ports.store.change(state => {
+            const saved = state.sessions.find(item => item.id === id)!;
+            saved.worktree = undefined;
+            saved.archived = true;
+            saved.error = '隔离目录已强制删除；会话记录尚未删除，可再次删除会话。';
+          });
+          ports.onState();
+          await removeRecord(id);
+        } catch (error) {
+          throw new Error('隔离目录已强制删除，但会话记录未完全删除。可选择仅删除会话重试：' + (error instanceof Error ? error.message : String(error)));
+        }
+      });
+    }
+    const preserveWorktree = typeof input !== 'string' && 'preserveWorktree' in input && input.preserveWorktree;
+    return ports.manage(id, async () => {
+      const session = ports.session(id);
+      if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
+      if (session.worktree && !preserveWorktree) throw new Error('请先在 Git 面板检查并清理独立 worktree，或选择“仅删除会话，保留隔离目录”。');
+      await removeRecord(id);
     });
-    ports.onState();
-  }));
+  });
   handle('session:export', idSchema, id => ports.export(id));
 }

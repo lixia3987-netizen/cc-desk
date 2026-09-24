@@ -70,8 +70,10 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   if(current==='/context'){
    output({type:'assistant',message:{id:'context-report',content:[{type:'text',text:'context report'}]},context_usage:{model:'fixture-model',total_tokens:12000,raw_max_tokens:200000,percentage:6}});done('context report');return;
   }
-  if(current==='/clear'){
-   session='22222222-2222-4222-8222-222222222222';output({type:'conversation_reset',session_id:session,new_conversation_id:session});done('cleared');return;
+  if(current.startsWith('/clear')){
+   if(current==='/clear fail'){output({type:'result',subtype:'error_during_execution',is_error:true,session_id:session,errors:['clear failed']});return;}
+   if(current!=='/clear same-id')session='22222222-2222-4222-8222-222222222222';
+   if(current!=='/clear result-only')output({type:'conversation_reset',session_id:session,new_conversation_id:session});done('cleared');return;
   }
   if(current==='/team:review 参数'){
    output({type:'system',subtype:'commands_changed',commands:[{name:'context',builtin:true},{name:'new-skill',description:'新 Skill',builtin:false}]});done('skill done');return;
@@ -289,7 +291,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  }
 });
 `;
-function setup(options: { initialFailure?: boolean; noTranscript?: boolean } = {}) {
+function setup(options: { initialFailure?: boolean; noTranscript?: boolean; honorIdentity?: boolean } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-chat-'));
   const store = new StateStore(directory);
   const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'agent',  cwd: directory,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -297,7 +299,7 @@ function setup(options: { initialFailure?: boolean; noTranscript?: boolean } = {
   const script = path.join(directory, 'fixture.cjs'); fs.writeFileSync(script, fixture);
   const record = path.join(directory, 'stdin.jsonl');
   const observedId = randomUUID(); const starts: boolean[] = [], launches: string[][] = [];
-  const runtime = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 1500, controlTimeoutMs: 150, backgroundResultTimeoutMs: 80, transcriptExists: async () => !options.noTranscript && starts.length > 0, invocation: (session, caps, resumed) => { launches.push(chatArguments(session, caps, resumed)); starts.push(resumed); return { file: process.execPath, args: [script, observedId, record, options.initialFailure && starts.length === 1 ? 'fail-init' : '', session.permissionMode] }; } });
+  const runtime = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 1500, controlTimeoutMs: 150, backgroundResultTimeoutMs: 80, transcriptExists: async () => !options.noTranscript && starts.length > 0, invocation: (session, caps, resumed) => { launches.push(chatArguments(session, caps, resumed)); starts.push(resumed); return { file: process.execPath, args: [script, options.honorIdentity ? session.execution.conversationId! : observedId, record, options.initialFailure && starts.length === 1 ? 'fail-init' : '', session.permissionMode] }; } });
   const sent = () => fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   return { directory, store, session, runtime, starts, launches, observedId, sent, cleanup: async () => { await runtime.shutdown(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
@@ -980,6 +982,60 @@ test('context tracks the latest root request, compaction completion, reports, re
     assert.equal((await s.runtime.send(s.session.id, 'after clear', capabilities)).success, true);
     assert.equal(s.sent().filter(frame => frame.type === 'user').at(-1).session_id, '22222222-2222-4222-8222-222222222222');
   } finally { await s.cleanup(); }
+});
+
+test('confirmed clear survives restart before its new transcript exists and later missing history still fails closed', async () => {
+  for (const command of ['/clear', '/clear result-only']) {
+    const s = setup({ noTranscript: true, honorIdentity: true });
+    let restarted: ChatRuntime | undefined;
+    try {
+      await s.runtime.send(s.session.id, 'before clear', capabilities);
+      assert.equal(s.store.state.sessions[0].started, true);
+      assert.equal((await s.runtime.send(s.session.id, command, capabilities)).success, true);
+      const clearedId = s.store.state.sessions[0].execution.conversationId;
+      assert.notEqual(clearedId, s.session.execution.conversationId);
+      assert.equal(s.store.state.sessions[0].started, false);
+      // Local reports need not create a transcript for this empty identity.
+      await s.runtime.send(s.session.id, '/context', capabilities);
+      assert.equal(s.store.state.sessions[0].started, false);
+      await s.runtime.shutdown();
+      const restored = new StateStore(s.directory);
+      assert.equal(restored.state.sessions[0].started, false);
+      const launches: string[][] = [];
+      restarted = new ChatRuntime(restored, () => {}, () => {}, {
+        transcriptExists: async () => false,
+        invocation: (session, caps, resumed) => {
+          launches.push(chatArguments(session, caps, resumed));
+          return { file: process.execPath, args: [path.join(s.directory, 'fixture.cjs'), session.execution.conversationId!, path.join(s.directory, 'stdin.jsonl')] };
+        },
+      });
+      // Opening the command menu also starts a process, before the next prompt.
+      await restarted.prepareCommands(s.session.id, capabilities);
+      assert.equal(launches[0][launches[0].indexOf('--session-id') + 1], clearedId);
+      assert.ok(!launches[0].includes('--resume'));
+      assert.equal((await restarted.send(s.session.id, 'after restart', capabilities)).success, true);
+      assert.equal(restored.state.sessions[0].execution.conversationId, clearedId);
+      assert.equal(restored.state.sessions[0].started, true);
+      assert.ok(restarted.snapshot(s.session.id).messages.some(message => message.text === 'before clear'));
+      await restarted.stopIdle(s.session.id);
+      await assert.rejects(restarted.send(s.session.id, 'missing established history', capabilities), /未找到原会话记录/);
+    } finally { await restarted?.shutdown(); await s.cleanup(); }
+  }
+});
+
+test('rejected or same-identity clear cannot authorize a fresh fallback for an established conversation', async () => {
+  for (const command of ['/clear fail', '/clear same-id']) {
+    const s = setup({ noTranscript: true, honorIdentity: true });
+    try {
+      await s.runtime.send(s.session.id, 'established', capabilities);
+      const original = s.store.state.sessions[0].execution.conversationId;
+      await s.runtime.send(s.session.id, command, capabilities);
+      assert.equal(s.store.state.sessions[0].started, true);
+      assert.equal(s.store.state.sessions[0].execution.conversationId, original);
+      await s.runtime.stopIdle(s.session.id);
+      await assert.rejects(s.runtime.send(s.session.id, 'must not replace history', capabilities), /未找到原会话记录/);
+    } finally { await s.cleanup(); }
+  }
 });
 
 test('unsuccessful compaction keeps its last measurement and auto-compaction resumes with the next request', async () => {

@@ -306,6 +306,9 @@ export class ChatHistory {
     } else if (event.type === 'context') {
       const context = object(event.context);
       if (context && ['unknown','ready','compacting','compacted'].includes(String(context.status))) snapshot.context = context as unknown as ChatSnapshot['context'];
+    } else if (event.type === 'conversation_recovered') {
+      snapshot.context = undefined;
+      snapshot.usage = undefined;
     } else if (event.type === 'result') {
       if (object(event.usage)) snapshot.usage = event.usage as ChatSnapshot['usage'];
       // A result may precede background task completion. Only a state event can

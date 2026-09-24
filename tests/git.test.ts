@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileAsync } from '../src/main/commands';
-import { cleanupWorktree, createWorktree, gitChanges, gitDiff, mergeWorktree, worktreeInfo } from '../src/main/git';
+import { cleanupWorktree, forceCleanupWorktree, createWorktree, gitChanges, gitDiff, mergeWorktree, worktreeInfo } from '../src/main/git';
 
 async function git(cwd: string, ...args: string[]) { return (await execFileAsync('git', args, { cwd })).stdout.trim(); }
 async function fixture() {
@@ -87,6 +87,9 @@ test('worktree lifecycle refuses running, dirty, unmerged and ignored-data remov
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     assert.equal((await mergeWorktree(f.repo, tree, id)).ok, false);
     await git(tree, 'add', '.'); await git(tree, 'commit', '-m', 'Feature');
+    const unmerged = await worktreeInfo(f.repo, tree, id);
+    assert.equal(unmerged.canMerge, true);
+    assert.match(unmerged.cleanupReasons.join('\n'), /尚未合入 main/);
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     await fs.writeFile(path.join(f.repo, 'dirty.txt'), 'keep');
     assert.equal((await mergeWorktree(f.repo, tree, id)).ok, false);
@@ -94,12 +97,27 @@ test('worktree lifecycle refuses running, dirty, unmerged and ignored-data remov
     assert.equal((await mergeWorktree(f.repo, tree, id)).status, 'merged');
     assert.equal(await fs.readFile(path.join(f.repo, 'new.txt'), 'utf8'), 'worktree data');
     await fs.writeFile(path.join(tree, 'ignored.txt'), 'must survive');
+    assert.match((await worktreeInfo(f.repo, tree, id)).cleanupReasons.join('\n'), /被 Git 忽略.*ignored\.txt/);
     assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
     assert.equal(await fs.readFile(path.join(tree, 'ignored.txt'), 'utf8'), 'must survive');
     await fs.unlink(path.join(tree, 'ignored.txt'));
     assert.equal((await cleanupWorktree(f.repo, tree, id)).status, 'removed');
     await assert.rejects(fs.stat(tree));
     assert.ok(await git(f.repo, 'rev-parse', '--verify', `refs/heads/workbench/${id.slice(0, 8)}`));
+  } finally { await f.dispose(); }
+});
+
+test('a dirty source prevents merge but does not invent a cleanup blocker for a safe child', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    await fs.writeFile(path.join(f.repo, 'local.txt'), 'source changes stay');
+    const info = await worktreeInfo(f.repo, tree, id);
+    assert.equal(info.canMerge, false);
+    assert.equal(info.canCleanup, true);
+    assert.deepEqual(info.cleanupReasons, []);
+    assert.match(info.reasons.join('\n'), /主项目存在未提交/);
+    assert.equal((await cleanupWorktree(f.repo, tree, id)).status, 'removed');
+    assert.equal(await fs.readFile(path.join(f.repo, 'local.txt'), 'utf8'), 'source changes stay');
   } finally { await f.dispose(); }
 });
 
@@ -116,5 +134,92 @@ test('diverged and foreign worktrees are preserved without automatic reset or me
     const foreign = path.join(f.dir, 'foreign'); await git(f.repo, 'worktree', 'add', '-b', 'manual', foreign);
     assert.equal((await cleanupWorktree(f.repo, foreign, id)).ok, false);
     assert.ok(await fs.stat(foreign));
+  } finally { await f.dispose(); }
+});
+
+test('explicit force cleanup discards dirty and ignored data but preserves unmerged commits and the source project', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    await fs.writeFile(path.join(tree, 'file.txt'), 'committed feature\n');
+    await git(tree, 'commit', '-am', 'Feature');
+    const feature = await git(tree, 'rev-parse', 'HEAD');
+    await fs.writeFile(path.join(tree, 'file.txt'), 'uncommitted edit\n');
+    await fs.writeFile(path.join(tree, 'untracked.txt'), 'discard this untracked file');
+    await fs.writeFile(path.join(tree, 'ignored.txt'), 'discard this ignored file');
+    await fs.writeFile(path.join(f.repo, 'file.txt'), 'separate source commit\n');
+    await git(f.repo, 'commit', '-am', 'Source');
+    await fs.writeFile(path.join(f.repo, 'keep.txt'), 'source working data');
+    const sourceHead = await git(f.repo, 'rev-parse', 'HEAD');
+    assert.equal((await cleanupWorktree(f.repo, tree, id)).ok, false);
+    const removed = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(removed.status, 'removed', removed.message);
+    await assert.rejects(fs.stat(tree));
+    assert.equal(await git(f.repo, 'rev-parse', `refs/heads/workbench/${id.slice(0, 8)}`), feature);
+    assert.equal(await git(f.repo, 'show', `${feature}:file.txt`), 'committed feature');
+    assert.equal(await git(f.repo, 'rev-parse', 'HEAD'), sourceHead);
+    assert.equal(await fs.readFile(path.join(f.repo, 'keep.txt'), 'utf8'), 'source working data');
+    assert.doesNotMatch(await git(f.repo, 'worktree', 'list', '--porcelain'), new RegExp(id));
+  } finally { await f.dispose(); }
+});
+
+test('force cleanup refuses active, foreign, main, subdirectory and Git-locked worktrees without changing files', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    await fs.writeFile(path.join(tree, 'keep.txt'), 'keep unsafe target');
+    assert.equal((await forceCleanupWorktree(f.repo, tree, id, true)).ok, false);
+    assert.equal((await forceCleanupWorktree(f.repo, tree, randomUUID())).ok, false);
+    assert.equal((await forceCleanupWorktree(f.repo, f.repo, id)).ok, false);
+    const child = path.join(tree, 'child'); await fs.mkdir(child);
+    assert.equal((await forceCleanupWorktree(f.repo, child, id)).ok, false);
+    const foreign = path.join(f.dir, 'foreign');
+    await git(f.repo, 'worktree', 'add', '-b', 'manual-force-target', foreign);
+    assert.equal((await forceCleanupWorktree(f.repo, foreign, id)).ok, false);
+    await git(f.repo, 'worktree', 'lock', '--reason', 'External process owns this worktree', tree);
+    const locked = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(locked.ok, false);
+    assert.match(locked.message, /locked/i);
+    assert.match(await git(f.repo, 'worktree', 'list', '--porcelain'), /locked External process/);
+    assert.equal(await fs.readFile(path.join(tree, 'keep.txt'), 'utf8'), 'keep unsafe target');
+    assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
+    assert.ok(await fs.stat(foreign));
+  } finally { await f.dispose(); }
+});
+
+test('force cleanup protects registered nested worktrees and nested independent or bare repositories', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const nested = path.join(tree, 'nested-worktree');
+    await git(f.repo, 'worktree', 'add', '-b', 'nested-manual', nested);
+    const registered = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(registered.ok, false); assert.match(registered.message, /其他 worktree/);
+    assert.equal(await fs.readFile(path.join(nested, 'file.txt'), 'utf8'), 'initial\n');
+    await git(f.repo, 'worktree', 'remove', nested);
+    const independent = path.join(tree, 'independent'); await fs.mkdir(independent);
+    await git(independent, 'init', '-b', 'main');
+    await fs.writeFile(path.join(independent, 'keep.txt'), 'nested repository data');
+    const repository = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(repository.ok, false); assert.match(repository.message, /独立 Git 仓库/);
+    assert.equal(await fs.readFile(path.join(independent, 'keep.txt'), 'utf8'), 'nested repository data');
+    // Move the preserved repo outside, then inspect a bare repo whose metadata
+    // lacks a .git name (common for local mirrors and backups).
+    await fs.rename(independent, path.join(f.dir, 'preserved-independent'));
+    const bare = path.join(tree, 'backup.git'); await fs.mkdir(bare);
+    await git(bare, 'init', '--bare');
+    const bareHead = await fs.readFile(path.join(bare, 'HEAD'), 'utf8');
+    const backup = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(backup.ok, false); assert.match(backup.message, /独立 Git 仓库/);
+    assert.equal(await fs.readFile(path.join(bare, 'HEAD'), 'utf8'), bareHead);
+  } finally { await f.dispose(); }
+});
+
+test('force cleanup refuses a symlink target and leaves external symlink contents untouched', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const alias = path.join(f.dir, 'tree-link'); await fs.symlink(tree, alias, 'dir');
+    assert.equal((await forceCleanupWorktree(f.repo, alias, id)).ok, false);
+    await fs.symlink(f.repo, path.join(tree, 'external-link'), 'dir');
+    const removed = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(removed.ok, true, removed.message);
+    assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
   } finally { await f.dispose(); }
 });
