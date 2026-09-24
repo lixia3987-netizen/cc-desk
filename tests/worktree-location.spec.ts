@@ -248,7 +248,7 @@ test('worktree location: blocked cleanup explains why and record-only deletion p
   } finally { await app.close(); await f.dispose(); }
 });
 
-test('worktree location: force deletion requires a typed second confirmation, cancel preserves data, and removal keeps the branch and project', async () => {
+test('worktree location: warning confirmation deletes a running locked worktree and nested repositories while keeping the source branch', async () => {
   const f = await workspace(), app = await f.launch();
   try {
     const page = await app.firstWindow();
@@ -257,6 +257,7 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await page.getByRole('button', { name: /新建会话/ }).click();
     const form = page.getByRole('dialog', { name: '新建会话', exact: true });
     await form.getByLabel('会话名称', { exact: true }).fill('Force delete temporary tree');
+    await form.getByRole('button', { name: 'Shell 终端', exact: true }).click();
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await form.getByRole('button', { name: '创建会话', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'Force delete temporary tree', exact: true })).toBeVisible();
@@ -269,28 +270,43 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await fs.writeFile(path.join(created.cwd, 'README.md'), 'Uncommitted edit\n');
     await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Untracked data\n');
     await fs.writeFile(path.join(created.cwd, 'ignored.txt'), 'Ignored data\n');
+    const nested = path.join(created.cwd, 'nested-repository');
+    await fs.mkdir(nested);
+    const nestedGit = (...args: string[]) => execFileSync('git', args, { cwd: nested, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    nestedGit('init', '-b', 'main');
+    nestedGit('config', 'user.name', 'Workbench Tests');
+    nestedGit('config', 'user.email', 'tests@example.invalid');
+    await fs.writeFile(path.join(nested, 'local-commit.txt'), 'This nested commit is part of the discarded directory\n');
+    nestedGit('add', '.'); nestedGit('commit', '-m', 'Nested local history');
+    const nestedHead = nestedGit('rev-parse', 'HEAD');
+    f.git('worktree', 'lock', created.cwd);
     const status = git('status', '--porcelain=v1', '--ignored');
+    await page.getByRole('button', { name: '启动会话', exact: true }).click();
+    await expect(page.locator('.session-header .status-tag')).toContainText('运行中');
     const context = page.getByRole('region', { name: '上下文面板', exact: true });
     if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
     await context.getByRole('button', { name: '删除会话', exact: true }).click();
+    await expect(context.getByRole('button', { name: '仅删除会话，保留隔离目录', exact: true })).toBeDisabled();
     const forceOption = context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true });
     await forceOption.click();
     const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
-    const typed = dialog.getByLabel('输入“删除”以确认', { exact: true }), confirm = dialog.getByRole('button', { name: '确认强制删除', exact: true });
+    const confirm = dialog.getByRole('button', { name: '确认强制删除', exact: true });
     await expect(dialog).toContainText(created.cwd);
-    await expect(dialog).toContainText('未提交修改、未跟踪文件和被忽略的文件都会丢失');
-    await expect(dialog).toContainText('Git 分支和其中已经提交的内容会保留');
-    await expect(confirm).toBeDisabled();
-    await typed.fill('delete'); await expect(confirm).toBeDisabled();
-    await typed.fill('删除'); await expect(confirm).toBeEnabled();
+    await expect(dialog).toContainText('将停止使用此目录的会话');
+    await expect(dialog).toContainText('未提交修改、未跟踪文件、被忽略的文件、所有子目录和嵌套仓库');
+    await expect(dialog).toContainText('嵌套仓库内的 Git 分支及已提交内容也会删除');
+    await expect(dialog).toContainText('来源仓库中保存的 Git 分支和已提交内容会保留');
+    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(confirm).toBeEnabled();
     await dialog.getByRole('button', { name: '取消', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(true);
+    await expect(page.locator('.session-header .status-tag')).toContainText('运行中');
     expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
+    expect(nestedGit('rev-parse', 'HEAD')).toBe(nestedHead);
     expect(await fs.readFile(path.join(created.cwd, 'ignored.txt'), 'utf8')).toBe('Ignored data\n');
     await forceOption.click();
-    await expect(typed).toHaveValue(''); await expect(confirm).toBeDisabled();
-    await typed.fill('删除');
+    await expect(confirm).toBeEnabled();
     await page.screenshot({ path: test.info().outputPath('force-worktree-confirmation.png') });
     await confirm.click();
     await expect(dialog).toHaveCount(0);
@@ -301,11 +317,19 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     expect(f.git('show', `${branch}:committed.txt`)).toBe('Keep this unmerged commit');
     expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Original project content\n');
     await expect(page.locator('.error-banner')).toHaveText([]);
-  } finally { await app.close(); await f.dispose(); }
+  } finally {
+    const page = await app.firstWindow().catch(() => null);
+    if (page) await page.evaluate(async () => {
+      const { state } = await window.desktop.snapshot();
+      await Promise.allSettled(state.sessions.map(session => window.desktop.stopSession(session.id)));
+    }).catch(() => {});
+    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }); }).catch(() => {});
+    await app.close(); await f.dispose();
+  }
 });
 
-for (const damage of ['missing-git', 'missing-directory'] as const) {
-  test(`worktree location: force deletion recovers an owned external worktree with ${damage} and preserves its branch`, async () => {
+for (const damage of ['missing-git', 'missing-directory', 'missing-source'] as const) {
+  test(`worktree location: warning confirmation deletes an external worktree with ${damage} and preserves source data`, async () => {
     const f = await workspace(), app = await f.launch();
     try {
       const page = await app.firstWindow();
@@ -332,30 +356,39 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
       git('add', '.'); git('commit', '-m', 'Keep damaged worktree branch');
       const head = git('rev-parse', 'HEAD');
       await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Explicitly discarded local data\n');
+      const sourcePath = damage === 'missing-source' ? path.join(f.directory, 'moved-source-project') : f.project.path;
+      const sourceGit = (...args: string[]) => execFileSync('git', args, { cwd: sourcePath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
       if (damage === 'missing-git') {
         await fs.rm(path.join(created.cwd, '.git'));
         // Outside the source project, Git cannot accidentally find a parent
         // repository; this reproduces the user's failing root-discovery call.
         expect(() => git('--literal-pathspecs', 'rev-parse', '--show-toplevel')).toThrow(/not a git repository/);
-      } else {
+      } else if (damage === 'missing-directory') {
         await fs.rm(created.cwd, { recursive: true });
+      } else {
+        // The stored source location and the worktree's .git pointer are now
+        // unusable; confirming deletion must still remove the recorded directory.
+        await fs.rename(f.project.path, sourcePath);
+        expect(await fs.stat(f.project.path).then(() => true, () => false)).toBe(false);
       }
-      expect(f.git('worktree', 'list', '--porcelain')).toContain(created.cwd.replaceAll('\\', '/'));
+      expect(sourceGit('worktree', 'list', '--porcelain')).toContain(created.cwd.replaceAll('\\', '/'));
       const context = page.getByRole('region', { name: '上下文面板', exact: true });
       if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
       await context.getByRole('button', { name: '删除会话', exact: true }).click();
       await context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
       await expect(dialog).toContainText(created.cwd);
-      await dialog.getByLabel('输入“删除”以确认', { exact: true }).fill('删除');
-      await dialog.getByRole('button', { name: '确认强制删除', exact: true }).click();
+      const confirm = dialog.getByRole('button', { name: '确认强制删除', exact: true });
+      await expect(confirm).toBeEnabled();
+      await expect(dialog.getByRole('textbox')).toHaveCount(0);
+      await confirm.click();
       await expect(dialog).toHaveCount(0);
       await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
       expect(await fs.stat(created.cwd).then(() => true, () => false)).toBe(false);
-      expect(f.git('worktree', 'list', '--porcelain')).not.toContain(created.cwd.replaceAll('\\', '/'));
-      expect(f.git('rev-parse', branch)).toBe(head);
-      expect(f.git('show', `${branch}:retained-commit.txt`)).toBe('Committed before metadata damage');
-      expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Original project content\n');
+      if (damage !== 'missing-source') expect(sourceGit('worktree', 'list', '--porcelain')).not.toContain(created.cwd.replaceAll('\\', '/'));
+      expect(sourceGit('rev-parse', branch)).toBe(head);
+      expect(sourceGit('show', `${branch}:retained-commit.txt`)).toBe('Committed before metadata damage');
+      expect(await fs.readFile(path.join(sourcePath, 'README.md'), 'utf8')).toBe('Original project content\n');
       await expect(page.locator('.error-banner')).toHaveText([]);
     } finally { await app.close(); await f.dispose(); }
   });

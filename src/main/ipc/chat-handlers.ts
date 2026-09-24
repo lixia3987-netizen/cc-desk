@@ -71,7 +71,10 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     if (ports.chat.has(id)) return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
     if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id)) throw new Error('请先结束当前会话任务。');
     await ports.reserve(id);
-    try { return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
+    try {
+      ports.assertUnlocked(ports.structured(id));
+      return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) };
+    }
     finally { ports.releaseAdmission(id); }
   });
   handle('chat:recover-context', idSchema, id => ports.manage(id, async () => {

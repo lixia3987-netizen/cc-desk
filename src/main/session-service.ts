@@ -117,6 +117,10 @@ export class SessionService {
   }
   private occupied(id: string) { return this.runtime.has(id) || this.chat.has(id) || this.admissions.has(id); }
   private taskOccupied(id: string) { return this.runtime.has(id) || this.chat.isBusy(id) || this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id); }
+  private lexicalPathKey(value: string) {
+    const resolved = path.resolve(value);
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  }
   private pathKey(value: string): string {
     let current = path.resolve(value);
     const missing: string[] = [];
@@ -143,7 +147,7 @@ export class SessionService {
   private assertUnlocked(session: Session) {
     this.assertAvailable();
     if(this.lifecycle.has(session.id)) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
-    this.assertDirectoriesUnlocked([this.pathKey(session.cwd)]);
+    this.assertDirectoriesUnlocked([this.lexicalPathKey(session.cwd), this.pathKey(session.cwd)]);
   }
   private assertAvailable() {
     if (this.stopping) throw new Error('工作台正在退出。');
@@ -179,14 +183,6 @@ export class SessionService {
   private async worktreeDirectories(s: Session) {
     return [...new Set((await Promise.all([gitWorktreeRoot(this.worktreeBase(s)),gitWorktreeRoot(s.worktree ?? s.cwd)])).map(dir => this.pathKey(dir)))];
   }
-  private async worktreeDeletionDirectories(s: Session) {
-    const recorded = [this.worktreeBase(s), s.worktree!];
-    // Damaged or already removed worktrees cannot report their Git root. Keep
-    // the recorded paths locked as well as every root Git can still resolve;
-    // only the force-cleanup helper may decide whether deletion is safe.
-    const roots = await Promise.all(recorded.map(directory => gitWorktreeRoot(directory).catch(() => undefined)));
-    return [...new Set([...recorded, ...roots.filter((root): root is string => !!root)].map(directory => this.pathKey(directory)))];
-  }
   private cleanupDependencies(s: Session) {
     const target = this.pathKey(s.worktree ?? s.cwd);
     return this.store.state.sessions.some(other => other.id !== s.id &&
@@ -195,7 +191,7 @@ export class SessionService {
   /** Keep source and project-local destination locked until the dependent session is saved. */
   async withSessionCreation<T>(cwd: string, isolated: boolean, action: () => Promise<T>, destinationProjectPath?: string): Promise<T> {
     const roots = isolated ? await Promise.all([gitWorktreeRoot(cwd), ...(destinationProjectPath ? [gitWorktreeRoot(destinationProjectPath)] : [])]) : [cwd];
-    const keys = [...new Set(roots.map(root => this.pathKey(root)))];
+    const keys = [...new Set([...roots.map(root => this.pathKey(root)), this.lexicalPathKey(cwd), ...(destinationProjectPath ? [this.lexicalPathKey(destinationProjectPath)] : [])])];
     this.assertDirectoriesUnlocked(keys);
     keys.forEach(key => this.directoryLocks.add(key));
     try {
@@ -203,15 +199,74 @@ export class SessionService {
       return await action();
     } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
   }
-  private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>,confirmedPath?:string) {
+  private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>) {
     return this.manage(id,async()=>{
       const s=this.session(id); if(!s.worktree)throw new Error('此会话没有独立 worktree。');
-      if(confirmedPath!==undefined&&s.worktree!==confirmedPath)throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
-      const keys = confirmedPath===undefined ? await this.worktreeDirectories(s) : await this.worktreeDeletionDirectories(s);
+      const keys = await this.worktreeDirectories(s);
       this.assertDirectoriesUnlocked(keys);
       keys.forEach(k=>this.directoryLocks.add(k));
       try{await this.releaseIdleDirectories(keys,'请先停止此 worktree 和来源目录中的全部会话。');return await action(s);}finally{keys.forEach(k=>this.directoryLocks.delete(k));}
     });
+  }
+  private async manageWorktreeDeletion<T>(id: string, confirmedPath: string, action: (session: Session, affectedIds: string[]) => Promise<T>) {
+    this.assertAvailable();
+    const session = this.session(id);
+    if (!session.worktree) throw new Error('此会话没有独立 worktree。');
+    if (session.worktree !== confirmedPath) throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
+    const requested = this.lexicalPathKey(confirmedPath);
+    // The filesystem operation unlinks a final symlink. Lock its location, not
+    // the unrelated directory it points to, while resolving parent aliases.
+    const keys = [...new Set([requested, path.join(this.pathKey(path.dirname(requested)), path.basename(requested))])];
+    this.assertDirectoriesUnlocked(keys);
+    const affectedIds = this.store.state.sessions.filter(other => {
+      if (other.id === id) return true;
+      const locations = [this.lexicalPathKey(other.cwd)];
+      try { locations.push(this.pathKey(other.cwd)); } catch { /* An unrelated inaccessible directory is not a deletion dependency. */ }
+      return keys.some(key => locations.some(location => this.contains(key, location)));
+    }).map(other => other.id);
+    if (affectedIds.some(affected => this.lifecycle.has(affected))) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
+    keys.forEach(key => this.directoryLocks.add(key));
+    affectedIds.forEach(affected => this.lifecycle.add(affected));
+    try {
+      await this.releaseDeletionSessions(affectedIds);
+      return await action(this.session(id), affectedIds);
+    } finally {
+      affectedIds.forEach(affected => this.lifecycle.delete(affected));
+      keys.forEach(key => this.directoryLocks.delete(key));
+    }
+  }
+  private async releaseDeletionSessions(ids: string[]) {
+    const deadline = Date.now() + 10_000;
+    const timeoutMessage = '会话进程尚未完全停止，隔离目录尚未删除，请稍后重试。';
+    const bounded = async <T>(operation: Promise<T>): Promise<T> => {
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        return await Promise.race([operation, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(timeoutMessage)), Math.max(1, deadline - Date.now()));
+        })]);
+      } finally { if (timer) clearTimeout(timer); }
+    };
+    const releases = ids.flatMap(id => {
+      const stopping = this.stop(id);
+      // Capture the structured connection before root exit can hide a still
+      // terminating tool process. stop() also cancels admitted sends/workflows.
+      return this.session(id).execution.mode === 'structured'
+        ? [stopping, this.chat.interruptAndWait(id)] : [stopping, this.runtime.stopAndWait(id)];
+    });
+    const results = await bounded(Promise.allSettled(releases));
+    const errors = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected').map(result => result.reason);
+    if (errors.length) throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : String(error)).join('\n'));
+    const admitted = () => ids.some(id => this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id));
+    while (admitted() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (admitted()) throw new Error(timeoutMessage);
+    // An already admitted terminal launcher can finish after the first stop.
+    // Admissions are now drained and locked, so this stop owns the final set.
+    await bounded(Promise.all(ids.filter(id => this.session(id).execution.mode === 'terminal').map(id => this.runtime.stopAndWait(id))));
+    const running = () => ids.some(id => this.runtime.has(id) || this.chat.isBusy(id));
+    while (running() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    if (running()) throw new Error(timeoutMessage);
+    await bounded(Promise.all(ids.map(id => this.chat.stopIdle(id))));
+    if (ids.some(id => this.occupied(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id))) throw new Error(timeoutMessage);
   }
   private async reserve(id: string) {
     const assertReady = () => {
@@ -244,7 +299,7 @@ export class SessionService {
     if(s.execution.mode === 'structured') return; // Started by first message; no empty model request.
     if(this.chat.has(id)) throw new Error('此会话已由图形化运行器占用。');
     await this.reserve(id);
-    try { this.assertAvailable(); await this.runtime.start(id); } finally { this.admissions.delete(id); }
+    try { this.assertUnlocked(this.session(id)); await this.runtime.start(id); } finally { this.admissions.delete(id); }
   }
   async stop(id: string) {
     this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
@@ -302,8 +357,7 @@ export class SessionService {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),
       manage: (id, action) => this.manage(id, action), select: id => this.select(id), export: id => this.export(id), onState: this.onState,
-      manageWorktreeDeletion: (id, confirmedPath, action) => this.manageWorktree(id, action, confirmedPath), worktreeBase: session => this.worktreeBase(session),
-      cleanupDependencies: session => this.cleanupDependencies(session),
+      manageWorktreeDeletion: (id, confirmedPath, action) => this.manageWorktreeDeletion(id, confirmedPath, action),
       forgetQueue: id => this.queue.delete(id),
     });
     registerChatHandlers(handle, {
