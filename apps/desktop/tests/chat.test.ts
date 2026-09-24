@@ -193,13 +193,19 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
   }
   if(current==='subtasks-no-start'||current==='subtasks-remote-no-start'){
    const remote=current==='subtasks-remote-no-start';const taskId=remote?'remote-agent':'ack-only-agent';
+   // Arm the gate before the acknowledgement; completion requires the parent's observed-state assertions.
+   const releaseFile=require('node:path').join(require('node:path').dirname(process.argv[3]),'release-acknowledged');
+   let released=false;
+   const releaseWatcher=fs.watch(require('node:path').dirname(releaseFile),()=>{
+    if(released||!fs.existsSync(releaseFile))return;
+    released=true;releaseWatcher.close();
+    output({type:'system',subtype:'task_notification',task_id:taskId,status:'completed',summary:'Acknowledged task finished'});
+    done('acknowledged background done');
+   });
    output({type:'assistant',message:{id:'ack-only-message',content:[{type:'tool_use',id:'ack-only-tool',name:'Agent',input:{description:'Acknowledged background task'}}]}});
    output({type:'user',tool_use_result:remote?{status:'remote_launched',taskId,description:'Remote background task'}:{status:'async_launched',agentId:taskId,description:'Acknowledged background task'},message:{content:[{type:'tool_result',tool_use_id:'ack-only-tool',content:'Background launch acknowledged'}]}});
    output({type:'result',uuid:'ack-only-intermediate',subtype:'success',result:'Waiting for acknowledged task',session_id:session});
-   setTimeout(()=>{
-    output({type:'system',subtype:'task_notification',task_id:taskId,status:'completed',summary:'Acknowledged task finished'});
-    done('acknowledged background done');
-   },150);return;
+   return;
   }
   if(current==='subtasks-resumed-agent'){
    for(const tool of ['initial-agent-tool','resumed-agent-tool']){
@@ -838,6 +844,7 @@ test('authoritative async and remote Agent launches wait for completion even wit
       assert.equal(s.runtime.isBusy(s.session.id), true);
       assert.equal(s.store.state.sessions[0].subtasks!.tasks.length, 1);
       assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'running');
+      fs.writeFileSync(path.join(s.directory, 'release-acknowledged'), 'release');
       assert.equal((await result).summary, 'acknowledged background done');
       const tasks = s.store.state.sessions[0].subtasks!.tasks;
       assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'completed');
