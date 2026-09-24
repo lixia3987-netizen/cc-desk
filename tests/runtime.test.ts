@@ -236,10 +236,47 @@ test('shutdown reports launch-resource failure even when the terminal process al
     await assert.rejects(runtime.shutdown(), error => error instanceof Error && error.cause === failure);
     assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
     assert.equal(runtime.lastError, failure);
+    assert.equal(f.store.state.sessions[0].status, 'error', 'failed cleanup must not advertise a successful stop');
+    assert.match(f.store.state.sessions[0].error ?? '', /资源清理失败/);
     await assert.rejects(runtime.shutdown(), /资源已释放/, 'failed resource cleanup cannot be reported as successful on retry');
   } finally {
     await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
     fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('terminal exit keeps stopping status and ownership until all launch resources close', { timeout: 20000 }, async () => {
+  for (const ending of ['stop', 'success', 'failure'] as const) {
+    const f = lifecycleFixture();
+    const ready = path.join(f.root, 'ready'), exit = path.join(f.root, 'exit');
+    let release!: () => void;
+    const resourceGate = new Promise<void>(resolve => { release = resolve; });
+    let closing = false;
+    const finalOwnership: boolean[] = [];
+    const runtime = new Runtime(f.store, () => {
+      if (['stopped', 'error'].includes(f.store.state.sessions[0].status)) finalOwnership.push(runtime.has(f.session.id));
+    }, () => {}, { prepare: async () => ({
+      file: process.execPath, args: ['-e', `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{if(fs.existsSync(${JSON.stringify(exit)}))process.exit(${ending === 'failure' ? 7 : 0});},20);`],
+      env: environment(), resource: { close: async () => { closing = true; await resourceGate; } },
+    }) });
+    try {
+      await runtime.start(f.session.id);
+      await until(() => fs.existsSync(ready), `${ending} fixture ready`);
+      if (ending === 'stop') runtime.stop(f.session.id); else fs.writeFileSync(exit, 'exit');
+      await until(() => closing, `${ending} resource close began`);
+      assert.equal(f.store.state.sessions[0].status, 'stopping', 'archive and quit must not become available during cleanup');
+      assert.equal(runtime.has(f.session.id), true);
+      assert.equal(runtime.activeCount, 1);
+      assert.deepEqual(finalOwnership, [], 'no stopped/error event may precede cleanup');
+      release();
+      await until(() => !runtime.has(f.session.id), `${ending} complete cleanup`);
+      assert.equal(f.store.state.sessions[0].status, ending === 'failure' ? 'error' : 'stopped');
+      assert.deepEqual(finalOwnership, [false], 'final status is published only after ownership is released');
+      assert.equal(runtime.activeCount, 0);
+    } finally {
+      release(); await runtime.shutdown(); await f.runtime.shutdown();
+      fs.rmSync(f.root, { recursive: true, force: true });
+    }
   }
 });
 

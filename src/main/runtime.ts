@@ -27,7 +27,11 @@ export class TerminalBuffer {
   }
 }
 
-interface ProcessEntry { process: IPty; ending: boolean; paused?: boolean; token: object; resource?: TerminalLaunchResource; resourceClose?: Promise<void>; release?: Promise<void>; released?: boolean; cleanup?: Promise<void> }
+interface ProcessEntry {
+  process: IPty; ending: boolean; paused?: boolean; token: object;
+  resource?: TerminalLaunchResource; resourceClose?: Promise<void>;
+  release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
+}
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
   private stopping = new Map<string, ProcessEntry>();
@@ -61,14 +65,17 @@ export class Runtime {
     try { this.options.onError?.(this.lifecycleError); } catch { /* Error reporting must never prevent cleanup. */ }
   }
   private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
-  private trackCleanup(cleanup: Promise<void>) {
-    const tracked = cleanup.catch(error => { this.cleanupError = error; this.reportError(error); });
+  private trackCleanup(cleanup: Promise<void>, entry?: ProcessEntry) {
+    const tracked = cleanup.catch(error => {
+      if (entry) entry.cleanupError ??= error;
+      this.cleanupError = error; this.reportError(error);
+    });
     this.cleanups.add(tracked);
     void tracked.then(() => this.cleanups.delete(tracked));
     return tracked;
   }
   private closeResource(entry: ProcessEntry) {
-    return entry.resourceClose ??= this.trackCleanup(Promise.resolve().then(() => entry.resource?.close()));
+    return entry.resourceClose ??= this.trackCleanup(Promise.resolve().then(() => entry.resource?.close()), entry);
   }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
@@ -197,18 +204,32 @@ export class Runtime {
       child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
         if (this.running.get(id) !== entry) return;
-        // Detach ownership before any fallible persistence, output, or UI callback.
+        // Root exit does not release descendants, forwarding workers or hooks.
+        // Keep UI state and ownership aligned until the same cleanup has settled.
         this.running.delete(id);
-        if (process.platform === 'win32') void this.releasePty(id, entry);
-        void this.closeResource(entry);
+        this.stopping.set(id, entry);
         this.guard(() => this.subtasks.end(id, entry.ending ? 'interrupted' : exitCode !== 0 ? 'failed' : 'unknown',
           entry.ending ? '会话已停止。' : exitCode !== 0 ? '会话进程异常退出。' : '会话进程已退出，未收到子任务完成通知。'));
         this.guard(() => this.flush());
         this.guard(() => this.emit(id, `\r\n\x1b[90m── 会话进程已退出 · code ${exitCode} ──\x1b[0m\r\n`));
-        this.guard(() => this.update(id, { status: entry.ending || exitCode === 0 ? 'stopped' : 'error', exitCode,
+        this.guard(() => this.update(id, { status: 'stopping', exitCode,
           taskState: entry.ending ? 'interrupted' : exitCode !== 0 ? 'error' : this.store.state.sessions.find(session => session.id === id)?.taskState,
           error: !entry.ending && exitCode !== 0 ? `会话进程退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
-        this.trimBuffers();
+        // Explicit stop already owns the process-tree cleanup. A natural exit
+        // still owns PTY and launcher resources, including on POSIX.
+        entry.cleanup ??= this.trackCleanup((async () => {
+          if (process.platform === 'win32') await this.releasePty(id, entry);
+          else entry.released = true; // node-pty closes the POSIX descriptor before onExit.
+          await this.closeResource(entry);
+        })(), entry);
+        void entry.cleanup.then(() => {
+          if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
+          this.guard(() => this.update(id, {
+            status: !entry.released ? 'stopping' : entry.cleanupError || (!entry.ending && exitCode !== 0) ? 'error' : 'stopped',
+            ...(entry.cleanupError ? { error: '会话进程已退出，但资源清理失败。请检查残留进程并重启工作台。' } : {}),
+          }));
+          this.trimBuffers();
+        });
       });
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
         terminalSync: launch.terminalSync });
@@ -258,7 +279,7 @@ export class Runtime {
         if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
         this.trimBuffers();
       }
-    })());
+    })(), entry);
     return entry.cleanup;
   }
   private stopWindowsTree(entry: ProcessEntry): Promise<void> {
@@ -287,11 +308,10 @@ export class Runtime {
         else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
         entry.released = true;
       } finally {
-        // Natural Windows exits also retain ownership until the worker is gone.
-        if (entry.released && !entry.cleanup && this.stopping.get(id) === entry) this.stopping.delete(id);
+        // The caller releases ownership after launcher and process-tree cleanup.
         this.trimBuffers();
       }
-    })());
+    })(), entry);
     return entry.release;
   }
   private async stopPosixTree(entry: ProcessEntry) {
