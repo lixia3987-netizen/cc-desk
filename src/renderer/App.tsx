@@ -8,7 +8,6 @@ import type { AppState, Attachment, Capabilities, NewSession, Session } from '..
 import { ChatPane } from './ChatPane';
 import { CLIUpdateNotice } from './CLIUpdateNotice';
 import { Dialog } from './Dialog';
-import { readInspectorOpen, saveInspectorOpen } from './layout-preferences';
 import { FilePicker } from './ProjectPanels';
 import { SessionSelection } from './selection';
 import { SettingsPanel } from './SettingsPanel';
@@ -57,8 +56,6 @@ export function App() {
   const selection = useRef(new SessionSelection());
   const stateEvents = useRef(0);
   const latestActiveId = useRef(activeId); latestActiveId.current = activeId;
-  const [inspectorOpen, setInspectorOpen] = useState(readInspectorOpen);
-  const toggleInspector = () => { const next = !inspectorOpen; setInspectorOpen(next); saveInspectorOpen(next); };
   const [filePicker, setFilePicker] = useState('');
   const [attachments, setAttachments] = useState<Record<string, Attachment[]>>({});
   const attachmentRevisions = useRef(new Map<string, number>());
@@ -241,8 +238,8 @@ export function App() {
       openNew={openNew} chooseProject={chooseProject} selectSession={selectSession} onSearch={value => { setSearch(value); if (value.trim()) setCollapsedGroups(new Set()); }}
       onProject={id => { setProjectId(id); expandGroup(id); }} toggleGroup={toggleGroup} setArchived={setArchived} openHistory={openHistory} onSettings={openSettings} />
     <main className="workspace">
-      <WorkspaceHeader state={state} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy} inspectorOpen={inspectorOpen}
-        onRename={title => { setRename(title); setModal('rename'); }} onPalette={openPalette} openIde={openIde} perform={perform} setNotice={setNotice} start={start} toggleInspector={toggleInspector}
+      <WorkspaceHeader state={state} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
+        onRename={title => { setRename(title); setModal('rename'); }} onPalette={openPalette} openIde={openIde} perform={perform} setNotice={setNotice} start={start}
         onAttention={item => { const target = state.sessions.find(session => session.id === item.sessionId); if (!target) return; setProjectId('all'); setArchived(target.archived); setSearch(''); selectSession(item.sessionId); setAttentionTarget({ ...item, nonce: ++attentionNonce.current }); }} />
       {error && <div className="error-banner" role="alert">
         <span>{error}</span>
@@ -274,7 +271,7 @@ export function App() {
                 changeAttachments(active.id, current => current.filter(file => !submittedPaths.has(file.path)));
               }} />}
           </SessionViewport>
-          <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy} inspectorOpen={inspectorOpen}
+          <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy}
             perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}
             setDeleteConfirm={setDeleteConfirm} flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} />
         </div>

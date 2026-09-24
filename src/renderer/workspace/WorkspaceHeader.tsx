@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, MoreHorizontal, PanelRightClose, PanelRightOpen, Play, Square, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, MoreHorizontal, Play, Square, X } from 'lucide-react';
 import type { AppState, Session } from '../../shared/types';
 import { AttentionCenter } from '../AttentionCenter';
 
@@ -7,14 +7,14 @@ import type { Perform } from './types';
 
 interface Props {
   state: AppState; active?: Session; project?: AppState['projects'][number]; structured: boolean;
-  activeBusy: boolean; busy: boolean; inspectorOpen: boolean;
+  activeBusy: boolean; busy: boolean;
   onRename: (title: string) => void; onPalette: () => void;
   onAttention: (item: { sessionId: string; requestId: string }) => void;
   openIde: () => void; perform: Perform; setNotice: (value: string) => void;
-  start: (session: Session) => Promise<void>; toggleInspector: () => void;
+  start: (session: Session) => Promise<void>;
 }
 
-export function WorkspaceHeader({ state, active, project, structured, activeBusy, busy, inspectorOpen, onRename, onPalette, onAttention, openIde, perform, setNotice, start, toggleInspector }: Props) {
+export function WorkspaceHeader({ state, active, project, structured, activeBusy, busy, onRename, onPalette, onAttention, openIde, perform, setNotice, start }: Props) {
   return <header className={'topbar ' + (active ? 'session-header' : '')}>
     {active ? <div className="session-heading">
       <div className="breadcrumb">
@@ -58,7 +58,6 @@ export function WorkspaceHeader({ state, active, project, structured, activeBusy
         </> : !structured && active.status === 'running' ? <button className="secondary compact" disabled={busy} title="关闭等待输入的终端进程，稍后可以恢复" onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
           <X size={13} />关闭终端</button> : <button className="primary compact" disabled={busy || active.archived} onClick={() => { if (structured) { document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus(); setNotice('输入任务并按 Enter 发送；Ctrl / ⌘ + Enter 换行。'); } else void start(active); }}>
           <Play size={14} />{structured ? (active.started ? '继续输入' : '开始输入') : active.started ? '恢复会话' : '启动会话'}</button>}</div>}
-      {active && <button className={'icon-button inspector-toggle ' + (inspectorOpen ? 'active' : '')} aria-label={inspectorOpen ? '收起右侧面板' : '展开右侧面板'} title={inspectorOpen ? '收起右侧面板' : '展开右侧面板'} aria-expanded={inspectorOpen} aria-controls="session-inspector" onClick={toggleInspector}>{inspectorOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}</button>}
     </div>
   </header>;
 }
