@@ -20,6 +20,29 @@ test('context counts the latest input plus both cache components without accumul
   assert.equal(reportedContext({ total_tokens: 32000, raw_max_tokens: 200000, model: 'main' }, next, 'report')?.source, 'context-command');
 });
 
+test('context report labels and absent model metadata retain capacity until the actual request model changes', () => {
+  for (const model of ['Sonnet 4.6', undefined]) {
+    const report = reportedContext({ total_tokens: 30000, raw_max_tokens: 200000, model }, undefined, 'report');
+    const missingModel = requestContext(report, { input_tokens: 1000 }, undefined, 'no model');
+    assert.equal(missingModel?.contextWindow, 200000);
+    const next = requestContext(missingModel, { input_tokens: 2000, cache_read_input_tokens: 10000 }, 'claude-sonnet-4-6', 'request');
+    assert.equal(next?.contextWindow, 200000); assert.equal(next?.inputTokens, 12000);
+    const repeated = reportedContext({ total_tokens: 40000, raw_max_tokens: 200000, model: 'Sonnet' }, next, 'report again');
+    assert.equal(repeated?.requestModel, undefined);
+    const bound = { ...repeated!, requestModel: next?.requestModel };
+    assert.equal(requestContext(bound, { input_tokens: 13000 }, 'claude-sonnet-4-6', 'same')?.contextWindow, 200000);
+    assert.equal(requestContext(bound, { input_tokens: 13000 }, 'different-model', 'switched')?.contextWindow, undefined);
+    const changedWithoutUsage = requestContext(bound, undefined, 'different-model', 'no usage');
+    assert.equal(changedWithoutUsage?.contextWindow, undefined);
+    assert.equal(changedWithoutUsage?.inputTokens, undefined);
+    assert.equal(changedWithoutUsage?.requestModel, 'different-model');
+    assert.equal(requestContext(repeated, {}, undefined, 'absent usage'), undefined);
+  }
+  // Legacy saved reports have no requestModel binding and must remain readable.
+  const legacy = { model: 'Sonnet', contextWindow: 200000, inputTokens: 30000, source: 'context-command' as const, status: 'ready' as const };
+  assert.equal(requestContext(legacy, { input_tokens: 12000 }, 'claude-sonnet-4-6', 'resumed')?.contextWindow, 200000);
+});
+
 test('command catalogs preserve CLI metadata, custom overrides, aliases and replace removed skills', () => {
   const initial = normalizeCommands([
     { name: 'compact', builtin: true, description: '压缩上下文', argumentHint: '[保留内容]' },

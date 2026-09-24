@@ -254,6 +254,7 @@ export class ChatRuntime {
       const result = new Promise<ChatTurnResult>(resolve => { entry.turn = { id: randomUUID(), resolve, interrupted: false, command: definition?.kind === 'skill' ? undefined : commandName,
         resetRequested: definition?.kind !== 'skill' && ['clear','reset','new'].includes(commandName ?? '') }; });
       entry.tools.clear(); entry.assistant.reset(); entry.resultIds.clear();
+      entry.contextRequest = undefined;
       entry.subtaskTools.clear(); entry.approvalTasks.clear(); entry.finishedTasks.clear(); entry.backgroundTaskTools.clear();
       this.subtasks.begin(id, entry.turn!.id);
       const userId = randomUUID();
@@ -343,6 +344,11 @@ export class ChatRuntime {
   }
   async updateConfig(id: string, patch: { model?: string; permissionMode?: PermissionMode; effort?: Effort }) {
     const session = this.session(id); let entry = this.entries.get(id);
+    const invalidateModelContext = () => {
+      if (patch.model === undefined || patch.model === session.model) return;
+      if (entry) { entry.contextRequest = undefined; entry.requestModel = undefined; }
+      this.context(id, { status: 'unknown' });
+    };
     if (this.busy.has(id) || this.starting.has(id) || entry?.approvals.size) throw new Error('请等待当前任务完成后修改模型或权限。');
     if (patch.effort !== undefined && patch.effort !== session.effort && entry) throw new Error('修改推理强度前请先停止会话，然后重新发送以恢复。');
     if (entry?.connection.ending) throw new Error('请等待会话停止。');
@@ -361,6 +367,9 @@ export class ChatRuntime {
       if (entry) {
         if (patch.model !== undefined) {
           await entry.connection.control({ subtype: 'set_model', model: patch.model || null });
+          // A confirmed model change stands even if a later permission control fails.
+          // A rejected model control leaves the previous context untouched.
+          invalidateModelContext();
           this.update(id, { model: patch.model }); this.history.get(id).model = patch.model || undefined;
         }
         if (patch.permissionMode !== undefined) {
@@ -375,6 +384,7 @@ export class ChatRuntime {
         });
         if (patch.permissionMode !== undefined) this.history.get(id).permissionMode = patch.permissionMode;
         if (patch.model !== undefined) this.history.get(id).model = patch.model || undefined;
+        invalidateModelContext();
       }
       this.notify(id, true);
     } catch (error) {

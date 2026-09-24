@@ -41,7 +41,16 @@ export class ClaudeEvents {
     const snapshot = this.output.history.get(id);
     const reported = reportedContext(report, snapshot.context, now());
     // Compaction's summarization request describes the old window.
-    const context = reported ?? (entry.turn?.command === 'compact' || snapshot.context?.status === 'compacting' ? undefined : requestContext(snapshot.context, payload.usage, payload.model || snapshot.model, now()));
+    if (reported) { this.output.context(id, { ...reported, requestModel: entry.requestModel }); return; }
+    if (entry.turn?.command === 'compact' || snapshot.context?.status === 'compacting') return;
+    const messageId = string(payload.id), incoming = object(payload.usage);
+    const model = string(payload.model);
+    if (model) entry.requestModel = model;
+    // Final assistant frames can omit cache components from the same message_start.
+    const hasUsage = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'].some(key => incoming[key] !== undefined);
+    const usage = !hasUsage ? undefined : messageId && entry.contextRequest?.id === messageId ? { ...entry.contextRequest.usage, ...incoming } : incoming;
+    const context = requestContext(snapshot.context, usage, model, now());
+    if (context && messageId && usage) entry.contextRequest = { id: messageId, usage };
     if (context) this.output.context(id, context);
   }
   private resetConversation(id: string, entry: Entry, nextId: string) {
@@ -51,6 +60,8 @@ export class ClaudeEvents {
       return;
     }
     entry.turn.resetApplied = true;
+    entry.contextRequest = undefined;
+    entry.requestModel = undefined;
     const previous = entry.expectedId;
     entry.expectedId = nextId; entry.enforceIdentity = true;
     this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: nextId, forkFrom: undefined, imported: undefined }, started: true });
@@ -145,7 +156,7 @@ export class ClaudeEvents {
       if (resultId && entry.resultIds.has(resultId)) return;
       if (resultId) entry.resultIds.add(resultId);
       const snapshot = this.output.history.get(id); const usage = object(frame.usage);
-      const capacity = contextCapacity(frame.modelUsage, snapshot.context?.model ?? snapshot.model);
+      const capacity = contextCapacity(frame.modelUsage, snapshot.context?.requestModel ?? snapshot.context?.model ?? snapshot.model);
       if (capacity) this.output.context(id, { status: 'unknown', ...snapshot.context, contextWindow: capacity });
       snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
@@ -227,6 +238,14 @@ export class ClaudeEvents {
     const subtype = string(frame.subtype); const snapshot = this.output.history.get(id);
     if (subtype === 'init') {
       if (parent) return;
+      const model = string(frame.model);
+      if (model && snapshot.context?.selectionModel && model !== snapshot.context.selectionModel) {
+        entry.contextRequest = undefined;
+        entry.requestModel = undefined;
+        this.output.context(id, { status: 'unknown', selectionModel: model });
+      } else if (model && model !== snapshot.context?.selectionModel) {
+        this.output.context(id, { status: 'unknown', ...snapshot.context, selectionModel: model });
+      }
       snapshot.model = string(frame.model) || undefined;
       snapshot.permissionMode = string(frame.permissionMode) || this.output.session(id).permissionMode;
       snapshot.mcpServers = Array.isArray(frame.mcp_servers) ? frame.mcp_servers.map(value => { const item = object(value); return { name: string(item.name), status: string(item.status) }; }) : [];
@@ -267,6 +286,7 @@ export class ClaudeEvents {
     } else if (subtype === 'commands_changed' && !parent) {
       entry.commands = normalizeCommands(frame.commands, entry.commands, frame.skills); this.output.notify(id);
     } else if (subtype === 'compact_boundary' && !parent) {
+      entry.contextRequest = undefined;
       const metadata = object(frame.compact_metadata), trigger = metadata.trigger === 'manual' || metadata.trigger === 'auto' ? metadata.trigger : undefined;
       this.output.context(id, { ...snapshot.context, status: 'compacted', inputTokens: undefined, measuredAt: undefined,
         lastCompaction: { at: now(), trigger, preTokens: tokenCount(metadata.pre_tokens) } });

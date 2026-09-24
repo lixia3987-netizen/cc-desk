@@ -182,6 +182,35 @@ test('missing operation capabilities reject before invoking a provider, includin
   } finally { await f.dispose(); }
 });
 
+test('saving a stopped structured model invokes its adapter while offline without granting live configuration', async () => {
+  const f = fixture();
+  try {
+    const { executor, caps } = f.register(), s = f.add();
+    f.store.change(state => { state.sessions[0].status = 'stopped'; state.sessions[0].model = 'previous-model'; });
+    caps.available = false; caps.liveConfig = false;
+    executor.snapshot(s.id).context = { status: 'ready', requestModel: 'previous-model', model: 'Previous model', inputTokens: 100, contextWindow: 200_000 };
+    const requested: { id: string; model?: string }[] = [];
+    const configure = executor.updateConfig.bind(executor);
+    executor.updateConfig = async (id, patch) => {
+      requested.push({ id, model: patch.model });
+      await configure(id, patch);
+      executor.snapshot(id).context = { status: 'unknown' };
+    };
+
+    await f.call('session:update', { id: s.id, model: 'replacement-model' });
+    assert.deepEqual(requested, [{ id: s.id, model: 'replacement-model' }]);
+    assert.equal(executor.configCalls, 1);
+    assert.deepEqual(executor.snapshot(s.id).context, { status: 'unknown' });
+    assert.equal(new StateStore(f.directory).state.sessions[0].model, 'replacement-model');
+    assert.equal(executor.activeCount, 0);
+
+    executor.active.add(s.id); caps.available = true;
+    await assert.rejects(f.call('session:update', { id: s.id, model: 'unsupported-live-model' }), /liveConfig/);
+    assert.equal(executor.configCalls, 1);
+    assert.equal(f.store.state.sessions[0].model, 'replacement-model');
+  } finally { await f.dispose(); }
+});
+
 test('an executor without attachment support never receives retained attachments', async () => {
   const f = fixture();
   try {
