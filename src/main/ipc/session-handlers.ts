@@ -18,9 +18,7 @@ interface SessionPorts {
   taskOccupied(id: string): boolean;
   admissionPending(id: string): boolean;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
-  manageWorktreeDeletion<T>(id: string, confirmedPath: string, action: (session: Session) => Promise<T>): Promise<T>;
-  worktreeBase(session: Session): string;
-  cleanupDependencies(session: Session): boolean;
+  manageWorktreeDeletion<T>(id: string, confirmedPath: string, action: (session: Session, affectedIds: string[]) => Promise<T>): Promise<T>;
   select(id: string): void;
   export(id: string): Promise<string | null>;
   onState(): void;
@@ -95,21 +93,24 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
   handle('session:delete', deleteSchema, input => {
     const id = typeof input === 'string' ? input : input.id;
     if (typeof input !== 'string' && 'forceWorktree' in input) {
-      // Use the same directory locks and worker-release barrier as safe cleanup.
-      // Force only relaxes Git's clean/merged checks, never resource ownership.
-      return ports.manageWorktreeDeletion(id, input.worktreePath, async session => {
+      return ports.manageWorktreeDeletion(id, input.worktreePath, async (session, affectedIds) => {
         if (session.worktree !== input.worktreePath) throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
-        if (ports.cleanupDependencies(session)) throw new Error('其他会话的工作目录或 worktree 来源依赖此目录，不能强制删除。');
-        const result = await forceCleanupWorktree(ports.worktreeBase(session), session.worktree!, id);
+        const project = ports.store.state.projects.find(item => item.id === session.projectId);
+        const result = await forceCleanupWorktree(session.worktreeBase ?? project?.path, session.worktree!, project ? [project.path] : []);
         if (!result.ok) throw new Error(result.message);
         try {
           // Record the completed filesystem step so a later attachment/history
           // removal failure can be retried as ordinary record-only deletion.
           ports.store.change(state => {
-            const saved = state.sessions.find(item => item.id === id)!;
-            saved.worktree = undefined;
-            saved.archived = true;
-            saved.error = '隔离目录已强制删除；会话记录尚未删除，可再次删除会话。';
+            for (const saved of state.sessions) if (affectedIds.includes(saved.id)) {
+              if (saved.id === id) saved.worktree = undefined;
+              saved.archived = true;
+              saved.status = 'stopped';
+              saved.error = saved.id === id
+                ? '隔离目录已强制删除；会话记录尚未删除，可再次删除会话。'
+                : '此会话的工作目录已被强制删除，已停止并归档；聊天记录仍保留。';
+              saved.updatedAt = new Date().toISOString();
+            }
           });
           ports.onState();
           await removeRecord(id);

@@ -28,7 +28,7 @@ export class TerminalBuffer {
 }
 
 interface ProcessEntry {
-  process: IPty; ending: boolean; paused?: boolean; token: object;
+  sessionId: string; process: IPty; ending: boolean; paused?: boolean; token: object;
   resource?: TerminalLaunchResource; resourceClose?: Promise<void>;
   release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
 }
@@ -45,6 +45,7 @@ export class Runtime {
   private shuttingDown = false;
   private maintenance = false;
   private cleanupError?: unknown;
+  private cleanupFailures = new Map<string, unknown>();
   private sequence = 0;
   private cancelledStarts = new Set<string>();
   private shutdownPromise?: Promise<void>;
@@ -67,7 +68,7 @@ export class Runtime {
   private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
   private trackCleanup(cleanup: Promise<void>, entry?: ProcessEntry) {
     const tracked = cleanup.catch(error => {
-      if (entry) entry.cleanupError ??= error;
+      if (entry) { entry.cleanupError ??= error; this.cleanupFailures.set(entry.sessionId, entry.cleanupError); }
       this.cleanupError = error; this.reportError(error);
     });
     this.cleanups.add(tracked);
@@ -199,7 +200,7 @@ export class Runtime {
       if (this.shuttingDown || this.maintenance || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
       const child = spawnTerminal(launch, session.cwd);
-      const entry: ProcessEntry = spawned = { process: child, ending: false, token, resource };
+      const entry: ProcessEntry = spawned = { sessionId: id, process: child, ending: false, token, resource };
       this.running.set(id, entry);
       child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
@@ -236,7 +237,7 @@ export class Runtime {
     } catch (error) {
       // A successful spawn followed by a failed state write still owns a real process.
       if (spawned) await this.beginStop(id, spawned);
-      else { try { await resource?.close(); } catch (closeError) { this.reportError(closeError); } }
+      else { try { await resource?.close(); } catch (closeError) { this.cleanupFailures.set(id, closeError); this.cleanupError = closeError; this.reportError(closeError); } }
       this.guard(() => this.update(id,{ status: this.cancelledStarts.has(id) || this.shuttingDown ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
       throw error;
     } finally {
@@ -263,6 +264,22 @@ export class Runtime {
     void this.beginStop(id, entry);
     this.guard(() => this.flush());
     this.update(id,{ status: 'stopping' });
+  }
+  async stopAndWait(id: string) {
+    const entry = this.running.get(id) ?? this.stopping.get(id);
+    const starting = this.startCompletions.get(id);
+    let stopError: unknown;
+    try { this.stop(id); } catch (error) { stopError = error; }
+    // stop() cancels a pending launcher. Its completion includes releasing any
+    // resources acquired before cancellation, even when no PTY was spawned.
+    await starting;
+    await entry?.cleanup;
+    const deadline = Date.now() + 5000;
+    while (this.has(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+    const failure = entry?.cleanupError ?? this.cleanupFailures.get(id);
+    if (failure !== undefined) throw new Error('会话进程或资源清理失败：' + (failure instanceof Error ? failure.message : String(failure)), { cause: failure });
+    if (stopError !== undefined) throw stopError;
+    if (this.has(id)) throw new Error('会话进程尚未完全停止，工作目录未释放，请稍后重试。');
   }
   private beginStop(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.cleanup) return entry.cleanup;
@@ -374,7 +391,7 @@ export class Runtime {
   forget(id: string, options: { deleteLogs?: boolean } = {}): void {
     if (this.has(id)) throw new Error('请先停止会话，再删除其运行数据。');
     this.flush();
-    this.buffers.delete(id); this.pending.delete(id); this.logErrors.delete(id); this.cancelledStarts.delete(id);
+    this.buffers.delete(id); this.pending.delete(id); this.logErrors.delete(id); this.cancelledStarts.delete(id); this.cleanupFailures.delete(id);
     if (options.deleteLogs) {
       fs.rmSync(this.logPath(id), { force: true });
       fs.rmSync(this.logPath(id) + '.previous', { force: true });

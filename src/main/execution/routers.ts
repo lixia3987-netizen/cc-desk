@@ -59,6 +59,11 @@ export class TerminalExecutions {
   start(id: string) { this.registry.require(id, 'terminal'); return this.get(id).start(id); }
   interrupt(id: string) { return this.get(id).interrupt(id); }
   stop(id: string) { return this.get(id).stop(id); }
+  async stopAndWait(id: string) {
+    const executor = this.get(id);
+    if (executor.stopAndWait) await executor.stopAndWait(id);
+    else await this.stop(id);
+  }
   snapshot(id: string) { return this.get(id).snapshot(id); }
   write(id: string, data: string) { return this.get(id).write(id, data); }
   resize(id: string, cols: number, rows: number) { return this.get(id).resize(id, cols, rows); }

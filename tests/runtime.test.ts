@@ -245,6 +245,67 @@ test('shutdown reports launch-resource failure even when the terminal process al
   }
 });
 
+test('session stop waits for asynchronous cleanup and reports only that session failure on retries', { timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  const healthy = { ...f.session, id: randomUUID(), title: 'healthy cleanup' };
+  f.store.change(state => state.sessions.push(healthy));
+  const failure = new Error('Owned launcher resource failed to close');
+  let release!: () => void, closing = false, finished = false;
+  const cleanupGate = new Promise<void>(resolve => { release = resolve; });
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => ({
+    file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+    resource: { close: async () => {
+      if (session.id !== f.session.id) return;
+      closing = true; await cleanupGate; throw failure;
+    } },
+  }) });
+  let rejected: Promise<void> | undefined;
+  try {
+    await runtime.start(f.session.id); await runtime.start(healthy.id);
+    rejected = assert.rejects(runtime.stopAndWait(f.session.id).finally(() => { finished = true; }), error => error instanceof Error && error.cause === failure);
+    await until(() => closing, 'session cleanup awaiting resource');
+    assert.equal(finished, false);
+    assert.equal(runtime.has(f.session.id), true);
+    await runtime.stopAndWait(healthy.id);
+    assert.equal(runtime.has(healthy.id), false);
+    release(); await rejected;
+    assert.equal(runtime.has(f.session.id), false);
+    assert.equal(runtime.pendingCleanupCount, 0);
+    await assert.rejects(runtime.stopAndWait(f.session.id), error => error instanceof Error && error.cause === failure);
+    await runtime.stopAndWait(healthy.id);
+    assert.equal(f.store.state.sessions.find(session => session.id === healthy.id)?.status, 'stopped');
+  } finally {
+    release(); await rejected?.catch(() => {});
+    await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('session stop awaits a cancelled launcher and reports cleanup failure before a PTY exists', { timeout: 10000 }, async () => {
+  const f = lifecycleFixture();
+  const failure = new Error('Cancelled launch resource failed to close');
+  let release!: () => void, stopped = false;
+  const preparation = new Promise<void>(resolve => { release = resolve; });
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async () => {
+    await preparation;
+    return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(), resource: { close: async () => { throw failure; } } };
+  } });
+  let starting: Promise<void> | undefined, stopping: Promise<void> | undefined;
+  try {
+    starting = assert.rejects(runtime.start(f.session.id), /已取消启动会话/);
+    stopping = assert.rejects(runtime.stopAndWait(f.session.id).finally(() => { stopped = true; }), error => error instanceof Error && error.cause === failure);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, false);
+    release(); await Promise.all([starting, stopping]);
+    assert.equal(runtime.has(f.session.id), false);
+    assert.equal(f.store.state.sessions[0].started, false);
+  } finally {
+    release(); await Promise.allSettled([starting, stopping]);
+    await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test('terminal exit keeps stopping status and ownership until all launch resources close', { timeout: 20000 }, async () => {
   for (const ending of ['stop', 'success', 'failure'] as const) {
     const f = lifecycleFixture();

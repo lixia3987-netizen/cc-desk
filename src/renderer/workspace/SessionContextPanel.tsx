@@ -31,17 +31,17 @@ export function SessionContextPanel({
   setDeleteConfirm, flushDrafts,
 }: SessionContextPanelProps) {
   const [forceTarget, setForceTarget] = useState<{ id: string; worktreePath: string }>();
-  const [forceText, setForceText] = useState(''), [forceError, setForceError] = useState(''), [forceDeleting, setForceDeleting] = useState(false);
+  const [forceError, setForceError] = useState(''), [forceDeleting, setForceDeleting] = useState(false);
   const forcePending = useRef(false), activeId = useRef(active.id);
   activeId.current = active.id;
   const deletionBlocked = busy || activeBusy || (!structured && ['running', 'stopping'].includes(active.status));
   const matchingTarget = forceTarget?.id === active.id && forceTarget?.worktreePath === active.worktree && deleteConfirm === active.id;
   useEffect(() => {
-    setForceTarget(undefined); setForceText(''); setForceError('');
+    setForceTarget(undefined); setForceError('');
   }, [active.id, active.worktree, deleteConfirm]);
   const forceDelete = async () => {
     const target = forceTarget;
-    if (!target || !matchingTarget || deletionBlocked || forcePending.current || forceText !== '删除') return;
+    if (!target || !matchingTarget || busy || forcePending.current) return;
     forcePending.current = true; setForceDeleting(true); setForceError('');
     try {
       await perform(async () => {
@@ -87,7 +87,7 @@ export function SessionContextPanel({
     })}>
       <Archive size={14} />{active.archived ? '取消归档' : '归档会话'}
     </button>
-    <button className="text-button danger archive-button" disabled={deletionBlocked} onClick={() => setDeleteConfirm(active.id)}>删除会话</button>
+    <button className="text-button danger archive-button" disabled={busy || forceDeleting || (!active.worktree && deletionBlocked)} onClick={() => setDeleteConfirm(active.id)}>删除会话</button>
     {deleteConfirm === active.id && <div className="action-confirm">
       <p>删除工作台中的会话记录，原始 CLI 历史会保留。</p>
       {active.worktree && <>
@@ -97,24 +97,24 @@ export function SessionContextPanel({
         <button className="secondary compact" disabled={busy} onClick={() => void perform(async () => { await window.desktop.copyText(active.worktree!); setNotice('隔离目录路径已复制'); })}>复制隔离目录路径</button>
       </>}
       <button className="secondary compact" disabled={busy || forceDeleting} onClick={() => setDeleteConfirm('')}>取消</button>
-      <button className="secondary compact danger" disabled={deletionBlocked} onClick={() => void perform(async () => {
+      <button className="secondary compact danger" disabled={deletionBlocked || forceDeleting} onClick={() => void perform(async () => {
         flushDrafts();
         await window.desktop.deleteSession(active.id, active.worktree ? { preserveWorktree: true } : undefined);
         selectSession('');
       })}>{active.worktree ? '仅删除会话，保留隔离目录' : '确认删除会话'}</button>
-      {active.worktree && <button className="secondary compact danger" disabled={deletionBlocked} onClick={() => {
-        setForceTarget({ id: active.id, worktreePath: active.worktree! }); setForceText(''); setForceError('');
+      {active.worktree && <button className="secondary compact danger" disabled={busy || forceDeleting} onClick={() => {
+        setForceTarget({ id: active.id, worktreePath: active.worktree! }); setForceError('');
       }}>删除会话并强制删除隔离目录</button>}
     </div>}
-    {forceTarget && matchingTarget && <Dialog label="强制删除隔离目录" onClose={() => { setForceTarget(undefined); setForceText(''); }} closeDisabled={busy || forceDeleting}>
+    {forceTarget && matchingTarget && <Dialog label="强制删除隔离目录" onClose={() => setForceTarget(undefined)} closeDisabled={busy || forceDeleting}>
       <h2>删除会话并强制删除隔离目录</h2>
-      <p>将永久删除此会话及下方隔离目录。目录中的未提交修改、未跟踪文件和被忽略的文件都会丢失，无法通过撤销恢复。</p>
+      <p>将停止使用此目录的会话，再删除此会话记录和隔离目录。</p>
+      <p>将永久删除此会话及下方隔离目录的全部内容，包括未提交修改、未跟踪文件、被忽略的文件、所有子目录和嵌套仓库。嵌套仓库内的 Git 分支及已提交内容也会删除，无法通过撤销恢复。</p>
       <p className="panel-note" style={{ overflowWrap: 'anywhere' }}>隔离目录：{forceTarget.worktreePath}</p>
-      <p>Git 分支和其中已经提交的内容会保留，来源项目不会被删除。</p>
-      <label>输入“删除”以确认<input aria-label="输入“删除”以确认" value={forceText} onChange={event => setForceText(event.target.value)} disabled={busy || forceDeleting} autoComplete="off" /></label>
+      <p>来源仓库中保存的 Git 分支和已提交内容会保留，来源项目不会被删除。</p>
       {forceError && <p className="chat-error" role="alert">{forceError}</p>}
-      <div className="modal-actions"><button className="secondary" disabled={busy || forceDeleting} onClick={() => { setForceTarget(undefined); setForceText(''); }}>取消</button>
-        <button className="secondary danger" disabled={deletionBlocked || forceDeleting || forceText !== '删除'} onClick={() => void forceDelete()}>{forceDeleting ? '正在删除…' : '确认强制删除'}</button></div>
+      <div className="modal-actions"><button className="secondary" disabled={busy || forceDeleting} onClick={() => setForceTarget(undefined)}>取消</button>
+        <button className="secondary danger" disabled={busy || forceDeleting} onClick={() => void forceDelete()}>{forceDeleting ? '正在删除…' : '确认强制删除'}</button></div>
     </Dialog>}
   </div>;
 }

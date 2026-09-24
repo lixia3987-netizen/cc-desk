@@ -42,6 +42,8 @@ export interface StructuredExecutor extends ExecutionLifecycle {
 }
 
 export interface TerminalExecutor extends ExecutionLifecycle {
+  /** Optional session-local barrier for process-tree and launcher cleanup. */
+  stopAndWait?(id: string): Promise<void>;
   start(id: string): Promise<void>;
   write(id: string, data: string): void;
   resize(id: string, cols: number, rows: number): void;
