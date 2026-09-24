@@ -1,4 +1,5 @@
 import { Activity, GitBranch, Stethoscope, Workflow } from 'lucide-react';
+import { useLayoutEffect, useRef } from 'react';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../../shared/panel-drafts';
 import { inspectorPanelIds, type InspectorPanelId } from '../layout-preferences';
 import { DiagnosticsPanel, GitPanel } from '../ProjectPanels';
@@ -20,20 +21,38 @@ const panels = {
 export function SessionInspector(props: Props) {
   const { active, report, appendReview, activePanels, updatePanel } = props;
   const layout = useInspectorPanels();
+  const openingPanel = useRef<InspectorPanelId | null>(null);
+  const empty = layout.openPanels.length === 0;
+  // Keep keyed, visited panels mounted while matching keyboard order to the dock.
+  const orderedPanels = [...layout.openPanels, ...inspectorPanelIds.filter(id => !layout.openPanels.includes(id))];
+  useLayoutEffect(() => {
+    const id = openingPanel.current;
+    openingPanel.current = null;
+    if (id && layout.openPanels.includes(id)) {
+      document.getElementById(`inspector-${id}`)?.querySelector('header')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  }, [layout.openPanels]);
+  const toggle = (id: InspectorPanelId) => {
+    openingPanel.current = layout.openPanels.includes(id) ? null : id;
+    layout.toggle(id);
+  };
   const close = (id: InspectorPanelId) => {
     layout.close(id);
     document.getElementById(`inspector-toggle-${id}`)?.focus();
   };
 
-  return <aside id="session-inspector" aria-label="会话详情" className="inspector" data-empty={layout.activePanel === null} data-active={layout.activePanel ?? ''} onKeyDown={event => {
-    if (event.key !== 'Escape' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || event.nativeEvent.isComposing || !layout.activePanel) return;
-    if (document.querySelector('[role="dialog"]') || !(event.target instanceof Element) || !event.target.closest('.inspector-panel')) return;
-    event.preventDefault(); event.stopPropagation(); close(layout.activePanel);
+  return <aside id="session-inspector" aria-label="会话详情" className="inspector" data-empty={empty} data-count={layout.openPanels.length} onKeyDown={event => {
+    if (event.key !== 'Escape' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || event.nativeEvent.isComposing) return;
+    if (document.querySelector('[role="dialog"]') || !(event.target instanceof Element)) return;
+    const focusedPanel = event.target.closest<HTMLElement>('.inspector-panel')?.dataset.panel;
+    const id = layout.openPanels.find(id => id === focusedPanel);
+    if (!id) return;
+    event.preventDefault(); event.stopPropagation(); close(id);
   }}>
-    <div className="inspector-dock" hidden={layout.activePanel === null}>
-      {inspectorPanelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.activePanel === id} onClose={() => close(id)}>
+    <div className="inspector-dock" hidden={empty}>
+      {orderedPanels.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
-        {id === 'git' && <GitPanel session={active} visible={layout.activePanel === id} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
+        {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
         {id === 'workflows' && <WorkflowPanel session={active} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
         {id === 'diagnostics' && <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} />}
       </InspectorPanel>)}
@@ -41,8 +60,8 @@ export function SessionInspector(props: Props) {
     <div className="inspector-tools" role="group" aria-label="会话面板">
       {inspectorPanelIds.map(id => {
         const { title, icon: Icon } = panels[id];
-        const open = layout.activePanel === id;
-        return <button key={id} id={`inspector-toggle-${id}`} aria-label={title} aria-pressed={open} aria-expanded={open} aria-controls={`inspector-${id}`} title={`${open ? '关闭' : '打开'}${title}面板`} onClick={() => layout.toggle(id)}>
+        const open = layout.openPanels.includes(id);
+        return <button key={id} id={`inspector-toggle-${id}`} aria-label={title} aria-pressed={open} aria-expanded={open} aria-controls={`inspector-${id}`} title={`${open ? '关闭' : '打开'}${title}面板`} onClick={() => toggle(id)}>
           <Icon size={18} /><span>{title}</span>
         </button>;
       })}
