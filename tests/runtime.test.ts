@@ -12,7 +12,7 @@ import { ClaudeTerminalLauncher } from '../src/main/engines/claude/terminal-laun
 import { ShellTerminalLauncher } from '../src/main/engines/shell/terminal-launcher';
 import type { TerminalLauncher, TerminalLaunchCallbacks } from '../src/main/execution/terminal-launch';
 import { createWorktree, gitInfo } from '../src/main/git';
-import { execFileAsync } from '../src/main/commands';
+import { environment, execFileAsync } from '../src/main/commands';
 import { fileURLToPath } from 'node:url';
 
 async function until(check:()=>boolean, phase: string, diagnostics: () => string = () => '', timeout = 7000) {
@@ -132,7 +132,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
     async prepare(session, callback) {
       assert.equal(session.execution.providerId, 'test-agent');
       callbacks.push(callback);
-      return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: {},
+      return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
         resource: { async close() { resourcesClosed++; } }, terminalSync: 'waiting' };
     }
   };
@@ -166,11 +166,18 @@ test('terminal runtime accepts another provider and isolates identity observatio
 });
 
 test('a process owning silent PTYs exits after natural exit, update disconnect and shutdown', { timeout: 25000 }, async () => {
+  const fixtureDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-silent-fixture-'));
+  const fixtureFile = path.join(fixtureDirectory, 'owner.mjs');
   const runtimeModule = new URL('../src/main/runtime.ts', import.meta.url).href;
   const storeModule = new URL('../src/main/store.ts', import.meta.url).href;
   const script = `
     import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
     import { randomUUID } from 'node:crypto'; import assert from 'node:assert/strict';
+    const checkpoint = phase => console.error(JSON.stringify({ phase,
+      resources: process.getActiveResourcesInfo(),
+      handles: process._getActiveHandles().map(handle => handle.constructor?.name ?? 'unknown'),
+    }));
+    checkpoint('loading-runtime');
     const { Runtime } = await import(${JSON.stringify(runtimeModule)}).then(module => module.default ?? module);
     const { StateStore } = await import(${JSON.stringify(storeModule)}).then(module => module.default ?? module);
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-silent-owner-'));
@@ -183,6 +190,7 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
       file: process.execPath, args: ['-e', program], env: process.env,
     }) });
     try {
+      checkpoint('natural-start');
       await runtime.start(id);
       const deadline = Date.now() + 5000;
       while (runtime.activeCount) {
@@ -190,19 +198,29 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
         await new Promise(resolve => setTimeout(resolve, 10));
       }
       assert.equal(runtime.lastError, undefined);
+      checkpoint('natural-released');
       program = 'setInterval(() => {}, 1000)';
       await runtime.start(id);
+      checkpoint('update-disconnecting');
       runtime.setMaintenance(true); await runtime.disconnectAll();
       assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+      checkpoint('update-disconnected');
       runtime.setMaintenance(false); await runtime.start(id); await runtime.shutdown();
       assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+      checkpoint('shutdown-released');
     } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true }); }
     console.log('silent PTY owner released');
   `;
-  const result = await execFileAsync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', script], {
-    cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 20000, windowsHide: true, maxBuffer: 256 * 1024,
-  });
-  assert.match(result.stdout, /silent PTY owner released/);
+  try {
+    fs.writeFileSync(fixtureFile, script);
+    // Worker(file) inherits execArgv; --input-type=module is invalid for its file.
+    const result = await execFileAsync(process.execPath, ['--import', 'tsx', fixtureFile], {
+      cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 20000, windowsHide: true, maxBuffer: 256 * 1024,
+    }).catch(error => {
+      assert.fail(`Silent PTY owner failed (${error.code ?? error.signal ?? 'unknown'}).\n${error.stdout ?? ''}\n${error.stderr ?? ''}`);
+    });
+    assert.match(result.stdout, /silent PTY owner released/);
+  } finally { fs.rmSync(fixtureDirectory, { recursive: true, force: true }); }
 });
 
 test('shutdown reports launch-resource failure even when the terminal process already exited', { timeout: 12000 }, async () => {
