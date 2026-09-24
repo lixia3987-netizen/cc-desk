@@ -171,7 +171,8 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
       await expect.poll(() => page.evaluate(async id => (await window.desktop.terminalSnapshot(id)).chunks.map(chunk => chunk.data).join(''), shellId)).toContain(prefix + 'still_alive');
       await page.locator('.session-row').filter({ hasText: '五种主题 · 同样清晰' }).click();
       await expect(page.locator('.message-code')).toBeVisible();
-      await page.getByRole('tab', { name: '变更', exact: true }).click();
+      const changesToggle = page.getByRole('button', { name: '变更', exact: true });
+      if (await changesToggle.getAttribute('aria-pressed') !== 'true') await changesToggle.click();
       await page.locator('.changed-files button').filter({ hasText: 'theme.ts' }).click();
       await expect(page.getByLabel('代码差异')).toContainText('+export const preserveTerminal = true;');
       await page.getByLabel('提示词编辑器').fill('请保持代码与正文易读，并保留当前任务和草稿。');

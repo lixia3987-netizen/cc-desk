@@ -177,7 +177,7 @@ test('worktree location: UI creates named trees in both locations and preserves 
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveValue('');
     await form.getByRole('button', { name: '关闭弹窗', exact: true }).click();
 
-    await page.getByRole('tab', { name: '变更', exact: true }).click();
+    await page.getByRole('button', { name: '变更', exact: true }).click();
     await expect(page.getByRole('button', { name: '清理隔离目录', exact: true })).toBeEnabled();
     await page.getByRole('button', { name: '清理隔离目录', exact: true }).click();
     await page.getByRole('button', { name: '确认清理', exact: true }).click();
@@ -186,9 +186,9 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(after.find(session => session.id === created.id)?.worktree).toBeUndefined();
     expect(after.find(session => session.id === original.id)?.cwd).toBe(original.cwd);
     expect(await fs.stat(original.cwd).then(stat => stat.isDirectory())).toBe(true);
-    await page.getByRole('tab', { name: '上下文', exact: true }).click();
-    await page.getByRole('tab', { name: '变更', exact: true }).click();
-    await expect(page.locator('.inspector .panel-content')).toContainText('工作目录已清理');
+    await page.getByRole('button', { name: '关闭变更面板', exact: true }).click();
+    await page.getByRole('button', { name: '变更', exact: true }).click();
+    await expect(page.getByRole('region', { name: '变更面板', exact: true })).toContainText('工作目录已清理');
     expect(errors).toEqual([]);
     await expect(page.locator('.error-banner')).toHaveText([]);
   } finally { await app.close(); await f.dispose(); }

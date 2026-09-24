@@ -1,5 +1,5 @@
 import { electronLaunchArgs } from './helpers/electron-launch';
-import { test, expect, _electron as electron } from '@playwright/test';
+import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -37,6 +37,10 @@ async function workspace(shellSelected = false) {
   });
   return { first, second, shell, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
+
+const panelNames = ['上下文', '变更', '工作流', '诊断'] as const;
+const panel = (page: Page, name: typeof panelNames[number]) => page.getByRole('region', { name: `${name}面板`, exact: true });
+const panelToggle = (page: Page, name: typeof panelNames[number]) => page.getByRole('button', { name, exact: true });
 
 test('inspector: keyboard toggle preserves drafts and mounted content, and visibility survives session changes and restart', async ({}, testInfo) => {
   const f = await workspace();
@@ -79,14 +83,14 @@ test('inspector: keyboard toggle preserves drafts and mounted content, and visib
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('这段提示词还没有发送。');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.model).toBe('');
 
-    await page.getByRole('tab', { name: '工作流', exact: true }).click();
+    await page.getByRole('button', { name: '工作流', exact: true }).click();
     await page.getByLabel('工作流目标', { exact: true }).fill('保留尚未创建的工作流目标。');
     await page.getByLabel('最大尝试次数', { exact: true }).selectOption('3');
     const workflowNode = (await page.getByLabel('工作流目标', { exact: true }).elementHandle())!;
     await page.getByRole('button', { name: '收起右侧面板', exact: true }).click();
     await expect(aside).toBeHidden();
     await page.getByRole('button', { name: '展开右侧面板', exact: true }).click();
-    await expect(page.getByRole('tab', { name: '工作流', exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('button', { name: '工作流', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('保留尚未创建的工作流目标。');
     await expect(page.getByLabel('最大尝试次数', { exact: true })).toHaveValue('3');
     expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
@@ -116,7 +120,95 @@ test('inspector: keyboard toggle preserves drafts and mounted content, and visib
   } finally { await app.close(); await f.dispose(); }
 });
 
-test('inspector: a narrow window keeps the toggle reachable and resizes a running terminal without restarting it', async () => {
+test('inspector: panels open independently, retain drafts when closed or folded, and restore their arrangement after restart', async ({}, testInfo) => {
+  const f = await workspace();
+  let app = await f.launch();
+  try {
+    let page = await app.firstWindow();
+    await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000));
+    await expect(panelToggle(page, '上下文')).toHaveAttribute('aria-pressed', 'true');
+    await expect(panel(page, '上下文')).toBeVisible();
+    await page.getByLabel('会话模型', { exact: true }).fill('independent-unsaved-model');
+    const modelNode = (await page.getByLabel('会话模型', { exact: true }).elementHandle())!;
+    for (const name of panelNames.slice(1)) {
+      await expect(panelToggle(page, name)).toHaveAttribute('aria-pressed', 'false');
+      await panelToggle(page, name).click();
+      await expect(panelToggle(page, name)).toHaveAttribute('aria-pressed', 'true');
+      await expect(panel(page, name)).toBeVisible();
+      await expect(panel(page, '上下文')).toBeVisible();
+    }
+    await page.getByLabel('工作流目标', { exact: true }).fill('独立面板关闭和重启之后仍然保留。');
+    await page.getByLabel('最大尝试次数', { exact: true }).selectOption('3');
+    const workflowNode = (await page.getByLabel('工作流目标', { exact: true }).elementHandle())!;
+    await page.screenshot({ path: testInfo.outputPath('inspector-independent-panels.png') });
+
+    await page.getByRole('button', { name: '折叠上下文面板', exact: true }).click();
+    await expect(panel(page, '上下文')).toBeVisible();
+    await expect(page.getByLabel('会话模型', { exact: true })).toBeHidden();
+    await expect(panelToggle(page, '上下文')).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByLabel('工作流目标', { exact: true })).toBeVisible();
+    expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
+    await page.getByRole('button', { name: '展开上下文面板', exact: true }).click();
+    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('independent-unsaved-model');
+    expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
+    await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
+    await expect(panel(page, '上下文')).toBeHidden();
+    await expect(panelToggle(page, '上下文')).toHaveAttribute('aria-pressed', 'false');
+    await expect(panel(page, '工作流')).toBeVisible();
+    expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
+    await panelToggle(page, '上下文').click();
+    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('independent-unsaved-model');
+
+    await page.getByRole('button', { name: '关闭工作流面板', exact: true }).click();
+    await expect(panel(page, '工作流')).toBeHidden();
+    await expect(panelToggle(page, '工作流')).toHaveAttribute('aria-pressed', 'false');
+    await expect(panel(page, '上下文')).toBeVisible();
+    expect(await workflowNode.evaluate(element => element.isConnected)).toBe(true);
+    await panelToggle(page, '工作流').click();
+    await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('独立面板关闭和重启之后仍然保留。');
+    expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
+    await page.getByRole('button', { name: '折叠工作流面板', exact: true }).click();
+    await expect(page.getByLabel('工作流目标', { exact: true })).toBeHidden();
+    await expect(panel(page, '上下文')).toBeVisible();
+    await page.getByRole('button', { name: '展开工作流面板', exact: true }).click();
+    await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('独立面板关闭和重启之后仍然保留。');
+    const chat = page.locator('.chat-pane'), widthWithPanels = (await chat.boundingBox())!.width;
+    for (const name of panelNames) await page.getByRole('button', { name: `关闭${name}面板`, exact: true }).click();
+    await expect.poll(async () => (await chat.boundingBox())!.width).toBeGreaterThan(widthWithPanels + 100);
+    await expect(page.getByRole('complementary', { name: '会话详情', exact: true })).toBeVisible();
+    for (const name of panelNames) {
+      await expect(panel(page, name)).toBeHidden();
+      await expect(panelToggle(page, name)).toHaveAttribute('aria-pressed', 'false');
+      await expect(panelToggle(page, name)).toBeInViewport({ ratio: 1 });
+    }
+    await panelToggle(page, '上下文').click();
+    await panelToggle(page, '工作流').click();
+    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('independent-unsaved-model');
+    await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('独立面板关闭和重启之后仍然保留。');
+    await expect(page.getByLabel('最大尝试次数', { exact: true })).toHaveValue('3');
+    expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
+    expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
+    await page.getByRole('button', { name: '折叠上下文面板', exact: true }).click();
+    await app.close();
+    app = await f.launch();
+    page = await app.firstWindow();
+    await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
+    for (const name of panelNames) {
+      const expected = name === '上下文' || name === '工作流';
+      await expect(panelToggle(page, name)).toHaveAttribute('aria-pressed', String(expected));
+      if (expected) await expect(panel(page, name)).toBeVisible();
+      else await expect(panel(page, name)).toBeHidden();
+    }
+    await expect(page.getByRole('button', { name: '展开上下文面板', exact: true })).toBeVisible();
+    await expect(page.getByLabel('会话模型', { exact: true })).toBeHidden();
+    await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('独立面板关闭和重启之后仍然保留。');
+    await expect(page.getByLabel('最大尝试次数', { exact: true })).toHaveValue('3');
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  } finally { await app.close(); await f.dispose(); }
+});
+
+test('inspector: automatic panel layout fits wide and narrow windows without restarting a running terminal', async ({}, testInfo) => {
   const f = await workspace(true), app = await f.launch();
   try {
     const page = await app.firstWindow(), errors: string[] = [];
@@ -154,6 +246,45 @@ test('inspector: a narrow window keeps the toggle reachable and resizes a runnin
     await page.keyboard.type(process.platform === 'win32' ? "Write-Output ('INSPECTOR_EXPANDED_' + $env:CC_DESK_INSPECTOR_SENTINEL)" : "printf '\\nINSPECTOR_EXPANDED_%s\\n' \"$CC_DESK_INSPECTOR_SENTINEL\"");
     await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(async id => (await window.desktop.terminalSnapshot(id)).chunks.map(chunk => chunk.data).join(''), f.shell.id)).toContain('INSPECTOR_EXPANDED_still_alive');
+    for (const name of panelNames.slice(1)) await panelToggle(page, name).click();
+    for (const [width, height, uiFontSize] of [[1600, 1000, 13], [980, 680, 20]]) {
+      await app.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setSize(w, h), [width, height]);
+      await page.evaluate(async size => {
+        const { state } = await window.desktop.snapshot();
+        await window.desktop.saveSettings({ ...state.settings, uiFontSize: size });
+      }, uiFontSize);
+      await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-font-scale')))).toBeCloseTo(uiFontSize / 13, 5);
+      const layout = async () => ({ context: (await panel(page, '上下文').boundingBox())!, changes: (await panel(page, '变更').boundingBox())! });
+      if (width === 1600) {
+        await expect.poll(async () => { const { context, changes } = await layout(); return changes.x - context.x - context.width; }).toBeGreaterThanOrEqual(0);
+        await expect.poll(async () => { const { context, changes } = await layout(); return Math.abs(context.y - changes.y); }).toBeLessThan(2);
+      } else {
+        await expect.poll(async () => { const { context, changes } = await layout(); return Math.abs(context.x - changes.x); }).toBeLessThan(2);
+        await expect.poll(async () => { const { context, changes } = await layout(); return changes.y - context.y - context.height; }).toBeGreaterThanOrEqual(0);
+      }
+      for (const name of panelNames) {
+        await expect(panelToggle(page, name)).toBeInViewport({ ratio: 1 });
+        await expect(panelToggle(page, name)).toHaveAttribute('aria-pressed', 'true');
+        const region = panel(page, name);
+        await expect(region).toBeVisible();
+        expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+        const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
+        await close.scrollIntoViewIfNeeded();
+        await expect(close).toBeInViewport({ ratio: 1 });
+      }
+      expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
+      await expect(page.getByRole('button', { name: '收起右侧面板', exact: true })).toBeInViewport({ ratio: 1 });
+      expect(await terminal.evaluate(element => element === document.querySelector('.terminal-host .xterm'))).toBe(true);
+      await page.getByRole('button', { name: '关闭上下文面板', exact: true }).scrollIntoViewIfNeeded();
+      await page.screenshot({ path: testInfo.outputPath(width === 1600 ? 'independent-panels-wide.png' : 'independent-panels-narrow.png') });
+    }
+    await page.getByRole('button', { name: '折叠工作流面板', exact: true }).click();
+    await page.getByRole('button', { name: '关闭变更面板', exact: true }).click();
+    await page.locator('.terminal-host').click();
+    await page.keyboard.type(process.platform === 'win32' ? "Write-Output ('INSPECTOR_LAYOUT_' + $env:CC_DESK_INSPECTOR_SENTINEL)" : "printf '\\nINSPECTOR_LAYOUT_%s\\n' \"$CC_DESK_INSPECTOR_SENTINEL\"");
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.terminalSnapshot(id)).chunks.map(chunk => chunk.data).join(''), f.shell.id)).toContain('INSPECTOR_LAYOUT_still_alive');
+    await expect(page.locator('.session-header .status-tag')).toContainText('运行中');
     await expect(page.locator('.error-banner')).toHaveCount(0);
     expect(errors).toEqual([]);
   } finally {

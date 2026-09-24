@@ -56,7 +56,6 @@ export function App() {
   const selection = useRef(new SessionSelection());
   const stateEvents = useRef(0);
   const latestActiveId = useRef(activeId); latestActiveId.current = activeId;
-  const [inspectorTab, setInspectorTab] = useState<'context' | 'git' | 'workflows' | 'diagnostics'>('context');
   const [inspectorOpen, setInspectorOpen] = useState(readInspectorOpen);
   const toggleInspector = () => { const next = !inspectorOpen; setInspectorOpen(next); saveInspectorOpen(next); };
   const [filePicker, setFilePicker] = useState('');
@@ -230,8 +229,8 @@ export function App() {
               onRemoveAttachment={path => void perform(async () => { await window.desktop.removeAttachment(active.id, path); setAttachments(old => ({ ...old, [active.id]: (old[active.id] ?? []).filter(file => file.path !== path) })); })}
               onAttachmentsSent={paths => setAttachments(old => ({ ...old, [active.id]: (old[active.id] ?? []).filter(file => !paths.includes(file.path)) }))} />}
           </SessionViewport>
-          <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy} inspectorOpen={inspectorOpen} inspectorTab={inspectorTab}
-            setInspectorTab={setInspectorTab} perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}
+          <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy} inspectorOpen={inspectorOpen}
+            perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}
             setDeleteConfirm={setDeleteConfirm} flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} />
         </div>
       </>}

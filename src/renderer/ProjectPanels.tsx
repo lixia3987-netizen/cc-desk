@@ -6,7 +6,7 @@ import type { EnvironmentDiagnostics } from '../shared/diagnostics';
 import { Dialog } from './Dialog';
 import type { GitReviewDraft, UpdateDraft } from '../shared/panel-drafts';
 
-export function GitPanel({session,onError,onReview,draft,onDraft}:{session:Session;onError:(error:unknown)=>void;onReview:(text:string)=>boolean;draft:GitReviewDraft;onDraft:UpdateDraft<GitReviewDraft>}) {
+export function GitPanel({session,onError,onReview,draft,onDraft,visible=true}:{session:Session;onError:(error:unknown)=>void;onReview:(text:string)=>boolean;draft:GitReviewDraft;onDraft:UpdateDraft<GitReviewDraft>;visible?:boolean}) {
   const [changes,setChanges]=useState<GitChanges>(),[diff,setDiff]=useState<GitDiff>(),[tree,setTree]=useState<WorktreeInfo>(),[busy,setBusy]=useState(false),[refreshing,setRefreshing]=useState(false),[checkedAt,setCheckedAt]=useState(''),[confirm,setConfirm]=useState<'merge'|'cleanup'>(),[notice,setNotice]=useState('');
   const {selected,staged}=draft;
   const feedback=draft.feedback[selected]??'';
@@ -29,19 +29,20 @@ export function GitPanel({session,onError,onReview,draft,onDraft}:{session:Sessi
   },[session.id,onError]);
   const scheduleRefresh=useCallback(()=>{clearTimeout(refreshTimer.current);refreshTimer.current=setTimeout(()=>void refresh(),120);},[refresh]);
   useEffect(()=>{
+    if(!visible)return;
     mounted.current=true;void refresh();
     // A fast turn can start and finish between two batched workspace snapshots.
     // Use the task state carried by the immediate chat event, not only React props.
     const off=window.desktop.onChat((id,state)=>{if(id===session.id&&['completed','interrupted','error'].includes(state??''))scheduleRefresh();});
     window.addEventListener('focus',scheduleRefresh);
     return()=>{mounted.current=false;seq.current++;refreshSeq.current++;clearTimeout(refreshTimer.current);off();window.removeEventListener('focus',scheduleRefresh);};
-  },[refresh,scheduleRefresh,session.id]);
+  },[refresh,scheduleRefresh,session.id,visible]);
   useEffect(()=>{
     const previous=lastTask.current;lastTask.current={state:session.taskState,status:session.status};
     const finished=previous.state!==session.taskState&&['completed','interrupted','error'].includes(session.taskState??'');
     const stopped=previous.status!==session.status&&['running','stopping'].includes(previous.status)&&!['running','stopping'].includes(session.status);
-    if((finished&&session.execution.mode!=='structured')||stopped)scheduleRefresh();
-  },[session.taskState,session.status,session.execution.mode,scheduleRefresh]);
+    if(visible&&((finished&&session.execution.mode!=='structured')||stopped))scheduleRefresh();
+  },[session.taskState,session.status,session.execution.mode,scheduleRefresh,visible]);
   const missing=!!selected&&!!changes?.available&&!changes.truncated&&!changes.changes.some(change=>change.path===selected);
   useEffect(()=>{
     setDiff(undefined);const request=++seq.current;
