@@ -179,6 +179,14 @@ export class SessionService {
   private async worktreeDirectories(s: Session) {
     return [...new Set((await Promise.all([gitWorktreeRoot(this.worktreeBase(s)),gitWorktreeRoot(s.worktree ?? s.cwd)])).map(dir => this.pathKey(dir)))];
   }
+  private async worktreeDeletionDirectories(s: Session) {
+    const recorded = [this.worktreeBase(s), s.worktree!];
+    // Damaged or already removed worktrees cannot report their Git root. Keep
+    // the recorded paths locked as well as every root Git can still resolve;
+    // only the force-cleanup helper may decide whether deletion is safe.
+    const roots = await Promise.all(recorded.map(directory => gitWorktreeRoot(directory).catch(() => undefined)));
+    return [...new Set([...recorded, ...roots.filter((root): root is string => !!root)].map(directory => this.pathKey(directory)))];
+  }
   private cleanupDependencies(s: Session) {
     const target = this.pathKey(s.worktree ?? s.cwd);
     return this.store.state.sessions.some(other => other.id !== s.id &&
@@ -195,10 +203,11 @@ export class SessionService {
       return await action();
     } finally { keys.forEach(key => this.directoryLocks.delete(key)); }
   }
-  private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>) {
+  private async manageWorktree<T>(id:string,action:(s:Session)=>Promise<T>,confirmedPath?:string) {
     return this.manage(id,async()=>{
       const s=this.session(id); if(!s.worktree)throw new Error('此会话没有独立 worktree。');
-      const keys = await this.worktreeDirectories(s);
+      if(confirmedPath!==undefined&&s.worktree!==confirmedPath)throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
+      const keys = confirmedPath===undefined ? await this.worktreeDirectories(s) : await this.worktreeDeletionDirectories(s);
       this.assertDirectoriesUnlocked(keys);
       keys.forEach(k=>this.directoryLocks.add(k));
       try{await this.releaseIdleDirectories(keys,'请先停止此 worktree 和来源目录中的全部会话。');return await action(s);}finally{keys.forEach(k=>this.directoryLocks.delete(k));}
@@ -293,7 +302,7 @@ export class SessionService {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),
       manage: (id, action) => this.manage(id, action), select: id => this.select(id), export: id => this.export(id), onState: this.onState,
-      manageWorktree: (id, action) => this.manageWorktree(id, action), worktreeBase: session => this.worktreeBase(session),
+      manageWorktreeDeletion: (id, confirmedPath, action) => this.manageWorktree(id, action, confirmedPath), worktreeBase: session => this.worktreeBase(session),
       cleanupDependencies: session => this.cleanupDependencies(session),
       forgetQueue: id => this.queue.delete(id),
     });

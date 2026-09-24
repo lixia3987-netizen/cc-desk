@@ -505,6 +505,121 @@ test('a record-removal failure after force cleanup leaves an archived record tha
   }finally{t.mock.restoreAll();await f.dispose();}
 });
 
+test('damaged worktree deletion still blocks source and target activity and dependent sessions when the gitfile is missing',async()=>{
+  const f=await fixture();try{
+    const source=path.join(f.repo,'src'),id=randomUUID(),tree=await createWorktree(source,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:source});
+    const sourceSibling=f.add(path.join(f.repo,'other'));
+    await fs.writeFile(path.join(tree,'keep.txt'),'keep while blocked');
+    await fs.rm(path.join(tree,'.git'));
+    const request={id,forceWorktree:true,worktreePath:tree};
+    for(const activeId of [sourceSibling.id,id]){
+      f.active.add(activeId);
+      await assert.rejects(f.call('session:delete',request),/请先停止.*会话/);
+      f.active.clear();
+      assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'keep while blocked');
+      await assert.rejects(fs.lstat(path.join(tree,'.git')),{code:'ENOENT'});
+    }
+    const child=path.join(tree,'child');await fs.mkdir(child);
+    const dependent=f.add(child);
+    await assert.rejects(f.call('session:delete',request),/依赖/);
+    assert.ok(f.store.state.sessions.some(session=>session.id===id));
+    assert.ok(f.store.state.sessions.some(session=>session.id===dependent.id));
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'keep while blocked');
+    await assert.rejects(fs.lstat(path.join(tree,'.git')),{code:'ENOENT'});
+    assert.equal(await fs.readFile(path.join(f.repo,'initial.txt'),'utf8'),'initial\n');
+  }finally{await f.dispose();}
+});
+
+test('damaged worktree deletion releases idle workers under directory locks before repairing or removing files',async t=>{
+  const f=await fixture();let release!:()=>void,deleting:Promise<unknown>|undefined;
+  try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},worktree:tree,worktreeBase:f.repo});
+    const source=f.add(f.repo),request={id,forceWorktree:true,worktreePath:tree};
+    await fs.writeFile(path.join(tree,'keep.txt'),'wait for worker release');
+    await fs.rm(path.join(tree,'.git'));
+    const branch=`refs/heads/workbench/${id.slice(0,8)}`;
+    const head=(await execFileAsync('git',['rev-parse',branch],{cwd:f.repo})).stdout.trim();
+    let physical=true,failRelease=true,entered!:()=>void;
+    const ready=new Promise<void>(resolve=>{entered=resolve;}),waiting=new Promise<void>(resolve=>{release=resolve;});
+    t.mock.method(f.service.chat,'has',(target:string)=>target===id&&physical);
+    t.mock.method(f.service.chat,'stopIdle',async()=>{if(failRelease)throw new Error('worker still exiting');entered();await waiting;physical=false;});
+    await assert.rejects(f.call('session:delete',request),/worker still exiting/);
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'wait for worker release');
+    failRelease=false;deleting=f.call('session:delete',request);
+    // Fail immediately if validation bypasses or rejects before the release barrier.
+    await Promise.race([ready,deleting.then(()=>{throw new Error('deletion completed before worker release');})]);
+    await assert.rejects(f.service.start(source.id),/管理操作/);
+    await assert.rejects(f.service.withSessionCreation(tree,false,async()=>{}),/管理操作/);
+    await assert.rejects(f.call('session:delete',{id,preserveWorktree:true}),/管理操作/);
+    await assert.rejects(f.call('session:delete',request),/管理操作/);
+    await assert.rejects(fs.lstat(path.join(tree,'.git')),{code:'ENOENT'});
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'wait for worker release');
+    release();await deleting;
+    await assert.rejects(fs.stat(tree),{code:'ENOENT'});
+    assert.equal(f.store.state.sessions.some(session=>session.id===id),false);
+    assert.equal((await execFileAsync('git',['rev-parse',branch],{cwd:f.repo})).stdout.trim(),head);
+    assert.equal(await fs.readFile(path.join(f.repo,'initial.txt'),'utf8'),'initial\n');
+  }finally{release?.();await deleting?.catch(()=>{});t.mock.restoreAll();await f.dispose();}
+});
+
+test('damaged worktree deletion finishes an already absent directory even when its source path is gone, preserving outside files and commits',async()=>{
+  const f=await fixture();try{
+    const source=path.join(f.repo,'src'),id=randomUUID(),tree=await createWorktree(source,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:source});
+    await fs.writeFile(path.join(tree,'committed.txt'),'retain this commit');
+    await execFileAsync('git',['add','.'],{cwd:tree});await execFileAsync('git',['commit','-m','Retained worktree commit'],{cwd:tree});
+    const branch=`refs/heads/workbench/${id.slice(0,8)}`,head=(await execFileAsync('git',['rev-parse',branch],{cwd:f.repo})).stdout.trim();
+    const outside=path.join(f.repo,'other','keep.txt');await fs.writeFile(outside,'outside data');
+    const independent=f.add(path.dirname(outside));
+    await fs.rm(tree,{recursive:true});await fs.rm(source,{recursive:true});
+    await f.call('session:delete',{id,forceWorktree:true,worktreePath:tree});
+    assert.equal(f.store.state.sessions.some(session=>session.id===id),false);
+    assert.equal(new StateStore(f.store.directory).state.sessions.some(session=>session.id===id),false);
+    assert.ok(f.store.state.sessions.some(session=>session.id===independent.id));
+    await assert.rejects(fs.stat(tree),{code:'ENOENT'});
+    assert.equal(await fs.readFile(outside,'utf8'),'outside data');
+    assert.equal((await execFileAsync('git',['rev-parse',branch],{cwd:f.repo})).stdout.trim(),head);
+    assert.equal((await execFileAsync('git',['show',`${branch}:committed.txt`],{cwd:f.repo})).stdout.trim(),'retain this commit');
+  }finally{await f.dispose();}
+});
+
+test('damaged worktree deletion gives actionable guidance and preserves an existing directory when its source cannot be verified',async()=>{
+  const f=await fixture();try{
+    const source=path.join(f.repo,'src'),id=randomUUID(),tree=await createWorktree(source,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:source});
+    await fs.writeFile(path.join(tree,'keep.txt'),'preserve unverified directory');
+    const gitfile=await fs.readFile(path.join(tree,'.git'),'utf8');
+    await fs.rm(source,{recursive:true});
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true,worktreePath:tree}),(error:unknown)=>{
+      assert.ok(error instanceof Error);
+      assert.match(error.message,/来源|原项目|源项目/);
+      assert.match(error.message,/仅删除会话|保留隔离目录|手动/);
+      assert.doesNotMatch(error.message,/Command failed|rev-parse|fatal:|not a git repository/);
+      return true;
+    });
+    assert.equal(f.store.state.sessions.find(session=>session.id===id)?.worktree,tree);
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'preserve unverified directory');
+    assert.equal(await fs.readFile(path.join(tree,'.git'),'utf8'),gitfile);
+    assert.equal(await fs.readFile(path.join(f.repo,'initial.txt'),'utf8'),'initial\n');
+  }finally{await f.dispose();}
+});
+
+test('damaged worktree deletion rejects a stale confirmed path before attempting Git discovery',async()=>{
+  const f=await fixture();try{
+    const id=randomUUID(),tree=await createWorktree(f.repo,f.dir,id);
+    f.add(tree,{id,worktree:tree,worktreeBase:f.repo});
+    await fs.writeFile(path.join(tree,'keep.txt'),'unchanged after stale confirmation');
+    await fs.rm(path.join(tree,'.git'));
+    await assert.rejects(f.call('session:delete',{id,forceWorktree:true,worktreePath:f.repo}),/隔离目录已改变/);
+    assert.equal(f.store.state.sessions.find(session=>session.id===id)?.worktree,tree);
+    assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'unchanged after stale confirmation');
+    await assert.rejects(fs.lstat(path.join(tree,'.git')),{code:'ENOENT'});
+    assert.equal(await fs.readFile(path.join(f.repo,'initial.txt'),'utf8'),'initial\n');
+  }finally{await f.dispose();}
+});
+
 test('busy checks cover source and target subdirectories but permit independent linked worktrees', async()=>{
   const f=await fixture();try {
     const id=randomUUID(), source=path.join(f.repo,'src'), tree=await createWorktree(source,f.dir,id);

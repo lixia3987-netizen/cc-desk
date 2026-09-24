@@ -223,3 +223,134 @@ test('force cleanup refuses a symlink target and leaves external symlink content
     assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
   } finally { await f.dispose(); }
 });
+
+test('force cleanup recovers only the selected registered missing gitfile and preserves source commits and unrelated damaged worktrees', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const other = await createWorktree(f.repo, f.dir, randomUUID());
+    await fs.writeFile(path.join(tree, 'file.txt'), 'unmerged commit\n');
+    await git(tree, 'commit', '-am', 'Keep this branch');
+    const branch = `workbench/${id.slice(0, 8)}`, head = await git(tree, 'rev-parse', 'HEAD');
+    await fs.writeFile(path.join(tree, 'file.txt'), 'discard dirty bytes');
+    await fs.writeFile(path.join(tree, 'ignored.txt'), 'discard ignored bytes');
+    await fs.unlink(path.join(tree, '.git')); await fs.unlink(path.join(other, '.git'));
+    const removed = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(removed.ok, true, removed.message);
+    await assert.rejects(fs.stat(tree), { code: 'ENOENT' });
+    await assert.rejects(fs.stat(path.join(other, '.git')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(other, 'file.txt'), 'utf8'), 'initial\n');
+    assert.equal(await git(f.repo, 'rev-parse', branch), head);
+    assert.equal(await git(f.repo, 'show', `${branch}:file.txt`), 'unmerged commit');
+    assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
+    // A project-local damaged tree misleadingly resolves to the source root.
+    // Cleanup must still target only the registered child, never that parent.
+    const localId = randomUUID(), local = await createWorktree(f.repo, f.dir, localId,
+      { location: 'project', projectPath: f.repo, projectName: 'Test', name: 'missing-git' });
+    await fs.unlink(path.join(local, '.git'));
+    assert.equal(await fs.realpath(await git(local, 'rev-parse', '--show-toplevel')), await fs.realpath(f.repo));
+    const localResult = await forceCleanupWorktree(f.repo, local, localId);
+    assert.equal(localResult.ok, true, localResult.message);
+    await assert.rejects(fs.stat(local), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
+    assert.ok(await git(f.repo, 'rev-parse', `refs/heads/workbench/${localId.slice(0, 8)}`));
+  } finally { await f.dispose(); }
+});
+
+test('missing gitfile recovery refuses wrong ownership, locked registration and nested repositories without leaving a repair file', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const metadata = await git(tree, 'rev-parse', '--absolute-git-dir');
+    const ownerFile = path.join(metadata, 'workbench-owner.json'), originalOwner = await fs.readFile(ownerFile, 'utf8');
+    await fs.unlink(path.join(tree, '.git'));
+    await fs.writeFile(ownerFile, JSON.stringify({ ...JSON.parse(originalOwner), sessionId: randomUUID() }));
+    assert.equal((await forceCleanupWorktree(f.repo, tree, id)).ok, false);
+    await assert.rejects(fs.stat(path.join(tree, '.git')), { code: 'ENOENT' });
+    await fs.writeFile(ownerFile, originalOwner);
+    await git(f.repo, 'worktree', 'lock', '--reason', 'Keep registered work', tree);
+    const locked = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(locked.ok, false); assert.match(locked.message, /锁定|locked/);
+    await assert.rejects(fs.stat(path.join(tree, '.git')), { code: 'ENOENT' });
+    await git(f.repo, 'worktree', 'unlock', tree);
+    const nested = path.join(tree, 'nested'); await fs.mkdir(nested); await git(nested, 'init', '-b', 'main');
+    await fs.writeFile(path.join(nested, 'keep.txt'), 'independent data');
+    const protectedTree = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(protectedTree.ok, false); assert.match(protectedTree.message, /独立 Git 仓库/);
+    await assert.rejects(fs.stat(path.join(tree, '.git')), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(nested, 'keep.txt'), 'utf8'), 'independent data');
+    assert.equal(await fs.readFile(ownerFile, 'utf8'), originalOwner);
+  } finally { await f.dispose(); }
+});
+
+test('absent target cleanup removes only its verified registration, honoring locks and preserving moved directories', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const other = await createWorktree(f.repo, f.dir, randomUUID());
+    const branch = `workbench/${id.slice(0, 8)}`, head = await git(tree, 'rev-parse', 'HEAD');
+    await git(f.repo, 'worktree', 'lock', tree);
+    await fs.rename(tree, tree + '-moved'); await fs.rename(other, other + '-moved');
+    assert.equal((await forceCleanupWorktree(f.repo, tree, id)).ok, false);
+    await git(f.repo, 'worktree', 'unlock', tree);
+    assert.equal((await forceCleanupWorktree(f.repo, tree, randomUUID())).ok, false);
+    const removed = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(removed.ok, true, removed.message);
+    const registrations = await git(f.repo, 'worktree', 'list', '--porcelain');
+    assert.ok(!registrations.includes(`worktree ${tree.replaceAll('\\', '/')}\n`));
+    assert.ok(registrations.includes(`worktree ${other.replaceAll('\\', '/')}\n`));
+    assert.equal(await fs.readFile(path.join(tree + '-moved', 'file.txt'), 'utf8'), 'initial\n');
+    assert.equal(await git(f.repo, 'rev-parse', branch), head);
+    // No registration or directory remains: retrying does not require a Git deletion.
+    assert.equal((await forceCleanupWorktree(f.repo, tree, id)).ok, true);
+    assert.equal((await forceCleanupWorktree(path.join(f.dir, 'missing-source'), tree, id)).ok, true);
+  } finally { await f.dispose(); }
+});
+
+test('malformed existing gitfiles and missing source repositories are preserved with actionable guidance', async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const broken = 'gitdir: /missing/other/repository\n';
+    await fs.writeFile(path.join(tree, '.git'), broken);
+    const existing = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(existing.ok, false); assert.match(existing.message, /\.git 信息已损坏/);
+    assert.match(existing.message, /仅删除会话/); assert.doesNotMatch(existing.message, /Command failed|fatal:/);
+    assert.equal(await fs.readFile(path.join(tree, '.git'), 'utf8'), broken);
+    const missingSource = await forceCleanupWorktree(path.join(f.dir, 'missing-source'), tree, id);
+    assert.equal(missingSource.ok, false); assert.match(missingSource.message, /来源仓库/);
+    assert.match(missingSource.message, /仅删除会话/); assert.doesNotMatch(missingSource.message, /Command failed|rev-parse|fatal:/);
+    assert.equal(await fs.readFile(path.join(tree, 'file.txt'), 'utf8'), 'initial\n');
+  } finally { await f.dispose(); }
+});
+
+test('a failed exclusive gitfile write removes only its partial repair and keeps the registered worktree', async t => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id), marker = path.join(tree, '.git');
+    await fs.unlink(marker);
+    const open = fs.open;
+    t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+      const handle = await open(...args);
+      if (args[0] === marker && args[1] === 'wx') {
+        const writeFile = handle.writeFile.bind(handle);
+        t.mock.method(handle, 'writeFile', async () => { await writeFile('gitdir: '); throw new Error('disk full during repair'); });
+      }
+      return handle;
+    });
+    const result = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(result.ok, false); assert.match(result.message, /disk full/);
+    await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(tree, 'file.txt'), 'utf8'), 'initial\n');
+    assert.ok((await git(f.repo, 'worktree', 'list', '--porcelain')).includes(tree.replaceAll('\\', '/')));
+  } finally { t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('missing gitfile recovery refuses symlinked ownership metadata', { skip: process.platform === 'win32' }, async () => {
+  const f = await fixture(); try {
+    const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
+    const owner = path.join(await git(tree, 'rev-parse', '--absolute-git-dir'), 'workbench-owner.json');
+    const retained = path.join(f.dir, 'original-owner.json');
+    await fs.rename(owner, retained); await fs.symlink(retained, owner); await fs.unlink(path.join(tree, '.git'));
+    const result = await forceCleanupWorktree(f.repo, tree, id);
+    assert.equal(result.ok, false); assert.match(result.message, /元数据异常/);
+    await assert.rejects(fs.stat(path.join(tree, '.git')), { code: 'ENOENT' });
+    assert.equal(JSON.parse(await fs.readFile(retained, 'utf8')).sessionId, id);
+    assert.equal(await fs.readFile(path.join(tree, 'file.txt'), 'utf8'), 'initial\n');
+  } finally { await f.dispose(); }
+});

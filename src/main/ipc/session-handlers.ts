@@ -18,7 +18,7 @@ interface SessionPorts {
   taskOccupied(id: string): boolean;
   admissionPending(id: string): boolean;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
-  manageWorktree<T>(id: string, action: (session: Session) => Promise<T>): Promise<T>;
+  manageWorktreeDeletion<T>(id: string, confirmedPath: string, action: (session: Session) => Promise<T>): Promise<T>;
   worktreeBase(session: Session): string;
   cleanupDependencies(session: Session): boolean;
   select(id: string): void;
@@ -97,7 +97,7 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
     if (typeof input !== 'string' && 'forceWorktree' in input) {
       // Use the same directory locks and worker-release barrier as safe cleanup.
       // Force only relaxes Git's clean/merged checks, never resource ownership.
-      return ports.manageWorktree(id, async session => {
+      return ports.manageWorktreeDeletion(id, input.worktreePath, async session => {
         if (session.worktree !== input.worktreePath) throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
         if (ports.cleanupDependencies(session)) throw new Error('其他会话的工作目录或 worktree 来源依赖此目录，不能强制删除。');
         const result = await forceCleanupWorktree(ports.worktreeBase(session), session.worktree!, id);

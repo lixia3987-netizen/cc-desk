@@ -303,3 +303,60 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await expect(page.locator('.error-banner')).toHaveText([]);
   } finally { await app.close(); await f.dispose(); }
 });
+
+for (const damage of ['missing-git', 'missing-directory'] as const) {
+  test(`worktree location: force deletion recovers an owned external worktree with ${damage} and preserves its branch`, async () => {
+    const f = await workspace(), app = await f.launch();
+    try {
+      const page = await app.firstWindow();
+      await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+      const settings = await openSettings(page);
+      await settings.getByLabel('Worktree 位置', { exact: true }).selectOption('custom');
+      await settings.getByLabel('统一 Worktree 根目录', { exact: true }).fill(f.customRoot);
+      await settings.getByRole('button', { name: '保存设置', exact: true }).click();
+      await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.worktreeRoot).toBe(f.customRoot);
+      await expect(settings.getByRole('button', { name: '保存设置', exact: true })).toBeEnabled();
+      await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+      await page.getByRole('button', { name: /新建会话/ }).click();
+      const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+      const title = 'Damaged external tree ' + damage;
+      await form.getByLabel('会话名称', { exact: true }).fill(title);
+      await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+      await form.getByRole('button', { name: '创建会话', exact: true }).click();
+      await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
+      const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === title)!;
+      expect(path.dirname(path.dirname(created.cwd))).toBe(f.customRoot);
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: created.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      const branch = `refs/heads/workbench/${created.id.slice(0, 8)}`;
+      await fs.writeFile(path.join(created.cwd, 'retained-commit.txt'), 'Committed before metadata damage\n');
+      git('add', '.'); git('commit', '-m', 'Keep damaged worktree branch');
+      const head = git('rev-parse', 'HEAD');
+      await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Explicitly discarded local data\n');
+      if (damage === 'missing-git') {
+        await fs.rm(path.join(created.cwd, '.git'));
+        // Outside the source project, Git cannot accidentally find a parent
+        // repository; this reproduces the user's failing root-discovery call.
+        expect(() => git('--literal-pathspecs', 'rev-parse', '--show-toplevel')).toThrow(/not a git repository/);
+      } else {
+        await fs.rm(created.cwd, { recursive: true });
+      }
+      expect(f.git('worktree', 'list', '--porcelain')).toContain(created.cwd.replaceAll('\\', '/'));
+      const context = page.getByRole('region', { name: '上下文面板', exact: true });
+      if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
+      await context.getByRole('button', { name: '删除会话', exact: true }).click();
+      await context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
+      await expect(dialog).toContainText(created.cwd);
+      await dialog.getByLabel('输入“删除”以确认', { exact: true }).fill('删除');
+      await dialog.getByRole('button', { name: '确认强制删除', exact: true }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
+      expect(await fs.stat(created.cwd).then(() => true, () => false)).toBe(false);
+      expect(f.git('worktree', 'list', '--porcelain')).not.toContain(created.cwd.replaceAll('\\', '/'));
+      expect(f.git('rev-parse', branch)).toBe(head);
+      expect(f.git('show', `${branch}:retained-commit.txt`)).toBe('Committed before metadata damage');
+      expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Original project content\n');
+      await expect(page.locator('.error-banner')).toHaveText([]);
+    } finally { await app.close(); await f.dispose(); }
+  });
+}

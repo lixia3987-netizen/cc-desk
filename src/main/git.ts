@@ -279,10 +279,7 @@ async function assertNoNestedRepositories(root: string): Promise<void> {
   }
 }
 
-/** Explicit destructive choice: discard worktree files, but never delete its branch. */
-export async function forceCleanupWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {
-  return mutate(basePath, async () => {
-    if (running) return { ok: false, status: 'blocked', message: '请先停止使用此工作区及来源目录的所有会话。' };
+async function forceRemoveVerifiedWorktree(basePath: string, worktreePath: string, sessionId: string): Promise<WorktreeActionResult> {
     try {
       const [base, target, common, directory, root, entry] = await Promise.all([
         fs.realpath(basePath), fs.realpath(worktreePath),
@@ -316,5 +313,137 @@ export async function forceCleanupWorktree(basePath: string, worktreePath: strin
     } catch (error) {
       return { ok: false, status: 'blocked', message: `隔离目录未完成强制删除；不会绕过 Git 保护或递归删除目录。${errorMessage(error)}` };
     }
-  });
+}
+
+async function canonicalExistingParent(value: string): Promise<string> {
+  let current = path.resolve(value);
+  const missing: string[] = [];
+  for (;;) {
+    try { return path.join(await fs.realpath(current), ...missing); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = path.dirname(current);
+      if (parent === current) throw error;
+      missing.unshift(path.basename(current)); current = parent;
+    }
+  }
+}
+
+async function optionalEntry(file: string) {
+  return fs.lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; return undefined; });
+}
+
+async function metadataText(file: string): Promise<string> {
+  const entry = await fs.lstat(file);
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.size > 16384) throw new Error('工作区登记元数据异常，不能自动恢复。');
+  return fs.readFile(file, 'utf8');
+}
+
+/** Prove identity from the source repository without relying on the target's .git file. */
+async function registeredWorktreeOwner(base: string, target: string, sessionId: string): Promise<{ directory: string; common: string } | undefined> {
+  const common = await fs.realpath((await git(base, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
+  if (containsDirectory(target, base) || containsDirectory(target, common)) throw new Error('隔离目录包含来源目录或 Git 元数据，不能强制删除。');
+  const records = (await git(base, ['worktree', 'list', '--porcelain', '-z'])).split('\0\0').filter(Boolean);
+  let matched: string[] | undefined;
+  for (const record of records) {
+    const fields = record.split('\0'), value = fields.find(field => field.startsWith('worktree '));
+    if (!value) continue;
+    const registered = await canonicalExistingParent(value.slice(9));
+    if (registered === target) {
+      if (matched) throw new Error('隔离目录存在重复登记，不能自动恢复。');
+      matched = fields;
+    } else if (containsDirectory(target, registered)) throw new Error(`隔离目录内还登记了其他 worktree，请先处理：${registered}`);
+  }
+  if (!matched) return;
+  if (matched.some(field => field === 'locked' || field.startsWith('locked '))) throw new Error('隔离目录已被 Git 锁定（locked），请先处理锁定原因。');
+  const branch = `workbench/${sessionId.slice(0, 8)}`;
+  if (!matched.includes(`branch refs/heads/${branch}`)) throw new Error('隔离目录登记的分支与会话不匹配，不能自动恢复。');
+  const metadataRoot = path.join(common, 'worktrees');
+  const rootEntry = await fs.lstat(metadataRoot);
+  if (!rootEntry.isDirectory() || rootEntry.isSymbolicLink()) throw new Error('工作区登记目录异常，不能自动恢复。');
+  let found: string | undefined;
+  for (const entry of await fs.readdir(metadataRoot, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const directory = path.join(metadataRoot, entry.name);
+    // Other registrations may be damaged too; never repair or modify them.
+    const pointer = await metadataText(path.join(directory, 'gitdir')).catch(() => undefined);
+    if (!pointer || await canonicalExistingParent(pointer.trim()) !== path.join(target, '.git')) continue;
+    if (found) throw new Error('隔离目录存在重复所有权记录，不能自动恢复。');
+    if (containsDirectory(target, directory)) throw new Error('隔离目录包含 Git 元数据，不能强制删除。');
+    const owner = JSON.parse(await metadataText(path.join(directory, OWNER_FILE))) as Ownership;
+    const shared = await fs.realpath(path.resolve(directory, (await metadataText(path.join(directory, 'commondir'))).trim()));
+    const head = (await metadataText(path.join(directory, 'HEAD'))).trim();
+    if (owner.version !== 1 || owner.sessionId !== sessionId || owner.basePath !== base || owner.branch !== branch || !owner.baseBranch ||
+        shared !== common || head !== `ref: refs/heads/${branch}`) throw new Error('隔离目录缺少匹配的应用所有权记录，不能自动恢复。');
+    if (await optionalEntry(path.join(directory, 'locked'))) throw new Error('隔离目录已被 Git 锁定（locked），请先处理锁定原因。');
+    await git(base, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]);
+    found = directory;
+  }
+  if (!found) throw new Error('隔离目录缺少匹配的应用所有权记录，不能自动恢复。');
+  return { directory: found, common };
+}
+
+/** Explicit destructive choice: discard worktree files, but never delete its branch. */
+export async function forceCleanupWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {
+  const blocked = (message: string): WorktreeActionResult => ({ ok: false, status: 'blocked', message });
+  const absent = (): WorktreeActionResult => ({ ok: true, status: 'removed', message: '隔离目录已经不存在，未删除任何文件；Git 分支和已提交记录保留。' });
+  if (running) return blocked('请先停止使用此工作区及来源目录的所有会话。');
+  try {
+    const entry = await optionalEntry(worktreePath);
+    if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) return blocked('只能删除会话登记的完整 worktree 根目录，不能删除链接或文件。');
+    const target = await canonicalExistingParent(worktreePath);
+    let base: string;
+    try { base = await fs.realpath(basePath); await gitWorktreeRoot(base); }
+    catch {
+      if (!entry && !await optionalEntry(worktreePath)) return absent();
+      return blocked(`无法验证来源仓库 ${basePath} 的 Git 信息。请恢复来源仓库，或选择“仅删除会话，保留隔离目录”。`);
+    }
+    return await withGitMutation(base, async () => {
+      if (!entry) {
+        const owner = await registeredWorktreeOwner(base, target, sessionId);
+        if (await optionalEntry(worktreePath)) return blocked('隔离目录在检查过程中重新出现，请刷新后重试。');
+        if (owner) await git(base, ['worktree', 'remove', '--force', '--', target]);
+        return absent();
+      }
+      const marker = path.join(target, '.git');
+      if (await optionalEntry(marker)) {
+        try { await gitWorktreeRoot(target); }
+        catch { return blocked(`隔离目录 ${target} 的 .git 信息已损坏。请恢复原链接，或选择“仅删除会话，保留隔离目录”。`); }
+        return forceRemoveVerifiedWorktree(base, worktreePath, sessionId);
+      }
+      const owner = await registeredWorktreeOwner(base, target, sessionId);
+      if (!owner) return blocked('隔离目录缺少匹配的应用所有权记录，不能自动恢复；可选择仅删除会话并保留目录。');
+      const current = await fs.lstat(target);
+      if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== entry.dev || current.ino !== entry.ino || await fs.realpath(worktreePath) !== target) {
+        return blocked('隔离目录在检查过程中发生变化，请刷新后重试。');
+      }
+      // Git cannot remove a registered directory whose backlink disappeared.
+      // Restore only this proven owner's missing file; git worktree repair would
+      // also mutate unrelated registrations, so it is deliberately not used here.
+      const pointer = `gitdir: ${owner.directory}\n`;
+      const handle = await fs.open(marker, 'wx', 0o600);
+      let created: import('node:fs').Stats | undefined, written = false, result: WorktreeActionResult | undefined;
+      try {
+        created = await handle.stat();
+        await handle.writeFile(pointer); written = true;
+        await handle.close();
+        result = await forceRemoveVerifiedWorktree(base, target, sessionId);
+        return result;
+      } finally {
+        await handle.close().catch(() => undefined);
+        if (!result?.ok && created) {
+          // Roll back only our unchanged inode and bytes, including a partial
+          // write. A concurrently replaced or edited .git file must survive.
+          const remaining = await optionalEntry(marker);
+          if (remaining?.isFile() && !remaining.isSymbolicLink() && remaining.dev === created.dev && remaining.ino === created.ino) {
+            const contents = await fs.readFile(marker, 'utf8');
+            if (written ? contents === pointer : pointer.startsWith(contents)) await fs.unlink(marker);
+          }
+        }
+      }
+    });
+  } catch (error) {
+    const detail = errorMessage(error);
+    return blocked(`无法安全清理隔离目录；可选择“仅删除会话，保留隔离目录”。${/^(Command failed: git|spawn git)/.test(detail) ? `来源仓库 ${basePath} 或隔离目录的 Git 信息已变化，请检查后重试。` : detail}`);
+  }
 }
