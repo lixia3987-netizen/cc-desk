@@ -2,11 +2,13 @@
 
 日期：2026-09-25（北京时间）。
 
-分析基线：`dev/native-agent@b9a644fda61b8f74bf9e47cdff4f7cda35ae75b8`。
+历史分析基线：`dev/native-agent@b9a644fda61b8f74bf9e47cdff4f7cda35ae75b8`；保留下文的原始缺口分析与设计理由，不代表最终候选的现状。
 
 关联文档：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段一验收](MONOREPO-PHASE-1-VALIDATION.md)、[阶段二实现与验收](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**实现验证中**，阶段分支为 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。本文保留分析基线的缺口、设计理由与验收要求；实际落地接口、迁移/回退说明及结果以[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)为准。下列验收项不是已经通过的结果，三平台结论待固定候选验证后补齐；本阶段不合入 main、不发布 Release。
+状态：**已完成，三平台验收通过**。固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，阶段分支为 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
+
+本文保留历史分析基线的缺口、设计理由与验收要求；实际落地接口、迁移/回退说明及验证结果以[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)为准。下列验收项是历史计划定义的门槛，不单独作为通过证据。P2 代码及后续独立 docs PR 的目标都仅为 `dev/native-agent`；本阶段不合入 main、不发布 Release。
 
 ## 1. 阶段目标
 
@@ -214,6 +216,6 @@ P2a 的入口任务是注入 ChatRuntime/TranscriptHydrator/子任务和展示�
 
 本阶段不创建 agent-core/agent-node 空包，不接真实模型，不实现工具执行器、上下文压缩、MCP、完整 Skills、多 Agent、TUI 或插件市场。P3 在稳定契约上开始；真实编码能力上线前必须补齐独立上下文、工具权限/预算、持久化与写入并发规则。
 
-实施分支建议为 `refactor/engine-boundaries`，从最新 `dev/native-agent` 创建。阶段 PR 目标仅为 `dev/native-agent`；如按 P2a/P2b 分 PR，两者分别满足自身验收且第二个从已集成的 dev 开始。当前计划文档不启动阶段二实施，也不触发 main 合并或发布。
+阶段实现已形成上述固定候选，位于 `refactor/engine-boundaries`，固定候选的完整验收结论见本文开头及验收记录。阶段代码 PR 目标仅为 `dev/native-agent`；验收状态和证据文档后续通过独立 docs PR 更新，目标同样仅为 `dev/native-agent`。固定候选及 CI 结果应相互对应；本次文档更新不触发 main 合并或 Release 发布。
 
 在用户另行明确授权前，所有代码继续只进入开发分支，不合入 main。
