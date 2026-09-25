@@ -21,6 +21,7 @@ const until = async (condition: () => boolean, timeout = 4000) => {
 const fixture = String.raw`
 const readline = require('node:readline');
 const fs = require('node:fs');
+const path = require('node:path');
 let session = process.argv[2];
 const commands=[{name:'compact',builtin:true,description:'压缩上下文',argumentHint:'[保留内容]'}, {name:'context',builtin:true,description:'上下文详情'}, {name:'clear',builtin:true}, {name:'team:review',description:'项目代码检查'}, {name:'resume',builtin:true}];
 let permissionMode = process.argv[5] || 'default';
@@ -28,6 +29,16 @@ const bypassEnabled = permissionMode === 'bypassPermissions';
 const output = value => process.stdout.write(JSON.stringify(value)+'\n');
 let turn=0;let pending;let current='';
 const done = text => { output({type:'assistant',message:{id:'msg-'+turn,content:[{type:'text',text}]}}); output({type:'result',subtype:'success',is_error:false,result:text,session_id:session,usage:{input_tokens:12,output_tokens:3},duration_ms:42,total_cost_usd:0.001,num_turns:1}); };
+// Arm before publishing the intermediate state. Only the observing test may advance it.
+const afterRelease = (name, action) => {
+ const releaseFile=path.join(path.dirname(process.argv[3]),'release-'+name);
+ if(fs.existsSync(releaseFile))throw new Error('Stale fixture release: '+name);
+ let released=false;
+ const watcher=fs.watch(path.dirname(releaseFile),()=>{
+  if(released||!fs.existsSync(releaseFile))return;
+  released=true;watcher.close();fs.unlinkSync(releaseFile);action();
+ });
+};
 readline.createInterface({input:process.stdin}).on('line',line=>{
  const m=JSON.parse(line);fs.appendFileSync(process.argv[3],line+'\n');
  if(m.type==='control_request'){
@@ -175,14 +186,15 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    done('foreground done');return;
   }
   if(current==='subtasks-background-ack'){
+   afterRelease('background-ack',()=>{
+    output({type:'system',subtype:'task_notification',task_id:'async-task',status:'completed',summary:'Background work complete'});
+    done('background done');
+   });
    output({type:'system',subtype:'task_started',task_id:'async-task',tool_use_id:'async-tool',task_type:'local_agent',description:'Background agent'});
    output({type:'assistant',message:{id:'async-message',content:[{type:'tool_use',id:'async-tool',name:'Agent',input:{description:'Background agent'}}]}});
    output({type:'user',tool_use_result:{status:'async_launched',agentId:'async-agent',description:'Background agent'},message:{content:[{type:'tool_result',tool_use_id:'async-tool',content:'Launched successfully'}]}});
    output({type:'result',uuid:'async-intermediate',subtype:'success',result:'Agent launched',session_id:session});
-   setTimeout(()=>{
-    output({type:'system',subtype:'task_notification',task_id:'async-task',status:'completed',summary:'Background work complete'});
-    done('background done');
-   },100);return;
+   return;
   }
   if(current==='subtasks-agent-alias'){
    output({type:'assistant',message:{id:'alias-message',content:[{type:'tool_use',id:'alias-tool',name:'Agent',input:{description:'Alias task'}}]}});
@@ -276,8 +288,15 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    const question=current==='question';const input=question?{questions:[{question:'Which database?',header:'Database',options:[{label:'SQLite',description:'Local'},{label:'Postgres'}],multiSelect:false}]}:{command:'touch approved-file',description:'fixture only'};
    const toolName=question?'AskUserQuestion':'Bash';
    output({type:'assistant',message:{id:'tools-'+turn,content:[{type:'tool_use',id:'tool-'+turn,name:toolName,input}]}});
-   pending={id:'permission-'+turn,input,question};output({type:'control_request',request_id:pending.id,request:{subtype:'can_use_tool',tool_name:toolName,input,tool_use_id:'tool-'+turn}});
-   if(current==='cancel')setTimeout(()=>{output({type:'control_cancel_request',request_id:pending.id});pending=undefined;done('cancelled request');},80);
+   pending={id:'permission-'+turn,input,question};
+   if(current==='cancel'){
+    const request=pending;
+    afterRelease('cancel',()=>{
+     if(pending!==request)return;
+     output({type:'control_cancel_request',request_id:request.id});pending=undefined;done('cancelled request');
+    });
+   }
+   output({type:'control_request',request_id:pending.id,request:{subtype:'can_use_tool',tool_name:toolName,input,tool_use_id:'tool-'+turn}});
    return;
   }
   output({type:'stream_event',event:{type:'message_start',message:{id:'msg-'+turn,model:'fixture-model'}}});
@@ -307,7 +326,16 @@ function setup(options: { initialFailure?: boolean; noTranscript?: boolean; hono
   const observedId = randomUUID(); const starts: boolean[] = [], launches: string[][] = [];
   const runtime = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 1500, controlTimeoutMs: 150, backgroundResultTimeoutMs: 80, transcriptExists: async () => !options.noTranscript && starts.length > 0, invocation: (session, caps, resumed) => { launches.push(chatArguments(session, caps, resumed)); starts.push(resumed); return { file: process.execPath, args: [script, options.honorIdentity ? session.execution.conversationId! : observedId, record, options.initialFailure && starts.length === 1 ? 'fail-init' : '', session.permissionMode] }; } });
   const sent = () => fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-  return { directory, store, session, runtime, starts, launches, observedId, sent, cleanup: async () => { await runtime.shutdown(); fs.rmSync(directory, { recursive: true, force: true }); } };
+  const releaseAndWait = async <T>(name: string, result: Promise<T>): Promise<T> => {
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      fs.writeFileSync(path.join(directory, 'release-'+name), 'release', { flag: 'wx' });
+      return await Promise.race([result, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Timed out waiting for fixture release: '+name)), 4000);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
+  };
+  return { directory, store, session, runtime, starts, launches, observedId, sent, releaseAndWait, cleanup: async () => { await runtime.shutdown(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
 
 test('CLI update interrupts a running turn and permits explicit conversation resume after disconnection', async () => {
@@ -445,8 +473,14 @@ test('CLI cancellation expires approval, interrupt ends only the turn, configura
   try {
     const cancelled = s.runtime.send(s.session.id, 'cancel', capabilities);
     await until(() => s.runtime.snapshot(s.session.id).pending.length === 1);
+    // A delayed observer must not miss approval because an 80 ms fixture timer expired.
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.equal(s.runtime.snapshot(s.session.id).pending.length, 1);
     const request = s.runtime.snapshot(s.session.id).pending[0];
-    await cancelled; assert.throws(() => s.runtime.respond(s.session.id, request.requestId, { behavior: 'allow' }), /失效/);
+    assert.equal(s.runtime.snapshot(s.session.id).taskState, 'waiting_approval');
+    assert.equal((await s.releaseAndWait('cancel', cancelled)).summary, 'cancelled request');
+    assert.deepEqual(s.runtime.snapshot(s.session.id).pending, []);
+    assert.throws(() => s.runtime.respond(s.session.id, request.requestId, { behavior: 'allow' }), /失效/);
     await s.runtime.updateConfig(s.session.id, { model: 'new-model', permissionMode: 'plan' });
     assert.equal(s.store.state.sessions[0].engineConfig.options.model, 'new-model'); assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode, 'plan');
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'bad' }), /unknown model/);
@@ -774,7 +808,8 @@ test('attention summaries expose only live requests and remove resolved, cancell
     s.runtime.respond(s.session.id,pending.requestId,{behavior:'deny'});assert.deepEqual(s.runtime.attention(),[]);await turn;
     const question=s.runtime.send(s.session.id,'question',capabilities);await until(()=>s.runtime.attention()[0]?.kind==='question');
     await s.runtime.interrupt(s.session.id);await question;assert.deepEqual(s.runtime.attention(),[]);
-    const cancelled=s.runtime.send(s.session.id,'cancel',capabilities);await cancelled;assert.deepEqual(s.runtime.attention(),[]);
+    const cancelled=s.runtime.send(s.session.id,'cancel',capabilities);await until(()=>s.runtime.attention().length===1);
+    await s.releaseAndWait('cancel',cancelled);assert.deepEqual(s.runtime.attention(),[]);
     const stopping=s.runtime.send(s.session.id,'approve',capabilities);await until(()=>s.runtime.attention().length===1);s.runtime.stop(s.session.id);
     assert.deepEqual(s.runtime.attention(),[]);await stopping;
   }finally{await s.cleanup();}
@@ -816,10 +851,12 @@ test('background launch acknowledgement remains running until its lifecycle conf
   try {
     const result = s.runtime.send(s.session.id, 'subtasks-background-ack', capabilities);
     await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Agent launched'));
+    // This exceeds the old 100 ms completion window; progress now requires our release.
+    await new Promise(resolve => setTimeout(resolve, 250));
     const tasks = s.store.state.sessions[0].subtasks!.tasks;
     assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'running'); assert.equal(tasks[0].background, true);
     assert.equal(tasks[0].agentId, 'async-agent'); assert.equal(s.runtime.isBusy(s.session.id), true);
-    assert.equal((await result).summary, 'background done');
+    assert.equal((await s.releaseAndWait('background-ack', result)).summary, 'background done');
     assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'completed');
   } finally { await s.cleanup(); }
 });
