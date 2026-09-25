@@ -97,6 +97,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await expect(page.getByRole('region', { name: '工具审批' })).toBeVisible();
     await app.evaluate(() => { const controls = (globalThis as unknown as { __p2EngineFixture: FixtureControls }).__p2EngineFixture; controls.available = false; controls.refresh(); });
     await expect(page.locator('.engine-unavailable')).toContainText('测试引擎暂时离线');
+    await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
     await expect(page.getByRole('region', { name: '工具审批' })).toBeVisible();
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     await expect(page.locator('.chat-message.assistant').last()).toContainText('测试审批已完成');
@@ -169,6 +170,7 @@ test('engine history ignores stale source results and unknown configurations ret
   const f = await fixture();
   const unknownId = randomUUID(), futureId = randomUUID(), now = new Date().toISOString();
   const workspace = JSON.parse(await fs.readFile(path.join(f.data, 'workspace.json'), 'utf8'));
+  workspace.settings.engineDefaults.claude = { schemaVersion: 99, options: { future: { alpha: 'preserve', beta: [1, 2] }, extra: true } };
   workspace.sessions = [
     { id: unknownId, providerId: 'vendor.missing', title: '缺失引擎记录', schemaVersion: 42 },
     { id: futureId, providerId: 'test.native', title: '未来配置记录', schemaVersion: 99 },
@@ -187,8 +189,35 @@ test('engine history ignores stale source results and unknown configurations ret
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.chat-message.assistant')).toContainText('已保存的独立引擎记录');
+    // Unknown defaults must not block unrelated preferences. IPC serialization
+    // may rebuild either the outer options or nested objects in a new key order.
+    await page.evaluate(async () => {
+      const { state } = await window.desktop.snapshot();
+      await window.desktop.saveSettings({ ...state.settings, fontSize: 15 });
+    });
+    const savedPreferences = await page.evaluate(async () => {
+      const { state } = await window.desktop.snapshot(), config = state.settings.engineDefaults.claude;
+      await window.desktop.saveSettings({ ...state.settings, fontSize: 16, engineDefaults: { ...state.settings.engineDefaults,
+        claude: { schemaVersion: config.schemaVersion, options: { extra: true, future: { beta: [1, 2], alpha: 'preserve' } } },
+      } });
+      return (await window.desktop.snapshot()).state.settings;
+    });
+    expect(savedPreferences.fontSize).toBe(16);
+    expect(savedPreferences.engineDefaults.claude).toEqual(workspace.settings.engineDefaults.claude);
+    await expect(page.evaluate(async () => {
+      const { state } = await window.desktop.snapshot(), config = state.settings.engineDefaults.claude;
+      await window.desktop.saveSettings({ ...state.settings, fontSize: 17, engineDefaults: { ...state.settings.engineDefaults,
+        claude: { ...config, options: { ...config.options, extra: false } },
+      } });
+    })).rejects.toThrow('此引擎配置版本不受支持');
+    const rejectedPreferences = await page.evaluate(async () => (await window.desktop.snapshot()).state.settings);
+    expect(rejectedPreferences.fontSize).toBe(16);
+    expect(rejectedPreferences.engineDefaults.claude).toEqual(workspace.settings.engineDefaults.claude);
     await expect(page.locator('.approval-card')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '删除会话', exact: true })).toBeDisabled();
+    await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
+    await page.getByRole('button', { name: '继续输入', exact: true }).click();
+    await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeFocused();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('/retained draft');
     await expect(page.locator('.slash-menu')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
@@ -253,6 +282,7 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     await expect(page.locator('.chat-message.assistant')).toContainText('测试引擎完成：maintenance message');
     await page.locator('.session-row').filter({ hasText: '等待维护的 Claude' }).click();
     await expect(page.locator('.engine-unavailable')).toContainText('正在维护');
+    await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('维护时保存的草稿');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '新建会话', exact: false }).click();

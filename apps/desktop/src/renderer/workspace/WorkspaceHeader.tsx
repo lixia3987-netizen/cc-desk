@@ -58,7 +58,7 @@ export function WorkspaceHeader({ state, active, descriptor, unavailable, readOn
           <button className="secondary compact danger" disabled={readOnly || busy || active.status === 'stopping'} onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
             <Square size={13} />停止</button>
         </> : !structured && active.status === 'running' ? <button className="secondary compact" disabled={busy || readOnly} title="关闭等待输入的终端进程，稍后可以恢复" onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
-          <X size={13} />关闭终端</button> : <button className="primary compact" disabled={busy || active.archived || !!unavailable || (active.kind === 'agent' && active.started && active.status !== 'running' && !descriptor?.capabilities.resume)} title={unavailable} onClick={() => { if (structured) { document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus(); setNotice('输入任务并按 Enter 发送；Ctrl / ⌘ + Enter 换行。'); } else void start(active); }}>
+          <X size={13} />关闭终端</button> : <button className="primary compact" disabled={busy || active.archived || (!structured && (!!unavailable || (active.kind === 'agent' && active.started && active.status !== 'running' && !descriptor?.capabilities.resume)))} title={structured ? undefined : unavailable} onClick={() => { if (structured) { document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus(); setNotice('输入任务并按 Enter 发送；Ctrl / ⌘ + Enter 换行。'); } else void start(active); }}>
           <Play size={14} />{structured ? (active.started ? '继续输入' : '开始输入') : active.started ? '恢复会话' : '启动会话'}</button>}</div>}
     </div>
   </header>;

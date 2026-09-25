@@ -68,7 +68,23 @@ async function expectPanelGeometry(page: Page, open: readonly PanelName[], colum
   const first = boxes[0]!;
   for (const box of boxes) expect(Math.abs(box!.width - first.width)).toBeLessThan(2);
   if (columns === 2) {
-    expect(first.width).toBeCloseTo(320, 0);
+    const geometry = Math.abs(first.width - 320) >= 0.5 ? await page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>('.session-content')!;
+      const inspector = document.querySelector<HTMLElement>('#session-inspector')!;
+      const dock = inspector.querySelector<HTMLElement>('.inspector-dock')!;
+      const styles = getComputedStyle(dock);
+      return {
+        viewport: { width: innerWidth, height: innerHeight, availableHeight: screen.availHeight, devicePixelRatio },
+        content: container.getBoundingClientRect().toJSON(), inspector: inspector.getBoundingClientRect().toJSON(),
+        dock: { offsetWidth: dock.offsetWidth, clientWidth: dock.clientWidth, offsetHeight: dock.offsetHeight,
+          clientHeight: dock.clientHeight, scrollWidth: dock.scrollWidth, scrollHeight: dock.scrollHeight, scrollTop: dock.scrollTop },
+        css: Object.fromEntries(['width', 'height', 'grid-template-columns', 'grid-template-rows', 'column-gap', 'row-gap',
+          'overflow-x', 'overflow-y', 'scrollbar-gutter'].map(property => [property, styles.getPropertyValue(property)])),
+        panels: Array.from(inspector.querySelectorAll<HTMLElement>('.inspector-panel:not([hidden])'))
+          .map(element => ({ id: element.dataset.panel, ...element.getBoundingClientRect().toJSON() })),
+      };
+    }) : undefined;
+    expect(first.width, geometry ? JSON.stringify({ measuredPanels: boxes, geometry }, null, 2) : undefined).toBeCloseTo(320, 0);
     expect(Math.abs(boxes[1]!.x - first.x)).toBeLessThan(2);
     expect(boxes[1]!.y).toBeGreaterThanOrEqual(first.y + first.height - 1);
     expect(boxes[2]!.x).toBeGreaterThanOrEqual(first.x + first.width - 1);

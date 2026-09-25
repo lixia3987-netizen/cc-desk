@@ -268,10 +268,10 @@ export function App() {
       {!active ? <WorkspaceWelcome hasProjects={!!state.projects.length} historyAvailable={!!historySources.length} openNew={openNew} chooseProject={chooseProject} openHistory={openHistory} /> : <>
         {active.execution.providerId === 'claude' && !structured && active.status === 'running' && active.terminalSync !== 'synced' && <div className="sync-note">{active.terminalSync === 'unsupported' ? '当前 CLI 不支持状态同步，任务状态请查看终端。' : '等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
         {active.error && <div className="inline-warning">{active.error}</div>}
-        {unavailable && <div className="inline-warning engine-unavailable" role="status">{unavailable}</div>}
+        {!structured && unavailable && <div className="inline-warning engine-unavailable" role="status">{unavailable}</div>}
         <div className="session-content">
           <SessionViewport state={state} active={active} executors={executors} descriptor={descriptor} disabled={!!unavailable} readOnly={readOnly} structured={structured} themeId={themeId} composer={composer} onDraft={setComposer} onSent={expected => clearSentDraft(active.id, expected)} report={report} onClearError={() => setError('')}>
-            {structured && <ChatPane key={active.id} session={active} descriptor={descriptor} readOnly={readOnly} draft={composer} disabled={!!unavailable}
+            {structured && <ChatPane key={active.id} session={active} descriptor={descriptor} readOnly={readOnly} draft={composer} disabled={!!unavailable} unavailable={unavailable}
               onDraft={value => saveDraftFor(active.id, value)} onSent={expected => clearSentDraft(active.id, expected)}
               onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id, () => window.desktop.pickAttachments(active.id))} onProjectFiles={() => setFilePicker(active.id)}
               onDropFiles={files => void addAttachments(active.id, () => window.desktop.addDroppedAttachments(active.id, files))}

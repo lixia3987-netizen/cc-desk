@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nati
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
@@ -111,7 +112,7 @@ function registerIPC() {
     const cliChanged=settings.claudePath!==store.state.settings.claudePath;
     if(cliChanged)cliUpdates.assertIdle();
     for (const [providerId, config] of Object.entries(settings.engineDefaults)) {
-      if (JSON.stringify(config) === JSON.stringify(store.state.settings.engineDefaults[providerId])) continue;
+      if (isDeepStrictEqual(config, store.state.settings.engineDefaults[providerId])) continue;
       const descriptor = executors.descriptors().find(item => item.providerId === providerId);
       if (descriptor) {
         services.assertEngineAvailable(providerId);

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { stripVTControlCharacters } from 'node:util';
+import { inspect, stripVTControlCharacters } from 'node:util';
 import { Runtime } from '../src/main/runtime';
 import { StateStore } from '../src/main/store';
 import type { Capabilities, Session } from '../src/shared/types';
@@ -301,7 +301,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-test('session maintenance disconnects Claude while Shell stays interactive and normal capacity still applies', { timeout: 15000 }, async () => {
+test('session maintenance disconnects Claude while Shell stays interactive and normal capacity still applies', { timeout: 15000 }, async t => {
   const f = lifecycleFixture();
   const claude: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
   const spare: Session = { ...f.session, id: randomUUID() };
@@ -309,37 +309,61 @@ test('session maintenance disconnects Claude while Shell stays interactive and n
   const shell = new ShellTerminalLauncher(f.store);
   const output = new Map<string, string>();
   let claudeClosed = 0;
+  let phase = 'starting';
+  const failures: unknown[] = [];
   const runtime = new Runtime(f.store, () => {}, chunk => output.set(chunk.sessionId, (output.get(chunk.sessionId) ?? '') + chunk.data), {
     prepare: async session => session.execution.providerId === 'shell' ? shell.prepare(session) : {
-      file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+      // A resident CLI cancels the current turn on Ctrl-C and keeps its process.
+      // Announce readiness after installing the handler; no platform timing guess.
+      file: process.execPath, args: ['-e', `
+        process.on('SIGINT', () => process.stdout.write('claude-interrupted\\n'));
+        process.stdout.write('claude-ready\\n');
+        setInterval(() => {}, 1000);
+      `], env: environment(),
       resource: { close: async () => { claudeClosed++; } },
     },
-  });
+  }, { onError: error => t.diagnostic(`PTY maintenance ${phase}: ${inspect(error, { depth: 6 })}`) });
   try {
     await runtime.start(f.session.id); await runtime.start(claude.id);
+    const claudeOutput = () => stripVTControlCharacters(output.get(claude.id) ?? '');
+    await until(() => claudeOutput().includes('claude-ready'), 'Claude fixture readiness', claudeOutput);
     await assert.rejects(runtime.disconnectSessions([claude.id]), /必须暂停目标会话/);
     runtime.setSessionMaintenance([claude.id], true);
     await assert.rejects(runtime.start(claude.id), /正在更新/);
     assert.throws(() => runtime.write(claude.id, 'input'), /正在更新/);
     assert.throws(() => runtime.resize(claude.id, 120, 40), /正在更新/);
     await assert.rejects(runtime.start(spare.id), /并发会话上限/);
+    phase = 'Claude interrupt';
     assert.doesNotThrow(() => runtime.interrupt(claude.id), 'cancellation remains available during maintenance');
+    await until(() => claudeOutput().includes('claude-interrupted'), 'Claude interrupt acknowledgement', claudeOutput);
+    assert.equal(runtime.has(claude.id), true, 'interrupt cancels the turn while the resident CLI stays connected');
+    phase = 'Claude disconnect';
     await runtime.disconnectSessions([claude.id]);
     assert.equal(claudeClosed, 1);
     assert.equal(runtime.has(claude.id), false);
     assert.equal(runtime.has(f.session.id), true);
     assert.equal(f.store.state.sessions.find(session => session.id === f.session.id)?.status, 'running');
+    phase = 'Shell interaction';
     runtime.resize(f.session.id, 120, 40);
     runtime.write(f.session.id, process.platform === 'win32' ? "Write-Output ('shell-' + 'survived')\r" : "printf '\\n%s%s\\n' 'shell-' 'survived'\r");
     await until(() => stripVTControlCharacters(output.get(f.session.id) ?? '').includes('shell-survived'), 'Shell input during Claude maintenance');
+    phase = 'spare Shell start';
     await runtime.start(spare.id);
     runtime.setSessionMaintenance([claude.id], false);
     await assert.rejects(runtime.start(claude.id), /并发会话上限/);
+    phase = 'global shutdown';
     await runtime.shutdown();
+    assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+    assert.equal(runtime.lastError, undefined);
     runtime.setSessionMaintenance([claude.id], false); runtime.setMaintenance(false);
     await assert.rejects(runtime.start(claude.id), /正在退出/, 'maintenance release cannot reopen a shutting down runtime');
-  } finally {
-    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+  } catch (error) { failures.push(error); }
+  finally {
+    const cleanups = await Promise.allSettled([runtime.shutdown(), f.runtime.shutdown()]);
+    for (const result of cleanups) if (result.status === 'rejected') failures.push(result.reason);
+    if (failures.length) throw new AggregateError(failures,
+      `PTY maintenance failed during ${phase}: ${inspect(failures, { depth: 8 })}`);
+    fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
 
