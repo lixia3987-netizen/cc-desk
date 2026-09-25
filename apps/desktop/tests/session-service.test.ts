@@ -9,7 +9,7 @@ import type { BrowserWindow } from 'electron';
 import { SessionService } from '../src/main/session-service';
 import { StateStore } from '../src/main/store';
 import { Attachments } from '../src/main/attachments';
-import type { TerminalExecutor } from '../src/main/execution/ports';
+import type { StructuredExecutor, TerminalExecutor } from '../src/main/execution/ports';
 import { ExecutionRegistry } from '../src/main/execution/registry';
 import { ClaudeStructuredExecutor } from '../src/main/engines/claude/structured-executor';
 import { claudeCapabilities } from '../src/main/engines/claude/capabilities';
@@ -34,12 +34,15 @@ async function fixture(window:BrowserWindow|null=null) {
   const projectId=randomUUID(), now=new Date().toISOString();
   store.change(s=>{s.projects.push({id:projectId,path:repo,name:'Test',createdAt:now});s.settings.claudePath=path.join(dir,'unavailable-claude');});
   const active=new Set<string>();
+  const maintained=new Set<string>();
   const runtime={
     getSession:(id:string)=>{const session=store.state.sessions.find(s=>s.id===id);if(!session)throw new Error('Session missing');return session;},
-    has:(id:string)=>active.has(id),start:async(id:string)=>{active.add(id);},stop:(id:string)=>{active.delete(id);},
+    has:(id:string)=>active.has(id),start:async(id:string)=>{if(maintained.has(id))throw new Error('maintained');active.add(id);},stop:(id:string)=>{active.delete(id);},
     forget:(id:string)=>{active.delete(id);},shutdown:async()=>{active.clear();},get activeCount(){return active.size;},
-    setMaintenance:(_value:boolean)=>{},disconnectAll:async()=>{active.clear();}
-  } as unknown as TerminalExecutor;
+    setMaintenance:(_value:boolean)=>{},disconnectAll:async()=>{active.clear();},
+    setSessionMaintenance:(ids:readonly string[],value:boolean)=>{for(const id of ids){if(value)maintained.add(id);else maintained.delete(id);}},
+    disconnectSessions:async(ids:readonly string[])=>{for(const id of ids)active.delete(id);},
+  } as unknown as TerminalExecutor & Required<Pick<TerminalExecutor, 'setSessionMaintenance' | 'disconnectSessions'>>;
   const caps:Capabilities={available:false,executable:'',version:'',flags:[],efforts:[]};
   const registry=new ExecutionRegistry(id=>{const s=store.state.sessions.find(s=>s.id===id);if(!s)throw new Error('Session missing');return s;});
   const chat=new ClaudeStructuredExecutor(store,()=>caps,registry.events);
@@ -53,10 +56,10 @@ async function fixture(window:BrowserWindow|null=null) {
   const call=async<T>(name:string,input:unknown):Promise<T> => await handlers.get(name)!(input) as T;
   const add=(cwd:string, extra:Partial<Session>={})=>{
     const session:Session={id:randomUUID(),projectId,title:'Test',cwd,kind:'shell',execution:{providerId:'shell',mode:'terminal'},started:false,
-      model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:now,updatedAt:now,...extra};
+      engineConfig:{schemaVersion:1,options:extra.execution?.providerId==='claude'?{model:'',effort:'default',permissionMode:'default'}:{}},status:'idle',archived:false,createdAt:now,updatedAt:now,...extra};
     store.change(s=>s.sessions.push(session));return session;
   };
-  return {dir,repo,store,service,runtime,chat,active,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
+  return {dir,repo,store,service,runtime,chat,active,maintained,registry,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
 test('context recovery holds the lifecycle lock and preserves a paused queue while rejecting racing sends and workflows', async t => {
@@ -141,6 +144,215 @@ test('disconnection and persistence failures abort the update but still stop ind
     const session = f.add(f.repo); await f.service.start(session.id); assert.equal(f.active.size, 1);
   } finally { await f.dispose(); }
 });
+
+test('engine maintenance stops only Claude while shared Shell and a non-Claude executor remain usable', async t => {
+  const f = await fixture();
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const installing = new Promise<void>(resolve => { entered = resolve; });
+  let update: Promise<void> | undefined;
+  try {
+    const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
+    const queuedClaude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+    const shell = f.add(f.repo);
+    const native = f.add(f.repo, { kind: 'agent', execution: { providerId: 'test.native', mode: 'structured', conversationId: 'native/opaque' } });
+    let nativeActive = true, nativeMaintenance = 0;
+    const sent: string[] = [];
+    const nativeSnapshot = (): ChatSnapshot => ({ sessionId: native.id, taskState: 'idle', messages: [], pending: [] });
+    const executor: StructuredExecutor = {
+      get activeCount() { return nativeActive ? 1 : 0; }, has: (id: string) => nativeActive && id === native.id, isBusy: () => false,
+      taskState: () => 'idle', hydrate: async () => {}, snapshot: nativeSnapshot, attention: () => [],
+      page: async () => ({ messages: [], before: null, after: null, incomplete: false }),
+      search: async () => ({ hits: [], nextBefore: null, incomplete: false }),
+      prepareCommands: async () => nativeSnapshot(), respond: () => {}, updateConfig: async () => {}, exports: async () => [],
+      send: async (_id: string, text: string) => { sent.push(text); return { success: true, summary: text }; },
+      interrupt: () => {}, stop: () => { nativeActive = false; }, stopIdle: async () => { nativeActive = false; }, forget: () => {},
+      setMaintenance: () => { nativeMaintenance++; }, disconnectAll: async () => { throw new Error('Native must not be disconnected'); },
+      shutdown: async () => { nativeActive = false; },
+    };
+    f.registry.register({ providerId: 'test.native', mode: 'structured', executor, capabilities: () => ({ available: true, structured: true, terminal: false, approvals: false, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false }) });
+    await f.service.start(claude.id); await f.service.start(shell.id);
+    update = f.service.withEngineMaintenance('claude', async () => { entered(); await held; });
+    await installing;
+    assert.equal(f.active.has(claude.id), false); assert.equal(f.active.has(shell.id), true);
+    assert.equal(nativeActive, true); assert.equal(nativeMaintenance, 0);
+    await assert.rejects(f.service.start(claude.id), /正在更新/);
+    await assert.rejects(f.call('chat:submit', { id: queuedClaude.id, text: 'must not dispatch' }), /正在更新/);
+    await assert.rejects(f.call('chat:commands', queuedClaude.id), /正在更新/);
+    await f.call('session:draft', { id: queuedClaude.id, text: 'save during maintenance' });
+    assert.equal((await f.call<ChatSnapshot>('chat:snapshot', queuedClaude.id)).sessionId, queuedClaude.id);
+    await f.service.start(shell.id);
+    assert.deepEqual(await f.call('chat:send', { id: native.id, text: 'native continues' }), { success: true, summary: 'native continues' });
+    const run = f.service.workflows.create({ sessionId: native.id, goal: 'native workflow', pauseAfterEachStage: false, maxAttempts: 2,
+      stages: [{ id: 'one', title: 'One', instruction: 'Inspect', dependsOn: [] }, { id: 'two', title: 'Two', instruction: 'Verify', dependsOn: ['one'] }] });
+    f.service.workflows.start(run.id);
+    assert.equal((await f.service.workflows.wait(run.id)).status, 'completed');
+    assert.equal(sent.length, 3);
+    assert.equal(f.service.queue.snapshot(queuedClaude.id).paused, true);
+    release(); await update;
+    assert.equal(f.active.has(shell.id), true); assert.equal(nativeActive, true);
+    assert.equal(f.service.queue.snapshot(queuedClaude.id).paused, true);
+    assert.equal(f.store.state.sessions.find(session => session.id === queuedClaude.id)?.draft, 'save during maintenance');
+    await f.service.start(claude.id);
+  } finally { release?.(); await update?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('engine maintenance drains an admitted attachment read before installing and never dispatches it', async t => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { enter = resolve; });
+  const reading = new Promise<void>(resolve => { release = resolve; });
+  let update: Promise<void> | undefined;
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+    const shell = f.add(f.repo);
+    const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
+    t.mock.method(attachments, 'retain', async () => { enter(); await reading; });
+    let sent = 0, installed = false;
+    t.mock.method(f.service.chat, 'send', async () => { sent++; return { success: true, summary: 'unexpected' }; });
+    const sending = assert.rejects(f.call('chat:send', { id: session.id, text: 'pending attachment' }), /正在更新|取消/);
+    await ready;
+    update = f.service.withEngineMaintenance('claude', async () => { installed = true; });
+    await f.service.start(shell.id);
+    assert.equal(installed, false);
+    release(); await sending; await update;
+    assert.equal(installed, true); assert.equal(sent, 0); assert.equal(f.active.has(shell.id), true);
+  } finally { release?.(); await update?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('engine admission generations reject pre-maintenance attachment requests after maintenance has ended', async t => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { enter = resolve; });
+  const reading = new Promise<void>(resolve => { release = resolve; });
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+    const before = f.service.captureEngineAdmission('claude'), other = f.service.captureEngineAdmission('test.native');
+    const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
+    t.mock.method(attachments, 'validate', async () => { enter(); await reading; return []; });
+    let sent = 0;
+    t.mock.method(f.service.chat, 'send', async () => { sent++; return { success: true, summary: 'unexpected' }; });
+    const sending = assert.rejects(f.call('chat:send', { id: session.id, text: 'pre-maintenance request' }), /维护已取消/);
+    await ready;
+    await f.service.withEngineMaintenance('claude', async () => {});
+    assert.throws(before, /维护已取消/); assert.doesNotThrow(other);
+    assert.doesNotThrow(f.service.captureEngineAdmission('claude'));
+    release(); await sending;
+    assert.equal(sent, 0);
+  } finally { release?.(); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('engine maintenance waits for queue completion ownership after the model turn has released admission', async t => {
+  const f = await fixture();
+  let finishTurn!: () => void, releaseAttachment!: () => void;
+  let enterTurn!: () => void, enterAttachment!: () => void;
+  const turning = new Promise<void>(resolve => { enterTurn = resolve; });
+  const attaching = new Promise<void>(resolve => { enterAttachment = resolve; });
+  const turn = new Promise<void>(resolve => { finishTurn = resolve; });
+  const attachment = new Promise<void>(resolve => { releaseAttachment = resolve; });
+  let update: Promise<void> | undefined, submitting: Promise<void> | undefined;
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+    const shell = f.add(f.repo);
+    t.mock.method(f.service.chat, 'send', async () => { enterTurn(); await turn; return { success: true, summary: 'finished' }; });
+    await f.call('chat:submit', { id: session.id, text: 'accepted first turn' });
+    await turning;
+    const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
+    const accept = attachments.acceptQueued.bind(attachments);
+    t.mock.method(attachments, 'acceptQueued', async (id: string, files: string[], commit: (names: string[]) => void) => { enterAttachment(); await attachment; await accept(id, files, commit); });
+    submitting = assert.rejects(f.call('chat:submit', { id: session.id, text: 'late attachment transaction' }), /正在更新|维护已取消/);
+    await attaching;
+    finishTurn();
+    // Drain promise continuations: the turn has finished, but its queue receipt
+    // is still behind the pending attachment transaction in the per-session FIFO.
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal((f.service as unknown as { admissions: Set<string> }).admissions.has(session.id), false);
+    assert.equal(f.service.queue.hasActive(session.id), true);
+    let installed = false;
+    update = f.service.withEngineMaintenance('claude', async () => { installed = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    await f.service.start(shell.id);
+    assert.equal(installed, false, 'installation must wait for the queue owner, even without a model admission');
+    releaseAttachment(); await submitting; await update;
+    assert.equal(installed, true); assert.equal(f.service.queue.hasActive(session.id), false);
+    assert.deepEqual(f.service.queue.snapshot(session.id).items, []);
+    assert.equal(f.service.queue.snapshot(session.id).paused, true);
+    assert.equal(f.active.has(shell.id), true);
+  } finally {
+    finishTurn?.(); releaseAttachment?.(); await submitting?.catch(() => {}); await update?.catch(() => {});
+    t.mock.restoreAll(); await f.dispose();
+  }
+});
+
+test('engine maintenance attempts every selected cleanup after a save failure and preserves Shell', async t => {
+  const f = await fixture();
+  try {
+    const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
+    const shell = f.add(f.repo);
+    await f.service.start(claude.id); await f.service.start(shell.id);
+    let chats = 0, terminals = 0, installed = 0;
+    t.mock.method(f.service.queue, 'pauseSessions', () => { throw new Error('queue disk fault'); });
+    t.mock.method(f.service.workflows, 'disconnectSessions', async () => { throw new Error('workflow disk fault'); });
+    t.mock.method(f.chat, 'disconnectAll', async () => { chats++; });
+    t.mock.method(f.runtime, 'disconnectSessions', async (ids: readonly string[]) => { terminals++; for (const id of ids) f.active.delete(id); });
+    await assert.rejects(f.service.withEngineMaintenance('claude', async () => { installed++; }), /已取消更新/);
+    assert.equal(chats, 1); assert.equal(terminals, 1); assert.equal(installed, 0);
+    assert.equal(f.active.has(shell.id), true); assert.equal(f.active.has(claude.id), false);
+    assert.equal(f.maintained.size, 0);
+    assert.doesNotThrow(() => f.service.assertEngineAvailable('claude'));
+  } finally { t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('global shutdown wins over a pending engine drain and maintenance finally cannot reopen admission', async t => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { enter = resolve; });
+  const draining = new Promise<void>(resolve => { release = resolve; });
+  let update: Promise<void> | undefined;
+  try {
+    const shell = f.add(f.repo);
+    await f.service.start(shell.id);
+    t.mock.method(f.chat, 'disconnectAll', async () => { enter(); await draining; });
+    let installed = 0;
+    update = f.service.withEngineMaintenance('claude', async () => { installed++; });
+    const rejected = assert.rejects(update, /正在退出/);
+    await ready;
+    await assert.rejects(f.service.withEngineMaintenance('test.native', async () => {}), /正在维护/);
+    await f.service.shutdown();
+    release(); await rejected;
+    assert.equal(installed, 0); assert.equal(f.active.size, 0);
+    assert.throws(() => f.service.assertEngineAvailable('claude'), /正在退出/);
+    assert.throws(() => f.service.assertEngineAvailable('shell'), /正在退出/);
+    await assert.rejects(f.service.start(shell.id), /正在退出/);
+  } finally { release?.(); await update?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('engine maintenance releases the original driver fence when an earlier deletion removes its session', async t => {
+  const f = await fixture();
+  let enter!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { enter = resolve; });
+  const removing = new Promise<void>(resolve => { release = resolve; });
+  let update: Promise<void> | undefined;
+  try {
+    const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
+    const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
+    const original = attachments.remove.bind(attachments);
+    t.mock.method(attachments, 'remove', async (id: string) => { enter(); await removing; await original(id); });
+    const deletion = f.call('session:delete', session.id);
+    await ready;
+    let installed = false;
+    update = f.service.withEngineMaintenance('claude', async () => { installed = true; });
+    assert.equal(f.maintained.has(session.id), true);
+    assert.equal(installed, false);
+    release(); await deletion; await update;
+    assert.equal(installed, true); assert.equal(f.maintained.size, 0);
+    assert.equal(f.registry.descriptors().find(item => item.providerId === 'claude')?.maintenance, false);
+    assert.equal(f.store.state.sessions.some(item => item.id === session.id), false);
+    const replacement = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
+    await f.service.start(replacement.id);
+  } finally { release?.(); await update?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
 test('worktree creation releases completed structured CLIs under directory locks before invoking Git',async t=>{
   const f=await fixture();try{
     const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()},status:'running',taskState:'completed'});
@@ -210,8 +422,8 @@ test('idle structured sessions can archive and delete while active tasks retain 
     assert.equal(physical.has(deleted.id),true);
     busy=false;await f.call('session:delete',deleted.id);
     assert.equal(physical.size,0);assert.equal(f.store.state.sessions.some(s=>s.id===deleted.id),false);
-    await f.call('session:update',{id:archived.id,archived:false,title:'配置时手动标题',model:'selected-model'});
-    assert.equal(f.store.state.sessions[0].titleSource,'manual');assert.equal(f.store.state.sessions[0].model,'selected-model');
+    await f.call('session:update',{id:archived.id,archived:false,title:'配置时手动标题',engineConfig:{schemaVersion:1,options:{model:'selected-model',effort:'default',permissionMode:'default'}}});
+    assert.equal(f.store.state.sessions[0].titleSource,'manual');assert.equal(f.store.state.sessions[0].engineConfig.options.model,'selected-model');
   }finally{t.mock.restoreAll();await f.dispose();}
 });
 

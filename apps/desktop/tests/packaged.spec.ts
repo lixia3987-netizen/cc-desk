@@ -8,6 +8,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { extractFile, listPackage } from '@electron/asar';
+import { persistedStateSchema as legacyWorkspaceSchema } from '../src/shared/workspace-v2';
 
 type Target = { format: string; artifact: string; executable: string; arch: string };
 const manifest = process.env.WORKBENCH_PACKAGED_TARGETS;
@@ -185,7 +186,9 @@ for (const target of targets) {
       await page.screenshot({ path: testInfo.outputPath('packaged-terminal.png') });
       await close();
 
-      const persisted = JSON.parse(await fs.readFile(path.join(profile, 'workspace.json'), 'utf8'));
+      const workspaceFile = path.join(profile, 'workspace.json');
+      const persisted = JSON.parse(await fs.readFile(workspaceFile, 'utf8'));
+      expect(persisted.version).toBe(3);
       expect(persisted.sessions).toHaveLength(1);
       expect(persisted.sessions[0].title).toBe('打包程序终端验证');
       expect(persisted.sessions[0].status).toBe('stopped');
@@ -193,21 +196,57 @@ for (const target of targets) {
       // project, session identity and transcript, then reopen with the packaged app.
       delete persisted.settings.notifications;
       delete persisted.settings.closeToTray;
+      delete persisted.settings.engineDefaults;
+      persisted.settings.defaultPermissionMode = 'default';
       persisted.version = 1;
       for (const session of persisted.sessions) {
+        // This fixture was created through the real Shell UI. A v1 Shell still
+        // required the old generic fields, although it never used Claude options.
+        expect(session.kind).toBe('shell');
+        expect(session.engineConfig).toEqual({ schemaVersion: 1, options: {} });
+        Object.assign(session, { model: '', effort: 'default', permissionMode: 'default' });
+        delete session.engineConfig;
         session.claudeId = session.execution.conversationId ?? randomUUID();
         session.kind = session.kind === 'agent' ? 'claude' : 'shell';
         delete session.execution;
         for (const key of ['adapter', 'draft', 'taskState', 'terminalSync', 'identityPending']) delete session[key];
       }
-      await fs.writeFile(path.join(profile, 'workspace.json'), JSON.stringify(persisted));
+      // Check the unmodified historical reader without replacing our v1 input
+      // with its transformed v2 output. The app must perform the real migration.
+      expect(legacyWorkspaceSchema.parse(persisted).version).toBe(2);
+      const legacyBytes = Buffer.from(JSON.stringify(persisted, null, 4) + '\n');
+      await fs.writeFile(workspaceFile, legacyBytes);
       page = await launch();
       await expect(page.getByRole('button', { name: /打包程序终端验证.*已停止/ })).toBeVisible();
       const state = (await page.evaluate(() => window.desktop.snapshot())).state;
+      expect(state.version).toBe(3);
+      expect(state.settings.engineDefaults.claude).toEqual({ schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } });
+      expect(state.settings.notifications).toBeUndefined();
+      expect(state.settings.closeToTray).toBeUndefined();
       expect(state.projects).toHaveLength(1);
       expect(state.projects[0].path).toBe(await fs.realpath(project));
       expect(state.sessions).toHaveLength(1);
       expect(state.sessions[0].id).toBe(persisted.sessions[0].id);
+      expect(state.sessions[0].execution).toEqual({ providerId: 'shell', mode: 'terminal' });
+      expect(state.sessions[0].engineConfig).toEqual({ schemaVersion: 1, options: {} });
+      for (const key of ['model', 'effort', 'permissionMode', 'claudeId']) expect(state.sessions[0]).not.toHaveProperty(key);
+      // Migration is dirty until a critical save/flush. Use normal packaged IPC
+      // for two distinct saves: the second rotates .bak but must not touch the
+      // immutable, byte-for-byte pre-v3 backup.
+      await page.evaluate(id => window.desktop.updateSession({ id, title: '打包程序终端验证 · v3' }), state.sessions[0].id);
+      const backups = async () => (await fs.readdir(profile)).filter(name => name.startsWith('workspace.pre-v3.')).sort();
+      const migrationBackups = await backups();
+      expect(migrationBackups).toHaveLength(1);
+      expect(migrationBackups[0]).toMatch(/^workspace\.pre-v3\.[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.json$/i);
+      const migrationBackup = path.join(profile, migrationBackups[0]);
+      expect(await fs.readFile(migrationBackup)).toEqual(legacyBytes);
+      const migratedDisk = JSON.parse(await fs.readFile(workspaceFile, 'utf8'));
+      expect(migratedDisk.version).toBe(3);
+      expect(migratedDisk.sessions[0].engineConfig).toEqual(state.sessions[0].engineConfig);
+      await page.evaluate(id => window.desktop.updateSession({ id, title: '打包程序终端验证' }), state.sessions[0].id);
+      expect(JSON.parse(await fs.readFile(workspaceFile + '.bak', 'utf8')).version).toBe(3);
+      expect(await backups()).toEqual(migrationBackups);
+      expect(await fs.readFile(migrationBackup)).toEqual(legacyBytes);
       expect((await page.evaluate(async () => {
         const snapshot = await window.desktop.snapshot();
         return (await window.desktop.terminalSnapshot(snapshot.state.sessions[0].id)).chunks.map(chunk => chunk.data).join('');
@@ -226,6 +265,24 @@ for (const target of targets) {
       }
       expect(errors).toEqual([]);
       await close();
+      // Reopen the same real executable against the now-persisted v3 workspace.
+      // No second migration or additional immutable backup may occur.
+      page = await launch();
+      const restored = (await page.evaluate(() => window.desktop.snapshot())).state;
+      expect(restored.version).toBe(3);
+      expect(restored.sessions).toHaveLength(1);
+      expect(restored.sessions[0].id).toBe(state.sessions[0].id);
+      expect(restored.sessions[0].title).toBe('打包程序终端验证');
+      expect(restored.sessions[0].execution).toEqual(state.sessions[0].execution);
+      expect(restored.sessions[0].engineConfig).toEqual(state.sessions[0].engineConfig);
+      expect(restored.settings.engineDefaults).toEqual(state.settings.engineDefaults);
+      expect(await backups()).toEqual(migrationBackups);
+      expect(await fs.readFile(migrationBackup)).toEqual(legacyBytes);
+      expect(errors).toEqual([]);
+      await close();
+      expect(JSON.parse(await fs.readFile(workspaceFile, 'utf8')).version).toBe(3);
+      expect(await backups()).toEqual(migrationBackups);
+      expect(await fs.readFile(migrationBackup)).toEqual(legacyBytes);
     } finally {
       if (app) {
         const page = app.windows()[0];

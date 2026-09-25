@@ -31,7 +31,7 @@ function setup(exists: (id: string) => Promise<boolean> = async () => false) {
   const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'existing session', kind: 'agent', cwd: worktree,
     worktree, worktreeBase: directory, execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID(), imported: true, forkFrom: randomUUID() },
     started: true, status: 'error', taskState: 'error', error: MISSING_TRANSCRIPT_ERROR, archived: false,
-    model: '', effort: 'default', permissionMode: 'default', draft: '保留草稿', createdAt: now, updatedAt: now };
+    engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, draft: '保留草稿', createdAt: now, updatedAt: now };
   store.change(state => state.sessions.push(session));
   const history = new ChatHistory(directory, () => false), snapshot = history.get(session.id);
   const message = { id: randomUUID(), turnId: randomUUID(), role: 'user' as const, text: '保留历史消息', createdAt: now };

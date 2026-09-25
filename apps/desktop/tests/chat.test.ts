@@ -300,7 +300,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
 function setup(options: { initialFailure?: boolean; noTranscript?: boolean; honorIdentity?: boolean } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-chat-'));
   const store = new StateStore(directory);
-  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'agent',  cwd: directory,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+  const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'agent',  cwd: directory,  started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
   store.change(state => state.sessions.push(session));
   const script = path.join(directory, 'fixture.cjs'); fs.writeFileSync(script, fixture);
   const record = path.join(directory, 'stdin.jsonl');
@@ -383,10 +383,10 @@ test('stream framing handles split/coalesced records, blank lines, UTF8 and reje
 test('arguments retain approval support and preserve the explicitly selected permission mode', () => {
   const s = setup();
   try {
-    const args = chatArguments({ ...s.session, model: 'name; $(echo bad)' }, capabilities, false);
+    const args = chatArguments({ ...s.session, engineConfig: { schemaVersion: 1, options: { ...s.session.engineConfig.options, model: 'name; $(echo bad)' } } }, capabilities, false);
     assert.ok(args.includes('--permission-prompt-tool')); assert.ok(args.includes('stdio'));
     assert.ok(args.includes('name; $(echo bad)')); assert.ok(!args.some(value => value.includes('dangerously')));
-    const bypass=chatArguments({...s.session,permissionMode:'bypassPermissions'},capabilities,false);
+    const bypass=chatArguments({...s.session,engineConfig:{schemaVersion:1,options:{...s.session.engineConfig.options,permissionMode:'bypassPermissions'}}},capabilities,false);
     assert.equal(bypass[bypass.indexOf('--permission-mode')+1],'bypassPermissions');
     assert.equal(bypass[bypass.indexOf('--permission-prompt-tool')+1],'stdio');
     assert.throws(() => chatArguments(s.session, { ...capabilities, flags: capabilities.flags.filter(flag => flag !== '--permission-prompt-tool') }, false), /不支持结构化/);
@@ -448,9 +448,9 @@ test('CLI cancellation expires approval, interrupt ends only the turn, configura
     const request = s.runtime.snapshot(s.session.id).pending[0];
     await cancelled; assert.throws(() => s.runtime.respond(s.session.id, request.requestId, { behavior: 'allow' }), /失效/);
     await s.runtime.updateConfig(s.session.id, { model: 'new-model', permissionMode: 'plan' });
-    assert.equal(s.store.state.sessions[0].model, 'new-model'); assert.equal(s.store.state.sessions[0].permissionMode, 'plan');
+    assert.equal(s.store.state.sessions[0].engineConfig.options.model, 'new-model'); assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode, 'plan');
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'bad' }), /unknown model/);
-    assert.equal(s.store.state.sessions[0].model, 'new-model');
+    assert.equal(s.store.state.sessions[0].engineConfig.options.model, 'new-model');
     await assert.rejects(s.runtime.updateConfig(s.session.id, { effort: 'max' }), /停止会话/);
     const hanging = s.runtime.send(s.session.id, 'hang', capabilities);
     await until(() => s.runtime.snapshot(s.session.id).taskState === 'thinking');
@@ -468,7 +468,7 @@ test('bypass switches restart idle CLI processes, resume identity and retain int
     const originalId=s.store.state.sessions[0].execution.conversationId;
     await s.runtime.updateConfig(s.session.id,{permissionMode:'bypassPermissions',model:undefined,effort:undefined});
     assert.equal(s.runtime.has(s.session.id),false);
-    assert.equal(s.store.state.sessions[0].permissionMode,'bypassPermissions');
+    assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode,'bypassPermissions');
     assert.equal(s.runtime.snapshot(s.session.id).permissionMode,'bypassPermissions');
     const questionResult=s.runtime.send(s.session.id,'question',capabilities);
     await until(()=>s.runtime.snapshot(s.session.id).pending.length===1);
@@ -564,11 +564,11 @@ test('child session metadata cannot overwrite root settings and unacknowledged l
   try {
     await s.runtime.send(s.session.id, 'child-init', capabilities);
     assert.equal(s.runtime.snapshot(s.session.id).model, 'fixture-model');
-    assert.equal(s.store.state.sessions[0].permissionMode, 'default');
+    assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode, 'default');
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'no-ack' }), /超时/);
     await until(() => !s.runtime.has(s.session.id));
-    assert.match(s.runtime.snapshot(s.session.id).error!, /配置变更未获 CLI 确认/);
+    assert.match(s.runtime.snapshot(s.session.id).error!, /配置变更.*已停止会话/);
   } finally { await s.cleanup(); }
 });
 
@@ -887,7 +887,7 @@ test('child system events and results track nested work without changing parent 
     assert.equal(tasks[0].summary, 'Child final report'); assert.equal(tasks[1].parentToolUseId, 'child-agent');
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     assert.equal(s.runtime.snapshot(s.session.id).model, 'fixture-model');
-    assert.equal(s.store.state.sessions[0].permissionMode, 'default');
+    assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode, 'default');
   } finally { await s.cleanup(); }
 });
 

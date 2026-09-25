@@ -4,8 +4,10 @@ import { version as appVersion } from '../../package.json';
 import { cliUpdateBusy, type CLIUpdateState } from '../shared/cli-update';
 import type { ExecutionDescriptor } from '../shared/execution';
 import { isSessionBusy } from '../shared/session-activity';
-import type { AppState, Attachment, Capabilities, NewSession, Session } from '../shared/types';
+import type { AppState, Attachment, Capabilities, Session } from '../shared/types';
 import { ChatPane } from './ChatPane';
+import { configurationSupported, engineDefaults, executionUnavailable } from './EngineConfiguration';
+import type { SessionDraft } from './workspace/types';
 import { CLIUpdateNotice } from './CLIUpdateNotice';
 import { Dialog } from './Dialog';
 import { FilePicker } from './ProjectPanels';
@@ -33,7 +35,9 @@ export function App() {
   const [executors, setExecutors] = useState<ExecutionDescriptor[]>([]);
   const [cap, setCap] = useState<Capabilities>({ available: false, executable: '', version: '', flags: [], efforts: ['default'] });
   const [cliUpdate, setCLIUpdate] = useState<CLIUpdateState>({ phase: 'idle', message: '等待检查 Claude Code 更新。', showBanner: false });
-  const cliUpdateEvents = useRef(0);
+  const cliUpdateEvents = useRef(0), executorEvents = useRef(0);
+  const [cliActionBusy, setCLIActionBusy] = useState(false);
+  const cliActionPending = useRef(false);
   const [projectId, setProjectId] = useState('all');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(() => new Set());
   const expandGroup = useCallback((id: string) => setCollapsedGroups(current => {
@@ -50,7 +54,7 @@ export function App() {
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [operationBusy, setBusy] = useState(false);
-  const busy = operationBusy || cliUpdateBusy(cliUpdate);
+  const busy = operationBusy;
   const latestBusy = useRef(busy); latestBusy.current = busy;
   const latestState = useRef(state); latestState.current = state;
   const selection = useRef(new SessionSelection());
@@ -70,14 +74,18 @@ export function App() {
   const [dataPath, setDataPath] = useState('');
   const [platform, setPlatform] = useState('');
   const [rename, setRename] = useState('');
-  const [draft, setDraft] = useState<NewSession>({ projectId: '', title: '', kind: 'agent', providerId: 'claude', model: '', effort: 'default', permissionMode: 'default', isolated: false, mode: 'structured' });
+  const [draft, setDraft] = useState<SessionDraft>({ projectId: '', title: '', kind: 'agent', providerId: 'claude', engineConfig: { schemaVersion: 1, options: {} }, isolated: false, mode: 'structured' });
   const report = useCallback((error: unknown) => setError(error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error)), []);
   const { drafts, saveDraftFor, clearSentDraft, flushDrafts, persistDrafts, appendDraft } = useSessionDrafts(latestState, report);
   const { approvalDrafts, panelDrafts, readingPositions, retainSessions, updatePanel } = useSessionMemory(latestState, report);
   const active = state?.sessions.find(s => s.id === activeId);
   const composer = active ? (drafts[active.id] ?? active.draft ?? '') : '';
   const structured = active?.execution.mode === 'structured';
-  const executionCapabilities = executors.find(executor => executor.providerId === active?.execution.providerId && executor.mode === active?.execution.mode)?.capabilities;
+  const descriptor = executors.find(executor => executor.providerId === active?.execution.providerId && executor.mode === active?.execution.mode);
+  const executionCapabilities = descriptor?.capabilities;
+  const unavailable = active ? executionUnavailable(descriptor, active) : undefined;
+  const readOnly = !!active && !configurationSupported(descriptor, active.engineConfig);
+  const historySources = executors.filter(item => item.history);
   const activeBusy = !!active && isSessionBusy(active);
   const project = state?.projects.find(p => p.id === (active?.projectId ?? projectId));
   const applyState = useCallback((value: AppState) => {
@@ -91,11 +99,11 @@ export function App() {
     }
   }, [expandGroup, retainSessions]);
   const refresh = useCallback(async () => {
-    const revision = stateEvents.current, updateRevision = cliUpdateEvents.current;
+    const revision = stateEvents.current, updateRevision = cliUpdateEvents.current, executorRevision = executorEvents.current;
     const snapshot = await window.desktop.snapshot();
     if (revision === stateEvents.current) applyState(snapshot.state);
     if (updateRevision === cliUpdateEvents.current) setCLIUpdate(snapshot.cliUpdate);
-    setCap(snapshot.capabilities); setExecutors(snapshot.executors);
+    setCap(snapshot.capabilities); if (executorRevision === executorEvents.current) setExecutors(snapshot.executors);
     setDataPath(snapshot.dataPath); setPlatform(snapshot.platform);
   }, [applyState]);
   const perform = useCallback(async (action: () => Promise<unknown>) => {
@@ -104,7 +112,7 @@ export function App() {
   }, [report]);
   const preferences = useWorkspacePreferences({ settings: state?.settings, open: modal === 'settings', refresh, perform, report, notify: setNotice });
   const { themeId, value: draftSettings } = preferences;
-  const { historyQuery, setHistoryQuery, historyNext, history, historyBusy, resetHistory, moreHistory } = useHistorySearch(draft.projectId, modal === 'history', perform, report);
+  const { historyQuery, setHistoryQuery, historyNext, history, historyBusy, resetHistory, moreHistory } = useHistorySearch(draft.projectId, draft.providerId ?? '', modal === 'history' && historySources.some(item => item.providerId === draft.providerId), perform, report);
   useEffect(() => {
     if (!window.desktop) { setError('请使用 npm run dev 或已安装的桌面应用打开此界面。'); return; }
     void refresh().catch(report);
@@ -127,8 +135,9 @@ export function App() {
       setProjectId('all'); setArchived(selected.archived); setSearch(''); expandGroup(selected.projectId);
     });
     const offCapabilities = window.desktop.onCapabilities(value => { setCap(value); void refresh().catch(report); });
+    const offExecutors = window.desktop.onExecutors(value => { executorEvents.current++; setExecutors(value); });
     const offCLIUpdate = window.desktop.onCLIUpdate(value => { cliUpdateEvents.current++; setCLIUpdate(value); });
-    return () => { disposed = true; offState(); offCapabilities(); offCLIUpdate(); offChat(); offError(); offNavigate(); };
+    return () => { disposed = true; offState(); offCapabilities(); offExecutors(); offCLIUpdate(); offChat(); offError(); offNavigate(); };
   }, [refresh, report, applyState, expandGroup]);
   const selectSession = (id: string) => {
     flushDrafts(); selection.current.request(id); setActiveId(id); setDeleteConfirm('');
@@ -137,11 +146,12 @@ export function App() {
     void window.desktop.setSelection(id).catch(report);
   };
   const setComposer = (value: string) => { if (active) saveDraftFor(active.id, value); };
-  const updateCLI = () => void perform(async () => {
-    // Persist pending text before confirmation; cancelling keeps both the draft and running tasks.
-    await persistDrafts();
-    await window.desktop.updateCLI();
-  });
+  const updateCLI = () => {
+    if (cliActionPending.current) return;
+    cliActionPending.current = true; setCLIActionBusy(true); setError('');
+    // Maintenance is scoped by each descriptor; other engines remain interactive.
+    void persistDrafts().then(() => window.desktop.updateCLI()).catch(report).finally(() => { cliActionPending.current = false; setCLIActionBusy(false); });
+  };
   const checkCLIUpdate = () => { void window.desktop.checkCLIUpdate().catch(report); };
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
@@ -152,7 +162,7 @@ export function App() {
   useEffect(() => { if (!notice) return; const timer = setTimeout(() => setNotice(''), 3500); return () => clearTimeout(timer); }, [notice]);
 
   useEffect(() => {
-    if (!activeId || !structured) return; let cancelled = false;
+    if (!activeId || !structured || !executionCapabilities?.attachments || readOnly) return; let cancelled = false;
     const revision = attachmentRevisions.current.get(activeId) ?? 0;
     void window.desktop.listAttachments(activeId).then(files => {
       // A delayed refresh must not restore an accepted chip or replace files
@@ -160,16 +170,17 @@ export function App() {
       if (!cancelled && revision === (attachmentRevisions.current.get(activeId) ?? 0)) setAttachments(old => ({ ...old, [activeId]: files }));
     }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
-  }, [activeId, structured, report]);
+  }, [activeId, structured, executionCapabilities?.attachments, readOnly, report]);
   const openNew = (kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string) => {
     const candidates = fork ? [fork.projectId] : [targetProjectId, projectId, active?.projectId, state?.projects[0]?.id];
     const selected = candidates.find(id => state?.projects.some(project => project.id === id)) ?? '';
+    const providerId = kind === 'shell' ? 'shell' : fork?.execution.providerId ?? 'claude';
+    const mode = kind === 'shell' ? 'terminal' : fork?.execution.mode ?? 'structured';
+    const selectedEngine = executors.find(item => item.providerId === providerId && item.mode === mode);
     setDraft({
       projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind,
-      providerId: kind === 'shell' ? 'shell' : fork?.execution.providerId ?? 'claude',
-      model: fork?.model ?? '', effort: fork?.effort ?? 'default',
-      permissionMode: fork?.permissionMode ?? (kind === 'agent' ? state?.settings.defaultPermissionMode ?? 'default' : 'default'),
-      isolated: false, worktreeName: '', mode: kind === 'shell' ? 'terminal' : fork?.execution.mode ?? 'structured',
+      providerId, engineConfig: fork ? structuredClone(fork.engineConfig) : engineDefaults(selectedEngine, state?.settings),
+      isolated: false, worktreeName: '', mode,
       conversationId: fork?.execution.conversationId, fork: !!fork
     });
     setModal('new');
@@ -189,10 +200,13 @@ export function App() {
   const openHistory = () => perform(async () => {
     const id = projectId === 'all' ? (active?.projectId ?? state?.projects[0]?.id) : projectId;
     if (!id) throw new Error('请先添加一个项目。');
-    setDraft(d => ({ ...d, projectId: id, conversationId: undefined, permissionMode: state?.settings.defaultPermissionMode ?? 'default' })); resetHistory(); setModal('history');
+    const source = historySources.find(item => item.providerId === active?.execution.providerId && item.mode === 'structured') ?? historySources.find(item => item.providerId === 'claude' && item.mode === 'structured') ?? historySources[0];
+    if (!source) throw new Error('没有已安装的外部历史来源。');
+    setDraft({ projectId: id, title: '', kind: 'agent', providerId: source.providerId, mode: source.mode, engineConfig: engineDefaults(source, state?.settings), isolated: false }); resetHistory(); setModal('history');
   });
-  const importHistory = (id: string, title: string) => perform(async () => {
-    const session = await window.desktop.createSession({ projectId: draft.projectId, title, kind: 'agent', providerId: 'claude', model: '', effort: 'default', permissionMode: draft.permissionMode, isolated: false, mode: 'structured', conversationId: id });
+  const importHistory = (id: string, title: string, providerId = draft.providerId) => perform(async () => {
+    if (providerId !== draft.providerId) throw new Error('历史来源已改变，请重新选择记录。');
+    const session = await window.desktop.createSession({ projectId: draft.projectId, title, kind: 'agent', providerId, engineConfig: draft.engineConfig, isolated: false, mode: draft.mode, conversationId: id });
     setArchived(false); selectSession(session.id); setModal(null);
   });
   if (!state) return <main className="boot">
@@ -202,7 +216,8 @@ export function App() {
   </main>;
   const addAttachments = async (id: string, choose: () => Promise<Attachment[]>) => {
     const session = latestState.current?.sessions.find(session => session.id === id);
-    if (latestBusy.current || pendingAttachmentImports.current.has(id) || !session || session.archived || session.execution.mode !== 'structured') return;
+    const engine = executors.find(item => item.providerId === session?.execution.providerId && item.mode === session?.execution.mode);
+    if (latestBusy.current || pendingAttachmentImports.current.has(id) || !session || session.archived || session.execution.mode !== 'structured' || !engine?.capabilities.attachments || executionUnavailable(engine, session)) return;
     // Reserve before invoking the picker/preload so Enter cannot race a copy,
     // even before React renders the pending indicator.
     pendingAttachmentImports.current.add(id); setAttachmentImports(new Set(pendingAttachmentImports.current));
@@ -234,11 +249,11 @@ export function App() {
   const taskCount = state.sessions.filter(isSessionBusy).length;
 
   return <div className="app">
-    <SessionSidebar state={state} cap={cap} activeId={activeId} projectId={projectId} archived={archived} search={search} collapsedGroups={collapsedGroups}
+    <SessionSidebar state={state} cap={cap} executors={executors} historyAvailable={!!historySources.length} activeId={activeId} projectId={projectId} archived={archived} search={search} collapsedGroups={collapsedGroups}
       openNew={openNew} chooseProject={chooseProject} selectSession={selectSession} onSearch={value => { setSearch(value); if (value.trim()) setCollapsedGroups(new Set()); }}
       onProject={id => { setProjectId(id); expandGroup(id); }} toggleGroup={toggleGroup} setArchived={setArchived} openHistory={openHistory} onSettings={openSettings} />
     <main className="workspace">
-      <WorkspaceHeader state={state} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
+      <WorkspaceHeader state={state} active={active} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
         onRename={title => { setRename(title); setModal('rename'); }} onPalette={openPalette} openIde={openIde} perform={perform} setNotice={setNotice} start={start}
         onAttention={item => { const target = state.sessions.find(session => session.id === item.sessionId); if (!target) return; setProjectId('all'); setArchived(target.archived); setSearch(''); selectSession(item.sessionId); setAttentionTarget({ ...item, nonce: ++attentionNonce.current }); }} />
       {error && <div className="error-banner" role="alert">
@@ -247,15 +262,16 @@ export function App() {
           <X size={16} />
         </button>
       </div>}
-      {cliUpdate.showBanner && modal !== 'settings' && <CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} onDismiss={() => void window.desktop.dismissCLIUpdate().catch(report)} disabled={busy} />}
+      {cliUpdate.showBanner && modal !== 'settings' && <CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} onDismiss={() => void window.desktop.dismissCLIUpdate().catch(report)} disabled={busy || cliActionBusy} />}
       {notice && <div className="notice">
         <Check size={14} />{notice}</div>}
-      {!active ? <WorkspaceWelcome hasProjects={!!state.projects.length} openNew={openNew} chooseProject={chooseProject} openHistory={openHistory} /> : <>
-        {active.kind === 'agent' && !structured && active.status === 'running' && active.terminalSync !== 'synced' && <div className="sync-note">{active.terminalSync === 'unsupported' ? '当前 CLI 不支持状态同步，任务状态请查看终端。' : '等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
+      {!active ? <WorkspaceWelcome hasProjects={!!state.projects.length} historyAvailable={!!historySources.length} openNew={openNew} chooseProject={chooseProject} openHistory={openHistory} /> : <>
+        {active.execution.providerId === 'claude' && !structured && active.status === 'running' && active.terminalSync !== 'synced' && <div className="sync-note">{active.terminalSync === 'unsupported' ? '当前 CLI 不支持状态同步，任务状态请查看终端。' : '等待 CLI 状态同步，当前仅确认进程正在运行。'}</div>}
         {active.error && <div className="inline-warning">{active.error}</div>}
-        <div className="session-content" inert={cliUpdateBusy(cliUpdate)}>
-          <SessionViewport state={state} active={active} structured={structured} themeId={themeId} composer={composer} onDraft={setComposer} onSent={expected => clearSentDraft(active.id, expected)} report={report} onClearError={() => setError('')}>
-            {structured && <ChatPane key={active.id} session={active} draft={composer} disabled={cliUpdateBusy(cliUpdate)}
+        {!structured && unavailable && <div className="inline-warning engine-unavailable" role="status">{unavailable}</div>}
+        <div className="session-content">
+          <SessionViewport state={state} active={active} executors={executors} descriptor={descriptor} disabled={!!unavailable} readOnly={readOnly} structured={structured} themeId={themeId} composer={composer} onDraft={setComposer} onSent={expected => clearSentDraft(active.id, expected)} report={report} onClearError={() => setError('')}>
+            {structured && <ChatPane key={active.id} session={active} descriptor={descriptor} readOnly={readOnly} draft={composer} disabled={!!unavailable} unavailable={unavailable}
               onDraft={value => saveDraftFor(active.id, value)} onSent={expected => clearSentDraft(active.id, expected)}
               onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id, () => window.desktop.pickAttachments(active.id))} onProjectFiles={() => setFilePicker(active.id)}
               onDropFiles={files => void addAttachments(active.id, () => window.desktop.addDroppedAttachments(active.id, files))}
@@ -271,7 +287,7 @@ export function App() {
                 changeAttachments(active.id, current => current.filter(file => !submittedPaths.has(file.path)));
               }} />}
           </SessionViewport>
-          <SessionInspector executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} cap={cap} busy={busy}
+          <SessionInspector executors={executors} sessions={state.sessions} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
             perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}
             setDeleteConfirm={setDeleteConfirm} flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} />
         </div>
@@ -287,17 +303,17 @@ export function App() {
       </footer>
     </main>
     {filePicker && <FilePicker key={filePicker} sessionId={filePicker} selected={[]} onClose={() => setFilePicker('')} onError={report} onPick={paths => { const id = filePicker; const value = drafts[id] ?? state.sessions.find(s => s.id === id)?.draft ?? ''; saveDraftFor(id, value + (value ? '\n\n' : '') + '请参考以下项目文件：\n' + paths.map(p => '@' + JSON.stringify(p)).join('\n')); setFilePicker(''); }} />}
-    {modal && <Dialog className={modal === 'settings' ? 'preferences' : ''} onClose={() => setModal(null)} closeDisabled={busy} label={modal === 'new' ? '新建会话' : modal === 'settings' ? '设置与连接' : modal === 'rename' ? '重命名会话' : modal === 'palette' ? '命令面板' : '导入 CLI 历史'}>
+    {modal && <Dialog className={modal === 'settings' ? 'preferences' : ''} onClose={() => setModal(null)} closeDisabled={busy} label={modal === 'new' ? '新建会话' : modal === 'settings' ? '设置与连接' : modal === 'rename' ? '重命名会话' : modal === 'palette' ? '命令面板' : '导入引擎历史'}>
       <button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={() => setModal(null)}>
         <X size={20} />
       </button>
-      {modal === 'palette' && <CommandPalette state={state} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery} openNew={openNew} openHistory={openHistory} onSettings={openSettings}
+      {modal === 'palette' && <CommandPalette state={state} historyAvailable={!!historySources.length} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery} openNew={openNew} openHistory={openHistory} onSettings={openSettings}
         onSelect={session => { setProjectId('all'); setArchived(session.archived); setSearch(''); selectSession(session.id); setModal(null); }} />}
-      {modal === 'new' && <NewSessionForm state={state} cap={cap} draft={draft} setDraft={setDraft} busy={busy} perform={perform} onCreated={id => { selectSession(id); setArchived(false); setModal(null); }} />}
-      {modal === 'settings' && draftSettings && <SettingsPanel value={draftSettings} saved={state.settings} {...preferences.editor}
-        cliUpdate={<CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} disabled={busy || draftSettings.claudePath !== state.settings.claudePath} />}
+      {modal === 'new' && <NewSessionForm state={state} executors={executors} draft={draft} setDraft={setDraft} busy={busy} perform={perform} onCreated={id => { selectSession(id); setArchived(false); setModal(null); }} />}
+      {modal === 'settings' && draftSettings && <SettingsPanel executors={executors} cliBusy={cliActionBusy || cliUpdateBusy(cliUpdate)} value={draftSettings} saved={state.settings} {...preferences.editor}
+        cliUpdate={<CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} disabled={busy || cliActionBusy || draftSettings.claudePath !== state.settings.claudePath} />}
         busy={busy} error={error} capabilities={cap} platform={platform} dataPath={dataPath} onClose={() => setModal(null)} />}
-      {modal === 'history' && <HistoryImport state={state} draft={draft} setDraft={setDraft} busy={busy} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery}
+      {modal === 'history' && <HistoryImport state={state} executors={executors} draft={draft} setDraft={setDraft} busy={busy} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery}
         history={history} historyBusy={historyBusy} historyNext={historyNext} importHistory={importHistory} moreHistory={moreHistory} />}
       {modal === 'rename' && active && <RenameSession active={active} rename={rename} setRename={setRename} structured={structured} activeBusy={activeBusy} busy={busy} perform={perform} onClose={() => setModal(null)} />}
       {error && modal !== 'settings' && <div className="modal-error" role="alert">{error}</div>}

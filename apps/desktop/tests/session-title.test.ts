@@ -19,7 +19,7 @@ test('only blank names on new Claude conversations opt into automatic naming', (
     { title: '', kind: 'agent' as const, fork: true }
   ]) assert.equal(initialSessionTitle(input).titleSource, 'manual');
   assert.equal(initialSessionTitle({ title: '', kind: 'shell' }).title, '项目终端');
-  const input = { projectId: randomUUID(), title: '  ', kind: 'agent', model: '', effort: 'default', isolated: false };
+  const input = { projectId: randomUUID(), title: '  ', kind: 'agent', isolated: false };
   assert.equal(sessionInputSchema.parse(input).title, '');
   assert.equal(sessionInputSchema.safeParse({ ...input, title: 'a'.repeat(121) }).success, false);
 });
@@ -74,7 +74,7 @@ test('title provenance and generated labels survive persistence without renaming
     const store = new StateStore(directory);
     const timestamp = new Date().toISOString();
     const legacy: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(),  cwd: directory, title: '新的开发会话',
-      kind: 'agent',  started: false, model: '', effort: 'default', permissionMode: 'default',
+      kind: 'agent',  started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } },
       status: 'idle', archived: false, createdAt: timestamp, updatedAt: timestamp };
     const pending: Session = { ...legacy, execution: { ...legacy.execution, conversationId: randomUUID() }, id: randomUUID(),  titleSource: 'default' };
     store.change(state => state.sessions.push(legacy, pending));

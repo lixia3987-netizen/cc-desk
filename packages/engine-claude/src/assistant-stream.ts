@@ -1,6 +1,6 @@
 import { createHash, randomUUID, type Hash } from 'node:crypto';
-import type { ChatMessage } from '../../../shared/chat';
-import { object, string, type WireObject } from '../../chat-protocol';
+import type { ChatMessage } from '@cc-desk/contracts/chat';
+import { object, string, type WireObject } from './chat-protocol.js';
 
 interface TextBlock { id: string; index: number; length: number; digest: string; hash?: Hash; finalized?: boolean; envelopeId?: string }
 interface AssistantGroup { id: string; sourceId: string; parent?: string; blocks: Map<number, TextBlock>; completed: boolean; stopped?: boolean }

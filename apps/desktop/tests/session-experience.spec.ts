@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import type { AppState } from '../src/shared/types';
+import type { LegacyAppState as AppState } from './helpers/legacy-workspace';
 
 interface FixtureRecord { event: 'start' | 'prompt'; mode: 'structured' | 'terminal'; session: string; pid: number; resume?: boolean; text?: string }
 

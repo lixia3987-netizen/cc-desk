@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nati
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
@@ -15,8 +16,9 @@ import { CLIUpdateService } from './cli-update-service';
 import { openIde } from './ide';
 import { gitInfo } from './git';
 import { diagnoseEnvironment } from './diagnostics';
-import { readHistory, queryHistory } from './history';
-import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
+import { queryHistory } from './history';
+import { HistorySources } from './execution/history-sources';
+import { idSchema, providerIdSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
 import type { Capabilities, Project } from '../shared/types';
 import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
 import { FontLibrary } from './font-library';
@@ -32,6 +34,8 @@ let window: BrowserWindow | null = null;
 let executors: ExecutionRegistry;
 let sessionCreation: SessionCreation;
 let services: SessionService;
+const historySources = new HistorySources();
+historySources.register('claude', queryHistory);
 let tray: Tray | undefined;
 let store: StateStore;
 let fonts: FontLibrary;
@@ -46,6 +50,7 @@ if (devUrl && devUrl !== 'http://127.0.0.1:5173') throw new Error('Invalid devel
 
 let notifyTimer:NodeJS.Timeout|undefined;
 let sentCapabilities:Capabilities|undefined;
+let sentExecutors = '';
 function notify() {
   if(notifyTimer)return;
   notifyTimer=setTimeout(()=>{
@@ -53,6 +58,8 @@ function notify() {
     if(window&&!window.isDestroyed()) {
       window.webContents.send('workspace:state',store.state);
       if(sentCapabilities!==capabilities){sentCapabilities=capabilities;window.webContents.send('workspace:capabilities',capabilities);}
+      const descriptions = executors.descriptors(), encoded = JSON.stringify(descriptions);
+      if (encoded !== sentExecutors) { sentExecutors = encoded; window.webContents.send('workspace:executors', descriptions); }
     }
   },40);
 }
@@ -95,8 +102,8 @@ function registerIPC() {
   handle('session:stop',idSchema,id => services.stop(id));
   handle('session:interrupt',idSchema,id => services.interrupt(id));
   handle('terminal:snapshot',idSchema,id => services.runtime.snapshot(id));
-  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => {cliUpdates.assertIdle();services.runtime.write(id,data);});
-  handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => services.runtime.resize(id,cols,rows));
+  handle('terminal:write',z.object({id:idSchema,data:z.string().max(128*1024)}),({id,data}) => {services.assertEngineAvailable(executors.getSession(id).execution.providerId);services.runtime.write(id,data);});
+  handle('terminal:resize',z.object({id:idSchema,cols:z.number().int().min(2).max(500),rows:z.number().int().min(1).max(300)}),({id,cols,rows}) => {services.assertEngineAvailable(executors.getSession(id).execution.providerId);services.runtime.resize(id,cols,rows);});
   handle('settings:save',settingsSchema,async settings => {
     for (const key of ['chatFontFamily', 'uiFontFamily'] as const) {
       if (IMPORTED_FONT_ID.test(settings[key]) && settings[key] !== store.state.settings[key] && !fonts.list().some(font => font.id === settings[key])) throw new Error('所选字体已被移除，请重新选择。');
@@ -104,6 +111,15 @@ function registerIPC() {
     if(settings.worktreeLocation === 'custom' && !path.isAbsolute(settings.worktreeRoot))throw new Error('统一 Worktree 根目录必须是绝对路径。');
     const cliChanged=settings.claudePath!==store.state.settings.claudePath;
     if(cliChanged)cliUpdates.assertIdle();
+    for (const [providerId, config] of Object.entries(settings.engineDefaults)) {
+      if (isDeepStrictEqual(config, store.state.settings.engineDefaults[providerId])) continue;
+      const descriptor = executors.descriptors().find(item => item.providerId === providerId);
+      if (descriptor) {
+        services.assertEngineAvailable(providerId);
+        settings.engineDefaults[providerId] = executors.defaultConfig(providerId, descriptor.mode, config);
+      }
+      // Unknown provider defaults are retained as opaque, bounded JSON.
+    }
     store.change(s => { s.settings = settings; });
     const appearance=THEME_APPEARANCE[normalizeThemeId(settings.theme)];nativeTheme.themeSource=appearance.scheme;
     if(window&&!window.isDestroyed())window.setBackgroundColor(appearance.background);
@@ -126,10 +142,12 @@ function registerIPC() {
     });
     try { fonts.remove(id); } finally { notify(); }
   });
-  handle('history:list',idSchema,async id => {
-    const project = store.state.projects.find(p => p.id === id);
+  handle('history:list',z.union([idSchema,z.object({projectId:idSchema,providerId:providerIdSchema.optional()}).strict()]),async input => {
+    const projectId = typeof input === 'string' ? input : input.projectId;
+    const providerId = typeof input === 'string' ? 'claude' : input.providerId;
+    const project = store.state.projects.find(p => p.id === projectId);
     if (!project) throw new Error('项目不存在。');
-    return readHistory(project.path);
+    return (await historySources.query(project.path, {providerId, limit: 100})).entries;
   });
   handle('git:info',idSchema,id => gitInfo(executors.getSession(id).cwd));
   handle('folder:open',idSchema,async id => {
@@ -184,7 +202,8 @@ function showWindow() {
 }
 async function requestQuit() {
   if (closing) return;
-  if(cliUpdates?.busy){showWindow();if(window)await dialog.showMessageBox(window,{type:'info',buttons:['返回工作台'],title:'Claude Code 正在更新',message:'请先完成或取消更新，再退出工作台。'});return;}
+  if(cliUpdates?.state.phase==='updating'){showWindow();if(window)await dialog.showMessageBox(window,{type:'info',buttons:['返回工作台'],title:'Claude Code 正在安装更新',message:'请等待安装完成后再退出工作台。正在写入的 CLI 安装不能安全中断。'});return;}
+  cliUpdates?.cancelPendingUpdate();
   closing = true;
   if (services?.activeCount && window) {
     const result = await dialog.showMessageBox(window,{type:'question',buttons:['保留窗口','停止会话并退出'],defaultId:0,cancelId:0,title:'退出工作台',message:`仍有 ${services.activeCount} 个会话进程运行。`,detail:'退出会停止这些进程。已保存的 Claude 对话可以在下次启动时恢复。'});
@@ -213,20 +232,20 @@ else {
       fonts = new FontLibrary(store.directory);
       executors = createExecutors(store,()=>capabilities,reportPersistenceError);
       services = new SessionService(store,executors,notify,()=>window,{
-        history:queryHistory, diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),
+        history:(cwd,options)=>historySources.query(cwd,options), diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),
       });
       sessionCreation = new SessionCreation(store,services,notify,'claude');
       const updater = new CLIUpdater(()=>store.state.settings,(url,options)=>net.fetch(url,options));
       cliUpdates = new CLIUpdateService({
         check:()=>updater.check(), verify:async candidate=>{await updater.verify(candidate);},
         install:candidate=>updater.install(candidate), refresh:refreshCapabilities,
-        disconnect:action=>services.withDisconnectedWorkspaces(action),
+        disconnect:action=>services.withEngineMaintenance('claude',action),
         confirm:async candidate=>{
           if(!window||window.isDestroyed())return false;
           const result=await dialog.showMessageBox(window,{type:'warning',title:'更新 Claude Code CLI',
             message:`将 Claude Code 从 ${candidate.currentVersion} 更新至 ${candidate.latestVersion}？`,
-            detail:`更新前会断开全部 ${store.state.projects.length} 个工作区，停止所有 Claude 会话、Shell 终端及工作流（当前 ${services.activeCount} 个会话进程）。正在执行的任务会被中断。项目、会话历史和已保存草稿会保留；更新结束后需手动恢复。`,
-            buttons:['取消','断开全部工作区并更新'],defaultId:0,cancelId:0,noLink:true});
+            detail:`更新前会暂停 ${store.state.sessions.filter(session=>session.execution.providerId==='claude').length} 个 Claude 会话的队列，停止其中的任务、终端及工作流（当前 ${services.activeCountForEngine('claude')} 个活动会话）。Shell 和其他引擎继续运行。项目、会话历史和已保存草稿会保留；Claude 任务在更新结束后需手动恢复。`,
+            buttons:['取消','停止 Claude 会话并更新'],defaultId:0,cancelId:0,noLink:true});
           return result.response===1;
         },
         changed:state=>{if(window&&!window.isDestroyed())window.webContents.send('cli-update:state',state);},

@@ -1,7 +1,7 @@
 import { Activity, Archive, Copy, GitBranch } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import type { ExecutionCapabilities } from '../../shared/execution';
-import type { AppState, Capabilities, Session } from '../../shared/types';
+import type { ExecutionCapabilities, ExecutionDescriptor } from '../../shared/execution';
+import type { AppState, Session } from '../../shared/types';
 import { SessionConfig } from '../SessionConfig';
 import { Dialog } from '../Dialog';
 import { time } from './presentation';
@@ -9,11 +9,11 @@ import type { OpenNew, Perform, ReportError } from './types';
 
 export interface SessionContextPanelProps {
   executionCapabilities?: ExecutionCapabilities;
+  descriptor?: ExecutionDescriptor; unavailable?: string; readOnly: boolean;
   active: Session;
   project?: AppState['projects'][number];
   structured: boolean;
   activeBusy: boolean;
-  cap: Capabilities;
   busy: boolean;
   perform: Perform;
   report: ReportError;
@@ -26,7 +26,7 @@ export interface SessionContextPanelProps {
 }
 
 export function SessionContextPanel({
-  executionCapabilities, active, project, structured, activeBusy, cap, busy,
+  executionCapabilities, descriptor, unavailable, readOnly, active, project, structured, activeBusy, busy,
   perform, report, setNotice, openNew, selectSession, deleteConfirm,
   setDeleteConfirm, flushDrafts,
 }: SessionContextPanelProps) {
@@ -34,7 +34,7 @@ export function SessionContextPanel({
   const [forceText, setForceText] = useState(''), [forceError, setForceError] = useState(''), [forceDeleting, setForceDeleting] = useState(false);
   const forcePending = useRef(false), activeId = useRef(active.id);
   activeId.current = active.id;
-  const deletionBlocked = busy || activeBusy || (!structured && ['running', 'stopping'].includes(active.status));
+  const deletionBlocked = readOnly || busy || activeBusy || (!structured && ['running', 'stopping'].includes(active.status));
   const matchingTarget = forceTarget?.id === active.id && forceTarget?.worktreePath === active.worktree && deleteConfirm === active.id;
   useEffect(() => {
     setForceTarget(undefined); setForceText(''); setForceError('');
@@ -62,11 +62,11 @@ export function SessionContextPanel({
       <label>工作目录</label>
       <strong>{active.cwd}</strong>
       <label>运行方式</label>
-      <strong>{structured ? '结构化对话' : active.kind === 'shell' ? '系统 Shell' : 'Claude Code 终端'}</strong>
+      <strong>{descriptor?.displayName ?? active.execution.providerId} · {structured ? '结构化对话' : '终端'}</strong>
       <label>创建时间</label>
       <strong>{time(active.createdAt)}</strong>
       {active.kind === 'agent' && <>
-        <label>Claude 会话 ID{active.identityPending ? ' · 等待同步' : ''}</label>
+        <label>会话 ID{active.identityPending ? ' · 等待同步' : ''}</label>
         <button className="id-copy" title="复制会话 ID" onClick={() => void perform(async () => {
           await navigator.clipboard.writeText(active.execution.conversationId ?? '');
           setNotice('会话 ID 已复制');
@@ -76,20 +76,21 @@ export function SessionContextPanel({
       </>}
     </div>
     {active.kind === 'agent' && <>
-      <SessionConfig key={active.id} session={active} capabilities={cap} onError={report} />
-      <button className="secondary full" disabled={!active.started || !executionCapabilities?.fork || activeBusy || active.identityPending} onClick={() => openNew('agent', active)}>
+      <SessionConfig key={active.id} session={active} descriptor={descriptor} onError={report} />
+      <button className="secondary full" disabled={readOnly || !!descriptor?.maintenance || !active.started || !executionCapabilities?.fork || activeBusy || active.identityPending} onClick={() => openNew('agent', active)}>
         <GitBranch size={14} />从此会话创建分支
       </button>
     </>}
-    <button className="text-button archive-button" disabled={busy || (structured ? activeBusy : ['running', 'stopping'].includes(active.status))} onClick={() => void perform(async () => {
+    <button className="text-button archive-button" disabled={readOnly || busy || (structured ? activeBusy : ['running', 'stopping'].includes(active.status))} onClick={() => void perform(async () => {
       await window.desktop.updateSession({ id: active.id, archived: !active.archived });
       selectSession('');
     })}>
       <Archive size={14} />{active.archived ? '取消归档' : '归档会话'}
     </button>
-    <button className="text-button danger archive-button" disabled={deletionBlocked} onClick={() => setDeleteConfirm(active.id)}>删除会话</button>
+    <button className="text-button danger archive-button" disabled={deletionBlocked} title={readOnly ? unavailable : undefined} onClick={() => setDeleteConfirm(active.id)}>删除会话</button>
+    {readOnly && <p className="panel-note">执行器不可用时保留会话及工作目录；归档、删除与原始记录导出暂不可用。</p>}
     {deleteConfirm === active.id && <div className="action-confirm">
-      <p>删除工作台中的会话记录，原始 CLI 历史会保留。</p>
+      <p>{active.execution.providerId === 'claude' ? '删除工作台中的会话记录，原始 CLI 历史会保留。' : '删除此引擎在工作台中的会话记录。'}</p>
       {active.worktree && <>
         <p>仅删除会话会保留隔离目录中的全部文件和 Git 分支，包括未提交、未合并及被忽略的文件。也可以在“变更”面板安全清理，或选择下方的强制删除。</p>
         <p className="panel-note">保留目录：{active.worktree}</p>

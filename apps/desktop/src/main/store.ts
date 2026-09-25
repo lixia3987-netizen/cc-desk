@@ -5,6 +5,7 @@ import type { AppState } from '../shared/types';
 import { persistedStateSchema, stateSchema } from '../shared/schema';
 import { isSubtaskActive } from '../shared/subtasks';
 import { DEFAULT_TYPOGRAPHY } from '../shared/fonts';
+import { randomUUID } from 'node:crypto';
 
 export class StateStore {
   state: AppState;
@@ -12,17 +13,25 @@ export class StateStore {
   private dirty = false;
   private flushTimer?: NodeJS.Timeout;
   private writeError?: Error;
+  private migrationSource?: string;
+  private migrationBackup?: string;
   constructor(readonly directory: string, private options: { writeDelayMs?: number; onError?: (error: Error) => void } = {}) {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.file = path.join(directory, 'workspace.json');
     if (fs.existsSync(this.file)) {
       // Fail closed: never replace corrupt user data with an empty workspace.
       try {
-        const stored = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+        const original = fs.readFileSync(this.file, 'utf8');
+        const stored = JSON.parse(original);
+        if (typeof stored.version === 'number' && stored.version > 3) throw new Error('FUTURE_WORKSPACE_VERSION');
         this.state = persistedStateSchema.parse(stored);
         this.dirty = stored.version !== this.state.version;
+        if (this.dirty) this.migrationSource = original;
       }
-      catch { throw new Error(`工作区数据无法读取，原文件已保留：${this.file}。可从 workspace.json.bak 恢复。`); }
+      catch (error) {
+        if (error instanceof Error && error.message === 'FUTURE_WORKSPACE_VERSION') throw new Error(`工作区使用更新的数据版本，请升级应用；原文件已保留：${this.file}。`);
+        throw new Error(`工作区数据无法读取，原文件已保留：${this.file}。可从备份恢复。`);
+      }
       for (const session of this.state.sessions) {
         if (session.status === 'running' || session.status === 'stopping') session.status = 'stopped';
         if (session.taskState && !['idle','completed','interrupted','error'].includes(session.taskState)) session.taskState = 'interrupted';
@@ -33,7 +42,7 @@ export class StateStore {
         }
       }
     } else {
-      this.state = { version: 2, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, defaultPermissionMode: 'default', ...DEFAULT_TYPOGRAPHY } };
+      this.state = { version: 3, projects: [], sessions: [], settings: { claudePath: '', shellPath: '', idePath: '', worktreeLocation: 'project', worktreeRoot: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {}, ...DEFAULT_TYPOGRAPHY } };
     }
   }
   get persistenceError() { return this.writeError; }
@@ -87,11 +96,22 @@ export class StateStore {
   private persist(state: AppState) {
     const temp = this.file + '.tmp';
     try {
+      // A rolling .bak is overwritten on subsequent saves. Preserve the exact
+      // pre-migration bytes separately before the first v3 replacement.
+      if (this.migrationSource !== undefined && !this.migrationBackup) {
+        const backup = path.join(this.directory, `workspace.pre-v3.${randomUUID()}.json`);
+        const fd = fs.openSync(backup, 'wx', 0o600);
+        let complete = false;
+        try { fs.writeFileSync(fd, this.migrationSource); fs.fsyncSync(fd); complete = true; }
+        finally { fs.closeSync(fd); if (!complete) { try { fs.unlinkSync(backup); } catch { /* Original workspace is untouched. */ } } }
+        this.migrationBackup = backup;
+      }
       const fd = fs.openSync(temp, 'w', 0o600);
       try { fs.writeFileSync(fd, JSON.stringify(state, null, 2)); fs.fsyncSync(fd); }
       finally { fs.closeSync(fd); }
       if (fs.existsSync(this.file)) fs.copyFileSync(this.file, this.file + '.bak');
       fs.renameSync(temp, this.file);
+      this.migrationSource = undefined;
     } catch (error) {
       this.writeError = error instanceof Error ? error : new Error(String(error));
       throw error;

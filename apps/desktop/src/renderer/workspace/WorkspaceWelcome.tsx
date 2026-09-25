@@ -4,10 +4,10 @@ import { version as appVersion } from '../../../package.json';
 import type { OpenNew } from './types';
 
 interface Props {
-  hasProjects: boolean; openNew: OpenNew; chooseProject: () => Promise<void>; openHistory: () => Promise<void>;
+  hasProjects: boolean; historyAvailable: boolean; openNew: OpenNew; chooseProject: () => Promise<void>; openHistory: () => Promise<void>;
 }
 
-export function WorkspaceWelcome({ hasProjects, openNew, chooseProject, openHistory }: Props) {
+export function WorkspaceWelcome({ hasProjects, historyAvailable, openNew, chooseProject, openHistory }: Props) {
   return <div className="welcome">
     <div className="eyebrow">
       <span />LOCAL FIRST · BUILT FOR FOCUS</div>
@@ -19,7 +19,7 @@ export function WorkspaceWelcome({ hasProjects, openNew, chooseProject, openHist
       <button className="primary" onClick={() => hasProjects ? openNew() : void chooseProject()}>
         <Plus size={17} />{hasProjects ? '开始新会话' : '添加第一个项目'}<ArrowUpRight size={16} />
       </button>
-      <button className="secondary" onClick={() => void openHistory()}>
+      <button className="secondary" disabled={!historyAvailable} onClick={() => void openHistory()}>
         <History size={16} />恢复已有会话</button>
     </div>
     <div className="feature-grid">

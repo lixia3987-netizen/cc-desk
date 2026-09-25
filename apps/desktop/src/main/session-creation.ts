@@ -18,6 +18,7 @@ export class SessionCreation {
     if (input.kind === 'shell' && (input.conversationId || input.fork || (input.providerId && input.providerId !== 'shell') || input.mode === 'structured')) throw new Error('Shell 会话不支持导入、分支或图形化执行。');
     if (input.fork && !input.conversationId) throw new Error('请指定要分支的会话。');
     const providerId = input.kind === 'shell' ? 'shell' : input.providerId ?? this.defaultProvider;
+    const assertAdmission = this.services.captureEngineAdmission(providerId);
     if (input.kind === 'agent' && providerId === 'shell') throw new Error('Shell 提供方必须使用 Shell 会话类型。');
     const mode = input.kind === 'shell' ? 'terminal' : input.mode ?? 'terminal';
     const execution = this.services.execution.createIdentity(providerId, mode, input);
@@ -37,8 +38,8 @@ export class SessionCreation {
     const now = new Date().toISOString();
     const session: Session = {
       id, projectId: project.id, ...title, cwd: sourcePath, kind: input.kind, execution,
-      started: !!execution.imported, model: input.model, effort: input.effort,
-      permissionMode: input.permissionMode ?? source?.permissionMode ?? (input.kind === 'agent' ? this.store.state.settings.defaultPermissionMode ?? 'default' : 'default'),
+      started: !!execution.imported,
+      engineConfig: this.services.execution.defaultConfig(providerId, mode, input.engineConfig ?? source?.engineConfig ?? this.store.state.settings.engineDefaults[providerId]),
       taskState: 'idle', draft: '', status: 'idle', archived: false, createdAt: now, updatedAt: now,
     };
     this.services.execution.validateSession(session);
@@ -46,12 +47,16 @@ export class SessionCreation {
     this.projects.set(project.id, (this.projects.get(project.id) ?? 0) + 1);
     try {
       return await this.services.withSessionCreation(sourcePath, input.isolated, async () => {
+        assertAdmission();
         const worktree = input.isolated ? await createWorktree(sourcePath, this.store.directory, id, {
           location, customRoot, projectPath: project.path, projectName: project.name,
           name: input.worktreeName?.trim() || sanitizeWorktreeName(title.title),
         }) : undefined;
         Object.assign(session, { cwd: worktree || sourcePath, worktree, worktreeBase: worktree ? sourcePath : undefined });
-        try { this.store.change(state => state.sessions.unshift(session)); }
+        try {
+          assertAdmission();
+          this.store.change(state => state.sessions.unshift(session));
+        }
         catch (error) {
           if (worktree) {
             const cleanup = await cleanupWorktree(sourcePath, worktree, id, false).catch(() => undefined);

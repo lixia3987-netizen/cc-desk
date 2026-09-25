@@ -1,6 +1,13 @@
 import { getSessionIdentity, type SessionExecution, type SessionStatus, type TerminalChunk } from '@cc-desk/contracts/execution';
 import type { ChatApproval, ChatDecision, ChatSnapshot, ChatTurnResult } from '@cc-desk/contracts/chat';
 import type { ChatJournalEvent, ExecutionEvent } from '@cc-desk/contracts/execution-events';
+import type { EngineConfig } from '@cc-desk/contracts/execution';
+import type { StructuredExecutor, ExecutionLifecycle, TerminalSnapshot } from '@cc-desk/contracts/execution-ports';
+
+export function configureProvider(executor: StructuredExecutor, sessionId: string, config: EngineConfig): Promise<void> {
+  return executor.updateConfig(sessionId, config);
+}
+export function countResources(executor: ExecutionLifecycle, terminal: TerminalSnapshot) { return { count: executor.activeCount, status: terminal.status }; }
 
 // A host can create execution events without importing the desktop Session type.
 export function hostEvent(session: { id: string; execution: SessionExecution; status: SessionStatus }): ExecutionEvent {

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { StateStore } from '../src/main/store';
 import { getSessionIdentity, sameConversation } from '../src/shared/execution';
 import { persistedStateSchema, sessionInputSchema, stateSchema } from '../src/shared/schema';
+import { createClaudeConfig, parseClaudeConfig } from '@cc-desk/engine-claude/config';
 import type { Session } from '../src/shared/types';
 
 function session(): Session {
@@ -14,7 +15,7 @@ function session(): Session {
   return {
     id: randomUUID(), projectId: randomUUID(), title: 'Saved conversation', kind: 'agent', cwd: '/workspace',
     execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
-    started: true, model: '', effort: 'default', permissionMode: 'default', status: 'stopped',
+    started: true, engineConfig: createClaudeConfig(), status: 'stopped',
     archived: false, createdAt: now, updatedAt: now, draft: 'Unsent draft',
   };
 }
@@ -24,9 +25,9 @@ function fixture() {
   return { directory, store, dispose: () => fs.rmSync(directory, { recursive: true, force: true }) };
 }
 function legacy(value: Session) {
-  const { execution, kind: _kind, ...fields } = value;
+  const { execution, engineConfig, kind: _kind, ...fields } = value;
   return {
-    ...fields, kind: 'claude' as const, claudeId: execution.conversationId!, adapter: execution.mode,
+    ...fields, ...parseClaudeConfig(engineConfig), kind: 'claude' as const, claudeId: execution.conversationId!, adapter: execution.mode,
     ...(execution.forkFrom ? { resumeFrom: execution.forkFrom } : {}),
     ...(execution.imported === undefined ? {} : { imported: execution.imported }),
   };
@@ -39,14 +40,15 @@ test('v1 import and fork identities migrate once without changing local IDs, dra
     imported.execution.imported = true;
     forked.execution.forkFrom = imported.execution.conversationId;
     forked.started = false;
-    const oldState = { ...f.store.state, version: 1, sessions: [legacy(imported), legacy(forked)], selectedSessionId: forked.id };
+    const { engineDefaults: _defaults, ...oldSettings } = f.store.state.settings;
+    const oldState = { ...f.store.state, settings: oldSettings, version: 1, sessions: [legacy(imported), legacy(forked)], selectedSessionId: forked.id };
     const original = JSON.stringify(oldState);
     fs.writeFileSync(f.store.file, original);
     const journal = path.join(f.directory, 'chat', `${forked.id}.events.jsonl`);
     fs.mkdirSync(path.dirname(journal));
     fs.writeFileSync(journal, 'existing journal\n');
     const restored = new StateStore(f.directory);
-    assert.equal(restored.state.version, 2);
+    assert.equal(restored.state.version, 3);
     assert.deepEqual(restored.state.sessions.map(item => item.id), [imported.id, forked.id]);
     assert.deepEqual(restored.state.sessions.map(item => item.execution), [imported.execution, forked.execution]);
     assert.equal(restored.state.selectedSessionId, forked.id);
@@ -55,7 +57,7 @@ test('v1 import and fork identities migrate once without changing local IDs, dra
     restored.flush();
     assert.equal(fs.readFileSync(`${restored.file}.bak`, 'utf8'), original);
     const saved = JSON.parse(fs.readFileSync(restored.file, 'utf8'));
-    for (const item of saved.sessions) for (const field of ['claudeId', 'resumeFrom', 'imported', 'adapter']) assert.equal(field in item, false);
+    for (const item of saved.sessions) for (const field of ['claudeId', 'resumeFrom', 'imported', 'adapter', 'model', 'effort', 'permissionMode']) assert.equal(field in item, false);
     assert.deepEqual(new StateStore(f.directory).state, restored.state);
   } finally { f.dispose(); }
 });
@@ -87,7 +89,7 @@ test('unknown providers and opaque conversation IDs survive saves and restarts',
     const restored = new StateStore(f.directory);
     restored.change(state => { state.sessions[0].title = 'Renamed'; });
     assert.deepEqual(new StateStore(f.directory).state.sessions[0].execution, value.execution);
-    const input = sessionInputSchema.parse({ projectId: value.projectId, title: '', kind: 'agent', providerId: value.execution.providerId, conversationId: value.execution.conversationId, mode: 'structured', model: '', effort: 'default', isolated: false });
+    const input = sessionInputSchema.parse({ projectId: value.projectId, title: '', kind: 'agent', providerId: value.execution.providerId, conversationId: value.execution.conversationId, mode: 'structured', engineConfig: createClaudeConfig(), isolated: false });
     assert.equal(input.conversationId, 'conversation/opaque:42');
   } finally { f.dispose(); }
 });

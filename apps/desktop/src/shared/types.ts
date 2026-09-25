@@ -4,22 +4,22 @@ import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
 import type { ThemeId } from './theme';
 import type { PanelDrafts } from './panel-drafts';
-import type { PermissionMode } from './permissions';
 import type { SubtaskActivity } from './subtasks';
 import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
 import type { CLIUpdateState } from './cli-update';
-import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk } from './execution';
+import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
+import type { ClaudeCapabilities } from '@cc-desk/engine-claude';
 export type { PermissionMode } from './permissions';
-export type { SessionStatus, TerminalChunk } from './execution';
-export type Effort = 'default' | 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultracode';
+export type { SessionStatus, TerminalChunk, EngineConfig, EngineConfigField, EngineConfiguration, JsonValue } from './execution';
+export type { Effort } from '@cc-desk/engine-claude/permissions';
 export interface Project { id: string; name: string; path: string; createdAt: string }
 export interface Session {
   id: string; projectId: string; title: string; kind: 'agent' | 'shell';
   titleSource?: SessionTitleSource;
   cwd: string; execution: SessionExecution; started: boolean;
-  model: string; effort: Effort; permissionMode: PermissionMode;
+  engineConfig: EngineConfig;
   status: SessionStatus; archived: boolean; createdAt: string; updatedAt: string;
   worktree?: string; worktreeBase?: string; exitCode?: number; error?: string;
   taskState?: TaskState; draft?: string;
@@ -28,15 +28,15 @@ export interface Session {
   panelDrafts?: PanelDrafts;
   subtasks?: SubtaskActivity;
 }
-export interface Settings extends TypographySettings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; defaultPermissionMode?: PermissionMode }
-export interface AppState { version: 2; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
-export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
+export interface Settings extends TypographySettings { claudePath: string; shellPath: string; idePath?: string; worktreeLocation?: 'project' | 'custom'; worktreeRoot?: string; maxSessions: number; fontSize: number; scrollback: number; notifications?: boolean; closeToTray?: boolean; theme?: ThemeId; engineDefaults: Record<string, EngineConfig> }
+export interface AppState { version: 3; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
+export type Capabilities = ClaudeCapabilities;
 export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
+export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; engineConfig?: EngineConfig; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
-export interface HistoryEntry { id: string; title: string; cwd: string; modifiedAt: string }
+export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
   snapshot(): Promise<Snapshot>;
@@ -45,7 +45,7 @@ export interface DesktopAPI {
   addProject(path: string): Promise<Project>;
   removeProject(id: string): Promise<void>;
   createSession(input: NewSession): Promise<Session>;
-  updateSession(input: { id: string; title?: string; archived?: boolean; model?: string; effort?: Effort; permissionMode?: PermissionMode }): Promise<void>;
+  updateSession(input: { id: string; title?: string; archived?: boolean; engineConfig?: EngineConfig }): Promise<void>;
   saveDraft(id: string, text: string): Promise<void>;
   savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;
   setSelection(id: string): Promise<void>;
@@ -67,7 +67,7 @@ export interface DesktopAPI {
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
   onChat(callback: (sessionId: string, taskState?: TaskState) => void): () => void;
-  queryHistory(projectId: string, options?: {query?: string; offset?: number; limit?: number}): Promise<HistoryPage>;
+  queryHistory(projectId: string, options?: {providerId?: string; query?: string; offset?: number; limit?: number}): Promise<HistoryPage>;
   gitChanges(id: string): Promise<GitChanges>;
   gitDiff(id: string, path: string, staged: boolean): Promise<GitDiff>;
   listProjectFiles(id: string, query: string): Promise<ProjectFiles>;
@@ -102,7 +102,7 @@ export interface DesktopAPI {
   updateCLI(): Promise<CLIUpdateState>;
   dismissCLIUpdate(): Promise<void>;
   onCLIUpdate(callback: (state: CLIUpdateState) => void): () => void;
-  history(projectId: string): Promise<HistoryEntry[]>;
+  history(projectId: string, providerId?: string): Promise<HistoryEntry[]>;
   gitInfo(sessionId: string): Promise<GitInfo>;
   exportTranscript(id: string): Promise<string | null>;
   openFolder(id: string): Promise<void>;
@@ -113,6 +113,7 @@ export interface DesktopAPI {
   onError(callback: (message: string) => void): () => void;
   onNavigate(callback: (sessionId: string) => void): () => void;
   onCapabilities(callback: (capabilities: Capabilities) => void): () => void;
+  onExecutors(callback: (executors: ExecutionDescriptor[]) => void): () => void;
   onExecution(callback: (event: ExecutionEvent) => void): () => void;
   onTerminal(callback: (chunk: TerminalChunk) => void): () => void;
 }

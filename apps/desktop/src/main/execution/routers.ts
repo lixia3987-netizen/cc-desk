@@ -1,21 +1,36 @@
 import type { ChatDecision, ChatPageOptions } from '../../shared/chat';
-import type { Effort, PermissionMode } from '../../shared/types';
+import type { EngineConfig } from '../../shared/types';
 import { ExecutionRegistry } from './registry';
 import type { StructuredExecutor } from './ports';
+import { OfflineHistory } from './offline-history';
 
 /** Route by each persisted execution identity, never by a concrete provider class. */
 export class StructuredExecutions {
-  constructor(private registry: ExecutionRegistry) {}
+  private offline?: OfflineHistory;
+  constructor(private registry: ExecutionRegistry, directory?: string) { if (directory) this.offline = new OfflineHistory(directory); }
   private get(id: string) { return this.registry.structured(id); }
   private all() { return this.registry.executors('structured') as StructuredExecutor[]; }
   get activeCount() { return this.all().reduce((count, executor) => count + executor.activeCount, 0); }
   has(id: string) { return this.all().some(executor => executor.has(id)); }
   isBusy(id: string) { return this.all().some(executor => executor.isBusy(id)); }
-  taskState(id: string) { return this.get(id).taskState(id); }
-  hydrate(id: string) { return this.get(id).hydrate(id); }
-  snapshot(id: string) { return this.get(id).snapshot(id); }
-  page(id: string, options?: ChatPageOptions) { return this.get(id).page(id, options); }
-  search(id: string, query: string, before?: string) { return this.get(id).search(id, query, before); }
+  private unavailable(id: string) { return this.registry.configurationError(id); }
+  taskState(id: string) { return this.unavailable(id) ? 'interrupted' as const : this.get(id).taskState(id); }
+  async hydrate(id: string) { if (!this.unavailable(id)) await this.get(id).hydrate(id); }
+  snapshot(id: string) {
+    const reason = this.unavailable(id);
+    if (reason && this.offline) return this.offline.snapshot(id, reason);
+    return this.get(id).snapshot(id);
+  }
+  page(id: string, options?: ChatPageOptions) {
+    const reason = this.unavailable(id);
+    if (reason && this.offline) return this.offline.page(id, reason, options);
+    return this.get(id).page(id, options);
+  }
+  search(id: string, query: string, before?: string) {
+    const reason = this.unavailable(id);
+    if (reason && this.offline) return this.offline.search(id, reason, query, before);
+    return this.get(id).search(id, query, before);
+  }
   attention() { return this.all().flatMap(executor => executor.attention()); }
   send(id: string, text: string, attachments?: string[], titlePrompt?: string) {
     this.registry.require(id, 'structured');
@@ -24,14 +39,16 @@ export class StructuredExecutions {
   }
   prepareCommands(id: string) { this.registry.require(id, 'commands'); return this.get(id).prepareCommands(id); }
   recoverContext(id: string) {
+    this.registry.require(id, 'recoverContext', false);
     const executor = this.get(id);
     if (!executor.recoverContext) throw new Error('此提供方不支持重建上下文。');
     return executor.recoverContext(id);
   }
   respond(id: string, requestId: string, decision: ChatDecision) { this.registry.require(id, 'approvals', false); return this.get(id).respond(id, requestId, decision); }
-  updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) {
+  updateConfig(id: string, config: EngineConfig) {
+    const validated = this.registry.validateConfig(id, config);
     if (this.has(id)) this.registry.require(id, 'liveConfig');
-    return this.get(id).updateConfig(id, config);
+    return this.get(id).updateConfig(id, validated);
   }
   interrupt(id: string) { return this.get(id).interrupt(id); }
   async interruptAndWait(id: string) {

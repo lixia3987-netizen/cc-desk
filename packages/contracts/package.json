@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "sideEffects": false,
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     "./execution": {
       "types": "./dist/execution.d.ts",
@@ -17,6 +19,10 @@
     "./execution-events": {
       "types": "./dist/execution-events.d.ts",
       "default": "./dist/execution-events.js"
+    },
+    "./execution-ports": {
+      "types": "./dist/execution-ports.d.ts",
+      "default": "./dist/execution-ports.js"
     }
   },
   "scripts": {

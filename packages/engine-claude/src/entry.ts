@@ -1,7 +1,7 @@
-import type { ChatApproval, ChatTurnResult } from '../../../shared/chat';
-import type { ClaudeCommand } from '../../../shared/claude-session';
-import type { AssistantStream } from './assistant-stream';
-import type { ClaudeConnection } from './connection';
+import type { ChatApproval, ChatTurnResult } from '@cc-desk/contracts/chat';
+import type { ClaudeCommand } from './claude-session.js';
+import type { AssistantStream } from './assistant-stream.js';
+import type { ClaudeConnection } from './connection.js';
 
 interface Turn {
   id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean;
@@ -15,6 +15,8 @@ export interface Entry {
   connection: ClaudeConnection; initialized: boolean;
   expectedId: string; enforceIdentity: boolean; bypassEnabled: boolean;
   turn?: Turn; approvals: Map<string, ChatApproval>;
+  /** Public approval tokens never reuse provider request IDs across runs or sessions. */
+  approvalRequests: Map<string, string>;
   assistant: AssistantStream; resultIds: Set<string>; tools: Set<string>; tasks: Set<string>;
   subtaskTools: Map<string, { foreground: boolean; parent?: string }>;
   approvalTasks: Map<string, string>;

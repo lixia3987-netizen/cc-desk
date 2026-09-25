@@ -35,7 +35,7 @@ interface ProcessEntry {
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
   private stopping = new Map<string, ProcessEntry>();
-  private cleanups = new Set<Promise<void>>();
+  private cleanups = new Map<Promise<void>, string>();
   private starting = new Set<string>();
   private startCompletions = new Map<string, Promise<void>>();
   private buffers = new Map<string, TerminalBuffer>();
@@ -44,10 +44,11 @@ export class Runtime {
   private flushTimer?: NodeJS.Timeout;
   private shuttingDown = false;
   private maintenance = false;
-  private cleanupError?: unknown;
+  private sessionMaintenance = new Set<string>();
+  private cleanupErrors = new Map<string, unknown>();
   private sequence = 0;
   private cancelledStarts = new Set<string>();
-  private shutdownPromise?: Promise<void>;
+  private shutdownPromise?: Promise<unknown[]>;
   private lifecycleError?: Error;
   private subtasks: SubtaskTracker;
   constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private launcher: TerminalLauncher, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
@@ -65,17 +66,17 @@ export class Runtime {
     try { this.options.onError?.(this.lifecycleError); } catch { /* Error reporting must never prevent cleanup. */ }
   }
   private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
-  private trackCleanup(cleanup: Promise<void>, entry?: ProcessEntry) {
+  private trackCleanup(id: string, cleanup: Promise<void>, entry?: ProcessEntry) {
     const tracked = cleanup.catch(error => {
       if (entry) entry.cleanupError ??= error;
-      this.cleanupError = error; this.reportError(error);
+      this.cleanupErrors.set(id, error); this.reportError(error);
     });
-    this.cleanups.add(tracked);
+    this.cleanups.set(tracked, id);
     void tracked.then(() => this.cleanups.delete(tracked));
     return tracked;
   }
-  private closeResource(entry: ProcessEntry) {
-    return entry.resourceClose ??= this.trackCleanup(Promise.resolve().then(() => entry.resource?.close()), entry);
+  private closeResource(id: string, entry: ProcessEntry) {
+    return entry.resourceClose ??= this.trackCleanup(id, Promise.resolve().then(() => entry.resource?.close()), entry);
   }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
@@ -149,7 +150,7 @@ export class Runtime {
   }
   async start(id: string) {
     if (this.shuttingDown) throw new Error('工作台正在退出，无法启动新会话。');
-    if (this.maintenance) throw new Error('执行程序正在更新，暂时不能启动终端。');
+    if (this.maintenance || this.sessionMaintenance.has(id)) throw new Error('执行程序正在更新，暂时不能启动终端。');
     const session = this.getSession(id);
     if (this.has(id)) return;
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
@@ -196,8 +197,10 @@ export class Runtime {
         }
       });
       resource = launch.resource;
-      if (this.shuttingDown || this.maintenance || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
+      if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
+      // Output observers may synchronously enter maintenance before native spawn.
+      if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       const child = spawnTerminal(launch, session.cwd);
       const entry: ProcessEntry = spawned = { process: child, ending: false, token, resource };
       this.running.set(id, entry);
@@ -217,10 +220,10 @@ export class Runtime {
           error: !entry.ending && exitCode !== 0 ? `会话进程退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
         // Explicit stop already owns the process-tree cleanup. A natural exit
         // still owns PTY and launcher resources, including on POSIX.
-        entry.cleanup ??= this.trackCleanup((async () => {
+        entry.cleanup ??= this.trackCleanup(id, (async () => {
           if (process.platform === 'win32') await this.releasePty(id, entry);
           else entry.released = true; // node-pty closes the POSIX descriptor before onExit.
-          await this.closeResource(entry);
+          await this.closeResource(id, entry);
         })(), entry);
         void entry.cleanup.then(() => {
           if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
@@ -236,8 +239,8 @@ export class Runtime {
     } catch (error) {
       // A successful spawn followed by a failed state write still owns a real process.
       if (spawned) await this.beginStop(id, spawned);
-      else { try { await resource?.close(); } catch (closeError) { this.reportError(closeError); } }
-      this.guard(() => this.update(id,{ status: this.cancelledStarts.has(id) || this.shuttingDown ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
+      else if (resource) await this.trackCleanup(id, Promise.resolve().then(() => resource!.close()));
+      this.guard(() => this.update(id,{ status: !this.cleanupErrors.has(id) && (this.cancelledStarts.has(id) || this.shuttingDown) ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
       throw error;
     } finally {
       this.starting.delete(id); this.cancelledStarts.delete(id); this.startCompletions.delete(id);
@@ -245,13 +248,19 @@ export class Runtime {
     }
   }
   write(id: string, data: string) {
+    if (this.maintenance || this.sessionMaintenance.has(id)) throw new Error('执行程序正在更新，暂时不能操作终端。');
     const entry = this.running.get(id);
     if (!entry || entry.ending) throw new Error('会话没有运行。请先启动或恢复。');
     entry.process.write(data);
   }
-  resize(id: string, cols: number, rows: number) { this.running.get(id)?.process.resize(cols,rows); }
+  resize(id: string, cols: number, rows: number) {
+    if (this.maintenance || this.sessionMaintenance.has(id)) throw new Error('执行程序正在更新，暂时不能操作终端。');
+    this.running.get(id)?.process.resize(cols,rows);
+  }
   interrupt(id: string) {
-    this.write(id,'\x03');
+    const entry = this.running.get(id);
+    if (!entry || entry.ending) throw new Error('会话没有运行。请先启动或恢复。');
+    entry.process.write('\x03');
     // Ctrl-C is only a request: background agents may continue until a hook or process exit confirms otherwise.
     this.update(id, { taskState: 'interrupted' });
   }
@@ -269,13 +278,13 @@ export class Runtime {
     entry.ending = true;
     this.guard(() => this.subtasks.end(id, 'interrupted', '会话已停止。'));
     this.stopping.set(id, entry);
-    entry.cleanup = this.trackCleanup((async () => {
+    entry.cleanup = this.trackCleanup(id, (async () => {
       try {
         if (process.platform === 'win32') await this.stopWindowsTree(entry);
         else await this.stopPosixTree(entry);
       } finally {
         await this.releasePty(id, entry);
-        await this.closeResource(entry);
+        await this.closeResource(id, entry);
         if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
         this.trimBuffers();
       }
@@ -302,7 +311,7 @@ export class Runtime {
   private releasePty(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.release) return entry.release;
     this.stopping.set(id, entry);
-    entry.release = this.trackCleanup((async () => {
+    entry.release = this.trackCleanup(id, (async () => {
       try {
         if (process.platform === 'win32') await releaseWindowsPty(entry.process);
         else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
@@ -384,28 +393,63 @@ export class Runtime {
     await (this.shutdownPromise ??= this.performShutdown());
     // Resource cleanup is idempotent, but saving must be retried after a disk fault.
     this.store.flush();
-    if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程和资源已释放，请检查残留进程后重试。', { cause: this.cleanupError });
+    if (this.activeCount || this.cleanupErrors.size) throw new Error('无法确认全部终端进程和资源已释放，请检查残留进程后重试。', { cause: this.cleanupErrors.values().next().value });
   }
-  setMaintenance(value: boolean) { this.maintenance = value; }
+  setMaintenance(value: boolean) {
+    this.maintenance = value;
+    if (value) for (const id of this.starting) this.cancelledStarts.add(id);
+  }
+  setSessionMaintenance(ids: readonly string[], value: boolean): void {
+    for (const id of ids) {
+      if (value) {
+        this.sessionMaintenance.add(id);
+        // A prepare begun before the barrier stays cancelled even if maintenance
+        // finishes before the provider returns its launch resources.
+        if (this.starting.has(id)) this.cancelledStarts.add(id);
+      } else this.sessionMaintenance.delete(id);
+    }
+  }
+  async disconnectSessions(ids: readonly string[]): Promise<void> {
+    const selected = new Set(ids);
+    if (!this.maintenance && [...selected].some(id => !this.sessionMaintenance.has(id))) {
+      throw new Error('断开终端前必须暂停目标会话。');
+    }
+    const failures = await this.performShutdown(false, selected);
+    for (const id of selected) if (this.cleanupErrors.has(id)) failures.push(this.cleanupErrors.get(id));
+    if ([...selected].some(id => this.has(id)) || failures.length) {
+      throw new Error('无法确认目标终端进程和资源已释放，已取消更新。请关闭残留进程并重启工作台后重试。', {
+        cause: new AggregateError(failures, '目标终端清理失败。'),
+      });
+    }
+    this.store.flush();
+  }
   async disconnectAll() {
     if (!this.maintenance) throw new Error('断开终端前必须暂停新会话。');
     await this.performShutdown(false);
-    if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程已停止，已取消更新。请关闭残留进程并重启工作台后重试。');
+    if (this.activeCount || this.cleanupErrors.size) throw new Error('无法确认全部终端进程已停止，已取消更新。请关闭残留进程并重启工作台后重试。');
     this.store.flush();
   }
-  private async performShutdown(permanent = true) {
+  private async performShutdown(permanent = true, selected?: ReadonlySet<string>): Promise<unknown[]> {
     if (permanent) this.shuttingDown = true;
-    for (const id of this.starting) this.cancelledStarts.add(id);
-    for (const id of this.running.keys()) this.guard(() => this.stop(id));
-    await Promise.all([...this.startCompletions.values()]);
+    const includes = (id: string) => !selected || selected.has(id);
+    const failures: unknown[] = [];
+    for (const id of this.starting) if (includes(id)) this.cancelledStarts.add(id);
+    for (const id of this.running.keys()) if (includes(id)) {
+      try { this.stop(id); } catch (error) { failures.push(error); this.reportError(error); }
+    }
+    await Promise.all([...this.startCompletions].filter(([id]) => includes(id)).map(([, completion]) => completion));
     const deadline = Date.now() + 3000;
-    while ((this.running.size || this.starting.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve,50));
+    const active = () => [...this.running.keys(), ...this.starting].some(includes);
+    while (active() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve,50));
     for (const [id, entry] of this.running) {
-      await this.beginStop(id, entry);
-      await this.releasePty(id, entry);
+      if (!includes(id)) continue;
+      try { await this.beginStop(id, entry); await this.releasePty(id, entry); }
+      catch (error) { failures.push(error); this.reportError(error); }
     }
     // Root exit is not proof that descendants, taskkill, or launcher resources have finished.
-    while (this.cleanups.size) await Promise.all([...this.cleanups]);
+    const pending = () => [...this.cleanups].filter(([, id]) => includes(id)).map(([cleanup]) => cleanup);
+    for (let cleanups = pending(); cleanups.length; cleanups = pending()) await Promise.all(cleanups);
     this.guard(() => this.flush());
+    return failures;
   }
 }

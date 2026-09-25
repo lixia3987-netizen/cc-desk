@@ -1,6 +1,7 @@
+import { parseClaudeConfig } from '@cc-desk/engine-claude/config';
 import type { ChatDecision, ChatPageOptions } from '../../../shared/chat';
 import { getSessionIdentity } from '../../../shared/execution';
-import type { Capabilities, Effort, PermissionMode } from '../../../shared/types';
+import type { Capabilities, EngineConfig } from '../../../shared/types';
 import { ChatRuntime } from '../../chat-runtime';
 import type { ChatRuntimeOptions } from '../../chat-runtime';
 import type { ExecutionEvents } from '../../execution/events';
@@ -46,7 +47,16 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   prepareCommands(id: string) { validateClaudeSession(this.session(id)); return this.runtime.prepareCommands(id, this.capabilities()); }
   recoverContext(id: string) { return this.runtime.recoverContext(id); }
   respond(id: string, requestId: string, decision: ChatDecision) { return this.runtime.respond(id, requestId, decision); }
-  updateConfig(id: string, config: { model?: string; effort?: Effort; permissionMode?: PermissionMode }) { return this.runtime.updateConfig(id, config); }
+  updateConfig(id: string, config: EngineConfig) {
+    const next = parseClaudeConfig(config);
+    const session = this.session(id);
+    const current = parseClaudeConfig(session.engineConfig);
+    return this.runtime.updateConfig(id, {
+      ...(next.model !== current.model ? { model: next.model } : {}),
+      ...(next.effort !== current.effort ? { effort: next.effort } : {}),
+      ...(next.permissionMode !== current.permissionMode || session.observedPermissionMode !== next.permissionMode ? { permissionMode: next.permissionMode } : {}),
+    });
+  }
   interrupt(id: string) { return this.runtime.interrupt(id); }
   interruptAndWait(id: string) { return this.runtime.interruptAndWait(id); }
   stop(id: string) { return this.runtime.stop(id); }

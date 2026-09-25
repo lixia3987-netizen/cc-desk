@@ -17,6 +17,8 @@ export class PtyExecutor implements TerminalExecutor {
   forget(id: string) { this.runtime.forget(id, { deleteLogs: true }); }
   exports(id: string) { return this.exportSources(id); }
   setMaintenance(value: boolean) { this.runtime.setMaintenance(value); }
+  setSessionMaintenance(ids: readonly string[], value: boolean) { this.runtime.setSessionMaintenance(ids, value); }
+  disconnectSessions(ids: readonly string[]) { return this.runtime.disconnectSessions(ids); }
   disconnectAll() { return this.runtime.disconnectAll(); }
   shutdown() { return this.runtime.shutdown(); }
 }

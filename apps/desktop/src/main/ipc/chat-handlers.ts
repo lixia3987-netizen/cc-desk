@@ -19,6 +19,7 @@ interface ChatPorts {
   attachments: Pick<Attachments, 'validate' | 'add' | 'list' | 'removeFile'>;
   structured(id: string): Session;
   assertUnlocked(session: Session): void;
+  captureAdmission(id: string): () => void;
   requireCommands(id: string): void;
   reserve(id: string): Promise<void>;
   releaseAdmission(id: string): void;
@@ -61,9 +62,11 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   handle('chat:snapshot', idSchema, async id => {
     ports.structured(id);
     await ports.chat.hydrate(id);
-    return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
+    const snapshot = ports.chat.snapshot(id);
+    return { ...snapshot, queue: snapshot.queue ?? ports.queue.snapshot(id) };
   });
   handle('chat:commands', idSchema, async id => {
+    const checkAdmission = ports.captureAdmission(id);
     const session = ports.structured(id);
     if (session.archived) throw new Error('请先取消会话归档。');
     ports.assertUnlocked(session);
@@ -71,7 +74,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     if (ports.chat.has(id)) return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
     if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id)) throw new Error('请先结束当前会话任务。');
     await ports.reserve(id);
-    try { return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
+    try { checkAdmission(); return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
     finally { ports.releaseAdmission(id); }
   });
   handle('chat:recover-context', idSchema, id => ports.manage(id, async () => {
@@ -91,9 +94,11 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   handle('chat:attention', z.undefined(), () => ports.chat.attention());
   handle('chat:send', sendSchema, async ({ id, text, attachments }) => {
     ports.structured(id);
+    const checkAdmission = ports.captureAdmission(id);
     if (!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流正在执行，请先取消后再手动发送。');
     const approved = await ports.attachments.validate(id, attachments);
+    checkAdmission();
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流已开始，请先取消后再发送。');
     return ports.runChat(id, text, approved);
   });
@@ -111,12 +116,14 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.chat.respond(id, requestId, decision);
   });
   handle('files:pick', idSchema, async id => {
+    const checkAdmission = ports.captureAdmission(id);
     assertCanStageAttachments(id);
     const result = await dialog.showOpenDialog(ports.getWindow()!, {
       title: '添加上下文附件', properties: ['openFile', 'multiSelections'],
       filters: [{ name: '文本、图片与 PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'py', 'yaml', 'yml', 'html', 'css', 'xml', 'log'] }],
     });
     if (result.canceled) return [];
+    checkAdmission();
     // A native picker may outlive deletion, archiving or maintenance of its source session.
     assertCanStageAttachments(id);
     return ports.attachments.add(id, result.filePaths);

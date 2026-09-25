@@ -36,10 +36,14 @@ export class SessionService {
   private workflowStates = new Map<string,string>();
   private stopping = false;
   private maintenance = false;
+  private maintainedEngines = new Set<string>();
+  private maintenanceOperation = false;
+  private maintenanceEpochs = new Map<string, number>();
+  private globalAdmissionEpoch = 0;
   constructor(private store: StateStore, readonly execution: ExecutionRegistry,
     private onState: () => void, private getWindow: () => BrowserWindow | null, private queries: WorkspaceQueries) {
     this.attachments = new Attachments(store.directory);
-    this.chat = new StructuredExecutions(execution);
+    this.chat = new StructuredExecutions(execution, store.directory);
     this.runtime = new TerminalExecutions(execution);
     execution.events.subscribe(event => {
       const window = this.getWindow();
@@ -81,6 +85,7 @@ export class SessionService {
     });
     for (const run of this.workflows.list()) this.workflowStates.set(run.id, run.status);
     this.queue = new ChatQueue(store.directory, {
+      captureAdmission: id => this.captureEngineAdmission(this.session(id).execution.providerId),
       assertAvailable: id => {
         const session = this.structured(id); this.assertUnlocked(session);
         if (session.archived) throw new Error('请先取消会话归档。');
@@ -105,10 +110,13 @@ export class SessionService {
     window.show();window.focus();
   }
   get activeCount() { return this.execution.activeCount; }
+  activeCountForEngine(providerId: string) {
+    return this.store.state.sessions.filter(session => session.execution.providerId === providerId && this.execution.has(session.id)).length;
+  }
   private session(id: string) { return this.execution.getSession(id); }
   private structured(id: string) {
     const s = this.session(id);
-    this.execution.structured(id);
+    if (s.execution.mode !== 'structured') throw new Error('此功能需要图形化会话。');
     return s;
   }
   private project(id: string) {
@@ -141,13 +149,29 @@ export class SessionService {
     if (keys.some(key => [...this.directoryLocks].some(lock => this.overlaps(key,lock)))) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
   }
   private assertUnlocked(session: Session) {
-    this.assertAvailable();
+    this.assertEngineAvailable(session.execution.providerId);
+    this.execution.validateSession(session);
     if(this.lifecycle.has(session.id)) throw new Error('会话或工作目录正在执行管理操作，请稍后重试。');
     this.assertDirectoriesUnlocked([this.pathKey(session.cwd)]);
   }
   private assertAvailable() {
     if (this.stopping) throw new Error('工作台正在退出。');
     if (this.maintenance) throw new Error('Claude Code 正在更新，所有工作区暂时断开，请等待更新完成。');
+  }
+  assertEngineAvailable(providerId: string) {
+    this.assertAvailable();
+    if (this.maintainedEngines.has(providerId)) throw new Error(`${providerId === 'claude' ? 'Claude Code 正在更新' : '会话执行引擎正在维护'}，请等待完成后重试。`);
+  }
+  captureEngineAdmission(providerId: string): () => void {
+    this.assertEngineAvailable(providerId);
+    const epoch = this.maintenanceEpochs.get(providerId) ?? 0;
+    const globalEpoch = this.globalAdmissionEpoch;
+    return () => {
+      this.assertEngineAvailable(providerId);
+      if (globalEpoch !== this.globalAdmissionEpoch || epoch !== (this.maintenanceEpochs.get(providerId) ?? 0)) {
+        throw new Error('执行引擎维护已取消此前操作，请重新尝试。');
+      }
+    };
   }
   private async manage<T>(id: string, action: () => T | Promise<T>): Promise<T> {
     this.assertUnlocked(this.session(id));
@@ -239,12 +263,17 @@ export class SessionService {
     this.admissions.add(id);
   }
   async start(id: string) {
-    this.assertAvailable();
     const s = this.session(id);
+    this.assertEngineAvailable(s.execution.providerId);
+    const epoch = this.cancellations.get(id) ?? 0;
     if(s.execution.mode === 'structured') return; // Started by first message; no empty model request.
     if(this.chat.has(id)) throw new Error('此会话已由图形化运行器占用。');
     await this.reserve(id);
-    try { this.assertAvailable(); await this.runtime.start(id); } finally { this.admissions.delete(id); }
+    try {
+      this.assertEngineAvailable(this.session(id).execution.providerId);
+      if (epoch !== (this.cancellations.get(id) ?? 0)) throw new Error('会话启动已取消。');
+      await this.runtime.start(id);
+    } finally { this.admissions.delete(id); }
   }
   async stop(id: string) {
     this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
@@ -284,7 +313,7 @@ export class SessionService {
     try {
       await this.attachments.retain(id,attachments);
       if (queued) await this.attachments.markSent(id, attachments);
-      this.assertAvailable();
+      this.assertEngineAvailable(this.session(id).execution.providerId);
       if (epoch !== (this.cancellations.get(id) ?? 0)) throw new Error('消息发送已取消。');
       if (queued && this.queue.snapshot(id).paused) throw new Error('队列已暂停，消息没有发送。');
       const result=await this.chat.send(id,text,attachments,titlePrompt);
@@ -305,10 +334,12 @@ export class SessionService {
       manageWorktreeDeletion: (id, confirmedPath, action) => this.manageWorktree(id, action, confirmedPath), worktreeBase: session => this.worktreeBase(session),
       cleanupDependencies: session => this.cleanupDependencies(session),
       forgetQueue: id => this.queue.delete(id),
+      validateConfig: (id, config) => this.execution.validateConfig(id, config),
     });
     registerChatHandlers(handle, {
       chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments, queue: this.queue,
       structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
+      captureAdmission: id => this.captureEngineAdmission(this.session(id).execution.providerId),
       requireCommands: id => { this.execution.require(id, 'commands'); },
       reserve: id => this.reserve(id), releaseAdmission: id => { this.admissions.delete(id); this.queue.wake(id); },
       manage: (id, action) => this.manage(id, action),
@@ -323,6 +354,7 @@ export class SessionService {
     });
     registerWorkflowHandlers(handle, {
       workflows: this.workflows, structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
+      defaultWorkflowError: id => this.execution.defaultWorkflowError(id),
       hasPendingTask: id => this.admissions.has(id) || BUSY.has(this.chat.taskState(id)) || this.queue.hasPending(id),
       pauseQueue: id => this.queue.pause(id), getWindow: this.getWindow,
     });
@@ -330,6 +362,7 @@ export class SessionService {
   private export(id: string) { return exportSession(this.execution, id, this.getWindow()); }
   async shutdown() {
     this.stopping=true;
+    this.globalAdmissionEpoch++;
     const errors:unknown[]=[];
     try { this.queue.pauseAll('工作台已退出，待发送消息需要手动继续。'); } catch (error) { errors.push(error); }
     try { await this.workflows.shutdown(); } catch(error) { errors.push(error); }
@@ -342,6 +375,9 @@ export class SessionService {
   }
   async withDisconnectedWorkspaces<T>(action: () => Promise<T>): Promise<T> {
     this.assertAvailable();
+    if (this.maintenanceOperation) throw new Error('执行引擎正在维护，请等待完成后重试。');
+    this.maintenanceOperation = true;
+    this.globalAdmissionEpoch++;
     this.maintenance = true;
     try {
       this.execution.setMaintenance(true);
@@ -352,10 +388,57 @@ export class SessionService {
       if (results.some(result => result.status === 'rejected') || this.activeCount || this.admissions.size) throw new Error('未能断开全部工作区或保存记录，已取消更新。请检查会话进程、磁盘空间和目录权限后重试。');
       this.store.flush();
       if (this.store.persistenceError) throw new Error('工作区记录尚未成功保存，已取消更新。请检查磁盘空间和目录权限。');
+      if (this.stopping) throw new Error('工作台正在退出，已取消更新。');
       return await action();
     } finally {
       try { this.execution.setMaintenance(false); }
-      finally { this.maintenance = false; this.onState(); }
+      finally { this.maintenance = false; this.maintenanceOperation = false; this.onState(); }
+    }
+  }
+  async withEngineMaintenance<T>(providerId: string, action: () => Promise<T>): Promise<T> {
+    this.assertEngineAvailable(providerId);
+    if (this.maintenanceOperation) throw new Error('执行引擎正在维护，请等待完成后重试。');
+    this.maintenanceOperation = true;
+    this.maintainedEngines.add(providerId);
+    this.maintenanceEpochs.set(providerId, (this.maintenanceEpochs.get(providerId) ?? 0) + 1);
+    // Fix the scope only after closing admission. Existing asynchronous work is
+    // cancelled even if it resumes after this maintenance operation has ended.
+    const sessions = this.store.state.sessions.filter(session => session.execution.providerId === providerId);
+    const ids = sessions.map(session => session.id);
+    const targeted = new Set(ids);
+    const workflowIds = [...new Set([...ids, ...this.workflows.list().filter(run => run.providerId === providerId).map(run => run.sessionId)])];
+    for (const id of ids) this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);
+    const pending = () => [...this.admissions, ...this.lifecycle].some(id => targeted.has(id)) ||
+      ids.some(id => this.queue.hasActive(id)) || workflowIds.some(id => this.workflows.isSessionBusy(id));
+    const errors: unknown[] = [];
+    try {
+      try { this.execution.setEngineMaintenance(providerId, ids, true); }
+      catch (error) { errors.push(error); }
+      try { this.onState(); } catch (error) { errors.push(error); }
+      // Persistence or one driver's failure must not prevent independent target
+      // cleanup. Surviving providers retain their queues, processes and owners.
+      const results = await Promise.allSettled([
+        Promise.resolve().then(() => this.queue.pauseSessions(sessions.filter(session => session.execution.mode === 'structured').map(session => session.id), '执行引擎维护已暂停队列，请手动继续。')),
+        Promise.resolve().then(() => this.workflows.disconnectSessions(workflowIds, '执行引擎维护已中断工作流，请手动继续。')),
+        Promise.resolve().then(() => this.execution.disconnectEngine(providerId, ids)),
+      ]);
+      for (const result of results) if (result.status === 'rejected') errors.push(result.reason);
+      const deadline = Date.now() + 10_000;
+      while (pending() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+      if (errors.length || pending() || ids.some(id => this.execution.has(id))) {
+        throw new AggregateError(errors, '未能停止目标引擎的全部任务或保存记录，已取消更新。请检查会话进程、磁盘空间和目录权限后重试。');
+      }
+      this.store.flush();
+      if (this.store.persistenceError) throw new Error('工作区记录尚未成功保存，已取消更新。请检查磁盘空间和目录权限。');
+      if (this.stopping) throw new Error('工作台正在退出，已取消更新。');
+      return await action();
+    } finally {
+      try { this.execution.setEngineMaintenance(providerId, ids, false); }
+      finally {
+        this.maintainedEngines.delete(providerId);
+        this.maintenanceOperation = false;
+        this.onState();
+      }
     }
   }
 }

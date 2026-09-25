@@ -11,7 +11,7 @@ import { isSubtaskActive, subtaskCounts, SUBTASK_LIMIT } from '../src/shared/sub
 function fixture() {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'cc-desk-subtasks-'));
   const store=new StateStore(directory),id=randomUUID(),projectId=randomUUID(),now=new Date().toISOString();
-  store.change(state=>state.sessions.push({ execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },id,projectId,title:'任务测试',kind:'agent',cwd:directory,started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:now,updatedAt:now}));
+  store.change(state=>state.sessions.push({ execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },id,projectId,title:'任务测试',kind:'agent',cwd:directory,started:false,engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } },status:'idle',archived:false,createdAt:now,updatedAt:now}));
   let notifications=0;
   const tracker=new SubtaskTracker(store,()=>notifications++);
   return {directory,store,id,tracker,get activity(){return store.state.sessions[0].subtasks!;},get notifications(){return notifications;},dispose(){store.flush();fs.rmSync(directory,{recursive:true,force:true});}};

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 import { fontFixture } from './fixtures/font';
 

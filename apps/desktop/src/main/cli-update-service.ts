@@ -42,6 +42,7 @@ export class CLIUpdateService {
   state: CLIUpdateState = { phase: 'idle', message: '每次启动时检查 Claude Code 更新。', showBanner: false };
   private candidate?: CLIUpdateCandidate;
   private epoch = 0;
+  private updateEpoch = 0;
   private checking?: Promise<CLIUpdateState>;
   constructor(private actions: CLIUpdateActions) {}
   get busy() { return cliUpdateBusy(this.state); }
@@ -53,6 +54,14 @@ export class CLIUpdateService {
     this.actions.changed(this.state);
   }
   dismiss() { if (!this.busy) this.publish({ showBanner: false }); }
+  /** Quitting may cancel admission to an installer, never interrupt its writes. */
+  cancelPendingUpdate() {
+    if (this.state.phase === 'updating') return false;
+    this.updateEpoch++;
+    this.epoch++;
+    this.candidate = undefined;
+    return true;
+  }
   check(): Promise<CLIUpdateState> {
     if (this.busy) return Promise.resolve(this.state);
     if (this.checking) return this.checking;
@@ -80,30 +89,37 @@ export class CLIUpdateService {
     this.assertIdle();
     const candidate = this.candidate;
     if (!candidate || this.state.phase !== 'available') throw new Error('请先检查更新，确认存在可用的新版本。');
-    this.publish({ phase: 'confirming', message: '等待确认断开全部工作区…', showBanner: true });
+    const epoch = ++this.updateEpoch;
+    const assertCurrent = () => { if (epoch !== this.updateEpoch) throw new Error('工作台正在退出，已取消更新。'); };
+    this.publish({ phase: 'confirming', message: '等待确认停止 Claude 会话…', showBanner: true });
     let disconnected = false;
     try {
-      if (!await this.actions.confirm(candidate)) {
+      const confirmed = await this.actions.confirm(candidate);
+      assertCurrent();
+      if (!confirmed) {
         this.publish({ phase: 'available', message: `已取消更新，当前继续使用 Claude Code ${candidate.currentVersion}。` });
         return this.state;
       }
       // A changed path or externally updated installation needs another check and confirmation.
       await this.actions.verify(candidate);
-      this.publish({ phase: 'disconnecting', message: '正在停止全部工作区的会话、终端和工作流…' });
+      assertCurrent();
+      this.publish({ phase: 'disconnecting', message: '正在停止 Claude 会话、终端和工作流…' });
       await this.actions.disconnect(async () => {
+        assertCurrent();
         disconnected = true;
         await this.actions.verify(candidate);
-        this.publish({ phase: 'updating', message: '工作区已断开，正在更新 Claude Code，请稍候…' });
+        assertCurrent();
+        this.publish({ phase: 'updating', message: 'Claude 会话已断开，正在更新 Claude Code，请稍候…' });
         let capabilities: Capabilities;
         try { await this.actions.install(candidate); }
         finally { capabilities = await this.actions.refresh(); }
         if (!capabilities.available) throw new Error('更新命令已结束，但 CLI 检测失败。请检查安装和可执行路径后重新检测。');
         const installed = cliVersion(capabilities.version);
         if (newerVersion(candidate.latestVersion, installed)) throw new Error('更新命令已结束，但当前路径尚未达到目标版本。请检查 CLI 更新通道、安装权限；Homebrew / WinGet 等安装请通过对应包管理器更新，然后重新检测。');
-        this.publish({ phase: 'updated', currentVersion: installed, message: `Claude Code 已更新至 ${installed}。工作区保持断开，可手动恢复会话。` });
+        this.publish({ phase: 'updated', currentVersion: installed, message: `Claude Code 已更新至 ${installed}。Claude 会话保持断开，可手动恢复。` });
       });
     } catch (error) {
-      this.publish({ phase: 'error', message: (error instanceof Error ? error.message : '更新失败，请重新检查后重试。') + (disconnected ? ' 工作区保持断开，未自动重启任务。' : ''), showBanner: true });
+      this.publish({ phase: 'error', message: (error instanceof Error ? error.message : '更新失败，请重新检查后重试。') + (disconnected ? ' Claude 会话保持断开，未自动重启任务。' : ''), showBanner: true });
     } finally { this.candidate = this.state.phase === 'available' ? candidate : undefined; }
     return this.state;
   }

@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { stripVTControlCharacters } from 'node:util';
+import { inspect, stripVTControlCharacters } from 'node:util';
 import { Runtime } from '../src/main/runtime';
 import { StateStore } from '../src/main/store';
 import type { Capabilities, Session } from '../src/shared/types';
@@ -26,7 +26,7 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-pty-'));const cwd=path.join(root,'项目 space & quote');fs.mkdirSync(cwd);
   const cwdProof = randomUUID(); fs.writeFileSync(path.join(cwd, 'cwd-proof.txt'), cwdProof + '\n', 'utf8');
   const store=new StateStore(path.join(root,'data'));const projectId=randomUUID();
-  const create=():Session=>({id:randomUUID(),projectId,title:'shell',kind:'shell',cwd,execution:{providerId:'shell',mode:'terminal'},started:false,model:'',effort:'default',permissionMode:'default',status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
+  const create=():Session=>({id:randomUUID(),projectId,title:'shell',kind:'shell',cwd,execution:{providerId:'shell',mode:'terminal'},started:false,engineConfig: { schemaVersion: 1, options: {} },status:'idle',archived:false,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()});
   const a=create(),b=create();store.change(s=>{s.sessions=[a,b];s.settings.maxSessions=1;});
   const output=new Map<string,string>();const runtime=new Runtime(store,()=>{},chunk=>output.set(chunk.sessionId,(output.get(chunk.sessionId)||'')+chunk.data), new ShellTerminalLauncher(store));
   try {
@@ -68,7 +68,7 @@ test('worktree creates an independent branch and preserves the original working 
 test('stopped terminal caches are bounded, evicted output reloads, and exports retain both log segments', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-cache-'));
   const store = new StateStore(root); const now = new Date().toISOString();
-  const sessions: Session[] = Array.from({ length: 12 }, () => ({ id: randomUUID(), projectId: randomUUID(), title: 'stopped', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now }));
+  const sessions: Session[] = Array.from({ length: 12 }, () => ({ id: randomUUID(), projectId: randomUUID(), title: 'stopped', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, engineConfig: { schemaVersion: 1, options: {} }, status: 'stopped', archived: false, createdAt: now, updatedAt: now }));
   store.change(state => { state.sessions = sessions; });
   const runtime = new Runtime(store, () => {}, () => {}, new ShellTerminalLauncher(store), { maxStoppedBuffers: 2 });
   try {
@@ -94,21 +94,21 @@ test('stopped terminal caches are bounded, evicted output reloads, and exports r
 test('a pending CLI identity or unsupported observed permission cannot silently resume with stale settings', { timeout: 10000 }, async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-runtime-guard-'));
   const store = new StateStore(root); const now = new Date().toISOString(); const id = randomUUID();
-  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'guard', kind: 'agent', cwd: root, execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }, started: true, model: '', effort: 'default', permissionMode: 'default', status: 'stopped', archived: false, createdAt: now, updatedAt: now, identityPending: true }));
+  store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'guard', kind: 'agent', cwd: root, execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }, started: true, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'stopped', archived: false, createdAt: now, updatedAt: now, identityPending: true }));
   const runtime = new Runtime(store, () => {}, () => {}, new ClaudeTerminalLauncher(store, () => ({ available: false, executable: '', version: '', flags: [], efforts: ['default'] })));
   try {
     await assert.rejects(runtime.start(id), /新会话身份尚未确认/);
     store.change(state => { state.sessions[0].identityPending = false; state.sessions[0].observedPermissionMode = 'auto'; });
     await assert.rejects(runtime.start(id), /明确选择/);
     assert.equal(runtime.activeCount, 0);
-    assert.equal(store.state.sessions[0].permissionMode, 'default');
+    assert.equal(store.state.sessions[0].engineConfig.options.permissionMode, 'default');
   } finally { await runtime.shutdown(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
 });
 
 function lifecycleFixture(shellPath = '') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-lifecycle-'));
   const store = new StateStore(path.join(root, 'data')); const now = new Date().toISOString();
-  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'cleanup fixture', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+  const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'cleanup fixture', kind: 'shell', cwd: root, execution: { providerId: 'shell', mode: 'terminal' }, started: false, engineConfig: { schemaVersion: 1, options: {} }, status: 'idle', archived: false, createdAt: now, updatedAt: now };
   store.change(state => { state.sessions.push(session); state.settings.shellPath = shellPath; });
   const errors: Error[] = [];
   let capabilities: Capabilities = { available: false, executable: '', version: '', flags: [], efforts: ['default'] };
@@ -147,16 +147,19 @@ test('terminal runtime accepts another provider and isolates identity observatio
     await until(() => !runtime.has(f.session.id), 'first provider cleanup');
     assert.equal(resourcesClosed, 1);
     await runtime.start(f.session.id);
-    callbacks[0].update({ conversationId: 'stale-conversation', model: 'stale' });
+    callbacks[0].update({ conversationId: 'stale-conversation', engineConfig: { schemaVersion: 1, options: { variant: 'stale' } } });
     callbacks[0].prompt('stale prompt');
     callbacks[0].subtask({ type: 'begin', turnId: 'stale-turn' });
     assert.equal(current().execution.conversationId, 'second-conversation');
-    assert.equal(current().model, '');
+    assert.deepEqual(current().engineConfig, { schemaVersion: 1, options: {} });
     assert.equal(current().title, 'cleanup fixture');
     assert.notEqual(current().subtasks?.turnId, 'stale-turn');
-    callbacks[1].update({ conversationId: 'third-conversation' });
+    callbacks[1].update({ conversationId: 'third-conversation', engineConfig: { schemaVersion: 1, options: { variant: 'confirmed-current-run' } } });
     callbacks[1].prompt('新的会话标题');
     assert.equal(current().execution.conversationId, 'third-conversation');
+    assert.deepEqual(current().engineConfig, { schemaVersion: 1, options: { variant: 'confirmed-current-run' } });
+    f.store.flush();
+    assert.deepEqual(new StateStore(f.store.directory).state.sessions[0].engineConfig, current().engineConfig);
     assert.equal(current().title, '新的会话标题');
   } finally {
     await runtime.shutdown(); await f.runtime.shutdown();
@@ -184,7 +187,7 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
     const store = new StateStore(root), id = randomUUID(), now = new Date().toISOString();
     store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'silent', kind: 'agent',
       execution: { providerId: 'silent', mode: 'terminal' }, cwd: root, started: false,
-      model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now }));
+      engineConfig: { schemaVersion: 1, options: {} }, status: 'idle', archived: false, createdAt: now, updatedAt: now }));
     let program = 'process.exit(0)';
     const runtime = new Runtime(store, () => {}, () => {}, { prepare: async () => ({
       file: process.execPath, args: ['-e', program], env: process.env,
@@ -291,6 +294,293 @@ test('CLI update disconnects real terminals and cancels pending starts without p
     assert.equal(f.runtime.activeCount, 1);
   } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
 });
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(done => { resolve = done; });
+  return { promise, resolve };
+}
+
+test('session maintenance disconnects Claude while Shell stays interactive and normal capacity still applies', { timeout: 15000 }, async t => {
+  const f = lifecycleFixture();
+  const claude: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
+  const spare: Session = { ...f.session, id: randomUUID() };
+  f.store.change(state => { state.sessions.push(claude, spare); state.settings.maxSessions = 2; });
+  const shell = new ShellTerminalLauncher(f.store);
+  const output = new Map<string, string>();
+  let claudeClosed = 0;
+  let phase = 'starting';
+  const failures: unknown[] = [];
+  const runtime = new Runtime(f.store, () => {}, chunk => output.set(chunk.sessionId, (output.get(chunk.sessionId) ?? '') + chunk.data), {
+    prepare: async session => session.execution.providerId === 'shell' ? shell.prepare(session) : {
+      // A resident CLI cancels the current turn on Ctrl-C and keeps its process.
+      // Announce readiness after installing the handler; no platform timing guess.
+      file: process.execPath, args: ['-e', `
+        process.on('SIGINT', () => process.stdout.write('claude-interrupted\\n'));
+        process.stdout.write('claude-ready\\n');
+        setInterval(() => {}, 1000);
+      `], env: environment(),
+      resource: { close: async () => { claudeClosed++; } },
+    },
+  }, { onError: error => t.diagnostic(`PTY maintenance ${phase}: ${inspect(error, { depth: 6 })}`) });
+  try {
+    await runtime.start(f.session.id); await runtime.start(claude.id);
+    const claudeOutput = () => stripVTControlCharacters(output.get(claude.id) ?? '');
+    await until(() => claudeOutput().includes('claude-ready'), 'Claude fixture readiness', claudeOutput);
+    await assert.rejects(runtime.disconnectSessions([claude.id]), /必须暂停目标会话/);
+    runtime.setSessionMaintenance([claude.id], true);
+    await assert.rejects(runtime.start(claude.id), /正在更新/);
+    assert.throws(() => runtime.write(claude.id, 'input'), /正在更新/);
+    assert.throws(() => runtime.resize(claude.id, 120, 40), /正在更新/);
+    await assert.rejects(runtime.start(spare.id), /并发会话上限/);
+    phase = 'Claude interrupt';
+    assert.doesNotThrow(() => runtime.interrupt(claude.id), 'cancellation remains available during maintenance');
+    await until(() => claudeOutput().includes('claude-interrupted'), 'Claude interrupt acknowledgement', claudeOutput);
+    assert.equal(runtime.has(claude.id), true, 'interrupt cancels the turn while the resident CLI stays connected');
+    phase = 'Claude disconnect';
+    await runtime.disconnectSessions([claude.id]);
+    assert.equal(claudeClosed, 1);
+    assert.equal(runtime.has(claude.id), false);
+    assert.equal(runtime.has(f.session.id), true);
+    assert.equal(f.store.state.sessions.find(session => session.id === f.session.id)?.status, 'running');
+    phase = 'Shell interaction';
+    runtime.resize(f.session.id, 120, 40);
+    runtime.write(f.session.id, process.platform === 'win32' ? "Write-Output ('shell-' + 'survived')\r" : "printf '\\n%s%s\\n' 'shell-' 'survived'\r");
+    await until(() => stripVTControlCharacters(output.get(f.session.id) ?? '').includes('shell-survived'), 'Shell input during Claude maintenance');
+    phase = 'spare Shell start';
+    await runtime.start(spare.id);
+    runtime.setSessionMaintenance([claude.id], false);
+    await assert.rejects(runtime.start(claude.id), /并发会话上限/);
+    phase = 'global shutdown';
+    await runtime.shutdown();
+    assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+    assert.equal(runtime.lastError, undefined);
+    runtime.setSessionMaintenance([claude.id], false); runtime.setMaintenance(false);
+    await assert.rejects(runtime.start(claude.id), /正在退出/, 'maintenance release cannot reopen a shutting down runtime');
+  } catch (error) { failures.push(error); }
+  finally {
+    const cleanups = await Promise.allSettled([runtime.shutdown(), f.runtime.shutdown()]);
+    for (const result of cleanups) if (result.status === 'rejected') failures.push(result.reason);
+    if (failures.length) throw new AggregateError(failures,
+      `PTY maintenance failed during ${phase}: ${inspect(failures, { depth: 8 })}`);
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session maintenance cancels deferred prepare and awaits its resource without waiting for another provider prepare', { timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const target: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
+  f.store.change(state => { state.sessions.push(target); state.settings.maxSessions = 2; });
+  const targetPrepare = deferred<void>(), shellPrepare = deferred<void>();
+  const resourceClosing = deferred<void>(), resourceRelease = deferred<void>();
+  let targetClosed = 0;
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => {
+    await (session.id === target.id ? targetPrepare.promise : shellPrepare.promise);
+    return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+      ...(session.id === target.id ? { resource: { close: async () => {
+        resourceClosing.resolve(); await resourceRelease.promise; targetClosed++;
+      } } } : {}),
+    };
+  } });
+  const targetStart = assert.rejects(runtime.start(target.id), /已取消启动会话/);
+  const shellStart = runtime.start(f.session.id);
+  let disconnected = false;
+  try {
+    runtime.setSessionMaintenance([target.id], true);
+    const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    // Even a short barrier permanently cancels prepares that crossed it.
+    runtime.setSessionMaintenance([target.id], false);
+    targetPrepare.resolve(); await resourceClosing.promise;
+    assert.equal(disconnected, false, 'cancelled prepare still owns its launch resources');
+    assert.equal(runtime.has(target.id), true);
+    assert.equal(f.store.state.sessions.find(session => session.id === target.id)?.started, false);
+    resourceRelease.resolve();
+    await until(() => disconnected, 'target disconnect while Shell prepare remains deferred');
+    await disconnect; await targetStart;
+    assert.equal(targetClosed, 1); assert.equal(runtime.has(target.id), false);
+    assert.equal(runtime.has(f.session.id), true, 'unrelated pending prepare remains admitted');
+    shellPrepare.resolve(); await shellStart;
+    assert.equal(f.store.state.sessions[0].status, 'running');
+  } finally {
+    targetPrepare.resolve(); shellPrepare.resolve(); resourceRelease.resolve();
+    await Promise.allSettled([targetStart, shellStart]);
+    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session disconnect awaits selected launcher cleanup and leaves unrelated stopping cleanup owned', { timeout: 16000 }, async () => {
+  const f = lifecycleFixture();
+  const target: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
+  f.store.change(state => { state.sessions.push(target); state.settings.maxSessions = 2; });
+  const targetClosing = deferred<void>(), targetRelease = deferred<void>();
+  const shellClosing = deferred<void>(), shellRelease = deferred<void>();
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => ({
+    file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+    resource: { close: async () => {
+      if (session.id === target.id) { targetClosing.resolve(); await targetRelease.promise; }
+      else { shellClosing.resolve(); await shellRelease.promise; }
+    } },
+  }) });
+  try {
+    await runtime.start(f.session.id); await runtime.start(target.id);
+    runtime.stop(f.session.id); await shellClosing.promise;
+    runtime.setSessionMaintenance([target.id], true);
+    let disconnected = false;
+    const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    await targetClosing.promise;
+    assert.equal(disconnected, false); assert.equal(runtime.has(target.id), true);
+    targetRelease.resolve();
+    await until(() => disconnected, 'target disconnect while Shell cleanup remains deferred');
+    await disconnect;
+    assert.equal(runtime.has(target.id), false); assert.equal(runtime.has(f.session.id), true);
+    assert.ok(runtime.pendingCleanupCount > 0, 'unrelated launch cleanup remains tracked');
+    assert.equal(f.store.state.sessions[0].status, 'stopping');
+  } finally {
+    targetRelease.resolve(); shellRelease.resolve();
+    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session disconnect isolates old cleanup faults and drains every selected resource before reporting failures', { timeout: 20000 }, async () => {
+  const f = lifecycleFixture();
+  const createTarget = (): Session => ({ ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } });
+  const healthy = createTarget(), failed = createTarget(), delayed = createTarget();
+  f.store.change(state => { state.sessions.push(healthy, failed, delayed); state.settings.maxSessions = 4; });
+  const shellFailure = new Error('Shell cleanup failed'), targetFailure = new Error('Claude cleanup failed');
+  const delayedClosing = deferred<void>(), delayedRelease = deferred<void>();
+  const closed = new Set<string>();
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => ({
+    file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+    resource: { close: async () => {
+      closed.add(session.id);
+      if (session.id === f.session.id) throw shellFailure;
+      if (session.id === failed.id) throw targetFailure;
+      if (session.id === delayed.id) { delayedClosing.resolve(); await delayedRelease.promise; }
+    } },
+  }) });
+  try {
+    await runtime.start(f.session.id); await runtime.start(healthy.id);
+    runtime.stop(f.session.id);
+    await until(() => !runtime.has(f.session.id) && runtime.pendingCleanupCount === 0, 'old Shell cleanup failure');
+    assert.equal(runtime.lastError, shellFailure);
+    runtime.setSessionMaintenance([healthy.id], true);
+    await runtime.disconnectSessions([healthy.id]);
+    assert.equal(runtime.has(healthy.id), false, 'a Shell cleanup fault must not reject Claude maintenance');
+    await runtime.start(failed.id); await runtime.start(delayed.id);
+    runtime.setSessionMaintenance([failed.id, delayed.id], true);
+    let settled = false;
+    const rejected = assert.rejects(runtime.disconnectSessions([failed.id, delayed.id]), error => {
+      assert.ok(error instanceof Error && error.cause instanceof AggregateError);
+      assert.ok(error.cause.errors.includes(targetFailure));
+      assert.equal(error.cause.errors.includes(shellFailure), false);
+      return true;
+    }).then(() => { settled = true; });
+    await delayedClosing.promise;
+    assert.equal(settled, false, 'one failed resource cannot skip another selected resource');
+    delayedRelease.resolve(); await rejected;
+    assert.ok(closed.has(failed.id) && closed.has(delayed.id));
+    assert.equal(runtime.has(failed.id), false); assert.equal(runtime.has(delayed.id), false);
+    await assert.rejects(runtime.disconnectSessions([failed.id]), /目标终端进程和资源已释放/, 'a completed target cleanup fault remains fail closed');
+    await assert.rejects(runtime.shutdown(), /全部终端进程和资源已释放/, 'global shutdown still sees every provider cleanup fault');
+  } finally {
+    delayedRelease.resolve(); await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session disconnect reports a launch-resource failure from a cancelled prepare before any PTY spawned', { timeout: 8000 }, async () => {
+  const f = lifecycleFixture();
+  const prepared = deferred<void>();
+  const failure = new Error('Cancelled prepare resource failed');
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async () => {
+    await prepared.promise;
+    return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+      resource: { close: async () => { throw failure; } } };
+  } });
+  const start = assert.rejects(runtime.start(f.session.id), /已取消启动会话/);
+  try {
+    runtime.setSessionMaintenance([f.session.id], true);
+    const disconnected = assert.rejects(runtime.disconnectSessions([f.session.id]), error =>
+      error instanceof Error && error.cause instanceof AggregateError && error.cause.errors.includes(failure));
+    prepared.resolve(); await Promise.all([start, disconnected]);
+    assert.equal(runtime.has(f.session.id), false); assert.equal(runtime.pendingCleanupCount, 0);
+    assert.equal(f.store.state.sessions[0].started, false); assert.equal(f.store.state.sessions[0].status, 'error');
+    await assert.rejects(runtime.disconnectSessions([f.session.id]), /目标终端进程和资源已释放/);
+  } finally {
+    prepared.resolve(); await start; await runtime.shutdown().catch(() => {}); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session disconnect drains all selected PTYs after a state write fails even if storage recovers during cleanup', { timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const other: Session = { ...f.session, id: randomUUID() };
+  f.store.change(state => { state.sessions.push(other); state.settings.maxSessions = 2; });
+  const closed = new Set<string>();
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => ({
+    file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment(),
+    resource: { close: async () => { closed.add(session.id); } },
+  }) });
+  try {
+    await runtime.start(f.session.id); await runtime.start(other.id);
+    runtime.setSessionMaintenance([f.session.id, other.id], true);
+    fs.mkdirSync(f.store.file + '.tmp');
+    const rejected = assert.rejects(runtime.disconnectSessions([f.session.id, other.id]), /目标终端进程和资源已释放/);
+    // Recover before async process cleanup finishes; the failed stop record must
+    // still reject this maintenance attempt after every target has drained.
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await rejected;
+    assert.deepEqual(closed, new Set([f.session.id, other.id]));
+    assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
+    await runtime.disconnectSessions([f.session.id, other.id]);
+  } finally {
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
+test('session disconnect waits for a target descendant after its PTY root exits while Shell remains active', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  const target: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
+  f.store.change(state => { state.sessions.push(target); state.settings.maxSessions = 2; });
+  const rootFile = path.join(f.root, 'target-root'), childFile = path.join(f.root, 'target-child');
+  const childCode = `const fs=require('node:fs');process.on('SIGTERM',()=>{});process.on('SIGHUP',()=>{});fs.writeFileSync(${JSON.stringify(childFile)},String(process.pid));setInterval(()=>{},1000);`;
+  const rootCode = `const fs=require('node:fs');process.on('SIGTERM',()=>process.exit(0));fs.writeFileSync(${JSON.stringify(rootFile)},String(process.pid));require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});setInterval(()=>{},1000);`;
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async session => ({
+    file: process.execPath, args: ['-e', session.id === target.id ? rootCode : 'setInterval(()=>{},1000)'], env: environment(),
+  }) });
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const processRunning = async (pid: number) => {
+    try {
+      const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]);
+      return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z');
+    } catch { return false; }
+  };
+  let rootPid = 0, childPid = 0;
+  try {
+    await runtime.start(f.session.id); await runtime.start(target.id);
+    await until(() => fs.existsSync(rootFile) && fs.existsSync(childFile), 'target descendant ready');
+    rootPid = Number(fs.readFileSync(rootFile, 'utf8')); childPid = Number(fs.readFileSync(childFile, 'utf8'));
+    runtime.setSessionMaintenance([target.id], true);
+    let disconnected = false;
+    const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    await until(() => !alive(rootPid), 'target PTY root exit');
+    assert.equal(await processRunning(childPid), true);
+    assert.equal(disconnected, false, 'root exit does not release target descendant ownership');
+    assert.equal(runtime.has(target.id), true); assert.equal(runtime.has(f.session.id), true);
+    await disconnect;
+    let childRunning = await processRunning(childPid);
+    for (let attempts = 0; childRunning && attempts < 40; attempts++) {
+      await new Promise(resolve => setTimeout(resolve, 25)); childRunning = await processRunning(childPid);
+    }
+    assert.equal(childRunning, false);
+    assert.equal(runtime.has(target.id), false); assert.equal(runtime.has(f.session.id), true);
+  } finally {
+    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+  }
+});
+
 test('stop and exit release a real PTY even when every state write fails', { timeout: 15000 }, async () => {
   const f = lifecycleFixture();
   try {
@@ -362,7 +652,7 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
 test('shutdown cancels and awaits a CLI start that is still resolving transcript and hook state', { timeout: 10000 }, async () => {
   const f = lifecycleFixture();
   try {
-    f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.settings.claudePath = process.execPath; });
+    f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.sessions[0].engineConfig = { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }; state.settings.claudePath = process.execPath; });
     f.setCapabilities({ available: true, executable: process.execPath, version: '2.1.278', flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
     const pending = f.runtime.start(f.session.id);
     const rejected = assert.rejects(pending, /已取消启动会话/);
@@ -418,14 +708,14 @@ const send = async (hook_event_name, fields = {}) => {
   await send('Stop');
 })().catch(error => { console.error(error); process.exit(9); });
 `, { mode: 0o755 });
-      f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.sessions[0].titleSource = ending === 'stop' ? 'default' : 'manual'; state.settings.claudePath = script; });
+      f.store.change(state => { state.sessions[0].kind = 'agent'; state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; state.sessions[0].engineConfig = { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }; state.sessions[0].titleSource = ending === 'stop' ? 'default' : 'manual'; state.settings.claudePath = script; });
       f.setCapabilities({ available: true, executable: script, version: '2.1.278',
         flags: ['--session-id', '--permission-mode', '--settings'], efforts: ['default'] });
       await f.runtime.start(f.session.id);
       const session = () => f.store.state.sessions[0];
       await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
         `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));
-      assert.equal(session().permissionMode, 'default', 'child modes never overwrite main launch settings');
+      assert.equal(session().engineConfig.options.permissionMode, 'default', 'child modes never overwrite main launch settings');
       assert.equal(session().title, ending === 'stop' ? '检查界面与接口' : 'cleanup fixture');
       assert.equal(session().titleSource, ending === 'stop' ? 'auto' : 'manual');
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);

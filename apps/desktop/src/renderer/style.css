@@ -278,6 +278,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .chat-meta{display:flex;align-items:center;gap:7px;margin:5px 21px 0;font-size:calc(9px * var(--ui-font-scale));color:var(--text-muted);flex-shrink:0;min-height:22px}
 .chat-meta .usage{margin-left:auto;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:var(--text-muted)}
 .chat-composer{margin-top:5px}
+.chat-composer>.engine-unavailable{margin:0;padding:8px 14px;overflow-wrap:anywhere}
 .context-meter{margin:4px 21px 0;flex-shrink:0;min-width:0;color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale))}
 .context-meter summary{display:flex;align-items:center;gap:8px;cursor:pointer;min-height:28px;list-style:none;flex-wrap:wrap}
 .context-meter summary::-webkit-details-marker{display:none}

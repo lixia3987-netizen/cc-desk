@@ -40,7 +40,7 @@ test('context recovery: cancel preserves the missing identity; confirmation keep
     await editor(page).fill('尚未提交的草稿');
     await recover.click();
     const dialog = page.getByRole('dialog', { name: '重建空白上下文', exact: true });
-    await expect(dialog).toContainText('此操作不能恢复原来的 Claude 上下文');
+    await expect(dialog).toContainText('此操作不能恢复原来的引擎上下文');
     await dialog.getByRole('button', { name: '取消', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe(session.execution.conversationId);

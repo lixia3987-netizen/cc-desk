@@ -99,9 +99,9 @@ export class ChatHistory {
   private dirty = new Set<string>();
   private timer?: NodeJS.Timeout;
   readonly directory: string;
-  constructor(directory: string, private isActive: (id: string) => boolean, private onError: (id: string, error: Error) => void = () => {}) {
+  constructor(directory: string, private isActive: (id: string) => boolean, private onError: (id: string, error: Error) => void = () => {}, private readOnly = false) {
     this.directory = path.join(directory, 'chat');
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
+    if (!readOnly) fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
   }
   private file(id: string, suffix: string) {
     if (!/^[a-z0-9-]{1,100}$/i.test(id)) throw new Error('无效会话 ID。');
@@ -186,6 +186,7 @@ export class ChatHistory {
     return this.put(entry, message);
   }
   append(id: string, event: Record<string, unknown>) {
+    if (this.readOnly) throw new Error('离线记录只能读取。');
     this.get(id);
     const entry = this.cache.get(id)!;
     const file = this.file(id, '.jsonl');
@@ -330,23 +331,27 @@ export class ChatHistory {
   private evict() {
     const inactive = [...this.cache.keys()].filter(id => !this.isActive(id));
     for (const id of inactive.slice(0, Math.max(0, inactive.length - INACTIVE_CACHE))) {
-      if (this.dirty.has(id)) this.save(id);
+      if (this.dirty.has(id) && !this.readOnly) this.save(id);
+      this.dirty.delete(id);
       this.cache.delete(id);
     }
   }
   flush() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-    for (const id of this.dirty) this.save(id);
+    if (this.readOnly) this.dirty.clear();
+    else for (const id of this.dirty) this.save(id);
     this.evict();
   }
   exportPath(id: string) {
+    if (this.readOnly) throw new Error('离线记录不支持创建导出文件。');
     this.flush();
     const file = this.file(id, '.jsonl');
     if (!fs.existsSync(file)) fs.writeFileSync(file, '', { mode: 0o600 });
     return file;
   }
   delete(id: string) {
+    if (this.readOnly) throw new Error('离线记录不支持删除。');
     if (this.isActive(id)) throw new Error('请先停止会话。');
     this.cache.delete(id); this.dirty.delete(id);
     for (const suffix of ['.json', '.json.tmp', '.jsonl']) fs.rmSync(this.file(id, suffix), { force: true });

@@ -162,18 +162,21 @@ export class WorkflowEngine {
     await this.interruptRuns('应用退出导致工作流中断，请检查现有结果后手动继续。');
   }
   async disconnectAll(): Promise<void> {
-    const running = [...this.active.values()];
-    await this.interruptRuns('Claude Code 更新导致工作流中断，请检查现有结果后手动继续。');
-    await Promise.all(running.map(token => token.completion));
+    await this.interruptRuns('Claude Code 更新导致工作流中断，请检查现有结果后手动继续。', undefined, true);
   }
-  private async interruptRuns(reason: string): Promise<void> {
-    const running = [...this.active.entries()];
-    // Invalidate every late result before any persistence operation can fail.
+  async disconnectSessions(ids: readonly string[], reason = '执行器维护导致工作流中断，请检查现有结果后手动继续。'): Promise<void> {
+    await this.interruptRuns(reason, new Set(ids), true);
+  }
+  private async interruptRuns(reason: string, sessionIds?: ReadonlySet<string>, waitForCompletion = false): Promise<void> {
+    const selected = this.state.runs.filter(run => !sessionIds || sessionIds.has(run.sessionId));
+    const selectedIds = new Set(selected.map(run => run.id));
+    const running = [...this.active.entries()].filter(([id]) => selectedIds.has(id));
+    // Invalidate every selected late result before any persistence operation can fail.
     for (const [,token] of running) token.cancelled = true;
     const errors:unknown[]=[];
     // Include stale in-memory running records on a retry after a failed save;
     // their runners may already have settled while storage was unavailable.
-    for (const id of new Set([...running.map(([id])=>id),...this.state.runs.filter(run=>run.status==='running').map(run=>run.id)])) {
+    for (const id of new Set([...running.map(([id])=>id),...selected.filter(run=>run.status==='running').map(run=>run.id)])) {
       try {
         this.update(id, run => {
           if (run.status !== 'running') return;
@@ -184,6 +187,10 @@ export class WorkflowEngine {
     }
     for(const result of await Promise.allSettled(running.map(([id])=>Promise.resolve().then(()=>this.options.cancelSession(this.get(id).sessionId))))) {
       if(result.status==='rejected')errors.push(result.reason);
+    }
+    // Failed persistence or cancellation must not release maintenance before its runners settle.
+    if (waitForCompletion) for (const result of await Promise.allSettled(running.map(([,token]) => token.completion))) {
+      if (result.status === 'rejected') errors.push(result.reason);
     }
     if(errors.length)throw new AggregateError(errors,`工作流停止或状态保存失败：${errors.map(errorText).join('\n')}`);
   }

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 
 async function workspace(configured = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-ide-'));

@@ -87,10 +87,10 @@ process.stdin.on('end', () => { clearInterval(timer); process.exit(0); });
   const sessions: Session[] = ['队列会话 A', '队列会话 B'].map(title => ({
     id: randomUUID(), execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
     projectId: project.id, title, titleSource: 'manual', kind: 'agent', cwd: projectPath,
-    started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now,
+    started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false, createdAt: now, updatedAt: now,
   }));
-  const state: AppState = { version: 2, projects: [project], sessions, selectedSessionId: sessions[0].id,
-    settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
+  const state: AppState = { version: 3, projects: [project], sessions, selectedSessionId: sessions[0].id,
+    settings: { engineDefaults: {}, claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const records = async (): Promise<QueueRecord[]> => (await fs.readFile(log, 'utf8')).split('\n').filter(Boolean).map(line => JSON.parse(line));
   const sent: Array<{ id: string; session: string; action: string }> = [];

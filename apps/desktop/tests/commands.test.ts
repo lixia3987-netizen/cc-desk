@@ -127,7 +127,7 @@ test('POSIX detection, PTY and structured chat share the explicit npm Node envir
   const store = new StateStore(path.join(f.root, 'data'));
   const createSession = (adapter: Session['execution']['mode']): Session => ({ execution: { providerId: 'claude', mode: adapter, conversationId: randomUUID() },
     id: randomUUID(), projectId: randomUUID(), title: 'POSIX fixture', kind: 'agent',  cwd: f.root,
-     started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+     started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   });
   const terminal = createSession('terminal'); const structured = createSession('structured');

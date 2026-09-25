@@ -1,21 +1,21 @@
 import { randomUUID } from 'node:crypto';
-import type { Session } from '../../../shared/types';
-import type { ChatApproval, ChatDecision, ChatMessage, ChatQuestion, ChatTurnResult } from '../../../shared/chat';
-import type { ChatJournalEvent } from '../../../shared/execution-events';
-import type { SubtaskStatus } from '../../../shared/subtasks';
-import { isPermissionMode } from '../../../shared/permissions';
-import { normalizeCommands, tokenCount, type ContextUsage } from '../../../shared/claude-session';
-import { object, string, type WireObject } from '../../chat-protocol';
-import type { ChatHistory } from '../../chat-history';
-import type { SubtaskTracker } from '../../subtask-tracker';
-import type { Entry } from './entry';
-import { ClaudeContext } from './context-tracker';
+import type { ClaudeSession as Session, ClaudeSessionPatch } from './types.js';
+import type { ChatApproval, ChatDecision, ChatMessage, ChatQuestion, ChatTurnResult } from '@cc-desk/contracts/chat';
+import type { ChatJournalEvent } from '@cc-desk/contracts/execution-events';
+import type { SubtaskStatus } from './types.js';
+import { isPermissionMode } from './permissions.js';
+import { normalizeCommands, tokenCount, type ContextUsage } from './claude-session.js';
+import { object, string, type WireObject } from './chat-protocol.js';
+import type { ClaudeHistory as ChatHistory } from './host.js';
+import type { ClaudeSubtasks as SubtaskTracker } from './host.js';
+import type { Entry } from './entry.js';
+import { ClaudeContext } from './context-tracker.js';
 
 interface EventOutput {
   history: Pick<ChatHistory, 'get' | 'getMessage'>;
   session(id: string): Session;
   current(id: string, entry: Entry): boolean;
-  update(id: string, patch: Partial<Session>): void;
+  update(id: string, patch: ClaudeSessionPatch): void;
   append(id: string, event: ChatJournalEvent): void;
   system(id: string, text: string, isError?: boolean): void;
   message(id: string, message: ChatMessage, delta?: string): void;
@@ -67,9 +67,11 @@ export class ClaudeEvents {
     if (type === 'control_response') { entry.connection.receiveControl(frame); return; }
     if (type === 'control_request') { this.permission(id, entry, frame); return; }
     if (type === 'control_cancel_request') {
-      const approval = entry.approvals.get(string(frame.request_id));
+      const publicId = [...entry.approvalRequests].find(([, wireId]) => wireId === string(frame.request_id))?.[0];
+      const approval = publicId ? entry.approvals.get(publicId) : undefined;
       if (approval) this.subtaskApproval(id, entry, approval, 'running');
-      entry.approvals.delete(string(frame.request_id)); this.output.activity(id, entry); return;
+      if (publicId) { entry.approvals.delete(publicId); entry.approvalRequests.delete(publicId); }
+      this.output.activity(id, entry); return;
     }
     const parent = string(frame.parent_tool_use_id) || undefined;
     if (type === 'conversation_reset' && !parent) { this.resetConversation(id, entry, string(frame.new_conversation_id)); return; }
@@ -296,18 +298,20 @@ export class ClaudeEvents {
     if (!entry.turn || entry.turn.interrupted || entry.approvals.size >= 32) {
       entry.connection.reply(requestId, { behavior: 'deny', message: 'No active turn or permission queue full.' }); return;
     }
-    if (entry.approvals.has(requestId)) return;
+    if ([...entry.approvalRequests.values()].includes(requestId)) return;
+    const publicId = randomUUID();
     const toolName = string(request.tool_name); const input = object(request.input);
     const questions: ChatQuestion[] | undefined = toolName === 'AskUserQuestion' && Array.isArray(input.questions) ? input.questions.map(value => {
       const question = object(value);
       return { question: string(question.question), header: string(question.header), multiSelect: question.multiSelect === true, options: Array.isArray(question.options) ? question.options.map(option => { const item = object(option); return { label: string(item.label), description: string(item.description) }; }) : [] };
     }) : undefined;
-    const approval: ChatApproval = { requestId, toolName, input: structuredClone(input), kind: toolName === 'AskUserQuestion' ? 'question' : 'permission', questions, createdAt: now(), toolUseId: string(request.tool_use_id) || undefined };
-    entry.approvals.set(requestId, approval);
+    const approval: ChatApproval = { requestId: publicId, toolName, input: structuredClone(input), kind: toolName === 'AskUserQuestion' ? 'question' : 'permission', questions, createdAt: now(), toolUseId: string(request.tool_use_id) || undefined };
+    entry.approvals.set(publicId, approval);
+    entry.approvalRequests.set(publicId, requestId);
     const parent = string(frame.parent_tool_use_id) || string(request.parent_tool_use_id) || (approval.toolUseId && this.output.history.getMessage(id, 'tool:' + approval.toolUseId)?.parentToolUseId);
     const taskTool = toolName === 'Agent' || toolName === 'Task' ? approval.toolUseId : parent;
     if (taskTool) {
-      entry.approvalTasks.set(requestId, taskTool);
+      entry.approvalTasks.set(publicId, taskTool);
       this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: taskTool, status: approval.kind === 'question' ? 'waiting_input' : 'waiting_approval', phase: 'progress' });
     }
     this.output.append(id, { type: 'approval_requested', approval });
@@ -324,7 +328,7 @@ export class ClaudeEvents {
   }
   respond(id: string, entry: Entry | undefined, requestId: string, decision: ChatDecision) {
     const approval = entry?.approvals.get(requestId);
-    if (!entry || entry.connection.ending || !approval) throw new Error('该审批已失效或已处理，请刷新会话。');
+    if (!entry || !entry.turn || entry.turn.interrupted || entry.connection.ending || !approval || !entry.approvalRequests.has(requestId)) throw new Error('该审批已失效或已处理，请刷新会话。');
     if (decision.behavior !== 'allow' && decision.behavior !== 'deny') throw new Error('无效审批决定。');
     let updatedInput = approval.input;
     if (approval.kind === 'question' && decision.behavior === 'allow') {
@@ -338,8 +342,8 @@ export class ClaudeEvents {
       updatedInput = { ...approval.input, answers };
     }
     const response = decision.behavior === 'allow' ? { behavior: 'allow', updatedInput } : { behavior: 'deny', message: decision.message?.slice(0, 16_000) || '用户拒绝了这次操作。' };
-    entry.connection.reply(requestId, response);
-    entry.approvals.delete(requestId);
+    entry.connection.reply(entry.approvalRequests.get(requestId)!, response);
+    entry.approvals.delete(requestId); entry.approvalRequests.delete(requestId);
     this.subtaskApproval(id, entry, approval, decision.behavior === 'deny' && (approval.toolName === 'Agent' || approval.toolName === 'Task') ? 'stopped' : 'running');
     this.output.append(id, { type: 'approval_resolved', requestId, decision });
     this.output.activity(id, entry);

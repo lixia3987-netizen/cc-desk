@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Project, Session } from '../../shared/types';
-import { idSchema } from '../../shared/schema';
+import { idSchema, providerIdSchema } from '../../shared/schema';
 import type { StateStore } from '../store';
 import type { WorkspaceQueries } from '../workspace-queries';
 import { gitChanges, gitDiff, worktreeInfo, mergeWorktree, cleanupWorktree } from '../git';
@@ -26,6 +26,7 @@ const relativePath = z.string().min(1).max(4096).refine(s => !/[\x00\r\n]/.test(
 const historySchema = z.object({
   projectId: idSchema, query: z.string().max(500).optional(), offset: z.number().int().min(0).optional(),
   limit: z.number().int().min(1).max(100).optional(),
+  providerId: providerIdSchema.optional(),
 });
 
 export function registerWorkspaceHandlers(handle: Register, ports: WorkspacePorts): void {

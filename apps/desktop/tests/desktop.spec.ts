@@ -50,7 +50,7 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     const state=await page.evaluate(async()=>(await window.desktop.snapshot()).state);
     // Project identity uses the canonical filesystem path (macOS /var is a symlink to /private/var).
     expect(state.projects[0].path).toBe(await fs.realpath(project));expect(state.sessions).toHaveLength(2);
-    await expect(page.evaluate(()=>window.desktop.createSession({projectId:'invalid',title:'x',kind:'shell',model:'',effort:'default',permissionMode:'default',isolated:false}))).rejects.toThrow();
+    await expect(page.evaluate(()=>window.desktop.createSession({projectId:'invalid',title:'x',kind:'shell',isolated:false}))).rejects.toThrow();
   }finally{
     const page=await app.firstWindow().catch(()=>null);
     if(page)await page.evaluate(async()=>{const s=await window.desktop.snapshot();for(const session of s.state.sessions)await window.desktop.stopSession(session.id);}).catch(()=>{});
@@ -118,7 +118,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await page.locator('.session-row').filter({hasText:'会话 B'}).click();await expect(page.getByRole('region',{name:'工具审批'})).toHaveCount(0);await expect(page.getByLabel('提示词编辑器')).toHaveValue('B 的独立草稿');
     // Requests from another project remain discoverable even when sidebar filters hide both sessions.
     const attentionProject=path.join(directory,'审批项目');await fs.mkdir(attentionProject);
-    const attentionSession=await page.evaluate(async folder=>{const project=await window.desktop.addProject(folder);const session=await window.desktop.createSession({projectId:project.id,title:'跨项目提问 C',kind:'agent',model:'',effort:'default',permissionMode:'default',isolated:false,mode:'structured'});await window.desktop.setSelection(session.id);return session.id;},attentionProject);
+    const attentionSession=await page.evaluate(async folder=>{const project=await window.desktop.addProject(folder);const session=await window.desktop.createSession({projectId:project.id,title:'跨项目提问 C',kind:'agent',engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}},isolated:false,mode:'structured'});await window.desktop.setSelection(session.id);return session.id;},attentionProject);
     await expect(page.getByRole('heading',{name:'跨项目提问 C',exact:true})).toBeVisible();
     await page.getByLabel('提示词编辑器').fill('question');await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.getByLabel('回答：使用哪个数据库？')).toBeVisible();
     await page.locator('.session-row').filter({hasText:'会话 B'}).click();await page.getByLabel('工作空间筛选').selectOption({label:'审批项目'});await page.getByLabel('搜索会话').fill('隐藏所有会话');

@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 
 const fence = (source: string, language = 'mermaid') => '```' + language + '\n' + source + '```';
@@ -110,7 +110,9 @@ test('mermaid: an incomplete diagram stays readable, does not break siblings and
     const page = await app.firstWindow(), errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     const first = page.locator('.mermaid-block').nth(0), second = page.locator('.mermaid-block').nth(1);
+    await first.scrollIntoViewIfNeeded();
     await expect(first.locator('.mermaid-error')).toBeVisible({ timeout: 15_000 });
+    await second.scrollIntoViewIfNeeded();
     await expect(second.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible({ timeout: 15_000 });
     await first.getByRole('button', { name: '源码', exact: true }).click();
     expect(await first.locator('pre').textContent()).toBe(incomplete);
@@ -200,8 +202,11 @@ test('mermaid: themes update diagrams and source configuration cannot enable act
     const page = await app.firstWindow(), errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     const first = page.locator('.mermaid-block').nth(0), second = page.locator('.mermaid-block').nth(1);
+    await first.scrollIntoViewIfNeeded();
     await expect(first.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible({ timeout: 15_000 });
+    await second.scrollIntoViewIfNeeded();
     await expect(second.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible({ timeout: 15_000 });
+    await first.scrollIntoViewIfNeeded();
     const node = first.locator('.mermaid-preview .mermaid-svg > svg .node rect').first();
     const darkFill = await node.evaluate(element => getComputedStyle(element).fill);
     await page.evaluate(async () => { const { state } = await window.desktop.snapshot(); await window.desktop.saveSettings({ ...state.settings, theme: 'cloud' }); });
@@ -213,6 +218,7 @@ test('mermaid: themes update diagrams and source configuration cannot enable act
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'midnight');
     await expect(first.locator('.mermaid-preview')).toHaveAttribute('data-theme', 'midnight');
     await expect.poll(() => node.evaluate(element => getComputedStyle(element).fill)).not.toBe(lightFill);
+    await second.scrollIntoViewIfNeeded();
     await expect(second.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible();
     const activeContent = await page.locator('.mermaid-preview').evaluateAll(previews => previews.flatMap(preview => Array.from(preview.querySelectorAll('*')).flatMap(element => {
       const violations: string[] = [];

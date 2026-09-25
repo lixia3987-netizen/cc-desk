@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 
 async function workspace(shellSelected = false) {
@@ -68,7 +68,23 @@ async function expectPanelGeometry(page: Page, open: readonly PanelName[], colum
   const first = boxes[0]!;
   for (const box of boxes) expect(Math.abs(box!.width - first.width)).toBeLessThan(2);
   if (columns === 2) {
-    expect(first.width).toBeCloseTo(320, 0);
+    const geometry = Math.abs(first.width - 320) >= 0.5 ? await page.evaluate(() => {
+      const container = document.querySelector<HTMLElement>('.session-content')!;
+      const inspector = document.querySelector<HTMLElement>('#session-inspector')!;
+      const dock = inspector.querySelector<HTMLElement>('.inspector-dock')!;
+      const styles = getComputedStyle(dock);
+      return {
+        viewport: { width: innerWidth, height: innerHeight, availableHeight: screen.availHeight, devicePixelRatio },
+        content: container.getBoundingClientRect().toJSON(), inspector: inspector.getBoundingClientRect().toJSON(),
+        dock: { offsetWidth: dock.offsetWidth, clientWidth: dock.clientWidth, offsetHeight: dock.offsetHeight,
+          clientHeight: dock.clientHeight, scrollWidth: dock.scrollWidth, scrollHeight: dock.scrollHeight, scrollTop: dock.scrollTop },
+        css: Object.fromEntries(['width', 'height', 'grid-template-columns', 'grid-template-rows', 'column-gap', 'row-gap',
+          'overflow-x', 'overflow-y', 'scrollbar-gutter'].map(property => [property, styles.getPropertyValue(property)])),
+        panels: Array.from(inspector.querySelectorAll<HTMLElement>('.inspector-panel:not([hidden])'))
+          .map(element => ({ id: element.dataset.panel, ...element.getBoundingClientRect().toJSON() })),
+      };
+    }) : undefined;
+    expect(first.width, geometry ? JSON.stringify({ measuredPanels: boxes, geometry }, null, 2) : undefined).toBeCloseTo(320, 0);
     expect(Math.abs(boxes[1]!.x - first.x)).toBeLessThan(2);
     expect(boxes[1]!.y).toBeGreaterThanOrEqual(first.y + first.height - 1);
     expect(boxes[2]!.x).toBeGreaterThanOrEqual(first.x + first.width - 1);
@@ -124,7 +140,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('unsaved-model');
     expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('这段提示词还没有发送。');
-    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.model).toBe('');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.engineConfig.options.model).toBe('');
 
     await page.getByLabel('会话模型', { exact: true }).focus();
     await page.keyboard.press('Escape');

@@ -28,6 +28,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     send({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'hello' } } });
     send({ type: 'control_request', request_id: 'permission-1', request: { subtype: 'can_use_tool', tool_name: 'Read', input: { file_path: 'README.md' } } });
   } else if (frame.type === 'control_response') {
+    if (frame.response.request_id !== 'permission-1') throw new Error('Public approval identity was not mapped back to its wire request');
     send({ type: 'assistant', message: { id: 'reply', content: [{ type: 'text', text: 'hello' }] } });
     send({ type: 'result', subtype: 'success', result: 'hello', session_id: session, usage: { input_tokens: 12, output_tokens: 1 } });
   }
@@ -41,7 +42,7 @@ function setup() {
   const session: Session = {
     id: randomUUID(), projectId: randomUUID(), title: 'events', kind: 'agent', cwd: directory,
     execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
-    started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+    started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false,
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
   };
   store.change(state => state.sessions.push(session));
@@ -70,7 +71,11 @@ test('Claude structured execution emits durable normalized events without exposi
       if (Date.now() > deadline) throw new Error('Timed out waiting for approval');
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    s.runtime.respond(s.session.id, 'permission-1', { behavior: 'allow' });
+    const approvalId = s.runtime.snapshot(s.session.id).pending[0].requestId;
+    assert.notEqual(approvalId, 'permission-1', 'public approval identity is bound to this run');
+    assert.throws(() => s.runtime.respond(s.session.id, 'permission-1', { behavior: 'allow' }), /审批已失效/);
+    s.runtime.respond(s.session.id, approvalId, { behavior: 'allow' });
+    assert.throws(() => s.runtime.respond(s.session.id, approvalId, { behavior: 'allow' }), /审批已失效/);
     assert.equal((await turn).success, true);
     const types = new Set(s.events.map(event => event.type));
     for (const type of ['state', 'message', 'text_delta', 'metadata', 'context', 'approval_requested', 'approval_resolved', 'result']) assert.ok(types.has(type as ChatJournalEvent['type']), type);
@@ -95,14 +100,16 @@ test('Claude public executor preserves local identity and rejects sessions owned
       if (Date.now() > deadline) throw new Error('Timed out waiting for approval');
       await new Promise(resolve => setTimeout(resolve, 10));
     }
-    executor.respond(s.session.id, 'permission-1', { behavior: 'allow' });
+    const approvalId = executor.snapshot(s.session.id).pending[0].requestId;
+    assert.notEqual(approvalId, 'permission-1');
+    executor.respond(s.session.id, approvalId, { behavior: 'allow' });
     assert.equal((await turn).success, true);
     assert.ok(observed.includes('result'));
     await executor.stopIdle(s.session.id);
     s.store.change(state => { state.sessions[0].execution.providerId = 'fixture-provider'; });
-    assert.throws(() => executor.snapshot(s.session.id), /只支持图形化 Claude/);
-    assert.throws(() => executor.hydrate(s.session.id), /只支持图形化 Claude/);
-    assert.throws(() => executor.send(s.session.id, 'foreign session'), /只支持图形化 Claude/);
+    assert.throws(() => executor.snapshot(s.session.id), /只支持.*Claude/);
+    assert.throws(() => executor.hydrate(s.session.id), /只支持.*Claude/);
+    assert.throws(() => executor.send(s.session.id, 'foreign session'), /只支持.*Claude/);
     assert.deepEqual(executor.attention(), []);
   } finally { await executor.shutdown(); await s.cleanup(); }
 });

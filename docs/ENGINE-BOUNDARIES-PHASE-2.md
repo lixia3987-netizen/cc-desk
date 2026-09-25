@@ -4,9 +4,9 @@
 
 分析基线：`dev/native-agent@b9a644fda61b8f74bf9e47cdff4f7cda35ae75b8`。
 
-关联文档：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段一验收](MONOREPO-PHASE-1-VALIDATION.md)。
+关联文档：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段一验收](MONOREPO-PHASE-1-VALIDATION.md)、[阶段二实现与验收](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：开发计划，尚未实施。本文中的接口名与新目录是设计建议；验收项不是已经通过的结果。此次只阅读当前源码和既有验收记录，没有运行新测试或调用模型。
+状态：**实现验证中**，阶段分支为 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。本文保留分析基线的缺口、设计理由与验收要求；实际落地接口、迁移/回退说明及结果以[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)为准。下列验收项不是已经通过的结果，三平台结论待固定候选验证后补齐；本阶段不合入 main、不发布 Release。
 
 ## 1. 阶段目标
 

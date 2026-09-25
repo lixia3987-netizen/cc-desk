@@ -1,7 +1,7 @@
-import type { ChatHistory } from '../../chat-history';
-import { object, string, type WireObject } from '../../chat-protocol';
-import { contextCapacity, reportedContext, requestContext, type ContextUsage } from '../../../shared/claude-session';
-import type { Entry } from './entry';
+import type { ClaudeHistory as ChatHistory } from './host.js';
+import { object, string, type WireObject } from './chat-protocol.js';
+import { contextCapacity, reportedContext, requestContext, type ContextUsage } from './claude-session.js';
+import type { Entry } from './entry.js';
 
 /** Usage follows root requests; the capacity identity stays fixed for the whole turn. */
 export class ClaudeContext {

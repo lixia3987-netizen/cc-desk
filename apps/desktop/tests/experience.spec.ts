@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 
 async function workspace(historyCount=90) {
@@ -262,12 +262,12 @@ test('experience: permission defaults persist while sessions, forks and import o
     await expect(page.getByLabel('默认权限模式',{exact:true})).toHaveValue('default');
     await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.keyboard.press('Escape');
-    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('default');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('default');
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await page.getByRole('tab',{name:'会话与权限',exact:true}).click();
     await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.getByRole('button',{name:'保存设置',exact:true}).click();
-    await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('bypassPermissions');
+    await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('bypassPermissions');
     await page.keyboard.press('Escape');
     await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('default');
     await app.close();app=await f.launch();page=await app.firstWindow();
@@ -276,13 +276,13 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByLabel('权限模式',{exact:true}).selectOption('plan');
     await page.getByRole('button',{name:'创建会话',exact:true}).click();
     await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('plan');
-    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.defaultPermissionMode).toBe('bypassPermissions');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('bypassPermissions');
     await page.getByLabel('会话权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.getByRole('button',{name:'保存配置',exact:true}).click();
-    await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.permissionMode;}).toBe('bypassPermissions');
+    await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.engineConfig.options.permissionMode;}).toBe('bypassPermissions');
     await select(page,'长对话 B');
     // The source is manual even though the global default is bypass.
-    await page.evaluate(id=>window.desktop.updateSession({id,permissionMode:'default'}),f.sessions[0].id);
+    await page.evaluate(id=>window.desktop.updateSession({id,engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}}}),f.sessions[0].id);
     await page.getByRole('button',{name:'从此会话创建分支',exact:true}).click();
     await expect(page.getByLabel('权限模式',{exact:true})).toHaveValue('default');
     await page.keyboard.press('Escape');
@@ -293,16 +293,16 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByRole('button',{name:'导入会话',exact:true}).click();
     await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('acceptEdits');
     const modes=await page.evaluate(async({projectId,sourceId})=>{
-      const input={projectId,title:'IPC permission test',kind:'agent' as const,model:'',effort:'default' as const,isolated:false};
+      const input={projectId,title:'IPC permission test',kind:'agent' as const,isolated:false};
       const implicit=await window.desktop.createSession(input);
       const terminal=await window.desktop.createSession({...input,mode:'terminal'});
-      const explicit=await window.desktop.createSession({...input,permissionMode:'plan'});
+      const explicit=await window.desktop.createSession({...input,engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'plan'}}});
       const fork=await window.desktop.createSession({...input,conversationId:sourceId,fork:true});
       const shell=await window.desktop.createSession({...input,kind:'shell'});
-      const duplicate=await window.desktop.createSession({...input,conversationId:sourceId,permissionMode:'bypassPermissions'});
-      return [implicit,terminal,explicit,fork,shell,duplicate].map(s=>s.permissionMode);
+      const duplicate=await window.desktop.createSession({...input,conversationId:sourceId,engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'bypassPermissions'}}});
+      return {agents:[implicit,terminal,explicit,fork,duplicate].map(s=>s.engineConfig.options.permissionMode),shell:shell.engineConfig};
     },{projectId:f.projects[1].id,sourceId:f.sessions[0].execution.conversationId});
-    expect(modes).toEqual(['bypassPermissions','bypassPermissions','plan','default','default','default']);
+    expect(modes).toEqual({agents:['bypassPermissions','bypassPermissions','plan','default','default'],shell:{schemaVersion:1,options:{}}});
     await expect(page.locator('.error-banner')).toHaveCount(0);
   }finally{await app.close();await f.dispose();}
 });
