@@ -9,6 +9,8 @@
 
 阶段二的基线分析、具体任务与验收条件见 [ENGINE-BOUNDARIES-PHASE-2.md](ENGINE-BOUNDARIES-PHASE-2.md)。下文“当前代码”保留的是总体计划编写时的基线，不作为阶段二最新实现清单；其中 `src/` 和 `tests/` 路径在阶段一后已分别位于 `apps/desktop/src/` 和 `apps/desktop/tests/`。
 
+阶段三 native Alpha 的范围、实际缺口、任务依赖和验收条件已整理为 [NATIVE-AGENT-PHASE-3.md](NATIVE-AGENT-PHASE-3.md)，分析基线为 `dev/native-agent@2c67d6a`。当前仅完成计划分析，尚未开始阶段三实现；后续按执行基础、模型与工具、桌面 Alpha 三个里程碑推进，继续只进入开发分支。
+
 ## 1. 目标与实施原则
 
 先迁移为 monorepo，再逐步接入能独立工作的自研 Agent。过渡期在同一桌面应用中保留 Claude Code CLI 与自研 Agent，按会话选择执行引擎。新引擎达到日常开发要求后，再调整新会话默认值并推进替代。
