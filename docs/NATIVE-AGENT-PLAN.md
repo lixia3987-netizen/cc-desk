@@ -1,9 +1,11 @@
 # cc-desk：monorepo 与自研 Agent 开发计划
 
 日期：2026-09-24（北京时间）  
-代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，当前应用版本 `0.5.0`。  
+历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发分支：`dev/native-agent`，从上述提交创建。  
-状态：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二已进入实现验证，工作位于 `refactor/engine-boundaries`，目标集成分支仍为 `dev/native-agent`；具体结果见 [ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。尚未宣称三平台验收完成，不合入 main、不发布 Release；真实 native 运行时继续按阶段三推进。
+状态：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二状态：**已完成，三平台验收通过**；固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，工作位于 `refactor/engine-boundaries`，目标集成分支仍为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
+
+实际落地接口、迁移/回退说明及验证结果见 [ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。P2 代码及后续独立 docs PR 的目标都仅为 `dev/native-agent`，不合入 main、不发布 Release；真实 native 运行时仍属于阶段三。
 
 阶段二的基线分析、具体任务与验收条件见 [ENGINE-BOUNDARIES-PHASE-2.md](ENGINE-BOUNDARIES-PHASE-2.md)。下文“当前代码”保留的是总体计划编写时的基线，不作为阶段二最新实现清单；其中 `src/` 和 `tests/` 路径在阶段一后已分别位于 `apps/desktop/src/` 和 `apps/desktop/tests/`。
 
@@ -135,7 +137,7 @@ P2 包提取可按真实依赖成熟度推进，不阻止 agent-core 的独立�
 
 `dev/native-agent` 用作此次工作的集成分支；后续分阶段分支以它为基础，例如 `refactor/monorepo-foundation`、`refactor/engine-boundaries`、`feat/native-agent-loop`。每个 PR 只包含一个可独立验收的阶段。
 
-沿用“完成并验证后自动合并”的偏好：阶段 PR 验证后合入开发集成分支；整体达到稳定阶段后，以独立 PR 把经过验证的内容推进 main。单纯创建集成分支或写入计划不触发合并或发布，实验性 native 功能以开关管理。
+沿用“完成并验证后自动合并”的偏好：阶段代码 PR 验证后仅合入开发集成分支 `dev/native-agent`。本次 P2 固定候选的验收状态见本文开头，验收状态与证据通过独立 docs PR 更新，目标同样仅为 `dev/native-agent`。在用户另行明确授权前，不推进 main，也不发布 Release；创建分支或更新计划本身不代表验收完成。P2 的测试引擎不作为可启用的正式产品入口，真实 native 产品入口属于 P3。
 
 第一批建议依次处理：
 
@@ -147,7 +149,7 @@ P2 包提取可按真实依赖成熟度推进，不阻止 agent-core 的独立�
 
 ## 10. 依据与验证范围
 
-本计划基于上述固定提交的源码、构建脚本、工作流和测试代码阅读，并对引擎、数据/UI、构建三个方面进行了独立交叉检查。本次没有安装依赖、运行项目测试或进行实际模型调用；文中验收项是后续开发门槛，不代表当前已通过。
+本计划最初基于上述历史分析基线的源码、构建脚本、工作流和测试代码阅读，并对引擎、数据/UI、构建三个方面进行了独立交叉检查。最初计划编写时未安装依赖、运行项目测试或进行实际模型调用；下文引用保留当时的分析依据。P2 固定候选的实际验证结果由[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)另行登记，本文的验收项不代表已经通过。
 
 相关官方文档（查阅于 2026-09-24）：
 
