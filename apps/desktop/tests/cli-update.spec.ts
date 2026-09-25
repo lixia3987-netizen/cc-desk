@@ -16,12 +16,12 @@ async function workspace() {
   const projects = [first, second].map((directory, i) => ({ id: randomUUID(), name: `Workspace ${i + 1}`, path: directory, createdAt: now }));
   const makeSession = (project: typeof projects[number], kind: Session['kind']): Session => ({ execution: kind === 'shell' ? {providerId: 'shell', mode: 'terminal'} : { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
     id: randomUUID(), projectId: project.id, title: kind === 'shell' ? 'Shell' : project.name, kind,
-    cwd: project.path,  started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false,
+    cwd: project.path,  started: false, engineConfig: { schemaVersion: 1, options: kind === 'shell' ? {} : { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false,
     createdAt: now, updatedAt: now, draft: '草稿需要保留',
   });
   const sessions = [makeSession(projects[0], 'agent'), makeSession(projects[1], 'agent'), makeSession(projects[1], 'shell')];
-  const state: AppState = { version: 2, projects, sessions, selectedSessionId: sessions[0].id, settings: {
-    claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system',
+  const state: AppState = { version: 3, projects, sessions, selectedSessionId: sessions[0].id, settings: {
+    claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system', engineDefaults: {},
   } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = async () => {
@@ -71,34 +71,42 @@ test('startup checks each launch; postpone and cancel never stop a live workspac
     expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(s => s.id === id)?.status, f.sessions[2].id)).toBe('running');
     expect((await f.calls()).filter(call => call.kind === 'update')).toHaveLength(0);
     const dialog = await app.evaluate(() => (globalThis as typeof globalThis & { updateDialog: Electron.MessageBoxOptions }).updateDialog);
-    expect(dialog.defaultId).toBe(0); expect(dialog.cancelId).toBe(0); expect(dialog.detail).toContain('全部 2 个工作区'); expect(dialog.detail).toContain('Shell');
+    expect(dialog.defaultId).toBe(0); expect(dialog.cancelId).toBe(0); expect(dialog.detail).toContain('2 个 Claude 会话'); expect(dialog.detail).toContain('Shell 和其他引擎继续运行');
     await close(app); app = await f.launch(); page = await app.firstWindow();
     await expect(banner(page)).toContainText('2.1.10'); expect((await f.calls()).filter(call => call.kind === 'npm')).toHaveLength(2);
   } finally { await close(app); await f.dispose(); }
 });
 
-test('confirmed update drains all workspaces, terminals, workflows and descendants; work resumes only on request', async () => {
+test('confirmed update drains Claude tasks, workflows and descendants while Shell remains interactive', async () => {
   const f = await workspace(), app = await f.launch();
   try {
     const page = await app.firstWindow(); await expect(banner(page)).toContainText('2.1.10');
     await fs.writeFile(f.mode, 'slow');
-    const workflow = await page.evaluate(async sessions => {
-      void window.desktop.sendChat(sessions[0].id, 'hold a running task').catch(() => {});
-      const run = await window.desktop.createWorkflow({ sessionId: sessions[1].id, goal: 'hold a workflow', pauseAfterEachStage: false, maxAttempts: 2 });
-      await window.desktop.startWorkflow(run.id); await window.desktop.startSession(sessions[2].id); return run.id;
-    }, f.sessions);
+    const workflow = await page.evaluate(async ids => {
+      void window.desktop.sendChat(ids[0], 'hold a running task').catch(() => {});
+      const run = await window.desktop.createWorkflow({ sessionId: ids[1], goal: 'hold a workflow', pauseAfterEachStage: false, maxAttempts: 2 });
+      await window.desktop.startWorkflow(run.id); await window.desktop.startSession(ids[2]); return run.id;
+    }, f.sessions.map(session => session.id));
     await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).state.sessions.filter(s => s.status === 'running').length)).toBe(3);
     await confirmation(app, 1); await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
     await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'updating' });
-    const attempts = await page.evaluate(async id => {
-      const results = await Promise.allSettled([window.desktop.startSession(id), window.desktop.updateCLI(), window.desktop.saveSettings({ ...(await window.desktop.snapshot()).state.settings, claudePath: 'different-cli' })]);
+    const attempts = await page.evaluate(async ids => {
+      const results = await Promise.allSettled([window.desktop.startSession(ids[2]), window.desktop.startSession(ids[0]), window.desktop.updateCLI(), window.desktop.saveSettings({ ...(await window.desktop.snapshot()).state.settings, claudePath: 'different-cli' })]);
       return results.map(result => result.status);
-    }, f.sessions[2].id);
-    expect(attempts).toEqual(['rejected', 'rejected', 'rejected']);
+    }, f.sessions.map(session => session.id));
+    expect(attempts).toEqual(['fulfilled', 'rejected', 'rejected', 'rejected']);
+    const shellMarker = 'SHELL_STILL_RUNNING_' + randomUUID().replaceAll('-', '');
+    const shellCommand = process.platform === 'win32' ? `Write-Output ('SHELL_' + '${shellMarker.slice(6)}')\r` : `printf '\\n%s%s\\n' 'SHELL_' '${shellMarker.slice(6)}'\r`;
+    await page.evaluate(async ({ id, command }) => {
+      await window.desktop.resizeTerminal(id, 100, 30);
+      await window.desktop.writeTerminal(id, command);
+    }, { id: f.sessions[2].id, command: shellCommand });
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.terminalSnapshot(id)).chunks.map(chunk => chunk.data).join(''), f.sessions[2].id)).toContain(shellMarker);
     await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'updated' }); await expect(banner(page)).toContainText('2.1.10');
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
     expect(snapshot.state.projects).toHaveLength(2); expect(snapshot.state.sessions).toHaveLength(3);
-    expect(snapshot.state.sessions.every(session => session.status === 'stopped')).toBe(true);
+    expect(snapshot.state.sessions.filter(session => session.execution.providerId === 'claude').every(session => session.status === 'stopped')).toBe(true);
+    expect(snapshot.state.sessions.find(session => session.id === f.sessions[2].id)?.status).toBe('running');
     expect(snapshot.state.sessions.map(session => session.execution.conversationId)).toEqual(f.sessions.map(session => session.execution.conversationId));
     expect(snapshot.state.sessions.map(session => session.draft)).toEqual(f.sessions.map(session => session.draft));
     expect(snapshot.capabilities.version).toContain('2.1.10');
@@ -119,11 +127,11 @@ for (const mode of ['fail', 'noop']) test(`updater ${mode} is reported honestly 
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
     await fs.writeFile(f.mode, mode); await confirmation(app, 1);
     await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
-    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'error', message: expect.stringContaining('工作区保持断开') });
-    await expect(banner(page)).toContainText('工作区保持断开');
+    await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'error', message: expect.stringContaining('Claude 会话保持断开') });
+    await expect(banner(page)).toContainText('Claude 会话保持断开');
     await expect(banner(page)).not.toContainText('secret');
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
-    expect(snapshot.capabilities.version).toContain('2.1.9'); expect(snapshot.state.sessions[2].status).toBe('stopped');
+    expect(snapshot.capabilities.version).toContain('2.1.9'); expect(snapshot.state.sessions[2].status).toBe('running');
     await fs.writeFile(f.mode, 'success'); await banner(page).getByRole('button', { name: '重新检查' }).click();
     await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);

@@ -3,7 +3,7 @@ import type { SubtaskObservation } from '../subtask-tracker';
 
 /** Launchers report observed metadata, never replace the local or provider identity. */
 export type TerminalSessionUpdate = Partial<Pick<Session,
-  'taskState' | 'terminalSync' | 'identityPending' | 'model' | 'permissionMode' | 'observedPermissionMode'
+  'taskState' | 'terminalSync' | 'identityPending' | 'engineConfig' | 'observedPermissionMode'
 >> & { conversationId?: string };
 
 export type TerminalSubtaskEvent =

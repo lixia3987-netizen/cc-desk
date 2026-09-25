@@ -157,7 +157,7 @@ test('resuming the same hook agent within one prompt creates a separate invocati
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-desk-hook-resume-'));
   const store = new StateStore(directory); const id = randomUUID(); const claudeId = randomUUID(); const now = new Date().toISOString();
   store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'hook resume', kind: 'agent',
-    cwd: directory, execution: { providerId: 'claude', mode: 'terminal', conversationId: claudeId }, started: true, model: '', effort: 'default', permissionMode: 'default',
+    cwd: directory, execution: { providerId: 'claude', mode: 'terminal', conversationId: claudeId }, started: true, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } },
     status: 'running', archived: false, createdAt: now, updatedAt: now }));
   const tracker = new SubtaskTracker(store, () => {});
   const observer = new PtyHookObserver(claudeId, event => {

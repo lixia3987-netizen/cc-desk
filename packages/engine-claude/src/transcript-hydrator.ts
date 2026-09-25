@@ -1,18 +1,17 @@
 import fs from 'node:fs';
-import type { ChatMessage } from '../../../shared/chat';
-import { StateStore } from '../../store';
-import { ChatHistory } from '../../chat-history';
-import { findClaudeTranscript } from '../../history';
-import { readTranscriptPreview } from '../../chat-import';
+import type { ChatMessage } from '@cc-desk/contracts/chat';
+import type { ClaudeSessions, ClaudeHistory as ChatHistory } from './host.js';
+import { findClaudeTranscript } from './history.js';
+import { readTranscriptPreview } from './chat-import.js';
 
 /** Imports only a stable transcript suffix while the local projection remains idle and unchanged. */
 export class TranscriptHydrator {
   private hydrating = new Map<string, Promise<void>>();
   private transcriptVersions = new Map<string, string>();
-  constructor(private store: StateStore, private history: ChatHistory, private isActive: (id: string) => boolean,
+  constructor(private sessions: ClaudeSessions, private history: ChatHistory, private isActive: (id: string) => boolean,
     private output: { message(id: string, message: ChatMessage): void; system(id: string, text: string): void }) {}
   private session(id: string) {
-    const session = this.store.state.sessions.find(item => item.id === id);
+    const session = this.sessions.get(id);
     if (!session) throw new Error('会话不存在。');
     return session;
   }
@@ -26,8 +25,8 @@ export class TranscriptHydrator {
     const operation = (async () => {
       const sourceId = session.execution.forkFrom && !session.started ? session.execution.forkFrom : session.execution.conversationId;
       if (!sourceId) return;
-      const project = this.store.state.projects.find(item => item.id === session.projectId);
-      const source = await findClaudeTranscript(session.cwd, sourceId) ?? (project && project.path !== session.cwd ? await findClaudeTranscript(project.path, sourceId) : undefined);
+      const projectPath = session.projectPath;
+      const source = await findClaudeTranscript(session.cwd, sourceId) ?? (projectPath && projectPath !== session.cwd ? await findClaudeTranscript(projectPath, sourceId) : undefined);
       if (!source) return;
       const before = await fs.promises.stat(source);
       const version = [source, before.dev, before.ino, before.size, before.mtimeMs].join(':');
@@ -37,7 +36,7 @@ export class TranscriptHydrator {
       // Only merge a stable transcript into an idle, unchanged projection.
       // The journal is authoritative while this runtime owns a live CLI process.
       if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return;
-      if (!this.store.state.sessions.some(item => item.id === id) || this.isActive(id)) return;
+      if (!this.sessions.get(id) || this.isActive(id)) return;
       const snapshot = this.history.get(id);
       if (snapshot.messages !== original || snapshot.messages.length !== length || snapshot.messages.at(-1) !== last) return;
       this.transcriptVersions.set(id, version);

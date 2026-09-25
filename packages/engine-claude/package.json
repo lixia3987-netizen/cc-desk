@@ -1,0 +1,27 @@
+{
+  "name": "@cc-desk/engine-claude",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./config": { "types": "./dist/config.d.ts", "default": "./dist/config.js" },
+    "./commands": { "types": "./dist/commands.d.ts", "default": "./dist/commands.js" },
+    "./chat-protocol": { "types": "./dist/chat-protocol.d.ts", "default": "./dist/chat-protocol.js" },
+    "./chat-import": { "types": "./dist/chat-import.d.ts", "default": "./dist/chat-import.js" },
+    "./history": { "types": "./dist/history.d.ts", "default": "./dist/history.js" },
+    "./pty-hooks": { "types": "./dist/pty-hooks.d.ts", "default": "./dist/pty-hooks.js" },
+    "./claude-session": { "types": "./dist/claude-session.d.ts", "default": "./dist/claude-session.js" },
+    "./permissions": { "types": "./dist/permissions.d.ts", "default": "./dist/permissions.js" },
+    "./session-recovery": { "types": "./dist/session-recovery.d.ts", "default": "./dist/session-recovery.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": { "@cc-desk/contracts": "0.0.0", "zod": "4.1.12" },
+  "devDependencies": { "@types/node": "24.10.1", "typescript": "5.9.3" }
+}

@@ -10,6 +10,7 @@ import type { Register } from './registration';
 interface WorkflowPorts {
   workflows: Pick<WorkflowEngine, 'list' | 'create' | 'start' | 'continue' | 'retry' | 'cancel' | 'remove' | 'exportRun' | 'reviseStage'>;
   structured(id: string): Session;
+  defaultWorkflowError(id: string): string | undefined;
   assertUnlocked(session: Session): void;
   hasPendingTask(id: string): boolean;
   pauseQueue(id: string): void;
@@ -21,9 +22,8 @@ const shortId = z.string().min(1).max(200);
 export function registerWorkflowHandlers(handle: Register, ports: WorkflowPorts): void {
   handle('workflow:list', idSchema.optional(), id => ports.workflows.list(id));
   handle('workflow:create', newWorkflowSchema, input => {
-    if (ports.structured(input.sessionId).permissionMode === 'plan' && !input.stages) {
-      throw new Error('默认工作流包含实现阶段，请先手动将权限切换为默认审批，或创建仅规划的自定义阶段。');
-    }
+    const error = !input.stages ? ports.defaultWorkflowError(input.sessionId) : undefined;
+    if (error) throw new Error(error);
     return ports.workflows.create(input);
   });
   const workflowReady = (id: string) => {

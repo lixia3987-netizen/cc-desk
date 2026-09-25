@@ -4,6 +4,8 @@ import { ChatQueueStorage, type StoredChatQueue } from './chat-queue-storage';
 
 interface QueueOptions {
   assertAvailable(id: string): void;
+  /** Captures host admission generations before a queue operation starts waiting. */
+  captureAdmission?(id: string): () => void;
   blocked(id: string): boolean;
   acceptAttachments(id: string, files: string[], commit: (attachmentNames?: string[]) => void): Promise<void>;
   run(id: string, item: QueuedChatMessage): Promise<ChatTurnResult>;
@@ -53,9 +55,14 @@ export class ChatQueue {
     this.mutations.set(id, current);
     try { return await current; } finally { if (this.mutations.get(id) === current) this.mutations.delete(id); }
   }
+  private captureAdmission(id: string): () => void {
+    const check = this.options.captureAdmission?.(id);
+    return () => { check?.(); this.options.assertAvailable(id); };
+  }
   async submit(id: string, text: string, attachments: string[] = [], requestId: string = randomUUID()): Promise<ChatSubmission> {
+    const assertAdmission = this.captureAdmission(id);
     return this.serial(id, async () => {
-      this.options.assertAvailable(id);
+      assertAdmission();
       if ((!text.trim() && !attachments.length) || text.length > 128 * 1024) throw new Error('消息为空或超过 128 KiB 上限。');
       if (attachments.length > 8 || new Set(attachments).size !== attachments.length) throw new Error('最多发送 8 个不同附件。');
       const digest = createHash('sha256').update(JSON.stringify({ text, attachments })).digest('hex');
@@ -69,7 +76,7 @@ export class ChatQueue {
       const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued' };
       const epoch = this.generation.get(id) ?? 0;
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
-        this.options.assertAvailable(id);
+        assertAdmission();
         item.attachmentNames = attachmentNames;
         this.commit(id, next => {
           if (!next.items.length && epoch === (this.generation.get(id) ?? 0)) { next.paused = false; delete next.error; }
@@ -110,30 +117,36 @@ export class ChatQueue {
     this.commit(id, () => {});
   }
   pauseAll(error?: string) {
+    this.pauseSessions([...this.states.keys()], error ?? '');
+  }
+  pauseSessions(ids: readonly string[], reason: string): void {
     const errors: unknown[] = [];
-    for (const id of this.states.keys()) { try { this.pause(id, error); } catch (failure) { errors.push(failure); } }
+    for (const id of new Set(ids)) { try { this.pause(id, reason); } catch (failure) { errors.push(failure); } }
     if (errors.length) throw new AggregateError(errors, errors.map(messageOf).join('\n'));
   }
   async resume(id: string) {
+    const assertAdmission = this.captureAdmission(id);
     await this.serial(id, () => {
-      this.options.assertAvailable(id);
+      assertAdmission();
       if (this.priorities.has(id)) throw new Error('正在中断上一轮，请稍后重试。');
       this.commit(id, next => { next.paused = false; delete next.error; });
       this.wake(id);
     });
   }
   sendNow(id: string, messageId: string): Promise<void> {
+    let assertAdmission: () => void;
+    try { assertAdmission = this.captureAdmission(id); } catch (error) { return Promise.reject(error); }
     const pending = this.priorities.get(id);
     if (pending) return pending.messageId === messageId ? pending.promise : Promise.reject(new Error('正在发送另一条排队消息，请稍后重试。'));
-    const operation = this.prioritize(id, messageId);
+    const operation = this.prioritize(id, messageId, assertAdmission);
     this.priorities.set(id, { messageId, promise: operation });
     void operation.finally(() => { this.priorities.delete(id); this.wake(id); }).catch(() => {});
     return operation;
   }
-  private async prioritize(id: string, messageId: string) {
+  private async prioritize(id: string, messageId: string, assertAdmission: () => void) {
     let epoch = 0, selected = false;
     await this.serial(id, () => {
-      this.options.assertAvailable(id);
+      assertAdmission();
       const item = this.state(id).items.find(value => value.id === messageId);
       if (!item || item.status === 'sending') return;
       selected = true;
@@ -152,7 +165,7 @@ export class ChatQueue {
       await this.active.get(id);
       await this.serial(id, () => {
         if (this.generation.get(id) !== epoch) return; // A later user stop or maintenance wins.
-        this.options.assertAvailable(id);
+        assertAdmission();
         this.commit(id, next => { next.paused = false; delete next.error; });
       });
     } catch (error) { this.pause(id, '立即发送未完成，队列已暂停：' + messageOf(error)); throw error; }

@@ -73,7 +73,7 @@ export function authenticationSummary(output: string, exitCode: number): Environ
 
 async function probeCLI(binary: string, projectPath: string | undefined, env: Record<string, string>, options: DiagnosticOptions): Promise<Pick<EnvironmentDiagnostics, 'cli' | 'auth'>> {
   let invocation: { file: string; prefix: string[] };
-  try { invocation = options.invocation ?? cliInvocation({ claudePath: binary, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 5000 }, env); }
+  try { invocation = options.invocation ?? cliInvocation({ claudePath: binary }, env); }
   catch (error) { return { cli: { installed: false, binary, runnable: false }, auth: { state: 'unavailable', message: error instanceof CLIResolutionError ? error.message : '未找到可安全启动的 Claude Code CLI。' } }; }
   const cli: EnvironmentDiagnostics['cli'] = { installed: true, binary: invocation.file, runnable: false };
   const run = options.run ?? runProcess;

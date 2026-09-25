@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { WorkflowEngine } from '../src/main/workflows';
+import type { WorkflowStorage } from '../src/main/workflow-storage';
 import type { WorkflowBinding, WorkflowStageDefinition, WorkflowStageResult } from '../src/shared/workflows';
 
 const steps: WorkflowStageDefinition[] = [
@@ -310,6 +311,96 @@ test('CLI update interrupts workflows without dispatching late stages and allows
     engine.continue(run.id); assert.equal((await engine.wait(run.id)).status, 'completed');
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+test('session maintenance drains only selected workflows while another provider advances', async () => {
+  const directory = temporary(), target = makeBinding(), other = { ...makeBinding(), providerId: 'native' };
+  const targetStarted = deferred<void>(), otherStarted = deferred<void>(), cancellation = deferred<void>();
+  const targetResult = deferred<WorkflowStageResult>(), otherResult = deferred<WorkflowStageResult>();
+  const calls = new Map<string, number>(), cancelled: string[] = [];
+  const engine = new WorkflowEngine(directory, {
+    getSession: id => id === target.sessionId ? target : other,
+    cancelSession: id => { cancelled.push(id); cancellation.resolve(); },
+    runStage: async id => {
+      const count = (calls.get(id) ?? 0) + 1; calls.set(id, count);
+      if (count > 1) return { success: true, summary: 'continued stage' };
+      (id === target.sessionId ? targetStarted : otherStarted).resolve();
+      return (id === target.sessionId ? targetResult : otherResult).promise;
+    },
+  });
+  const runs = [target, other].map(binding => engine.create({ sessionId: binding.sessionId, goal: 'Scoped maintenance', stages: steps }));
+  try {
+    for (const run of runs) engine.start(run.id);
+    await Promise.all([targetStarted.promise, otherStarted.promise]);
+    let settled = false;
+    const disconnect = engine.disconnectSessions([target.sessionId], 'target maintenance').finally(() => { settled = true; });
+    await cancellation.promise;
+    assert.equal(settled, false); assert.equal(engine.isSessionBusy(target.sessionId), true);
+    otherResult.resolve({ success: true, summary: 'other first stage' });
+    assert.equal((await engine.wait(runs[1].id)).status, 'completed');
+    assert.equal(calls.get(other.sessionId), 3);
+    assert.deepEqual(cancelled, [target.sessionId]); assert.equal(settled, false);
+    targetResult.resolve({ success: true, summary: 'late target success' });
+    await disconnect;
+    const stopped = await engine.wait(runs[0].id);
+    assert.equal(stopped.status, 'interrupted'); assert.equal(stopped.error, 'target maintenance');
+    assert.equal(stopped.stages[0].artifacts.length, 0); assert.equal(stopped.stages[1].attempts, 0);
+    assert.equal(engine.isSessionBusy(target.sessionId), false);
+    engine.continue(stopped.id);
+    assert.equal((await engine.wait(stopped.id)).status, 'completed');
+  } finally {
+    targetResult.resolve({ success: false, summary: '' }); otherResult.resolve({ success: false, summary: '' });
+    await engine.shutdown(); await Promise.all(runs.map(run => engine.wait(run.id)));
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('session maintenance aggregates save and cancel failures only after every selected completion settles', async () => {
+  const directory = temporary(), bindings = [makeBinding(), makeBinding()];
+  const started = bindings.map(() => deferred<void>()), pending = bindings.map(() => deferred<WorkflowStageResult>());
+  const cancellations = bindings.map(() => deferred<void>()), cancelled: string[] = [];
+  const engine = new WorkflowEngine(directory, {
+    getSession: id => bindings.find(binding => binding.sessionId === id)!,
+    cancelSession: id => { const index = bindings.findIndex(binding => binding.sessionId === id); cancelled.push(id); cancellations[index].resolve(); throw new Error(`cancel ${index}`); },
+    runStage: async id => { const index = bindings.findIndex(binding => binding.sessionId === id); started[index].resolve(); return pending[index].promise; },
+  });
+  const runs = bindings.map(binding => engine.create({ sessionId: binding.sessionId, goal: 'Maintenance failure', stages: steps }));
+  const storage = (engine as unknown as { storage: WorkflowStorage }).storage, save = storage.save.bind(storage);
+  try {
+    for (const run of runs) engine.start(run.id);
+    await Promise.all(started.map(value => value.promise));
+    storage.save = () => { throw new Error('disk full'); };
+    let settled = false;
+    const disconnect = engine.disconnectSessions(bindings.map(binding => binding.sessionId)).finally(() => { settled = true; });
+    const rejected = assert.rejects(disconnect, (error: unknown) => {
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 4);
+      assert.match(error.message, /disk full/); assert.match(error.message, /cancel 0/); assert.match(error.message, /cancel 1/);
+      return true;
+    });
+    await Promise.all(cancellations.map(value => value.promise));
+    assert.deepEqual(cancelled, bindings.map(binding => binding.sessionId));
+    assert.equal(settled, false);
+    pending[0].resolve({ success: true, summary: 'late first success' });
+    await engine.wait(runs[0].id);
+    assert.equal(settled, false); assert.equal(engine.isSessionBusy(bindings[1].sessionId), true);
+    pending[1].resolve({ success: true, summary: 'late second success' });
+    await rejected;
+    assert.ok(bindings.every(binding => !engine.isSessionBusy(binding.sessionId)));
+    assert.ok(engine.list().every(run => run.status === 'running' && run.stages[0].artifacts.length === 0 && run.stages[1].attempts === 0));
+    storage.save = save;
+    await engine.disconnectSessions([bindings[0].sessionId], 'retry first save');
+    assert.equal(engine.list(bindings[0].sessionId)[0].status, 'interrupted');
+    assert.equal(engine.list(bindings[1].sessionId)[0].status, 'running');
+    assert.equal(cancelled.length, 2, 'stale records must be repaired without recancelling settled runners');
+    await engine.disconnectSessions([bindings[1].sessionId], 'retry second save');
+    assert.ok(engine.list().every(run => run.status === 'interrupted'));
+  } finally {
+    storage.save = save;
+    for (const value of pending) value.resolve({ success: false, summary: '' });
+    await Promise.all(runs.map(run => engine.wait(run.id))); await engine.shutdown();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('shutdown preserves an interrupted stage and prevents late success from advancing', async () => {
   const directory = temporary();
   try {

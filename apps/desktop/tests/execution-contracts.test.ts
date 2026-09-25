@@ -7,19 +7,22 @@ import { randomUUID } from 'node:crypto';
 import type { BrowserWindow } from 'electron';
 import { z } from 'zod';
 import { StateStore } from '../src/main/store';
+import { SessionCreation } from '../src/main/session-creation';
 import { SessionService } from '../src/main/session-service';
 import { Attachments } from '../src/main/attachments';
 import { ExecutionRegistry } from '../src/main/execution/registry';
 import { ExecutionStatePublisher } from '../src/main/execution/events';
 import type { StructuredExecutor, TerminalExecutor } from '../src/main/execution/ports';
 import type { ChatDecision, ChatSnapshot, ChatTurnResult, TaskState } from '../src/shared/chat';
-import type { ExecutionCapabilities, SessionExecution } from '../src/shared/execution';
+import type { EngineConfig, ExecutionCapabilities, SessionExecution } from '../src/shared/execution';
 import { getSessionIdentity } from '../src/shared/execution';
 import type { ExecutionEvent } from '../src/shared/execution-events';
 import type { Session } from '../src/shared/types';
 
 const capabilities = (): ExecutionCapabilities => ({ available: true, structured: true, terminal: true, approvals: true,
   resume: true, fork: true, commands: true, contextUsage: true, liveConfig: true, attachments: true });
+const independentConfig = (profile = 'balanced', budget = 512): EngineConfig => ({ schemaVersion: 2, options: { profile, budget } });
+const independentSchema = z.object({ schemaVersion: z.literal(2), options: z.object({ profile: z.string().min(1).max(80), budget: z.number().int().min(1).max(4096) }).strict() }).strict();
 const done: ChatTurnResult = { success: true, summary: 'Actual fake executor result' };
 const interrupted: ChatTurnResult = { success: false, summary: '', interrupted: true };
 const until = async (check: () => boolean) => {
@@ -41,7 +44,7 @@ class FakeStructured implements StructuredExecutor {
   rejectDisconnect = false;
   rejectShutdown = false;
   hold = false;
-  constructor(private registry: ExecutionRegistry) {}
+  constructor(private registry: ExecutionRegistry, private saveConfig: (id: string, config: EngineConfig) => void) {}
   get activeCount() { return this.active.size; }
   has(id: string) { return this.active.has(id); }
   isBusy(id: string) { return this.pending.has(id); }
@@ -77,7 +80,7 @@ class FakeStructured implements StructuredExecutor {
     return this.snapshot(id);
   }
   respond(id: string, _requestId: string, decision: ChatDecision) { this.decisions.push(decision); this.finish(id, decision.behavior === 'allow' ? done : interrupted); }
-  async updateConfig(_id: string, _config: Parameters<StructuredExecutor['updateConfig']>[1]) { this.configCalls++; }
+  async updateConfig(id: string, config: EngineConfig) { this.configCalls++; this.saveConfig(id, structuredClone(config)); }
   async exports(_id: string) { return []; }
   interrupt(id: string) { this.finish(id, interrupted); }
   stop(id: string) { this.interrupt(id); this.active.delete(id); }
@@ -131,13 +134,24 @@ function fixture() {
   const add = (providerId = 'test.engine', mode: SessionExecution['mode'] = 'structured', conversationId = 'opaque/conversation:42') => {
     const value: Session = { id: randomUUID(), projectId, title: providerId, kind: providerId === 'shell' ? 'shell' : 'agent',
       execution: providerId === 'shell' ? { providerId, mode } : { providerId, mode, conversationId },
-      cwd: directory, started: false, model: '', effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+      cwd: directory, started: false, engineConfig: providerId === 'shell' ? { schemaVersion: 1, options: {} } : independentConfig(), status: 'idle', archived: false, createdAt: now, updatedAt: now };
     store.change(state => state.sessions.push(value)); return value;
   };
   const register = (providerId = 'test.engine', caps = capabilities()) => {
-    const executor = new FakeStructured(registry); registry.register({ providerId, mode: 'structured', executor, capabilities: () => caps }); return { executor, caps };
+    const executor = new FakeStructured(registry, (id, config) => store.change(state => { state.sessions.find(session => session.id === id)!.engineConfig = config; }));
+    const identities: { conversationId?: string; fork?: boolean }[] = [];
+    registry.register({ providerId, mode: 'structured', executor, capabilities: () => caps,
+      configuration: () => ({ schemaVersion: 2, defaults: independentConfig(), fields: [{ key: 'profile', label: 'Profile', type: 'text' }] }),
+      validateConfig: config => independentSchema.parse(config),
+      createIdentity: input => {
+        identities.push(structuredClone(input));
+        return { providerId, mode: 'structured', conversationId: input.conversationId && !input.fork ? input.conversationId : `remote/task:${randomUUID()}`,
+          ...(input.fork ? { forkFrom: input.conversationId } : {}), ...(input.conversationId && !input.fork ? { imported: true } : {}) };
+      },
+    }); return { executor, caps, identities };
   };
-  return { store, registry, service, sent, call, add, register, changes: () => changed, directory,
+  const creation = new SessionCreation(store, service, () => { changed++; }, 'test.engine');
+  return { store, registry, service, creation, projectId, sent, call, add, register, changes: () => changed, directory,
     dispose: async () => { try { await service.shutdown(); } finally { fs.rmSync(directory, { recursive: true, force: true }); } } };
 }
 
@@ -174,7 +188,7 @@ test('missing operation capabilities reject before invoking a provider, includin
     await assert.rejects(f.call('chat:respond', { id: s.id, requestId: 'no', decision: { behavior: 'allow' } }), /approvals/);
     assert.equal(executor.decisions.length, 0);
     caps.liveConfig = false;
-    await assert.rejects(f.call('session:update', { id: s.id, model: 'another' }), /liveConfig/);
+    await assert.rejects(f.call('session:update', { id: s.id, engineConfig: independentConfig('another') }), /liveConfig/);
     assert.equal(executor.configCalls, 0);
     caps.structured = false;
     await assert.rejects(f.call('chat:send', { id: s.id, text: 'blocked' }), /structured/);
@@ -182,32 +196,32 @@ test('missing operation capabilities reject before invoking a provider, includin
   } finally { await f.dispose(); }
 });
 
-test('saving a stopped structured model invokes its adapter while offline without granting live configuration', async () => {
+test('saving stopped independent engine options invokes its adapter offline without granting live configuration', async () => {
   const f = fixture();
   try {
     const { executor, caps } = f.register(), s = f.add();
-    f.store.change(state => { state.sessions[0].status = 'stopped'; state.sessions[0].model = 'previous-model'; });
+    f.store.change(state => { state.sessions[0].status = 'stopped'; state.sessions[0].engineConfig = independentConfig('previous-profile'); });
     caps.available = false; caps.liveConfig = false;
     executor.snapshot(s.id).context = { status: 'ready', requestModel: 'previous-model', model: 'Previous model', inputTokens: 100, contextWindow: 200_000 };
-    const requested: { id: string; model?: string }[] = [];
+    const requested: { id: string; config: EngineConfig }[] = [];
     const configure = executor.updateConfig.bind(executor);
     executor.updateConfig = async (id, patch) => {
-      requested.push({ id, model: patch.model });
+      requested.push({ id, config: patch });
       await configure(id, patch);
       executor.snapshot(id).context = { status: 'unknown' };
     };
 
-    await f.call('session:update', { id: s.id, model: 'replacement-model' });
-    assert.deepEqual(requested, [{ id: s.id, model: 'replacement-model' }]);
+    await f.call('session:update', { id: s.id, engineConfig: independentConfig('replacement-profile') });
+    assert.deepEqual(requested, [{ id: s.id, config: independentConfig('replacement-profile') }]);
     assert.equal(executor.configCalls, 1);
     assert.deepEqual(executor.snapshot(s.id).context, { status: 'unknown' });
-    assert.equal(new StateStore(f.directory).state.sessions[0].model, 'replacement-model');
+    assert.deepEqual(new StateStore(f.directory).state.sessions[0].engineConfig, independentConfig('replacement-profile'));
     assert.equal(executor.activeCount, 0);
 
     executor.active.add(s.id); caps.available = true;
-    await assert.rejects(f.call('session:update', { id: s.id, model: 'unsupported-live-model' }), /liveConfig/);
+    await assert.rejects(f.call('session:update', { id: s.id, engineConfig: independentConfig('unsupported-live-profile') }), /liveConfig/);
     assert.equal(executor.configCalls, 1);
-    assert.equal(f.store.state.sessions[0].model, 'replacement-model');
+    assert.deepEqual(f.store.state.sessions[0].engineConfig, independentConfig('replacement-profile'));
   } finally { await f.dispose(); }
 });
 
@@ -359,5 +373,111 @@ test('a failed normalized-event observer cannot interrupt a provider turn or oth
     assert.ok(seen.some(event => event.type === 'conversation.changed' && event.taskState === 'completed'));
     unsubscribe();
     assert.deepEqual(await f.call('chat:send', { id: s.id, text: 'second turn' }), done);
+  } finally { await f.dispose(); }
+});
+
+test('independent engine defaults materialize through SessionCreation and survive configuration updates and restart', async () => {
+  const f = fixture();
+  try {
+    const { executor } = f.register();
+    f.store.change(state => { state.settings.engineDefaults['test.engine'] = independentConfig('workspace-default', 1024); });
+    const input = { projectId: f.projectId, title: 'Independent agent', kind: 'agent' as const, isolated: false, mode: 'structured' as const };
+    const first = await f.creation.create(input);
+    assert.deepEqual(first.engineConfig, independentConfig('workspace-default', 1024));
+    assert.equal('model' in first, false); assert.equal('permissionMode' in first.engineConfig.options, false);
+    f.store.change(state => { state.settings.engineDefaults['test.engine'] = independentConfig('new-default', 2048); });
+    const second = await f.creation.create(input);
+    assert.deepEqual(second.engineConfig, independentConfig('new-default', 2048));
+    assert.deepEqual(f.registry.getSession(first.id).engineConfig, independentConfig('workspace-default', 1024));
+    await f.call('session:update', { id: first.id, engineConfig: independentConfig('explicit', 256) });
+    const restored = new StateStore(f.directory);
+    assert.deepEqual(restored.state.sessions.find(session => session.id === first.id)!.engineConfig, independentConfig('explicit', 256));
+    assert.deepEqual(restored.state.sessions.find(session => session.id === second.id)!.engineConfig, independentConfig('new-default', 2048));
+    assert.equal(executor.configCalls, 1);
+    assert.deepEqual(await f.call('chat:send', { id: first.id, text: 'without Claude configuration' }), done);
+  } finally { await f.dispose(); }
+});
+
+test('provider validation rejects legacy Claude fields, unknown config versions and invalid independent values before execution', async () => {
+  const f = fixture();
+  try {
+    const { executor } = f.register(), session = f.add();
+    for (const engineConfig of [
+      { schemaVersion: 3, options: { profile: 'future', budget: 256 } },
+      { schemaVersion: 2, options: { model: 'claude', effort: 'max', permissionMode: 'plan' } },
+      independentConfig('budget-error', -1),
+    ]) await assert.rejects(f.call('session:update', { id: session.id, engineConfig }));
+    await assert.rejects(f.call('session:update', { id: session.id, model: 'legacy-top-level' }));
+    await assert.rejects(f.creation.create({ projectId: f.projectId, title: '', kind: 'agent', mode: 'structured', isolated: false,
+      engineConfig: { schemaVersion: 0, options: { retained: 'legacy' } } }));
+    assert.equal(executor.configCalls, 0); assert.equal(executor.requests.length, 0);
+    assert.deepEqual(f.registry.getSession(session.id).engineConfig, independentConfig());
+    assert.equal(f.store.state.sessions.length, 1);
+  } finally { await f.dispose(); }
+});
+
+test('a partial provider configuration failure retains only confirmed changes without overwriting them at the IPC boundary', async () => {
+  const f = fixture();
+  try {
+    const { executor } = f.register(), session = f.add();
+    executor.active.add(session.id);
+    const configure = executor.updateConfig.bind(executor);
+    executor.updateConfig = async (id, config) => {
+      await configure(id, { ...config, options: { ...config.options, budget: 512 } });
+      throw new Error('Budget change rejected after profile accepted');
+    };
+    await assert.rejects(f.call('session:update', { id: session.id, title: 'uncommitted title', engineConfig: independentConfig('accepted', 1024) }), /Budget change rejected/);
+    assert.deepEqual(f.registry.getSession(session.id).engineConfig, independentConfig('accepted', 512));
+    const restored = new StateStore(f.directory).state.sessions.find(value => value.id === session.id)!;
+    assert.deepEqual(restored.engineConfig, independentConfig('accepted', 512));
+    assert.equal(restored.title, session.title);
+  } finally { await f.dispose(); }
+});
+
+test('failed configuration persistence rejects IPC without committing unpersisted options', async () => {
+  const f = fixture();
+  try {
+    f.register(); const session = f.add();
+    const original = fs.readFileSync(f.store.file, 'utf8');
+    fs.mkdirSync(f.store.file + '.tmp');
+    await assert.rejects(f.call('session:update', { id: session.id, engineConfig: independentConfig('not-saved', 1024) }));
+    assert.deepEqual(f.registry.getSession(session.id).engineConfig, independentConfig());
+    assert.equal(fs.readFileSync(f.store.file, 'utf8'), original);
+  } finally {
+    fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
+    await f.dispose();
+  }
+});
+
+test('SessionCreation rejects unsupported fork and resume before asking the provider to allocate identity', async () => {
+  const f = fixture();
+  try {
+    const { executor, caps, identities } = f.register();
+    const input = { projectId: f.projectId, title: '', kind: 'agent' as const, isolated: false, mode: 'structured' as const, conversationId: 'remote/existing' };
+    caps.fork = false;
+    await assert.rejects(f.creation.create({ ...input, fork: true }), /fork/);
+    caps.fork = true; caps.resume = false;
+    await assert.rejects(f.creation.create(input), /resume/);
+    assert.equal(identities.length, 0);
+    assert.equal(f.store.state.sessions.length, 0);
+    assert.equal(executor.requests.length, 0);
+  } finally { await f.dispose(); }
+});
+
+test('an offline provider can still create and import sessions when its declared capabilities permit them', async () => {
+  const f = fixture();
+  try {
+    const { executor, caps, identities } = f.register();
+    caps.available = false;
+    const input = { projectId: f.projectId, title: '', kind: 'agent' as const, isolated: false, mode: 'structured' as const };
+    const fresh = await f.creation.create(input);
+    const imported = await f.creation.create({ ...input, conversationId: 'offline/import:42' });
+    assert.equal(fresh.started, false);
+    assert.equal(imported.execution.conversationId, 'offline/import:42');
+    assert.equal(imported.execution.imported, true); assert.equal(imported.started, true);
+    assert.equal(identities.length, 2); assert.equal(executor.requests.length, 0);
+    assert.deepEqual(new StateStore(f.directory).state.sessions.map(session => session.id), [imported.id, fresh.id]);
+    await assert.rejects(f.call('chat:send', { id: fresh.id, text: 'cannot launch offline' }), /尚未就绪/);
+    assert.equal(executor.requests.length, 0);
   } finally { await f.dispose(); }
 });

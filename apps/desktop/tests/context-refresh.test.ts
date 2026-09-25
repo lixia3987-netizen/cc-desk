@@ -78,7 +78,7 @@ function setup(configuredModel = '', restoredContext?: ContextUsage) {
   const store = new StateStore(directory), now = new Date().toISOString();
   const session: Session = { id: randomUUID(), projectId: randomUUID(), title: 'context', kind: 'agent', cwd: directory,
     execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, started: false,
-    model: configuredModel, effort: 'default', permissionMode: 'default', status: 'idle', archived: false, createdAt: now, updatedAt: now };
+    engineConfig: { schemaVersion: 1, options: { model: configuredModel, effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false, createdAt: now, updatedAt: now };
   store.change(state => state.sessions.push(session));
   if (restoredContext) {
     const history = new ChatHistory(directory, () => false);
@@ -88,7 +88,7 @@ function setup(configuredModel = '', restoredContext?: ContextUsage) {
   const runtime = new ChatRuntime(store, () => {}, () => {}, {
     invocation: () => ({ file: process.execPath, args: [script, initialModel, initialAlias] }), transcriptExists: async () => true,
   });
-  return { runtime, directory, session, send: async (text: string) => {
+  return { runtime, directory, session, store, send: async (text: string) => {
       const result = await runtime.send(session.id, text, capabilities); assert.equal(result.success, true, result.error); return result;
     },
     context: () => runtime.snapshot(session.id).context,
@@ -138,6 +138,8 @@ test('a confirmed model switch invalidates context even if a later permission ch
   try {
     await s.send('/context'); await s.send('normal');
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'new-model', permissionMode: 'plan' }), /unsupported mode/);
+    assert.deepEqual(s.store.state.sessions[0].engineConfig.options, { model: 'new-model', effort: 'default', permissionMode: 'default' });
+    assert.deepEqual(new StateStore(s.directory).state.sessions[0].engineConfig, s.store.state.sessions[0].engineConfig);
     assert.equal(s.context()?.contextWindow, undefined); assert.equal(s.context()?.inputTokens, undefined);
     await s.send('/context'); await s.send('normal');
     assert.equal(s.context()?.contextWindow, 200000);
@@ -196,7 +198,7 @@ test('a confirmed model control resets a changed runtime selection even when the
     await s.send('/context'); await s.send('switch-selection');
     assert.equal(s.context()?.requestModel, 'sonnet'); assert.equal(s.context()?.contextWindow, 200000);
     await s.send('routed-capacity-conflict');
-    assert.equal(s.session.model, 'sonnet');
+    assert.equal(s.session.engineConfig.options.model, 'sonnet');
     assert.equal(s.context()?.requestModel, 'other-selection'); assert.equal(s.context()?.inputTokens, 12000); assert.equal(s.context()?.contextWindow, 250000);
     await s.runtime.updateConfig(s.session.id, { model: 'sonnet' });
     assert.equal(s.context()?.inputTokens, undefined); assert.equal(s.context()?.contextWindow, undefined);

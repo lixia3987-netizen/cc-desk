@@ -1,3 +1,6 @@
+import type { ExecutionDescriptor } from '../../shared/execution';
+import type { Session } from '../../shared/types';
+import { executionUnavailable } from '../EngineConfiguration';
 import { Activity, GitBranch, Stethoscope, Workflow } from 'lucide-react';
 import { useLayoutEffect, useRef } from 'react';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../../shared/panel-drafts';
@@ -9,6 +12,7 @@ import { SessionContextPanel, type SessionContextPanelProps } from './SessionCon
 import { useInspectorPanels } from './useInspectorPanels';
 
 interface Props extends SessionContextPanelProps {
+  executors: ExecutionDescriptor[]; sessions: Session[];
   appendReview: (text: string) => boolean; activePanels: PanelDrafts;
   updatePanel: <K extends keyof PanelDrafts>(id: string, key: K, update: (value: NonNullable<PanelDrafts[K]>) => NonNullable<PanelDrafts[K]>) => void;
 }
@@ -53,8 +57,12 @@ export function SessionInspector(props: Props) {
       {orderedPanels.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
         {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
-        {id === 'workflows' && <WorkflowPanel session={active} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
-        {id === 'diagnostics' && <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} />}
+        {id === 'workflows' && <WorkflowPanel session={active} disabled={props.readOnly || !!props.descriptor?.maintenance || !props.descriptor?.capabilities.structured} executionBlocked={run => {
+          const session = props.sessions.find(item => item.id === run.sessionId);
+          const descriptor = props.executors.find(item => item.providerId === run.providerId && item.mode === run.executionMode);
+          return !session || !!executionUnavailable(descriptor, session);
+        }} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
+        {id === 'diagnostics' && (active.execution.providerId === 'claude' ? <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} /> : <div className="panel-content"><p className="panel-note">{props.unavailable ?? `${props.descriptor?.displayName ?? active.execution.providerId} 暂未提供连接诊断。`}</p></div>)}
       </InspectorPanel>)}
     </div>
     <div className="inspector-tools" role="group" aria-label="会话面板">

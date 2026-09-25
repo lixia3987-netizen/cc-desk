@@ -21,7 +21,7 @@ test('CLI maintenance waits for real PTY cleanup and accepts Darwin EPERM for th
   const store = new StateStore(path.join(root, 'data'));
   const id = randomUUID(), now = new Date().toISOString(), pidFile = path.join(root, 'pid');
   store.change(state => state.sessions.push({ id, projectId: randomUUID(), title: 'fixture', kind: 'shell',
-    execution: { providerId: 'shell', mode: 'terminal' }, cwd: root, model: '', effort: 'default', permissionMode: 'default',
+    execution: { providerId: 'shell', mode: 'terminal' }, cwd: root, engineConfig: { schemaVersion: 1, options: {} },
     started: false, status: 'idle', archived: false, createdAt: now, updatedAt: now }));
   const errors: Error[] = [];
   const runtime = new Runtime(store, () => {}, () => {}, {

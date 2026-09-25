@@ -5,14 +5,15 @@ import { DEFAULT_TYPOGRAPHY, fontFamily, systemFontFamily, typography, type Font
 import { listSystemFonts } from './system-fonts';
 import { settingsSchema } from '../shared/schema';
 import { normalizeThemeId } from '../shared/theme';
-import { PermissionModeField } from './PermissionModeField';
+import type { ExecutionDescriptor } from '../shared/execution';
+import { EngineConfigFields, configurationSupported, engineDefaults, sameEngineDefaults } from './EngineConfiguration';
 import { ThemePicker } from './ThemePicker';
 import type { ReactNode } from 'react';
 
 const pages = [
   { id: 'appearance', title: '外观与字体', icon: Palette, description: '选择主题，分别调整聊天内容与菜单界面的阅读体验。' },
   { id: 'connection', title: '连接与终端', icon: Plug, description: '连接本机 Claude Code，设置 Shell 与终端显示。' },
-  { id: 'sessions', title: '会话与权限', icon: Layers, description: '管理并发数量和新会话的默认权限。' },
+  { id: 'sessions', title: '会话与权限', icon: Layers, description: '管理并发数量和各引擎的新会话默认配置。' },
   { id: 'workspace', title: '工作区与 IDE', icon: FolderCog, description: '选择 Worktree 位置，以及打开项目的编辑器。' },
   { id: 'system', title: '通知与后台', icon: Bell, description: '设置任务通知、窗口关闭行为，并查看数据位置。' },
 ] as const;
@@ -23,7 +24,7 @@ interface Props {
   fonts: ImportedFont[]; onImport(): void; onRemove(id: string): void;
   busy: boolean; error: string; capabilities: Capabilities; platform: string; dataPath: string;
   onSave(detect: boolean): void; onClose(): void; onChooseIde(): void; onChooseWorktree(): void;
-  cliUpdate: ReactNode;
+  cliUpdate: ReactNode; executors: ExecutionDescriptor[]; cliBusy?: boolean;
 }
 
 function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoaded, disabled, onChange}: {scope: 'chat' | 'ui'; value: Settings; fonts: ImportedFont[]; systemFonts: SystemFont[]; systemQuery: string; systemLoaded: boolean; disabled: boolean; onChange(value: Settings): void}) {
@@ -52,6 +53,7 @@ function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoade
 
 export function SettingsPanel(props: Props) {
   const {value, saved, onChange, page, onPage, fonts, busy, error, capabilities: cap, platform, dataPath} = props;
+  const defaults = [...new Map(props.executors.filter(item => item.configuration?.fields.length).map(item => [item.providerId, item])).values()];
   const [validation, setValidation] = useState('');
   const [systemFonts, setSystemFonts] = useState<SystemFont[]>([]);
   const [systemQuery, setSystemQuery] = useState('');
@@ -72,13 +74,14 @@ export function SettingsPanel(props: Props) {
   useEffect(() => { void refreshSystemFonts(); return () => { systemRequest.current++; }; }, [refreshSystemFonts]);
   const content = useRef<HTMLDivElement>(null);
   const selected = pages.find(item => item.id === page)!;
-  const dirty = (Object.keys({...saved,...value}) as (keyof Settings)[]).some(key => value[key] !== saved[key]);
+  const dirty = (Object.keys({...saved,...value}) as (keyof Settings)[]).some(key => key === 'engineDefaults'
+    ? !sameEngineDefaults(value.engineDefaults, saved.engineDefaults) : value[key] !== saved[key]);
   const changePage = (next: SettingsPage) => { onPage(next); content.current?.scrollTo(0, 0); };
   const save = (detect: boolean) => {
     const result = settingsSchema.safeParse(value);
     if (!result.success) {
       const issue = result.error.issues[0], key = String(issue.path[0]);
-      const target: SettingsPage = /^(chatFont|uiFont|theme)/.test(key) ? 'appearance' : /^(worktree|ide)/.test(key) ? 'workspace' : /^(maxSessions|defaultPermissionMode)/.test(key) ? 'sessions' : /^(notifications|closeToTray)/.test(key) ? 'system' : 'connection';
+      const target: SettingsPage = /^(chatFont|uiFont|theme)/.test(key) ? 'appearance' : /^(worktree|ide)/.test(key) ? 'workspace' : /^(maxSessions|engineDefaults)/.test(key) ? 'sessions' : /^(notifications|closeToTray)/.test(key) ? 'system' : 'connection';
       const sizeHints: Record<string, string> = {chatFontSize:'聊天字号须为 11–28 的整数。',uiFontSize:'菜单字号须为 11–20 的整数。',fontSize:'终端字号须为 11–24 的整数。',maxSessions:'并发会话数须为 1–12 的整数。',scrollback:'终端回滚行数须为 1000–50000 的整数。'};
       setValidation(sizeHints[key] || issue.message); changePage(target); return;
     }
@@ -114,7 +117,7 @@ export function SettingsPanel(props: Props) {
         </>}
         {page === 'connection' && <>
           {props.cliUpdate}
-          <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
+          <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy || props.cliBusy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
             <p className="hint">{value.claudePath !== saved.claudePath ? '路径尚未保存；点击“保存并检测”以检查当前输入。' : '检测路径：' + (saved.claudePath || '自动查找')}</p>
             <div className={'connection-box ' + (cap.available ? 'connected' : '')}><div><span className={'dot ' + (cap.available ? 'running' : 'error')}/><strong>{busy ? '正在保存并检查设置…' : cap.available ? cap.version : '未检测到 CLI'}</strong></div><p>{busy ? '请稍候…' : cap.available ? cap.executable : cap.error || '保存设置后自动检测 CLI。'}</p>{cap.available && <small>可用强度：{cap.efforts.filter(value => value !== 'default').join(' / ') || '跟随 CLI'}</small>}</div>
             <p className="hint">在终端完成 Claude 登录。API Key、MCP 与 provider 沿用 Claude Code 配置；客户端不保存凭据。路径变更用于后续启动的进程。</p>
@@ -126,7 +129,13 @@ export function SettingsPanel(props: Props) {
         </>}
         {page === 'sessions' && <>
           <section className="settings-section"><h4>并发任务</h4><label>最大并发会话<input aria-label="最大并发会话" type="number" min={1} max={12} disabled={busy} value={value.maxSessions} onChange={event => onChange({...value,maxSessions:Number(event.target.value)})}/></label><p className="hint">限制同时连接的会话数量。降低上限不会停止已有任务。</p></section>
-          <section className="settings-section"><h4>默认权限</h4><PermissionModeField label="默认权限模式" value={value.defaultPermissionMode ?? 'default'} disabled={busy} onChange={defaultPermissionMode => onChange({...value,defaultPermissionMode})}/><p className="hint">用于新建和首次导入的 Claude 会话，可在创建时调整。已有会话保留自己的模式，创建分支时继承原会话模式。</p></section>
+          {defaults.map(descriptor => {
+            const config = engineDefaults(descriptor, value);
+            return <section className="settings-section" key={descriptor.providerId}><h4>{descriptor.displayName ?? descriptor.providerId} 默认配置</h4>
+              {configurationSupported(descriptor, config) ? <EngineConfigFields value={config} fields={descriptor.configuration!.fields} prefix="默认" disabled={busy || descriptor.maintenance} onChange={engineConfig => onChange({ ...value, engineDefaults: { ...value.engineDefaults, [descriptor.providerId]: engineConfig } })} /> : <p className="hint">已保存的默认配置版本暂不受支持，原值已保留。</p>}
+              <p className="hint">用于此引擎的新建和首次导入会话，可在创建时调整。已有会话保留自己的配置，创建分支时继承原会话配置。</p>
+            </section>;
+          })}
         </>}
         {page === 'workspace' && <>
           <section className="settings-section worktree-preferences"><h4>Worktree 位置</h4><label>Worktree 位置<select aria-label="Worktree 位置" aria-describedby="worktree-location-help" disabled={busy} value={value.worktreeLocation ?? 'project'} onChange={event => onChange({...value,worktreeLocation:event.target.value as 'project' | 'custom'})}><option value="project">项目目录内（.claude/worktrees）</option><option value="custom">统一目录</option></select></label>
@@ -143,7 +152,7 @@ export function SettingsPanel(props: Props) {
     </div>
     <footer className="settings-footer">
       {(validation || error) && <div className="settings-error" role="alert">{validation || error}</div>}
-      <div className="settings-footer-actions"><span className="settings-save-state">{busy ? '正在处理…' : dirty ? '有未保存的更改' : '设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={props.onClose}>取消</button>{page === 'connection' && <button type="button" className="secondary" disabled={busy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}<button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button></div>
+      <div className="settings-footer-actions"><span className="settings-save-state">{busy ? '正在处理…' : dirty ? '有未保存的更改' : '设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={props.onClose}>取消</button>{page === 'connection' && <button type="button" className="secondary" disabled={busy || props.cliBusy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}<button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button></div>
     </footer>
   </form>;
 }

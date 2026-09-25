@@ -3,7 +3,10 @@ import path from 'node:path';
 import type { ExecutionRegistry } from './registry';
 
 export async function exportSession(registry: ExecutionRegistry, id: string, window: BrowserWindow | null) {
-  const sources = await registry.registration(registry.getSession(id)).executor.exports(id);
+  const registration = registry.registration(registry.getSession(id));
+  // Reading records remains possible during maintenance or CLI discovery failure.
+  if (!registration.capabilities().export) throw new Error('此会话执行器不支持导出。');
+  const sources = await registration.executor.exports(id);
   if (!sources.length) throw new Error('此会话没有可导出的记录。');
   const first = sources[0];
   const target = await dialog.showSaveDialog(window!, {

@@ -25,9 +25,11 @@ async function until(condition: () => boolean) {
 }
 const success: ChatTurnResult = { success: true, summary: 'finished' };
 const interrupted: ChatTurnResult = { success: false, summary: '', interrupted: true };
+type QueueRun = { sessionId: string; item: QueuedChatMessage; result: ReturnType<typeof deferred<ChatTurnResult>> };
 
 function fixture(overrides: Partial<Options> = {}, directory = fs.mkdtempSync(path.join(os.tmpdir(), 'workbench-chat-queue-'))) {
-  const runs: { sessionId: string; item: QueuedChatMessage; result: ReturnType<typeof deferred<ChatTurnResult>> }[] = [];
+  const runs: QueueRun[] = [];
+  const runObservers = new Map<string, (run: QueueRun) => void>();
   const active = new Set<string>();
   const interruptions: string[] = [];
   const changed: string[] = [];
@@ -38,7 +40,9 @@ function fixture(overrides: Partial<Options> = {}, directory = fs.mkdtempSync(pa
       assert.equal(active.has(sessionId), false, 'two turns must never run concurrently in one session');
       active.add(sessionId);
       const result = deferred<ChatTurnResult>();
-      runs.push({ sessionId, item: structuredClone(item), result });
+      const run = { sessionId, item: structuredClone(item), result };
+      runs.push(run);
+      runObservers.get(item.text)?.(run); runObservers.delete(item.text);
       try { return await result.promise; } finally { active.delete(sessionId); }
     },
     interrupt: async id => { interruptions.push(id); },
@@ -47,6 +51,10 @@ function fixture(overrides: Partial<Options> = {}, directory = fs.mkdtempSync(pa
   });
   return {
     directory, queue, runs, active, interruptions, changed,
+    waitForRun(text: string): Promise<QueueRun> {
+      const run = runs.find(item => item.item.text === text);
+      return run ? Promise.resolve(run) : new Promise(resolve => runObservers.set(text, resolve));
+    },
     async close() {
       queue.pauseAll();
       for (const run of runs) run.result.resolve(interrupted);
@@ -177,6 +185,131 @@ test('maintenance pauses all queues, rejects new submissions, and does not autom
     assert.ok(f.queue.snapshot(first).items.some(item => item.text === 'waiting one'));
     assert.ok(f.queue.snapshot(second).items.some(item => item.text === 'waiting two'));
   } finally { await f.close(); }
+});
+
+test('session maintenance preserves another queue FIFO and requires manual continuation only for its targets', async () => {
+  const f = fixture(), target = randomUUID(), other = randomUUID();
+  try {
+    await f.queue.submit(target, 'target active');
+    await f.queue.submit(target, 'target waiting');
+    await f.queue.submit(other, 'other active');
+    await f.queue.submit(other, 'other waiting');
+    const [targetRun, otherRun] = await Promise.all([f.waitForRun('target active'), f.waitForRun('other active')]);
+    f.queue.pauseSessions([target], 'target maintenance');
+    targetRun.result.resolve(success); otherRun.result.resolve(success);
+    const next = await f.waitForRun('other waiting');
+    assert.deepEqual(f.runs.map(run => run.item.text), ['target active', 'other active', 'other waiting']);
+    assert.equal(f.queue.snapshot(target).paused, true);
+    assert.equal(f.queue.snapshot(target).error, 'target maintenance');
+    assert.deepEqual(f.queue.snapshot(target).items.map(item => item.text), ['target waiting']);
+    assert.equal(f.queue.snapshot(other).paused, false);
+    assert.equal(f.queue.snapshot(other).error, undefined);
+    await f.queue.resume(target);
+    assert.equal((await f.waitForRun('target waiting')).sessionId, target);
+    next.result.resolve(success);
+  } finally { await f.close(); }
+});
+
+test('session maintenance invalidates only its target send-now generation while another promotion completes', async () => {
+  const target = randomUUID(), other = randomUUID();
+  const targetInterrupt = deferred<void>(), otherInterrupt = deferred<void>(), releaseInterrupts = deferred<void>();
+  const f = fixture({ interrupt: async id => {
+    (id === target ? targetInterrupt : otherInterrupt).resolve();
+    await releaseInterrupts.promise;
+  } });
+  try {
+    await f.queue.submit(target, 'target active');
+    const targetUrgent = await f.queue.submit(target, 'target urgent');
+    await f.queue.submit(other, 'other active');
+    const otherUrgent = await f.queue.submit(other, 'other urgent');
+    const [targetRun, otherRun] = await Promise.all([f.waitForRun('target active'), f.waitForRun('other active')]);
+    const promotions = [f.queue.sendNow(target, targetUrgent.messageId), f.queue.sendNow(other, otherUrgent.messageId)];
+    await Promise.all([targetInterrupt.promise, otherInterrupt.promise]);
+    f.queue.pauseSessions([target], 'target maintenance');
+    targetRun.result.resolve(interrupted); otherRun.result.resolve(interrupted); releaseInterrupts.resolve();
+    await Promise.all(promotions);
+    await f.waitForRun('other urgent');
+    assert.deepEqual(f.runs.map(run => run.item.text), ['target active', 'other active', 'other urgent']);
+    assert.equal(f.queue.snapshot(target).paused, true);
+    assert.equal(f.queue.snapshot(target).error, 'target maintenance');
+    assert.equal(f.queue.snapshot(other).paused, false);
+  } finally { releaseInterrupts.resolve(); await f.close(); }
+});
+
+test('session maintenance pauses every selected queue despite save failures without touching unselected state', async () => {
+  const f = fixture({ blocked: () => true }), first = randomUUID(), second = randomUUID(), other = randomUUID();
+  const storage = (f.queue as unknown as { storage: ChatQueueStorage }).storage;
+  const save = storage.save.bind(storage), attempts: string[] = [];
+  try {
+    await f.queue.submit(first, 'first'); await f.queue.submit(second, 'second'); await f.queue.submit(other, 'other');
+    const untouched = f.queue.snapshot(other);
+    storage.save = (id, state) => { attempts.push(id); if (id === first || id === second) throw new Error(`save ${id}`); save(id, state); };
+    assert.throws(() => f.queue.pauseSessions([first, first, second], 'maintenance'), (error: unknown) => {
+      assert.ok(error instanceof AggregateError); assert.equal(error.errors.length, 2); return true;
+    });
+    assert.deepEqual(attempts, [first, second]);
+    for (const id of [first, second]) {
+      assert.equal(f.queue.snapshot(id).paused, true); assert.equal(f.queue.snapshot(id).error, 'maintenance');
+    }
+    assert.deepEqual(f.queue.snapshot(other), untouched);
+  } finally { storage.save = save; await f.close(); }
+});
+
+test('admission generations reject queued submissions and resumes after maintenance has already ended', async t => {
+  for (const operation of ['submit', 'resume', 'send now'] as const) await t.test(operation, async () => {
+    let maintenance = false, admissionEpoch = 0, blockDispatch = true;
+    const entered = deferred<void>(), releaseMutation = deferred<void>();
+    const f = fixture({
+      blocked: () => blockDispatch,
+      assertAvailable: () => { if (maintenance) throw new Error('maintenance active'); },
+      captureAdmission: () => {
+        const epoch = admissionEpoch;
+        return () => { if (epoch !== admissionEpoch) throw new Error('maintenance cancelled old operation'); };
+      },
+    });
+    const id = randomUUID();
+    try {
+      const accepted = await f.queue.submit(id, 'preserved queued message');
+      f.queue.pause(id);
+      const mutation = f.queue.removeAttachment(id, '/unused-attachment', async () => { entered.resolve(); await releaseMutation.promise; });
+      await entered.promise;
+      const oldOperation = operation === 'submit' ? f.queue.submit(id, 'old submission') : operation === 'resume' ? f.queue.resume(id) : f.queue.sendNow(id, accepted.messageId);
+      const rejected = assert.rejects(oldOperation, /maintenance cancelled old operation/);
+      maintenance = true; admissionEpoch++;
+      f.queue.pauseSessions([id], 'maintenance pause');
+      maintenance = false; blockDispatch = false;
+      releaseMutation.resolve(); await mutation; await rejected;
+      f.queue.wake(id); await tick();
+      assert.equal(f.runs.length, 0);
+      assert.equal(f.queue.snapshot(id).paused, true);
+      assert.equal(f.queue.snapshot(id).error, 'maintenance pause');
+      assert.deepEqual(f.queue.snapshot(id).items.map(item => item.text), ['preserved queued message']);
+      assert.deepEqual(f.interruptions, []);
+      await f.queue.resume(id);
+      await f.waitForRun('preserved queued message');
+    } finally { releaseMutation.resolve(); await f.close(); }
+  });
+});
+
+test('admission generations reject an attachment commit after a complete maintenance cycle', async () => {
+  let admissionEpoch = 0;
+  const entered = deferred<void>(), releaseAttachments = deferred<void>();
+  const f = fixture({
+    captureAdmission: () => { const epoch = admissionEpoch; return () => { if (epoch !== admissionEpoch) throw new Error('maintenance cancelled attachments'); }; },
+    acceptAttachments: async (_id, _files, commit) => { entered.resolve(); await releaseAttachments.promise; commit(); },
+  });
+  const id = randomUUID();
+  try {
+    const oldSubmission = f.queue.submit(id, 'old attachment submission', ['/attachment/evidence.txt']);
+    const rejected = assert.rejects(oldSubmission, /maintenance cancelled attachments/);
+    await entered.promise;
+    admissionEpoch++; f.queue.pauseSessions([id], 'maintenance pause');
+    releaseAttachments.resolve(); await rejected;
+    f.queue.wake(id); await tick();
+    assert.equal(f.runs.length, 0);
+    assert.equal(f.queue.snapshot(id).paused, true);
+    assert.deepEqual(f.queue.snapshot(id).items, []);
+  } finally { releaseAttachments.resolve(); await f.close(); }
 });
 
 test('failed turns retain accepted messages and pause before any following message can execute', async () => {

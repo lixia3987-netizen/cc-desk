@@ -1,6 +1,6 @@
 import path from 'node:path';
 import fs from 'node:fs/promises';
-import { environment, execFileAsync } from './commands';
+import { environment, execFileAsync } from './platform-commands';
 import type { GitInfo } from '../shared/types';
 import { readProjectFile, resolveProjectFile } from './files';
 import type { GitChange, GitChanges, GitDiff, WorktreeInfo, WorktreeActionResult } from '../shared/git';

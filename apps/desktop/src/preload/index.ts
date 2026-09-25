@@ -76,7 +76,7 @@ const api: DesktopAPI = {
   updateCLI:() => ipcRenderer.invoke('cli-update:apply'),
   dismissCLIUpdate:() => ipcRenderer.invoke('cli-update:dismiss'),
   onCLIUpdate:callback => { const listener=(_event:Electron.IpcRendererEvent,state:Parameters<typeof callback>[0])=>callback(state);ipcRenderer.on('cli-update:state',listener);return()=>ipcRenderer.removeListener('cli-update:state',listener); },
-  history:projectId => ipcRenderer.invoke('history:list',projectId),
+  history:(projectId,providerId) => ipcRenderer.invoke('history:list',providerId ? {projectId,providerId} : projectId),
   gitInfo:sessionId => ipcRenderer.invoke('git:info',sessionId),
   exportTranscript:id => ipcRenderer.invoke('session:export',id),
   openFolder:id => ipcRenderer.invoke('folder:open',id),
@@ -87,6 +87,7 @@ const api: DesktopAPI = {
   onError:callback => { const listener=(_event:Electron.IpcRendererEvent,message:string)=>callback(message);ipcRenderer.on('workspace:error',listener);return()=>ipcRenderer.removeListener('workspace:error',listener); },
   onNavigate:callback => { const listener=(_event:Electron.IpcRendererEvent,id:string)=>callback(id);ipcRenderer.on('session:navigate',listener);return()=>ipcRenderer.removeListener('session:navigate',listener); },
   onCapabilities:callback => {const listener=(_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0])=>callback(data);ipcRenderer.on('workspace:capabilities',listener);return()=>ipcRenderer.removeListener('workspace:capabilities',listener);},
+  onExecutors:callback => {const listener=(_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0])=>callback(data);ipcRenderer.on('workspace:executors',listener);return()=>ipcRenderer.removeListener('workspace:executors',listener);},
   onTerminal:callback => {const listener = (_event:Electron.IpcRendererEvent,data:Parameters<typeof callback>[0]) => callback(data);ipcRenderer.on('terminal:data',listener);return () => ipcRenderer.removeListener('terminal:data',listener);}
 };
 contextBridge.exposeInMainWorld('desktop',api);

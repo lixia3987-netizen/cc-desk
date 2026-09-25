@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import type { AppState } from '../src/shared/types';
+import type { LegacyAppState as AppState } from './helpers/legacy-workspace';
 
 async function workspace() {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-worktree-ui-')));
@@ -168,7 +168,7 @@ test('worktree location: UI creates named trees in both locations and preserves 
     execFileSync('git', ['commit', '-m', 'Source tree commit'], { cwd: original.cwd, stdio: 'pipe' });
     const fork = await page.evaluate(input => window.desktop.createSession({
       projectId: input.projectId, title: 'fork-child', kind: 'agent', mode: 'structured',
-      model: '', effort: 'default', isolated: true, conversationId: input.conversationId, fork: true, worktreeName: 'fork-child',
+      engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, isolated: true, conversationId: input.conversationId, fork: true, worktreeName: 'fork-child',
     }), { conversationId: original.execution.conversationId, projectId: f.project.id });
     expect(fork.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', `fork-child-${fork.id.slice(0, 8)}`));
     expect(fork.worktreeBase).toBe(original.cwd);
@@ -405,7 +405,7 @@ test('session deletion: stale snapshot failures do not replace the workspace, wh
     const page = await app.firstWindow();
     await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
     const created = await page.evaluate(async projectId => {
-      const session = await window.desktop.createSession({ projectId, title: 'Snapshot lifecycle', kind: 'agent', providerId: 'claude', mode: 'structured', model: '', effort: 'default', isolated: false });
+      const session = await window.desktop.createSession({ projectId, title: 'Snapshot lifecycle', kind: 'agent', providerId: 'claude', mode: 'structured', engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, isolated: false });
       await window.desktop.setSelection(session.id);
       return session;
     }, f.project.id);

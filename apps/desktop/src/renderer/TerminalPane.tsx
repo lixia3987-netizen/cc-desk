@@ -8,17 +8,18 @@ import { getTerminalTheme } from './themes';
 import { terminalPromptPacket } from './composer-keyboard';
 export interface TerminalHandle { paste: (text: string) => void; submit: (text: string) => Promise<void>; focus: () => void }
 
-export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:Settings;themeId:ThemeId;active:boolean;onError:(error:unknown)=>void}>(function TerminalPane({session,settings,themeId,active,onError},ref) {
+export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:Settings;themeId:ThemeId;active:boolean;disabled?:boolean;onError:(error:unknown)=>void}>(function TerminalPane({session,settings,themeId,active,onError,disabled=false},ref) {
   const host = useRef<HTMLDivElement>(null);
   const terminal = useRef<Terminal | null>(null);
   const fit = useRef<FitAddon | null>(null);
   const status = useRef(session.status);
+  const blocked = useRef(disabled); blocked.current = disabled;
   const errorHandler = useRef(onError);
   status.current = session.status; errorHandler.current = onError;
   useImperativeHandle(ref,() => ({
-    paste:text => terminal.current?.paste(text),
+    paste:text => { if(!blocked.current)terminal.current?.paste(text); },
     submit:async text => {
-      if(status.current!=='running'||!terminal.current)throw new Error('终端尚未就绪，请先启动会话。');
+      if(blocked.current||status.current!=='running'||!terminal.current)throw new Error('终端尚未就绪，请先启动会话。');
       if(!terminal.current.modes.bracketedPasteMode)throw new Error('CLI 尚未准备好接收提示词，请在终端完成登录或目录信任后重试。');
       // A single IPC write prevents Enter from overtaking a pending asynchronous paste.
       await window.desktop.writeTerminal(session.id,terminalPromptPacket(text));
@@ -45,7 +46,7 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
       hydrating=false;
     }).catch(error => {if(disposed)return;hydrating=false;for(const chunk of waiting)consume(chunk);waiting.length=0;errorHandler.current(error);});
     const input=term.onData(data => {
-      if(status.current !== 'running') return;
+      if(blocked.current || status.current !== 'running') return;
       void window.desktop.writeTerminal(session.id,data).catch(error => errorHandler.current(error));
     });
     term.attachCustomKeyEventHandler(event => {
@@ -59,7 +60,7 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     const resize=() => {
       if(!host.current?.clientWidth || !host.current.clientHeight)return;
       addon.fit();
-      if(status.current === 'running')void window.desktop.resizeTerminal(session.id,Math.min(term.cols,500),Math.min(term.rows,300)).catch(error => errorHandler.current(error));
+      if(!blocked.current && status.current === 'running')void window.desktop.resizeTerminal(session.id,Math.min(term.cols,500),Math.min(term.rows,300)).catch(error => errorHandler.current(error));
     };
     const observer=new ResizeObserver(resize);observer.observe(host.current!);resize();
     return () => {disposed=true;off();observer.disconnect();input.dispose();term.dispose();terminal.current=null;};
@@ -73,7 +74,7 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
   },[themeId]);
   useEffect(() => {
     if(terminal.current){terminal.current.options.fontSize=settings.fontSize;terminal.current.options.scrollback=settings.scrollback;}
-    if(active)requestAnimationFrame(() => {fit.current?.fit();if(terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});
+    if(active)requestAnimationFrame(() => {fit.current?.fit();if(!blocked.current && terminal.current && session.status==='running')void window.desktop.resizeTerminal(session.id,Math.min(terminal.current.cols,500),Math.min(terminal.current.rows,300)).catch(onError);});
   },[active,settings.fontSize,settings.scrollback,session.status,session.id,onError]);
   useEffect(()=>{
     if(!active)return;

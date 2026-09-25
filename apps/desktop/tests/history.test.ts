@@ -16,6 +16,7 @@ test('history is project-scoped, tolerates incomplete JSONL, preserves original 
     const file=path.join(dir,id+'.jsonl');await fs.writeFile(file,original);
     await fs.writeFile(path.join(dir,other+'.jsonl'),JSON.stringify({type:'user',cwd:'/another-project',message:{content:'private other project'}}));
     const result=await readHistory(cwd);assert.equal(result.length,1);assert.equal(result[0].id,id);assert.equal(result[0].title,'恢复中文项目');
+    assert.equal(result[0].providerId,'claude');
     assert.equal(await fs.readFile(file,'utf8'),original);assert.equal(await transcriptExists(id),true);assert.equal(await transcriptExists(randomUUID()),false);
   }finally{if(old===undefined)delete process.env.CLAUDE_CONFIG_DIR;else process.env.CLAUDE_CONFIG_DIR=old;await fs.rm(root,{recursive:true,force:true});}
 });
@@ -50,6 +51,7 @@ test('full-text query covers late transcript content, paginates within project a
       await fs.utimes(path.join(directory, id + '.jsonl'), new Date(index * 1000), new Date(index * 1000));
     }
     const page = await queryHistory(cwd, { query: '检索标记', limit: 2 });
+    assert.ok(page.entries.every(entry => entry.providerId === 'claude'));
     assert.deepEqual(page.entries.map(entry => entry.id), [ids[2], ids[1]]);
     assert.equal(page.total, 3); assert.equal(page.nextOffset, 2);
     const last = await queryHistory(cwd, { query: '检索标记', offset: page.nextOffset!, limit: 2 });

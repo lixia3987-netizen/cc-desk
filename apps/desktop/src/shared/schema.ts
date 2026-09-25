@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { THEME_IDS } from './theme';
-import { PERMISSION_MODES } from './permissions';
+import type { EngineConfig, JsonValue } from './execution';
+import { persistedStateSchema as persistedV2Schema } from './workspace-v2';
 import { SUBTASK_STATUSES, SUBTASK_LIMIT } from './subtasks';
 import { DEFAULT_TYPOGRAPHY, isFontId } from './fonts';
 export const fontIdSchema = z.string().max(2311).refine(isFontId, '请选择系统或已导入的字体。').transform(value => value as import('./fonts').FontId);
@@ -14,7 +15,35 @@ export const sessionExecutionSchema = z.object({
   forkFrom: conversationIdSchema.optional(),
   imported: z.boolean().optional(),
 }).strict();
-export const permissionModeSchema = z.enum(PERMISSION_MODES);
+/** Bound unknown provider data before recursive consumers can inspect it. */
+function boundedJsonObject(value: unknown): value is Record<string, JsonValue> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const queue: { value: unknown; depth: number }[] = [{ value, depth: 0 }];
+  const seen = new Set<object>();
+  let nodes = 0, size = 0;
+  while (queue.length) {
+    const item = queue.pop()!;
+    if (++nodes > 2048 || item.depth > 8) return false;
+    const current = item.value;
+    if (current === null || typeof current === 'boolean') continue;
+    if (typeof current === 'number') { if (!Number.isFinite(current)) return false; continue; }
+    if (typeof current === 'string') { size += current.length; if (size > 65536) return false; continue; }
+    if (!current || typeof current !== 'object' || seen.has(current)) return false;
+    seen.add(current);
+    if (!Array.isArray(current) && Object.getPrototypeOf(current) !== Object.prototype && Object.getPrototypeOf(current) !== null) return false;
+    for (const [key, child] of Object.entries(current)) {
+      if (key.length > 200 || /[\x00-\x1f\x7f]/.test(key) || ['__proto__', 'constructor', 'prototype'].includes(key)) return false;
+      size += key.length; if (size > 65536) return false;
+      queue.push({ value: child, depth: item.depth + 1 });
+      if (queue.length > 2048) return false;
+    }
+  }
+  return true;
+}
+export const engineConfigSchema = z.object({
+  schemaVersion: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  options: z.custom<Record<string, JsonValue>>(boundedJsonObject, '引擎配置必须是大小和深度受限的 JSON 对象。'),
+}).strict();
 export const settingsSchema = z.object({
   claudePath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
   shellPath: z.string().max(4096).refine(s => !/[\x00\r\n]/.test(s)),
@@ -28,13 +57,11 @@ export const settingsSchema = z.object({
   uiFontSize: z.number().int().min(11).max(20).default(DEFAULT_TYPOGRAPHY.uiFontSize),
   scrollback: z.number().int().min(1000).max(50000),
   notifications: z.boolean().optional(), closeToTray: z.boolean().optional(), theme: z.enum(THEME_IDS).optional(),
-  defaultPermissionMode: permissionModeSchema.default('default')
+  engineDefaults: z.record(providerIdSchema, engineConfigSchema).default({})
 }).refine(settings => settings.worktreeLocation !== 'custom' || !!settings.worktreeRoot, { message: '请选择或填写统一 Worktree 根目录。', path: ['worktreeRoot'] });
 export const sessionInputSchema = z.object({
   projectId: idSchema, title: z.string().trim().max(120), kind: z.enum(['agent', 'shell']),
-  model: z.string().trim().max(200).refine(s => !/[\x00-\x1f]/.test(s)),
-  effort: z.enum(['default','low','medium','high','xhigh','max','ultracode']),
-  permissionMode: permissionModeSchema.optional(), isolated: z.boolean(),
+  engineConfig: engineConfigSchema.optional(), isolated: z.boolean(),
   worktreeName: z.string().max(80).refine(s => !/[/\\\x00-\x1f\x7f]/.test(s) && !s.includes('..'), 'Worktree 名称不能包含路径分隔符、控制字符或 ..。').trim().optional(),
   providerId: providerIdSchema.optional(), conversationId: conversationIdSchema.optional(), fork: z.boolean().optional(),
   mode: z.enum(['terminal','structured']).optional()
@@ -60,7 +87,7 @@ const sessionFieldsSchema = z.object({
   id: idSchema, projectId: idSchema, title: z.string(),
   titleSource: z.enum(['default','auto','manual']).optional(),
   cwd: z.string(), started: z.boolean(),
-  model: z.string(), effort: sessionInputSchema.shape.effort, permissionMode: permissionModeSchema,
+  engineConfig: engineConfigSchema,
   status: z.enum(['idle','running','stopping','stopped','error']), archived: z.boolean(),
   createdAt: z.string(), updatedAt: z.string(), worktree: z.string().optional(), exitCode: z.number().optional(), error: z.string().optional(),
   draft: z.string().max(128*1024).optional(), worktreeBase: z.string().optional(),
@@ -81,26 +108,29 @@ const workspaceFields = {
   selectedSessionId: z.union([idSchema,z.literal('')]).optional(),
 };
 export const stateSchema = z.object({
-  version: z.literal(2), ...workspaceFields, sessions: z.array(sessionSchema),
+  version: z.literal(3), ...workspaceFields, sessions: z.array(sessionSchema),
 });
 
-const legacySessionSchema = sessionFieldsSchema.extend({
-  kind: z.enum(['claude', 'shell']), claudeId: idSchema,
-  resumeFrom: idSchema.optional(), imported: z.boolean().optional(),
-  adapter: z.enum(['terminal', 'structured']).optional(),
-}).strict();
-const legacyStateSchema = z.object({ version: z.literal(1), ...workspaceFields, sessions: z.array(legacySessionSchema) });
-
-/** Disk compatibility is isolated from live writes: only one identity is ever persisted. */
-export const persistedStateSchema = z.union([stateSchema, legacyStateSchema.transform((state): z.infer<typeof stateSchema> => ({
-  ...state, version: 2 as const,
-  sessions: state.sessions.map(({ kind, claudeId, resumeFrom, imported, adapter, ...session }) => ({
-    ...session,
-    kind: kind === 'claude' ? 'agent' as const : 'shell' as const,
-    execution: kind === 'shell' ? { providerId: 'shell', mode: 'terminal' as const } : {
-      providerId: 'claude', mode: adapter ?? 'terminal', conversationId: claudeId,
-      ...(resumeFrom === undefined ? {} : { forkFrom: resumeFrom }),
-      ...(imported === undefined ? {} : { imported }),
-    },
-  })),
-}))]);
+function migrateConfig(providerId: string, options: { model: string; effort: string; permissionMode: string }): EngineConfig {
+  if (providerId === 'claude') return { schemaVersion: 1, options };
+  if (providerId === 'shell') return { schemaVersion: 1, options: options.model || options.effort !== 'default' || options.permissionMode !== 'default' ? { legacy: options } : {} };
+  // Version zero has no implied Claude semantics. Only its provider may migrate it.
+  return { schemaVersion: 0, options };
+}
+const migratedV3Schema = persistedV2Schema.transform((state, context): z.infer<typeof stateSchema> => {
+  const { defaultPermissionMode, ...settings } = state.settings;
+  const result = stateSchema.safeParse({
+    ...state, version: 3 as const,
+    settings: { ...settings, engineDefaults: { claude: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: defaultPermissionMode } } } },
+    sessions: state.sessions.map(({ model, effort, permissionMode, ...session }) => ({
+      ...session, engineConfig: migrateConfig(session.execution.providerId, { model, effort, permissionMode }),
+    })),
+  });
+  if (!result.success) {
+    for (const issue of result.error.issues) context.addIssue({ code: 'custom', message: issue.message, path: issue.path });
+    return z.NEVER;
+  }
+  return result.data;
+});
+/** Only disk reads accept legacy formats. Every live change validates v3. */
+export const persistedStateSchema = z.union([stateSchema, migratedV3Schema]);

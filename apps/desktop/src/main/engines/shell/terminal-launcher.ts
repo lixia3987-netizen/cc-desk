@@ -1,5 +1,5 @@
 import type { Session } from '../../../shared/types';
-import { environment, shellInvocation } from '../../commands';
+import { environment, shellInvocation } from '../../platform-commands';
 import type { TerminalLauncher, TerminalLaunchSpec } from '../../execution/terminal-launch';
 import type { StateStore } from '../../store';
 

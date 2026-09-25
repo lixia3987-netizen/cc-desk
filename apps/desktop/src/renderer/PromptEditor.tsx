@@ -3,10 +3,10 @@ import { composerKeyAction, insertComposerNewline } from './composer-keyboard';
 import type { SessionCommand } from '../shared/execution';
 import { insertCommand, matchingCommands, slashQuery } from '../shared/session-commands';
 
-export function PromptEditor({ value, onChange, onSend, placeholder, disabled, commands, loadCommands }: {
+export function PromptEditor({ value, onChange, onSend, placeholder, disabled, commands, loadCommands, commandOwner = '会话' }: {
   value: string; onChange: (value: string) => void; onSend: () => void;
   placeholder: string; disabled?: boolean;
-  commands?: SessionCommand[]; loadCommands?: () => Promise<void>;
+  commandOwner?: string; commands?: SessionCommand[]; loadCommands?: () => Promise<void>;
 }) {
   const composing = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -47,18 +47,18 @@ export function PromptEditor({ value, onChange, onSend, placeholder, disabled, c
     if (pending && value === pending.value) input.current?.setSelectionRange(pending.caret, pending.caret);
   }, [value]);
   return <>
-    {open && <section className="slash-menu" aria-label="Claude 命令与 Skills">
+    {open && <section className="slash-menu" aria-label={commandOwner+' 命令与 Skills'}>
       <header><strong>命令与 Skills</strong><span>↑ ↓ 选择 · Enter / Tab 填入 · Esc 关闭</span></header>
       {loading && <p role="status">正在读取当前会话的命令…</p>}
       {error && <p role="alert">{error}<button type="button" onMouseDown={event => event.preventDefault()} onClick={() => void request()}>重试</button></p>}
-      {!loading && !error && !matches.length && <p>{commands === undefined ? '命令列表尚未就绪，请稍后重试。' : commands.length ? '没有匹配的命令或 Skill' : '当前 CLI 未提供命令列表；仍可直接输入完整命令。'}{commands === undefined && <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => void request()}>重试</button>}</p>}
+      {!loading && !error && !matches.length && <p>{commands === undefined ? '命令列表尚未就绪，请稍后重试。' : commands.length ? '没有匹配的命令或 Skill' : '当前引擎未提供命令列表；仍可直接输入完整命令。'}{commands === undefined && <button type="button" onMouseDown={event => event.preventDefault()} onClick={() => void request()}>重试</button>}</p>}
       <div id={listId} role="listbox" aria-label="可用命令">
         {matches.map((command, index) => <button type="button" role="option" id={`${listId}-${index}`} key={command.name} tabIndex={-1}
           aria-selected={index === activeIndex} aria-disabled={!!command.disabledReason}
           onMouseDown={event => event.preventDefault()} onMouseMove={() => setSelected(index)} onClick={() => choose(command)}>
           <span className="slash-name">/{command.name}<small>{command.argumentHint}</small></span>
           <span className="slash-kind">{command.kind === 'builtin' ? '系统命令' : command.kind === 'skill' ? 'Skill' : '命令 / Skill'}</span>
-          <span className="slash-description">{command.disabledReason || command.description || '由当前 Claude Code 会话提供'}</span>
+          <span className="slash-description">{command.disabledReason || command.description || '由当前会话提供'}</span>
         </button>)}
       </div>
     </section>}

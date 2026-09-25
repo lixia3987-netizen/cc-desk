@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
+import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
 import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot } from '../shared/chat';
 import { MessageText } from './MessageText';
@@ -20,7 +21,7 @@ export { MessageText } from './MessageText';
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
-function ApprovalCard({approval,sessionId,onError,drafts}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts}) {
+function ApprovalCard({approval,sessionId,onError,drafts,engineName}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string}) {
   const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId)),[busy,setBusy]=useState(false);
   const {answers,reason}=value;
   const update=(patch:Partial<ApprovalDraft>)=>setValue(previous=>{const next={...previous,...patch};drafts.set(sessionId,approval.requestId,next);return next;});
@@ -33,7 +34,7 @@ function ApprovalCard({approval,sessionId,onError,drafts}:{approval:ChatApproval
   };
   const questions=approval.questions??[];
   return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={approval.kind==='question'?'等待回答':'工具审批'}>
-    <header><ShieldCheck size={17}/><strong>{approval.kind==='question'?'Claude 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
+    <header><ShieldCheck size={17}/><strong>{approval.kind==='question'?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
     {approval.kind==='question'?questions.map((q,index)=><fieldset key={index} disabled={busy}><legend>{q.question}</legend><div className="question-options">{q.options.map((option,i)=>{
       const selected=q.multiSelect?(answers[q.question]??'').split(', ').includes(option.label):answers[q.question]===option.label;
       return <button key={i} type="button" className={selected?'chosen':''} aria-pressed={selected} onClick={()=>setAnswers(value=>{
@@ -49,15 +50,16 @@ function ApprovalCard({approval,sessionId,onError,drafts}:{approval:ChatApproval
 function sameMessage(left:ChatMessage,right:ChatMessage) {
   return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input);
 }
-const ChatMessageRow=memo(function ChatMessageRow({message}:{message:ChatMessage}) {
+const ChatMessageRow=memo(function ChatMessageRow({message,engineName}:{message:ChatMessage;engineName:string}) {
   const content=<><MessageText text={message.text}/>{message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
-  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?'Claude':'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
-},(previous,next)=>sameMessage(previous.message,next.message));
+  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
+},(previous,next)=>previous.engineName===next.engineName&&sameMessage(previous.message,next.message));
 
-export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,disabled=false}:{
-  session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;
+export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,descriptor,readOnly=false,disabled=false}:{
+  descriptor?:ExecutionDescriptor;readOnly?:boolean;session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;
   onDropFiles:(files:File[])=>void;attachmentBusy:boolean;attachmentDisabled:boolean;isAttachmentImporting:()=>boolean;
 }) {
+  const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
@@ -102,13 +104,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     }catch(error){if(mounted.current&&seq===request.current)throw error;}
   },[session.id,approvalDrafts]);
   const prepareCommands=useCallback(()=>{
+    if(disabled||readOnly||!descriptor?.capabilities.commands)return Promise.resolve();
     if(commandsLoading.current)return commandsLoading.current;
     const pending=window.desktop.prepareChatCommands(session.id).then(async()=>{if(mounted.current)await load();});
     commandsLoading.current=pending;
     const clear=()=>{if(commandsLoading.current===pending)commandsLoading.current=undefined;};
     void pending.then(clear,clear);
     return pending;
-  },[session.id,load]);
+  },[session.id,load,disabled,readOnly,descriptor?.capabilities.commands]);
   useEffect(()=>{
     mounted.current=true;let timer:ReturnType<typeof setTimeout>|undefined;
     void load().catch(onError);
@@ -118,7 +121,9 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const handled=useRef(onAttentionHandled);handled.current=onAttentionHandled;
   const [focusRequest,setFocusRequest]=useState('');
   useEffect(()=>{
-    if(!attentionTarget)return;let cancelled=false;
+    if(!attentionTarget)return;
+    if(readOnly||descriptor?.maintenance){handled.current();return;}
+    let cancelled=false;
     // Obtain a fresh snapshot before deciding whether a navigation target expired.
     const seq=++request.current;pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setShowSearch(false);
     void window.desktop.chatSnapshot(session.id).then(value=>{
@@ -130,7 +135,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       handled.current();
     }).catch(error=>{if(!cancelled){onError(error);handled.current();}});
     return()=>{cancelled=true;};
-  },[attentionTarget?.nonce,session.id,jumpToItem,onError]);
+  },[attentionTarget?.nonce,session.id,jumpToItem,onError,readOnly,descriptor?.maintenance]);
   useLayoutEffect(()=>{
     if(!focusRequest||archive)return;
     const card=Array.from(content.current?.querySelectorAll<HTMLElement>('[data-request-id]')??[]).find(item=>item.dataset.requestId===focusRequest);
@@ -145,7 +150,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
   const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
   const composerDisabled=disabled||session.archived;
-  const recoveryAvailable=session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
+  const recoveryAvailable=!!descriptor?.capabilities.recoverContext&&!readOnly&&session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
   const recoverContext=async()=>{
     if(recovering)return;
     setRecovering(true);
@@ -155,42 +160,42 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const queued=running||!!snapshot?.queue?.items.length;
   const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
     onAccepted:jumpToLatest,onSent,onAttachmentsSent,onError,refresh:load});
-  const attachmentsBlocked=composerDisabled||attachmentDisabled||attachmentBusy||submitting;
+  const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
-    {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给 Claude。</span></div>}
+    {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给当前引擎。</span></div>}
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
       {(snapshot?.truncated||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={paging||!!archive&&!archive.before||!visible?.messages.length||exhaustedBefore===visible?.messages[0]?.id} onClick={()=>void openPage({before:archive?.before??visible?.messages[0]?.id}).catch(onError)}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>本页 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
     {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setPaging(false);setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
     <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={onScroll}><div className="chat-scroll-content" ref={content}>
-      {!visible?.messages.length&&!snapshot?.queue?.items.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>从一个明确的任务开始</h3><p>描述目标、引用项目文件，在这里查看 Claude 的执行过程。</p><small>需要确认的工具请求会显示审批卡片。</small></div>}
+      {!visible?.messages.length&&!snapshot?.queue?.items.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
-      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message}/>)}
-      {visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts}/>)}
+      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName}/>)}
+      {!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
-      {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的 Claude 上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
+      {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{session.status==='stopping'?'正在停止':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} queue={snapshot?.queue} disabled={composerDisabled} onError={onError} refresh={load}/>}
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
-    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="CLI 报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="CLI 实际返回的用量与费用估算，不代表订阅剩余额度">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
-    <ContextMeter context={snapshot?.context}/>
+    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title="引擎实际返回的用量与费用估算">{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
+    {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context}/>}
     {confirmRecovery&&<Dialog label="重建空白上下文" onClose={()=>setConfirmRecovery(false)} closeDisabled={recovering}>
       <h2>重建空白上下文</h2>
-      <p>此操作不能恢复原来的 Claude 上下文。将创建新的 Claude 会话标识，之前的聊天不会自动发送给 Claude。</p>
+      <p>此操作不能恢复原来的引擎上下文。将创建新的引擎会话标识，之前的聊天不会自动发送给引擎。</p>
       <p>本地聊天记录、草稿、附件和独立 worktree 都会保留。排队消息将保持暂停，需检查后手动继续。</p>
-      <p className="panel-note">如果需要找回原上下文，请取消并检查 Claude 配置目录或重新导入历史记录。</p>
+      <p className="panel-note">如果需要找回原上下文，请取消并检查此引擎的配置目录或重新导入历史记录。</p>
       <div className="modal-actions"><button className="secondary" disabled={recovering} onClick={()=>setConfirmRecovery(false)}>取消</button><button className="primary" disabled={recovering||composerDisabled||running||!recoveryAvailable} onClick={()=>void recoverContext()}>{recovering?'重建中…':'确认重建'}</button></div>
     </Dialog>}
     <div className="composer chat-composer">{attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={attachmentsBlocked} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
-      <PromptEditor placeholder={queued?'继续输入，发送后加入队列…':'描述任务，或输入 / 选择命令与 Skills…'} value={draft} disabled={composerDisabled} onChange={onDraft} onSend={()=>void send()}
-        commands={snapshot?.commands} loadCommands={prepareCommands}/>
-      <div className="chat-composer-actions"><button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；文件可拖入聊天区成为待发送附件；草稿自动保存">Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={composerDisabled||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!attachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
+      <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
+        commands={snapshot?.commands} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
+      <div className="chat-composer-actions"><button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；文件可拖入聊天区成为待发送附件；草稿自动保存">Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={readOnly||session.archived||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!attachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
     </div>
   </div>;
 }

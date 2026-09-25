@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
-import { environment } from './commands';
+import { environment } from './platform-commands';
 
 interface IdeInvocation { file: string; args: string[]; application: string; cwd: string; appBundle: boolean }
 type Launcher = (file: string, args: string[], options: SpawnOptions) => ChildProcess;

@@ -1,5 +1,22 @@
 /** The application's stable session ID is separate from a provider's conversation ID. */
 export type ExecutionMode = 'structured' | 'terminal';
+/** Persisted provider-owned configuration. Credentials must not be stored here. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export interface EngineConfig { schemaVersion: number; options: Record<string, JsonValue> }
+export interface EngineConfigField {
+  key: string;
+  label: string;
+  type: 'text' | 'select';
+  options?: { value: string; label: string }[];
+  placeholder?: string;
+  description?: string;
+  apply?: 'stopped' | 'live' | 'restart';
+}
+export interface EngineConfiguration {
+  schemaVersion: number;
+  defaults: EngineConfig;
+  fields: EngineConfigField[];
+}
 export interface SessionExecution {
   providerId: string;
   mode: ExecutionMode;
@@ -31,11 +48,18 @@ export interface ExecutionCapabilities {
   contextUsage: boolean;
   liveConfig: boolean;
   attachments: boolean;
+  recoverContext?: boolean;
+  export?: boolean;
 }
 export interface ExecutionDescriptor {
   providerId: string;
   mode: ExecutionMode;
+  displayName?: string;
   capabilities: ExecutionCapabilities;
+  configuration?: EngineConfiguration;
+  maintenance?: boolean;
+  /** External history import is distinct from continuing a local session. */
+  history?: boolean;
 }
 
 /** Only values reported by the provider are used; no model-name based window guesses. */

@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { constants, type BigIntStats } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
-import { environment, execFileAsync } from './commands';
+import { environment, execFileAsync } from './platform-commands';
 import type { ProjectFile, ProjectFiles } from '../shared/git';
 
 const MAX_FILE_BYTES = 256 * 1024;

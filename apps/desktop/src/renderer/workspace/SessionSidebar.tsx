@@ -1,11 +1,12 @@
 import { Archive, ChevronRight, Command, Folder, GitBranch, History, Plus, Search, Settings2, TerminalSquare } from 'lucide-react';
+import type { ExecutionDescriptor } from '../../shared/execution';
 import type { AppState, Capabilities, Session } from '../../shared/types';
 
 import { sessionColor, sessionLabel, time } from './presentation';
 import type { OpenNew } from './types';
 
 interface Props {
-  state: AppState; cap: Capabilities; activeId: string; projectId: string;
+  state: AppState; cap: Capabilities; executors: ExecutionDescriptor[]; historyAvailable: boolean; activeId: string; projectId: string;
   archived: boolean; search: string; collapsedGroups: Set<string>;
   openNew: OpenNew; chooseProject: () => Promise<void>; selectSession: (id: string) => void;
   onSearch: (value: string) => void; onProject: (id: string) => void;
@@ -13,7 +14,7 @@ interface Props {
   openHistory: () => Promise<void>; onSettings: () => void;
 }
 
-export function SessionSidebar({ state, cap, activeId, projectId, archived, search, collapsedGroups, openNew, chooseProject, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings }: Props) {
+export function SessionSidebar({ state, cap, executors, historyAvailable, activeId, projectId, archived, search, collapsedGroups, openNew, chooseProject, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings }: Props) {
   const projectsById = new Map(state.projects.map(project => [project.id, project]));
   const query = search.trim().toLowerCase();
   const sessions = state.sessions.filter(s => s.archived === archived && (projectId === 'all' || s.projectId === projectId) && `${s.title} ${s.cwd} ${projectsById.get(s.projectId)?.name ?? ''}`.toLowerCase().includes(query)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -72,7 +73,7 @@ export function SessionSidebar({ state, cap, activeId, projectId, archived, sear
                 <div className="session-row-icon">{s.kind === 'shell' ? <TerminalSquare size={15} /> : <span className={`dot ${sessionColor(s)}`} />}</div>
                 <div>
                   <strong>{s.title}</strong>
-                  <small>{sessionLabel(s)}<span>·</span>{time(s.updatedAt)}</small>
+                  <small>{executors.find(item=>item.providerId===s.execution.providerId&&item.mode===s.execution.mode)?.displayName??s.execution.providerId}<span>·</span>{sessionLabel(s)}<span>·</span>{time(s.updatedAt)}</small>
                 </div>{s.worktree && <GitBranch size={13} />}
               </button>)}
             {!group.sessions.length && <div className="group-empty">暂无会话</div>}
@@ -82,8 +83,8 @@ export function SessionSidebar({ state, cap, activeId, projectId, archived, sear
       {!sessionGroups.length && <div className="list-empty">{query ? '没有匹配的会话' : archived ? '暂无归档会话' : '从一个新会话开始。'}</div>}
     </div>
     <div className="sidebar-bottom">
-      <button onClick={() => void openHistory()}>
-        <History size={16} />导入 CLI 历史<ChevronRight size={14} />
+      <button disabled={!historyAvailable} onClick={() => void openHistory()}>
+        <History size={16} />{executors.some(item=>item.history&&item.providerId!=='claude')?'导入引擎历史':'导入 CLI 历史'}<ChevronRight size={14} />
       </button>
       <button onClick={() => { onSettings(); }}>
         <Settings2 size={16} />设置与连接<ChevronRight size={14} />

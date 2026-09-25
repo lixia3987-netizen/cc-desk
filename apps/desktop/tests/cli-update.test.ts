@@ -58,7 +58,7 @@ test('failed installer refreshes capability information and allows an explicit r
   let fail = true;
   const f = fixture({ install: async () => { if (fail) throw new Error('installer failed'); } });
   await f.service.check(); await f.service.update();
-  assert.equal(f.service.state.phase, 'error'); assert.match(f.service.state.message, /工作区保持断开/); assert.ok(f.calls.includes('refresh'));
+  assert.equal(f.service.state.phase, 'error'); assert.match(f.service.state.message, /Claude 会话保持断开/); assert.ok(f.calls.includes('refresh'));
   fail = false; await f.service.check(); await f.service.update(); assert.equal(f.service.state.phase, 'updated');
 });
 test('zero exit with unchanged version or an unusable CLI is not reported as a successful upgrade', async () => {
@@ -66,6 +66,39 @@ test('zero exit with unchanged version or an unusable CLI is not reported as a s
     const f = fixture({ refresh: async () => capability });
     await f.service.check(); await f.service.update(); assert.equal(f.service.state.phase, 'error');
   }
+});
+test('quitting invalidates confirmation and every pre-install verification without starting the installer', async () => {
+  for (const phase of ['confirm', 'first-verify', 'disconnect', 'second-verify'] as const) {
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    let verifies = 0, installs = 0;
+    const gate = async () => { enter(); await waiting; };
+    const f = fixture({
+      confirm: async () => { if (phase === 'confirm') await gate(); return true; },
+      verify: async () => { verifies++; if ((verifies === 1 && phase === 'first-verify') || (verifies === 2 && phase === 'second-verify')) await gate(); },
+      disconnect: async action => { if (phase === 'disconnect') await gate(); return action(); },
+      install: async () => { installs++; },
+    });
+    await f.service.check();
+    const update = f.service.update();
+    await entered;
+    assert.equal(f.service.cancelPendingUpdate(), true);
+    release(); await update;
+    assert.equal(installs, 0, phase); assert.equal(f.service.busy, false);
+    assert.match(f.service.state.message, /正在退出/);
+  }
+});
+test('quitting cannot cancel an installer that has already begun writing', async () => {
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture({ install: async () => { enter(); await waiting; } });
+  await f.service.check(); const update = f.service.update(); await entered;
+  assert.equal(f.service.state.phase, 'updating');
+  assert.equal(f.service.cancelPendingUpdate(), false);
+  release(); await update;
+  assert.equal(f.service.state.phase, 'updated'); assert.ok(f.calls.includes('refresh'));
 });
 test('double clicks, path changes and checks cannot race the confirmation or update', async () => {
   let confirm!: (value: boolean) => void;

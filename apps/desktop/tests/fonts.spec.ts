@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 import { importedFamily, normalizeSystemFonts } from '../src/shared/fonts';
 import { fontFixture } from './fixtures/font';

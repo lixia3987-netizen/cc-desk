@@ -5,7 +5,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AppState, Session } from '../src/shared/types';
+import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 
 async function workspace(shellSelected = false) {
@@ -124,7 +124,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('unsaved-model');
     expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('这段提示词还没有发送。');
-    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.model).toBe('');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.engineConfig.options.model).toBe('');
 
     await page.getByLabel('会话模型', { exact: true }).focus();
     await page.keyboard.press('Escape');

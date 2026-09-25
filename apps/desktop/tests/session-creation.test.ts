@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { createClaudeConfig, parseClaudeConfig } from '@cc-desk/engine-claude/config';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -34,6 +35,7 @@ function fixture() {
   let allocated = 0;
   const register = (providerId: string, validateSession?: (session: Session) => void) => registry.register({
     providerId, mode: 'terminal', executor,
+    ...(providerId === 'claude' ? { configuration: () => ({ schemaVersion: 1, defaults: createClaudeConfig(), fields: [] }), validateConfig: (config: import('../src/shared/types').EngineConfig) => createClaudeConfig(parseClaudeConfig(config)) } : {}),
     capabilities: () => ({ available: true, structured: false, terminal: true, approvals: false,
       resume: providerId !== 'shell', fork: providerId !== 'shell', commands: false, contextUsage: false, liveConfig: false, attachments: false }),
     validateSession: validateSession ?? (providerId === 'claude' ? validateClaudeSession : undefined),
@@ -49,7 +51,7 @@ function fixture() {
   });
   const creation = new SessionCreation(store, service, () => {}, 'claude');
   const input = (patch: Partial<NewSession> = {}): NewSession => ({ projectId, title: '', kind: 'agent',
-    model: '', effort: 'default', isolated: false, mode: 'terminal', ...patch });
+    isolated: false, mode: 'terminal', ...patch });
   return { root, projectPath, projectId, store, creation, input, register,
     dispose: async () => { try { await service.shutdown(); } finally { fs.rmSync(root, { recursive: true, force: true }); } } };
 }
@@ -84,19 +86,19 @@ test('imports deduplicate only within a provider and unarchive the original loca
   } finally { await f.dispose(); }
 });
 
-test('forks preserve their provider source identity, source directory and permission configuration', async () => {
+test('forks preserve their provider source identity, source directory and provider-specific configuration', async () => {
   const f = fixture();
   try {
     const conversationId = 'source/conversation';
     const source = await f.creation.create(f.input({ providerId: 'test.engine', conversationId }));
     const sourcePath = path.join(f.root, 'source-worktree'); fs.mkdirSync(sourcePath);
-    f.store.change(state => Object.assign(state.sessions.find(session => session.id === source.id)!, { cwd: sourcePath, permissionMode: 'plan' }));
+    f.store.change(state => Object.assign(state.sessions.find(session => session.id === source.id)!, { cwd: sourcePath, engineConfig: { schemaVersion: 1, options: { profile: 'research', budget: 73 } } }));
     await f.creation.create(f.input({ providerId: 'other.engine', conversationId }));
     const fork = await f.creation.create(f.input({ providerId: 'test.engine', conversationId, fork: true }));
     assert.notEqual(fork.id, source.id); assert.notEqual(fork.execution.conversationId, conversationId);
     assert.equal(fork.execution.providerId, 'test.engine'); assert.equal(fork.execution.forkFrom, conversationId);
     assert.equal(fork.execution.imported, false); assert.equal(fork.started, false);
-    assert.equal(fork.cwd, sourcePath); assert.equal(fork.permissionMode, 'plan');
+    assert.equal(fork.cwd, sourcePath); assert.deepEqual(fork.engineConfig, { schemaVersion: 1, options: { profile: 'research', budget: 73 } });
     assert.equal(new StateStore(f.store.directory).state.sessions[0].execution.forkFrom, conversationId);
   } finally { await f.dispose(); }
 });

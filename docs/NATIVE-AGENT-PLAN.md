@@ -3,9 +3,9 @@
 日期：2026-09-24（北京时间）  
 代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，当前应用版本 `0.5.0`。  
 开发分支：`dev/native-agent`，从上述提交创建。  
-状态：阶段一 monorepo 迁移已实现，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。Agent 运行时仍按后续阶段推进，全部开发暂留 `dev/native-agent`。
+状态：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二已进入实现验证，工作位于 `refactor/engine-boundaries`，目标集成分支仍为 `dev/native-agent`；具体结果见 [ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。尚未宣称三平台验收完成，不合入 main、不发布 Release；真实 native 运行时继续按阶段三推进。
 
-阶段二的当前源码分析、具体任务与验收条件见 [ENGINE-BOUNDARIES-PHASE-2.md](ENGINE-BOUNDARIES-PHASE-2.md)。下文阶段零基线中的 `src/` 和 `tests/` 路径在阶段一后已分别位于 `apps/desktop/src/` 和 `apps/desktop/tests/`。
+阶段二的基线分析、具体任务与验收条件见 [ENGINE-BOUNDARIES-PHASE-2.md](ENGINE-BOUNDARIES-PHASE-2.md)。下文“当前代码”保留的是总体计划编写时的基线，不作为阶段二最新实现清单；其中 `src/` 和 `tests/` 路径在阶段一后已分别位于 `apps/desktop/src/` 和 `apps/desktop/tests/`。
 
 ## 1. 目标与实施原则
 

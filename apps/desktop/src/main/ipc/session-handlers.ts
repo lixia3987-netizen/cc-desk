@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import type { Session } from '../../shared/types';
-import { idSchema, panelDraftsSchema, sessionInputSchema } from '../../shared/schema';
+import type { EngineConfig, Session } from '../../shared/types';
+import { engineConfigSchema, idSchema, panelDraftsSchema } from '../../shared/schema';
 import type { StateStore } from '../store';
 import type { StructuredExecutions, TerminalExecutions } from '../execution/routers';
 import type { Attachments } from '../attachments';
@@ -15,6 +15,7 @@ interface SessionPorts {
   workflows: Pick<WorkflowEngine, 'isSessionBusy' | 'removeSession'>;
   attachments: Pick<Attachments, 'remove'>;
   session(id: string): Session;
+  validateConfig(id: string, config: EngineConfig): EngineConfig;
   taskOccupied(id: string): boolean;
   admissionPending(id: string): boolean;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
@@ -29,9 +30,8 @@ interface SessionPorts {
 
 const updateSchema = z.object({
   id: idSchema, title: z.string().trim().min(1).max(120).optional(), archived: z.boolean().optional(),
-  model: sessionInputSchema.shape.model.optional(), effort: sessionInputSchema.shape.effort.optional(),
-  permissionMode: sessionInputSchema.shape.permissionMode.optional(),
-});
+  engineConfig: engineConfigSchema.optional(),
+}).strict();
 const deleteSchema = z.union([
   idSchema,
   z.object({ id: idSchema, preserveWorktree: z.literal(true) }).strict(),
@@ -70,19 +70,22 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
   handle('session:update', updateSchema, async input => {
     const session = ports.session(input.id);
     if (input.archived && ports.taskOccupied(session.id)) throw new Error('请先停止会话和工作流，再归档。');
-    const save = () => ports.store.change(state => Object.assign(state.sessions.find(item => item.id === session.id)!, input,
+    const { engineConfig, ...metadata } = input;
+    const save = () => ports.store.change(state => Object.assign(state.sessions.find(item => item.id === session.id)!, metadata,
       input.title !== undefined ? { titleSource: 'manual' } : {},
-      input.permissionMode ? { observedPermissionMode: input.permissionMode } : {},
       { updatedAt: new Date().toISOString() }));
-    const configChanged = input.model !== undefined || input.effort !== undefined || input.permissionMode !== undefined;
+    const configChanged = engineConfig !== undefined;
     if (configChanged) {
       if (ports.workflows.isSessionBusy(session.id) || ports.admissionPending(session.id)) throw new Error('请等待当前任务完成后再修改配置。');
       if (ports.runtime.has(session.id)) throw new Error('终端模式请停止会话后修改启动配置。');
       await ports.manage(session.id, async () => {
+        const validated = ports.validateConfig(session.id, engineConfig);
         if (input.archived && ports.chat.has(session.id)) await ports.chat.stopIdle(session.id);
         if (session.execution.mode === 'structured') {
-          await ports.chat.updateConfig(session.id, { model: input.model, effort: input.effort, permissionMode: input.permissionMode });
-        }
+          // The provider commits each confirmed change; never overwrite a
+          // partially applied live configuration with the request's old view.
+          await ports.chat.updateConfig(session.id, validated);
+        } else ports.store.change(state => { state.sessions.find(item => item.id === session.id)!.engineConfig = validated; });
         save();
       });
       ports.onState();
