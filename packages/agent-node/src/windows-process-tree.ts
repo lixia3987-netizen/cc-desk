@@ -222,8 +222,15 @@ export function runWindowsTreeCleanup(options: {
 }): Promise<{ released: boolean; diagnostic: WindowsCleanupProgress }> {
   // Keep a large retained ancestry out of Windows' 32,767-character command line.
   const script = buildWindowsTreeCleanupScript(options.anchors, options.timeoutMs, 'stdin');
-  const systemRoot = Object.entries(options.environment).find(([key]) => key.toUpperCase() === 'SYSTEMROOT')?.[1];
-  const executable = systemRoot ? path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
+  const systemRoots = Object.entries(options.environment).filter(([key]) => key.toUpperCase() === 'SYSTEMROOT');
+  const systemRoot = systemRoots[0]?.[1];
+  // Missing or filtered SystemRoot cannot authorize resolving a helper from
+  // the approved command's cwd/PATH. Only a local drive-qualified OS root is accepted.
+  if (systemRoots.length !== 1 || !systemRoot || /[\0\r\n]/.test(systemRoot) || !path.win32.isAbsolute(systemRoot)
+    || !/^[A-Za-z]:[\\/]/.test(systemRoot)) {
+    return Promise.resolve({ released: false, diagnostic: { phase: 'windows_snapshot', code: 'spawn_error', snapshots: 0, terminationAttempts: 0, liveProcesses: 0 } });
+  }
+  const executable = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   return new Promise(resolve => {
     const helper = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
       shell: false, windowsHide: true, env: options.environment, stdio: ['pipe', 'pipe', 'pipe'],

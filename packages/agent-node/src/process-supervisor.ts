@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
 import { runWindowsTreeCleanup, type WindowsProcessAnchor } from './windows-process-tree.js';
+import { createWindowsCommandJob, WindowsCommandJobError, type WindowsCommandJob, type WindowsCommandJobDiagnostic } from './windows-command-job.js';
 
 export interface CommandRequest {
   executable: string;
@@ -28,8 +29,9 @@ export interface CommandResult {
 }
 
 export interface ProcessCleanupDiagnostic {
-  phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'windows_helper_release' | 'posix_terminate';
-  code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'identity_unavailable' | 'unreleased' | 'os_error';
+  phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'windows_helper_release' | 'windows_job' | 'posix_terminate';
+  code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'identity_unavailable' | 'unreleased' | 'os_error'
+    | 'released' | 'cancelled' | 'protocol_error' | 'ownership_unconfirmed' | 'bind_failed' | 'query_failed' | 'terminate_failed';
   elapsedMs: number;
   snapshots: number;
   terminationAttempts: number;
@@ -37,9 +39,11 @@ export interface ProcessCleanupDiagnostic {
   guardianExited: boolean;
   streamsClosed: boolean;
   helperStage?: 'bootstrap' | 'compile' | 'snapshot' | 'capture' | 'terminate';
+  jobStage?: 'compile' | 'open' | 'challenge' | 'bind' | 'active' | 'terminate' | 'query' | 'closed';
   nativeCode?: number;
   helperExitCode?: number | null;
   helperExited?: boolean;
+  helperStarted?: boolean;
   helperOutputBytes?: number;
   osCode?: 'ENOENT' | 'EACCES' | 'EPERM' | 'ESRCH' | 'UNKNOWN';
 }
@@ -77,13 +81,17 @@ export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: r
   return result;
 }
 
-// The guardian stays alive after the approved command exits, providing a host-owned
-// root during descendant discovery. It never interprets commands or uses a shell.
+// The guardian waits for host authorization before launching the command. Windows
+// first binds it to an owned Job; POSIX uses its detached process group.
 const GUARDIAN = String.raw`
 const { spawn } = require('node:child_process');
 let started = false;
 process.on('SIGTERM', () => {});
 process.on('message', message => {
+  if (!started && message && message.type === 'challenge' && typeof message.nonce === 'string') {
+    process.send?.({ type: 'challenge-response', nonce: message.nonce });
+    return;
+  }
   if (started || !message || message.type !== 'launch') return;
   started = true;
   try {
@@ -103,10 +111,9 @@ process.on('message', message => {
 // Loss of the owning host cannot turn this into an intentionally persistent job.
 process.on('disconnect', () => {
   if (process.platform === 'win32') {
-    const killer = spawn('taskkill.exe', ['/PID', String(process.pid), '/T', '/F'], {
-      shell: false, windowsHide: true, stdio: 'ignore',
-    });
-    killer.on('error', () => process.exit(1));
+    // The host-owned Job helper loses its input pipe too and closes the Job.
+    // No executable lookup or recycled PID can authorize a second tree killer.
+    process.exit(1);
   } else {
     try { process.kill(-process.pid, 'SIGKILL'); } catch { process.exit(1); }
   }
@@ -119,12 +126,13 @@ interface CommandRecord {
   child: ChildProcess;
   pid?: number;
   commandPid?: number;
-  spawnStartedAt: number;
-  spawnCompletedAt: number;
-  commandSpawnStartedAt?: number;
-  commandSpawnCompletedAt?: number;
-  windowsProcesses: Map<number, WindowsProcessAnchor>;
   windowsHelpers: Map<Promise<void>, ChildProcess>;
+  windowsJob?: WindowsCommandJob;
+  windowsPreparation?: Promise<void>;
+  windowsPreparationAbort?: AbortController;
+  windowsPreparationDiagnostic?: WindowsCommandJobDiagnostic;
+  cleanupRequested: boolean;
+  commandLaunched: boolean;
   closed: boolean;
   guardianExited: boolean;
   exitSeen: boolean;
@@ -337,20 +345,19 @@ export class ProcessSupervisor {
     }
     const guardianEnvironment = { ...launchEnvironment };
     if (process.versions.electron) guardianEnvironment.ELECTRON_RUN_AS_NODE = '1';
-    const spawnStartedAt = Date.now();
     const child = spawn(this.nodeExecutable, ['-e', GUARDIAN], {
       cwd: command.cwd, env: guardianEnvironment, shell: false,
       detached: process.platform !== 'win32', windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
-    const spawnCompletedAt = Date.now();
     let finish!: () => void;
     const done = new Promise<CommandResult>(resolve => {
       finish = () => resolve(result);
     });
     const record: CommandRecord = {
       owner: ownerId, environment: launchEnvironment, child, pid: child.pid, closed: false, guardianExited: false, exitSeen: false,
-      windowsProcesses: new Map(), windowsHelpers: new Map(), spawnStartedAt, spawnCompletedAt,
+      windowsHelpers: new Map(), cleanupRequested: false, commandLaunched: false,
+      windowsPreparationAbort: process.platform === 'win32' ? new AbortController() : undefined,
       result, stdout: [], stderr: [], capturedBytes: 0, outputLimit,
       cleanupFailed: false, done, finish, signal,
     };
@@ -382,10 +389,6 @@ export class ProcessSupervisor {
       const value = message as Record<string, unknown>;
       if (value.type === 'command-started' && Number.isSafeInteger(value.pid) && Number(value.pid) > 0) {
         record.commandPid = Number(value.pid);
-        if (Number.isSafeInteger(value.spawnStartedAt) && Number.isSafeInteger(value.spawnCompletedAt)) {
-          record.commandSpawnStartedAt = Number(value.spawnStartedAt);
-          record.commandSpawnCompletedAt = Number(value.spawnCompletedAt);
-        }
         return;
       }
       if (value.type === 'command-exit') {
@@ -400,23 +403,90 @@ export class ProcessSupervisor {
         void this.stopRecord(record);
       }
     });
-    child.once('spawn', () => {
-      if (record.cleanupPromise) return;
+    const launch = () => {
+      if (record.cleanupRequested || this.disposed || this.revokedOwners.has(ownerId) || signal?.aborted) return;
+      if (record.guardianExited || record.closed || (process.platform === 'win32' && !record.windowsJob?.usable)) {
+        result.error = 'Command containment was lost before launch; the command was not executed.';
+        void this.stopRecord(record);
+        return;
+      }
+      // Windows preparation has its own bounded budget. The command's execution
+      // budget starts only after containment is ready and launch is authorized.
+      if (process.platform === 'win32') startTimer();
+      record.commandLaunched = true;
       child.send({ type: 'launch', command: launchCommand, environment: launchEnvironment }, error => {
         if (error && !record.cleanupPromise) {
           result.error = 'Unable to initialize the command runtime.';
           void this.stopRecord(record);
         }
       });
+    };
+    child.once('spawn', () => {
+      if (record.cleanupRequested) return;
+      if (process.platform !== 'win32') { launch(); return; }
+      record.windowsPreparation = (async () => {
+        try {
+          record.windowsJob = await createWindowsCommandJob({
+            guardianPid: record.pid!, environment: record.environment, timeoutMs: this.cleanupTimeoutMs,
+            signal: record.windowsPreparationAbort!.signal,
+            challenge: nonce => this.challengeGuardian(record, nonce),
+            onHelper: (helper, whenClosed) => {
+              record.windowsHelpers.set(whenClosed, helper);
+              void whenClosed.then(() => record.windowsHelpers.delete(whenClosed));
+            },
+          });
+          launch();
+        } catch (error) {
+          // Preparation never authorizes command execution on failure. Its helper
+          // and the empty guardian still have to reach their physical barriers.
+          record.windowsPreparationAbort!.abort();
+          if (error instanceof WindowsCommandJobError) record.windowsPreparationDiagnostic = error.diagnostic;
+          if (!result.cancelled) result.error = 'Unable to contain the command runtime; the command was not executed.'
+            + (record.windowsPreparationDiagnostic ? ' ' + JSON.stringify(record.windowsPreparationDiagnostic) : '');
+        }
+      })();
+      void record.windowsPreparation.then(() => {
+        if (!record.commandLaunched && !record.cleanupRequested) void this.stopRecord(record);
+      });
     });
-    record.timer = setTimeout(() => {
-      result.timedOut = true;
-      void this.stopRecord(record);
-    }, timeoutMs);
+    const startTimer = () => {
+      record.timer = setTimeout(() => {
+        result.timedOut = true;
+        void this.stopRecord(record);
+      }, timeoutMs);
+    };
+    if (process.platform !== 'win32') startTimer();
     record.abort = () => { result.cancelled = true; void this.stopRecord(record); };
     signal?.addEventListener('abort', record.abort, { once: true });
     if (signal?.aborted) record.abort();
     return done;
+  }
+
+  private challengeGuardian(record: CommandRecord, nonce: string): Promise<void> {
+    const signal = record.windowsPreparationAbort!.signal;
+    return new Promise((resolve, reject) => {
+      const finish = (confirmed: boolean) => {
+        clearTimeout(timer);
+        record.child.off('message', onMessage);
+        record.child.off('exit', failed);
+        record.child.off('close', failed);
+        signal.removeEventListener('abort', failed);
+        if (confirmed) resolve(); else reject(new Error('Command runtime ownership was not confirmed.'));
+      };
+      const failed = () => finish(false);
+      const onMessage = (message: unknown) => {
+        if (message && typeof message === 'object'
+          && (message as Record<string, unknown>).type === 'challenge-response'
+          && (message as Record<string, unknown>).nonce === nonce) finish(true);
+      };
+      const timer = setTimeout(failed, this.cleanupTimeoutMs);
+      record.child.on('message', onMessage);
+      record.child.once('exit', failed);
+      record.child.once('close', failed);
+      signal.addEventListener('abort', failed, { once: true });
+      if (signal.aborted || record.guardianExited || record.closed || !record.child.connected) { failed(); return; }
+      record.child.send({ type: 'challenge', nonce }, error => { if (error) failed(); });
+    });
   }
 
   async stopOwner(ownerId: string): Promise<void> {
@@ -439,11 +509,13 @@ export class ProcessSupervisor {
 
   private stopRecord(record: CommandRecord): Promise<boolean> {
     if (record.cleanupPromise) return record.cleanupPromise;
+    record.cleanupRequested = true;
+    record.windowsPreparationAbort?.abort();
     if (record.timer) clearTimeout(record.timer);
     if (record.abort) record.signal?.removeEventListener('abort', record.abort);
     const startedAt = Date.now();
     record.result.cleanupDiagnostic = {
-      phase: process.platform === 'win32' ? 'windows_snapshot' : 'posix_terminate', code: 'running',
+      phase: process.platform === 'win32' ? 'windows_job' : 'posix_terminate', code: 'running',
       elapsedMs: 0, snapshots: 0, terminationAttempts: 0, liveProcesses: 0,
       guardianExited: record.guardianExited, streamsClosed: record.closed,
     };
@@ -475,40 +547,59 @@ export class ProcessSupervisor {
   }
 
   private async releaseTree(record: CommandRecord): Promise<boolean> {
-    if (!record.pid) return true; // spawn failure: no OS process was created.
     const deadline = Date.now() + this.cleanupTimeoutMs;
+    if (!record.pid) {
+      // A failed spawn has no process to signal and emits no exit event, but its
+      // Node stdio/IPC handles still have to reach the close barrier.
+      while (!record.closed && Date.now() < deadline) await delay(10);
+      if (!record.closed) record.result.cleanupDiagnostic!.code = 'timeout';
+      return record.closed;
+    }
     if (process.platform === 'win32') {
-      // A timed-out helper still owns process handles until its own close event.
-      // Never overlap a retry with that helper, or forget its physical ownership.
+      // Cancelling preparation cannot launch a command later. The original Node
+      // ChildProcess handle is authority to stop this still-empty guardian.
+      if (!record.commandLaunched && !record.guardianExited) record.child.kill('SIGKILL');
+      let preparing = !!record.windowsPreparation;
+      void record.windowsPreparation?.then(() => { preparing = false; });
+      while (preparing && Date.now() < deadline) await delay(10);
+      if (preparing || Date.now() >= deadline) {
+        record.result.cleanupDiagnostic!.code = 'timeout';
+        return false;
+      }
+      if (record.windowsPreparationDiagnostic) {
+        const progress = record.windowsPreparationDiagnostic;
+        Object.assign(record.result.cleanupDiagnostic!, {
+          phase: 'windows_job', code: progress.code, jobStage: progress.stage,
+          nativeCode: progress.nativeCode, liveProcesses: progress.activeProcesses ?? 0,
+          helperExitCode: progress.helperExitCode, helperStarted: progress.helperStarted,
+        });
+      }
+      if (record.windowsJob) {
+        const released = await record.windowsJob.stop(Math.max(1, deadline - Date.now()));
+        const progress = record.windowsJob.diagnostic;
+        Object.assign(record.result.cleanupDiagnostic!, {
+          phase: 'windows_job', code: progress.code, jobStage: progress.stage,
+          nativeCode: progress.nativeCode, liveProcesses: progress.activeProcesses ?? 0,
+          helperExitCode: progress.helperExitCode, helperExited: record.windowsJob.closed, helperStarted: progress.helperStarted,
+        });
+        if (!released) return false;
+      } else if (record.commandLaunched) {
+        // An authorized launch always has a bound Job. There is no snapshot
+        // fallback that could mistake a missing ancestry chain for release.
+        record.result.cleanupDiagnostic!.code = 'ownership_unconfirmed';
+        return false;
+      }
       record.result.cleanupDiagnostic!.phase = 'windows_helper_release';
       while (record.windowsHelpers.size && Date.now() < deadline) await delay(10);
-      if (record.windowsHelpers.size || Date.now() >= deadline) return false;
-      const anchors = new Map<number, WindowsProcessAnchor>();
-      for (const [pid, anchor] of record.windowsProcesses) anchors.set(pid, { ...anchor });
-      if (!anchors.has(record.pid)) anchors.set(record.pid, {
-        pid: record.pid, exited: record.guardianExited,
-        spawnStartedAt: record.spawnStartedAt, spawnCompletedAt: record.spawnCompletedAt,
-      });
-      if (record.commandPid && !anchors.has(record.commandPid)) anchors.set(record.commandPid, {
-        pid: record.commandPid, exited: record.exitSeen,
-        spawnStartedAt: record.commandSpawnStartedAt, spawnCompletedAt: record.commandSpawnCompletedAt,
-      });
-      const cleaned = await runWindowsTreeCleanup({
-        anchors: [...anchors.values()], environment: record.environment,
-        timeoutMs: Math.max(1, deadline - Date.now()),
-        onAnchor: anchor => record.windowsProcesses.set(anchor.pid, { ...record.windowsProcesses.get(anchor.pid), ...anchor }),
-        onProgress: progress => Object.assign(record.result.cleanupDiagnostic!, progress),
-        onHelper: (helper, whenClosed) => {
-          record.windowsHelpers.set(whenClosed, helper);
-          void whenClosed.then(() => record.windowsHelpers.delete(whenClosed));
-        },
-      });
-      Object.assign(record.result.cleanupDiagnostic!, cleaned.diagnostic);
-      if (!cleaned.released) return false;
-      // OS process release and Node's owned process/IPC/stdio handles are
-      // separate barriers. Neither a root exit nor helper success replaces close.
+      if (record.windowsHelpers.size) {
+        record.result.cleanupDiagnostic!.code = 'timeout';
+        return false;
+      }
+      // Zero Job members, helper close, and the guardian's process/IPC/stdio close
+      // are separate required barriers. Root exit alone never proves release.
       record.result.cleanupDiagnostic!.phase = 'windows_streams';
       while (!record.closed && Date.now() < deadline) await delay(10);
+      if (!record.closed || !record.guardianExited) record.result.cleanupDiagnostic!.code = 'timeout';
       return record.closed && record.guardianExited && record.windowsHelpers.size === 0;
     }
     killGroup(record.pid, 'SIGTERM');

@@ -6,6 +6,28 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { runWindowsTreeCleanup } from '../dist/windows-process-tree.js';
 
+test('Windows cleanup never resolves a missing or relative SystemRoot helper through cwd or PATH', async () => {
+  const originalSpawn = childProcess.spawn;
+  let spawned = false;
+  childProcess.spawn = () => { spawned = true; throw new Error('An untrusted helper must not spawn'); };
+  syncBuiltinESMExports();
+  try {
+    for (const systemRoot of [undefined, '', 'relative', 'C:Windows', '\\Windows', '/Windows', '\\\\server\\share\\Windows', 'C:\\Windows\0suffix', 'C:\\Windows\n']) {
+      const result = await runWindowsTreeCleanup({
+        anchors: [{ pid: 321, exited: true }], environment: { SystemRoot: systemRoot, PATH: 'project-helper-directory' }, timeoutMs: 10,
+      });
+      assert.equal(result.released, false);
+      assert.equal(result.diagnostic.code, 'spawn_error');
+      assert.equal(JSON.stringify(result).includes('project-helper-directory'), false);
+    }
+    const ambiguous = await runWindowsTreeCleanup({
+      anchors: [{ pid: 321, exited: true }], environment: { SystemRoot: 'C:\\Windows', SYSTEMROOT: 'D:\\Windows' }, timeoutMs: 10,
+    });
+    assert.equal(ambiguous.diagnostic.code, 'spawn_error');
+    assert.equal(spawned, false);
+  } finally { childProcess.spawn = originalSpawn; syncBuiltinESMExports(); }
+});
+
 test('failed Windows helper retains late and trailing ancestors before its physical close barrier', async () => {
   const originalSpawn = childProcess.spawn;
   const helper = new EventEmitter();
@@ -21,7 +43,7 @@ test('failed Windows helper retains late and trailing ancestors before its physi
   let whenClosed;
   try {
     const result = await runWindowsTreeCleanup({
-      anchors: [{ pid: 321, exited: true }], environment: {}, timeoutMs: 10,
+      anchors: [{ pid: 321, exited: true }], environment: { SystemRoot: 'C:\\Windows' }, timeoutMs: 10,
       onAnchor: anchor => anchors.push(anchor), onProgress: value => progress.push(value),
       onHelper: (_helper, closed) => { whenClosed = closed; },
     });

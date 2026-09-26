@@ -102,7 +102,15 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     try{
       const value=await window.desktop.chatSnapshot(session.id);
       if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}
-    }catch(error){if(mounted.current&&seq===request.current)throw error;}
+    }catch(error){
+      if(!mounted.current||seq!==request.current)return;
+      // Deletion commits in the main process before its batched workspace event
+      // or IPC response unmounts this pane. A queued read can fail in that gap.
+      // Confirm the record is gone instead of hiding an active session's error.
+      let exists=true;
+      try{exists=(await window.desktop.snapshot()).state.sessions.some(item=>item.id===session.id);}catch{}
+      if(exists&&mounted.current&&seq===request.current)throw error;
+    }
   },[session.id,approvalDrafts]);
   const prepareCommands=useCallback(()=>{
     if(disabled||readOnly||!descriptor?.capabilities.commands)return Promise.resolve();
