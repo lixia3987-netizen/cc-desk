@@ -39,6 +39,9 @@ jobs:
         run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture ' + process.arch)"
       - run: npm ci
       - id: check
+        # Keep a stuck test process from consuming the entire job budget and
+        # hiding its failure logs and platform diagnostics.
+        timeout-minutes: ${{ runner.os == 'Windows' && 20 || 10 }}
         run: npm run check
       - name: Diagnose native process release after a Windows check failure
         if: ${{ !cancelled() && steps.check.outcome == 'failure' && runner.os == 'Windows' }}
