@@ -18,9 +18,13 @@
 
 ## 本地证据与范围
 
-首轮定向验证包括：core 45 项；store 23 项；Responses HTTP/SSE 29 项；本地文件/指令/进程 26 项；投影 5 项；连接与就绪 14 项；目录/会话/队列/workflow 98 项；包出口/声明 8 项；native executor 真实工具闭环 6 项。后续审查新增对抗测试与修复，最终数量以固定候选日志为准，不能简单相加为总数。
+实现候选 `13df7e6d67d95db6afec7f8bf8b61a1043d8c295` 已完成本地根 `npm run check`：contracts 3 项、engine-claude 13 项、agent-core 49 项、agent-node 86 项、desktop 495 项通过及 1 项跳过，共 646 项通过、0 项失败、1 项跳过；包括全部类型检查和桌面构建。GitHub 独立 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36215567007) 同样通过。
 
-交叉审查已捕获并修复重复提交收尾错误、失败回合混入上轮摘要、未知写入伪造完成记录、完整项目指令未入账、恢复确认哈希失效，以及凭据反射的流式展示风险。每项保持相应回归测试；全部根检查仍需候选统一运行。
+交叉审查已捕获并修复重复提交收尾错误、失败回合混入上轮摘要、未知写入伪造完成记录、完整项目指令未入账、恢复确认哈希失效，以及凭据反射的流式展示风险。每项保持相应回归测试。
+
+首轮 [三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36215567021) 中 Linux 根检查通过，源码 Electron E2E 为 57 项通过、9 项失败；macOS 发现测试期望路径没有解析 `/var` 到 `/private/var`，Windows 发现并发停止 Claude 会话时重复 CIM 查询与释放预算冲突。修复采用规范路径断言、单次 Windows 强制清理及原有完整退出验证，不跳过平台覆盖。界面失败涉及旧并发 fixture 共用目录、初始窗口导航等待及就绪状态，修复候选需继续复验。
+
+三平台工作流分别执行源码 E2E 和成品测试；根检查通过后，即使源码 E2E 失败也继续收集成品诊断，原失败仍使整个 job 失败。这不会降低验收门槛或触发发布。
 
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
@@ -28,7 +32,7 @@
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 待统一完成 |
+| 同一候选根 `npm run check` | 首候选本地及 workspace CI 通过；平台修复候选待复验 |
 | Windows/macOS/Linux 全部源码 Electron E2E | 待 CI |
 | 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 待 CI |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |

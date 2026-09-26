@@ -56,7 +56,7 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
     assert.equal(output.has(b.id),false);
     const snapshot=runtime.snapshot(a.id);assert.ok(snapshot.chunks.length>0);
     const exported=runtime.exportLogs(a.id);assert.match(exported,/retained-before-rotation/);assert.match(stripVTControlCharacters(exported),/中文输入完成/);
-    runtime.stop(a.id);await until(()=>runtime.activeCount===0, 'stop', () => JSON.stringify({ status: store.state.sessions[0].status, active: runtime.activeCount }));
+    runtime.stop(a.id);await runtime.whenReleased(a.id);
     assert.equal(store.state.sessions[0].status,'stopped');
     await runtime.start(b.id);assert.equal(store.state.sessions[1].status,'running');
   }finally{await runtime.shutdown();fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
@@ -154,7 +154,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
     assert.equal(current().id, f.session.id);
     assert.deepEqual(current().execution, { providerId: 'test-agent', mode: 'terminal', conversationId: 'second-conversation' });
     runtime.stop(f.session.id);
-    await until(() => !runtime.has(f.session.id), 'first provider cleanup');
+    await runtime.whenReleased(f.session.id);
     assert.equal(resourcesClosed, 1);
     await runtime.start(f.session.id);
     callbacks[0].update({ conversationId: 'stale-conversation', engineConfig: { schemaVersion: 1, options: { variant: 'stale' } } });
@@ -205,11 +205,8 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
     try {
       checkpoint('natural-start');
       await runtime.start(id);
-      const deadline = Date.now() + 5000;
-      while (runtime.activeCount) {
-        assert.ok(Date.now() < deadline, 'natural exit must release its worker');
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
+      await runtime.whenReleased(id);
+      assert.equal(runtime.activeCount, 0, 'natural exit must release its worker');
       assert.equal(runtime.lastError, undefined);
       checkpoint('natural-released');
       program = 'setInterval(() => {}, 1000)';
@@ -757,7 +754,7 @@ const send = async (hook_event_name, fields = {}) => {
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
       if (ending === 'crash') {
         fs.writeFileSync(crash, 'exit');
-        await until(() => !f.runtime.has(f.session.id), 'crashed hooked PTY');
+        await f.runtime.whenReleased(f.session.id);
         assert.equal(session().status, 'error');
         assert.equal(session().subtasks?.tasks[1].status, 'failed');
       } else {

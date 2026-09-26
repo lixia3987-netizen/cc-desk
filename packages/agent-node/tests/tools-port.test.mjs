@@ -110,7 +110,7 @@ test('command uses approved literal argv/cwd and ownership is rechecked immediat
   owned = true;
   const result = await port.execute(prepared, ctx, approve(prepared, ctx));
   assert.equal(result.status, 'completed');
-  assert.deepEqual(JSON.parse(result.output.stdout), { cwd: root, arg: 'literal ; echo unsafe' });
+  assert.deepEqual(JSON.parse(result.output.stdout), { cwd: await fs.realpath(root), arg: 'literal ; echo unsafe' });
   assert.equal(result.effects.cleanup, 'released');
 });
 test('schema rejects unknown fields and pre-aborted tools never run', async t => {

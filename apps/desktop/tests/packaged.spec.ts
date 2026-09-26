@@ -134,7 +134,7 @@ for (const target of targets) {
       expect(extractFile(identity.appPath, 'dist/native/worker.cjs').length).toBeGreaterThan(1024);
       const page = await app.firstWindow();
       page.on('pageerror', error => errors.push(error.message));
-      await page.waitForFunction(() => !!window.desktop);
+      await expect(page.locator('main.workspace')).toBeVisible();
       return page;
     };
     const close = async () => {

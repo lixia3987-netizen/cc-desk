@@ -46,13 +46,29 @@ async function pendingTool(page: Page, sessionId: string, name: string) {
   await expect.poll(() => page.evaluate(async ({ sessionId, name }) => (await window.desktop.chatSnapshot(sessionId)).pending.find(item => item.toolName === name)?.requestId, { sessionId, name })).toBeTruthy();
   return page.evaluate(async ({ sessionId, name }) => (await window.desktop.chatSnapshot(sessionId)).pending.find(item => item.toolName === name)!.requestId, { sessionId, name });
 }
-async function cleanupApp(app: ElectronApplication) {
-  if (app.process().exitCode !== null) return;
-  const page = app.windows()[0];
-  if (page && !page.isClosed()) await page.evaluate(async () => {
-    for (const session of (await window.desktop.snapshot()).state.sessions) if (['running', 'stopping'].includes(session.status)) await window.desktop.stopSession(session.id);
-  }).catch(() => {});
-  await app.close();
+async function readyWindow(app: ElectronApplication): Promise<Page> {
+  const page = await app.firstWindow();
+  // firstWindow can resolve while the initial about:blank document is alive.
+  // The workspace exists only after navigation, preload, and the state snapshot.
+  await expect(page.locator('main.workspace')).toBeVisible();
+  return page;
+}
+const appCleanups = new WeakMap<ElectronApplication, Promise<void>>();
+function cleanupApp(app: ElectronApplication): Promise<void> {
+  const previous = appCleanups.get(app);
+  if (previous) return previous;
+  // A closed Playwright application no longer exposes its process dispatcher.
+  // Share the first cleanup so explicit closes and finally blocks can coexist.
+  const cleanup = (async () => {
+    if (app.process().exitCode !== null) return;
+    const page = app.windows()[0];
+    if (page && !page.isClosed()) await page.evaluate(async () => {
+      for (const session of (await window.desktop.snapshot()).state.sessions) if (['running', 'stopping'].includes(session.status)) await window.desktop.stopSession(session.id);
+    }).catch(() => {});
+    await app.close();
+  })();
+  appCleanups.set(app, cleanup);
+  return cleanup;
 }
 async function noSavedSecret(directory: string): Promise<void> {
   for (const item of await fs.readdir(directory, { withFileTypes: true })) {
@@ -75,7 +91,7 @@ test('native utilityProcess completes approved patch/command, isolates credentia
   } } });
   let app = await f.launch();
   try {
-    let page = await app.firstWindow();
+    let page = await readyWindow(app);
     const configured = await connection(page, fixture.baseURL);
     const session = await nativeSession(page, f.projectId, configured.id);
     const requestId = randomUUID(), text = 'Read the file, apply the approved update, then run the approved command.';
@@ -101,7 +117,7 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     const duplicate = await page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     expect(duplicate.success).toBe(true); expect(fixture.requests).toHaveLength(count);
     await noSavedSecret(f.data);
-    await cleanupApp(app); app = await f.launch(); page = await app.firstWindow();
+    await cleanupApp(app); app = await f.launch(); page = await readyWindow(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
     await expect(page.locator('.chat-message.assistant').last()).toContainText('本地任务完成');
     const restarted = await page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0]);
@@ -126,7 +142,7 @@ test('native denial does not write, and missing credentials fail before a model 
   const f = await workspace(), fixture: Fixture = await startResponsesFixture();
   const app = await f.launch();
   try {
-    const page = await app.firstWindow();
+    const page = await readyWindow(app);
     const empty = await page.evaluate(baseURL => window.desktop.nativeConnections.upsert({ name: '尚未设置凭据', protocol: 'responses', baseURL, model: 'fixture-model', allowLoopbackHttp: true, enabled: true, auth: { mode: 'memory' } }), fixture.baseURL);
     const missing = await nativeSession(page, f.projectId, empty.id, '缺失密钥');
     const missingResult = await page.evaluate(id => window.desktop.sendChat(id, 'must not reach model'), missing.id);
@@ -147,7 +163,7 @@ test('native interruption cancels a live HTTP model request and releases its rea
   const f = await workspace(), fixture: Fixture = await startResponsesFixture({ handler: () => ({ hang: true }) });
   const app = await f.launch();
   try {
-    const page = await app.firstWindow(), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
+    const page = await readyWindow(app), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
     const result = page.evaluate(id => window.desktop.sendChat(id, 'Wait for the intentionally hanging local fixture.'), session.id);
     await expect.poll(() => fixture.requests.length).toBe(1);
     await page.evaluate(id => window.desktop.interruptSession(id), session.id);
@@ -170,7 +186,7 @@ test('native queue executes two accepted messages in order with distinct durable
   } });
   const app = await f.launch();
   try {
-    const page = await app.firstWindow(), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
+    const page = await readyWindow(app), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
     const first = await page.evaluate(id => window.desktop.submitChat(id, '第一个顺序消息', [], 'native-queue-client-one'), session.id);
     await expect.poll(() => fixture.requests.length).toBe(1);
     const second = await page.evaluate(id => window.desktop.submitChat(id, '第二个顺序消息', [], 'native-queue-client-two'), session.id);
@@ -207,7 +223,7 @@ test('native automatic workflow crosses two real workers without deadlock and ho
   } });
   const app = await f.launch();
   try {
-    const page = await app.firstWindow(), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
+    const page = await readyWindow(app), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
     const shell = await page.evaluate(projectId => window.desktop.createSession({ projectId, title: '工作流期间 Shell', kind: 'shell', providerId: 'shell', mode: 'terminal', isolated: false }), f.projectId);
     const run = await page.evaluate(sessionId => window.desktop.createWorkflow({ sessionId, goal: '同一个 native 会话串行完成两阶段', pauseAfterEachStage: false, maxAttempts: 1,
       stages: [{ id: 'first', title: '第一阶段', instruction: '读取上下文后仅回复第一阶段结果。' }, { id: 'second', title: '第二阶段', instruction: '沿用前一阶段完整上下文，仅回复第二阶段结果。', dependsOn: ['first'] }],

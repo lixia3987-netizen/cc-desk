@@ -38,7 +38,8 @@ jobs:
       - name: Verify native runner architecture
         run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture ' + process.arch)"
       - run: npm ci
-      - run: npm run check
+      - id: check
+        run: npm run check
       - name: Verify real Windows npm Claude launcher
         if: runner.os == 'Windows'
         shell: pwsh
@@ -49,19 +50,24 @@ jobs:
           node --import tsx apps/desktop/scripts/verify-windows-npm.ts (Join-Path $claudeNpmPrefix 'claude.cmd')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm run test:e2e
-      - if: runner.os == 'Windows'
+      # Source E2E and packaged smoke are independent gates. A source failure
+      # must remain a failed job, but should not hide packaging diagnostics.
+      - id: package_windows
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
         run: npm run dist:win
-      - if: runner.os == 'macOS'
+      - id: package_macos
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'macOS' }}
         run: npm run dist:mac
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - if: runner.os == 'Linux'
+      - id: package_linux
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Linux' }}
         run: npm run dist:linux
       - name: Smoke test release payloads on Linux
-        if: runner.os == 'Linux'
+        if: ${{ !cancelled() && steps.package_linux.outcome == 'success' }}
         run: xvfb-run -a npm run test:packaged
       - name: Smoke test release payloads on Windows and macOS
-        if: runner.os != 'Linux'
+        if: ${{ !cancelled() && (steps.package_windows.outcome == 'success' || steps.package_macos.outcome == 'success') }}
         run: npm run test:packaged
       - uses: actions/upload-artifact@v4
         with:

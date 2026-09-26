@@ -114,7 +114,11 @@ test('native readiness is per session, preserves saved history and Claude defaul
     if (connectionField.type === 'select') await page.getByLabel(connectionField.label, { exact: true }).selectOption(connection.id);
     else await page.getByLabel(connectionField.label, { exact: true }).fill(connection.id);
     await page.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: '有可用连接的 Native', exact: true })).toBeVisible();
+    await expect(page.getByLabel('会话模型连接', { exact: true })).toHaveValue(connection.id);
+    await expect(page.locator('.chat-composer .engine-unavailable')).toHaveCount(0);
     await page.getByLabel('提示词编辑器', { exact: true }).fill('只检查 UI 就绪状态');
+    await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('只检查 UI 就绪状态');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
     await expect(page.locator('.chat-composer .engine-unavailable')).toHaveCount(0);
     await page.evaluate(async item => { const { credentialConfigured: _configured, ready: _ready, error: _error, ...metadata } = item; await window.desktop.nativeConnections.upsert({ ...metadata, enabled: false }); }, connection);

@@ -22,6 +22,7 @@ export interface ClaudeRuntimeOptions {
   onEvent?: (id: string, event: ChatJournalEvent) => void;
 }
 const MAX_TEXT = 256 * 1024;
+const PROCESS_RELEASE_TIMEOUT_MS = process.platform === 'win32' ? 12000 : 5000;
 const now = () => new Date().toISOString();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -100,7 +101,7 @@ export class ClaudeRuntime {
     // A root process may exit before its MCP/tool descendants. Wait for the
     // process-group escalation as well, rather than treating root exit as a
     // guarantee that the working directory is no longer held on Windows.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
     while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，工作目录未释放，请稍后重试。');
     if (entry.connection.termination) {
@@ -449,7 +450,7 @@ export class ClaudeRuntime {
       if (entry && patch.permissionMode !== undefined && entry.bypassEnabled !== (patch.permissionMode === 'bypassPermissions')) {
         this.update(id, { status: 'stopping' });
         this.terminate(entry);
-        const deadline = Date.now() + 5000;
+        const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
         while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
         if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，权限配置未保存。请等待停止后重试。');
         // This method owns the runtime's busy flag. Await only the physical
@@ -579,7 +580,7 @@ export class ClaudeRuntime {
     try {
       const stopped = await Promise.race([
         Promise.all([...this.terminations, ...[...this.releaseCompletions.values()].map(completion => completion.then(() => true))]).then(results => results.every(Boolean)),
-        new Promise<boolean>(resolve => { terminationDeadline = setTimeout(() => resolve(false), 5000); }),
+        new Promise<boolean>(resolve => { terminationDeadline = setTimeout(() => resolve(false), PROCESS_RELEASE_TIMEOUT_MS); }),
       ]);
       if (!stopped || this.terminationFailed || this.terminations.size || this.entries.size) {
         errors.push(new Error('无法确认全部聊天子进程已停止，请关闭残留进程后重试退出。'));

@@ -10,16 +10,18 @@ import type { AppState, Session } from '../src/shared/types';
 
 async function workspace() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-cli-ui-')), fixture = await cliUpdateFixture(root);
-  const data = path.join(root, 'data'), first = path.join(root, 'project-a'), second = path.join(root, 'project-b');
-  await Promise.all([fs.mkdir(data), fs.mkdir(first), fs.mkdir(second)]);
+  const data = path.join(root, 'data'), directories = ['project-a', 'project-b', 'project-shell'].map(name => path.join(root, name));
+  await Promise.all([fs.mkdir(data), ...directories.map(directory => fs.mkdir(directory))]);
   const now = new Date().toISOString();
-  const projects = [first, second].map((directory, i) => ({ id: randomUUID(), name: `Workspace ${i + 1}`, path: directory, createdAt: now }));
+  const projects = directories.map((directory, i) => ({ id: randomUUID(), name: `Workspace ${i + 1}`, path: directory, createdAt: now }));
   const makeSession = (project: typeof projects[number], kind: Session['kind']): Session => ({ execution: kind === 'shell' ? {providerId: 'shell', mode: 'terminal'} : { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
     id: randomUUID(), projectId: project.id, title: kind === 'shell' ? 'Shell' : project.name, kind,
     cwd: project.path,  started: false, engineConfig: { schemaVersion: 1, options: kind === 'shell' ? {} : { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false,
     createdAt: now, updatedAt: now, draft: '草稿需要保留',
   });
-  const sessions = [makeSession(projects[0], 'agent'), makeSession(projects[1], 'agent'), makeSession(projects[1], 'shell')];
+  // Maintenance must preserve an independently running Shell. A Shell in the
+  // workflow's directory would correctly be refused by directory ownership.
+  const sessions = [makeSession(projects[0], 'agent'), makeSession(projects[1], 'agent'), makeSession(projects[2], 'shell')];
   const state: AppState = { version: 3, projects, sessions, selectedSessionId: sessions[0].id, settings: {
     claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system', engineDefaults: {},
   } };
@@ -42,7 +44,7 @@ async function workspace() {
     return app;
   };
   const calls = async () => (await fs.readFile(fixture.log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as { kind: string; autoUpdater?: string });
-  return { ...fixture, root, sessions, launch, calls, dispose: () => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
+  return { ...fixture, root, projects, sessions, launch, calls, dispose: () => fs.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 async function confirmation(app: ElectronApplication, response: number) {
   await app.evaluate(({ dialog }, answer) => {
@@ -104,7 +106,7 @@ test('confirmed update drains Claude tasks, workflows and descendants while Shel
     await expect.poll(() => page.evaluate(async id => (await window.desktop.terminalSnapshot(id)).chunks.map(chunk => chunk.data).join(''), f.sessions[2].id)).toContain(shellMarker);
     await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'updated' }); await expect(banner(page)).toContainText('2.1.10');
     const snapshot = await page.evaluate(() => window.desktop.snapshot());
-    expect(snapshot.state.projects).toHaveLength(2); expect(snapshot.state.sessions).toHaveLength(3);
+    expect(snapshot.state.projects).toEqual(f.projects); expect(snapshot.state.sessions).toHaveLength(3);
     expect(snapshot.state.sessions.filter(session => session.execution.providerId === 'claude').every(session => session.status === 'stopped')).toBe(true);
     expect(snapshot.state.sessions.find(session => session.id === f.sessions[2].id)?.status).toBe('running');
     expect(snapshot.state.sessions.map(session => session.execution.conversationId)).toEqual(f.sessions.map(session => session.execution.conversationId));

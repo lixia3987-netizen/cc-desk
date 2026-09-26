@@ -110,23 +110,29 @@ export class ClaudeConnection {
   terminate(preserveOutput = false) {
     if (!preserveOutput) { this.ending = true; this.closeControls('会话进程已停止。'); }
     if (this.termination) return;
+    if (process.platform === 'win32') {
+      // Windows Stop-Process is already forceful. Starting a second PowerShell
+      // snapshot on the POSIX escalation timer duplicates expensive CIM work
+      // and can make concurrent sessions exceed the physical release budget.
+      this.termination = (this.child.pid ? stopWindowsTree(this.child.pid) : Promise.resolve(true)).then(stopped => {
+        this.child.stdin.destroy();
+        return stopped;
+      });
+      return;
+    }
     const signal = (value: NodeJS.Signals): Promise<boolean> => {
       if (!this.child.pid) return Promise.resolve(true);
-      if (process.platform === 'win32') {
-        return stopWindowsTree(this.child.pid);
-      }
       return this.signalProcessGroup(this.child.pid, value).then(() => true, () => {
         try { this.child.kill(value); } catch { /* Already exited. */ }
         return false;
       });
     };
     const first = signal('SIGTERM');
-    // Keep Windows' root alive until taskkill has found the process tree. Closing
-    // stdin first lets a healthy CLI exit before taskkill can find descendants.
+    // Settle the initial signal attempt before closing the input endpoint.
     void first.then(() => this.child.stdin.destroy());
     // Keep escalation even if the CLI root exits before an ignoring descendant.
     this.termination = new Promise(resolve => {
-      this.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(process.platform === 'win32' ? await first && last : last && (!this.child.pid || await waitForGroupRelease(this.child.pid)))); }, 1500);
+      this.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(last && (!this.child.pid || await waitForGroupRelease(this.child.pid)))); }, 1500);
     });
   }
 }

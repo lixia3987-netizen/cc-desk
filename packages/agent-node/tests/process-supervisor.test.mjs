@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ProcessSupervisor, commandEnvironment, linuxLiveProcesses } from '../dist/process-supervisor.js';
@@ -41,7 +41,7 @@ test('executes explicit argv and cwd without a shell and reports the actual exit
   request.argv.push('a b', '$(echo unsafe)', 'x; echo unsafe', '"quoted"');
   const result = await supervisor.run('run:1', request);
   assert.equal(result.exitCode, 7);
-  assert.deepEqual(JSON.parse(result.stdout), { cwd, args: request.argv.slice(2) });
+  assert.deepEqual(JSON.parse(result.stdout), { cwd: await realpath(cwd), args: request.argv.slice(2) });
   assert.equal(result.stderr, 'err\n');
   assert.equal(result.cleanup, 'released');
   assert.equal(result.cancelled, false);
