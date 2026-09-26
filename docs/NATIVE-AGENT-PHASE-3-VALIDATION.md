@@ -48,15 +48,21 @@ macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`�
 
 第六候选 `257af660` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36220653021) 及本地完整根检查通过（679 项通过、0 项失败、10 项平台测试跳过）。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36220653028) 中 macOS 完整通过根检查、67 项源码 E2E 和 5 项成品测试，含实际的删除通知延迟回归；Linux 根检查及源码 E2E 通过，成品继续验证。Windows 的四项真实 Job 回归全部通过：首次清理前父进程已退出的 detached 后代、助手崩溃与 owner 隔离、绑定失败、取消。正常 native 命令仍在过滤环境中的 PowerShell 编译准备阶段超时，未授权命令执行，根检查未通过。独立诊断显示完整环境 CIM 查询约 0.33 秒完成，过滤环境启动正常但查询超时，故后续修复显式加载系统内置模块，不恢复完整宿主环境或原 PSModulePath。另根据 Node/libuv 的实际启动行为，以空值阻止 Windows 必需变量及 NODE_V8_COVERAGE 被重新从宿主注入，并保留真实子进程凭据隔离回归；这些修复仍需下一候选验证。
 
+第七候选 `aa984797` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36221330885) 通过（681 项通过、0 项失败、12 项平台测试跳过）。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36221330986) 中 macOS 完整通过根检查、67 项源码 E2E 和 5 项成品测试。Windows 的 agent-node 为 119 项通过、0 项失败、3 项平台测试跳过：过滤环境中的 Job 编译/绑定/释放、带 stdin 的 CIM 清理，以及宿主身份/coverage 变量隔离均通过。桌面检查暴露 worker 测试的路径分隔符断言、Claude 清理的启动时间窗口拒绝，以及 runtime 测试全部输出后进程未退出的问题；不能据 native 包通过推断 Windows 桌面通过。Linux 检查未结束，取消后日志不可用，无法确定具体停点。
+
+第八候选 `f9faaebf` 仅给平台根检查增加步骤截止，保留全部断言和三平台门槛，避免挂起检查耗尽整个任务的诊断时间；其独立 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36222008841) 同样通过。
+
+随后修复 worker 路径断言并补齐失败时的 fixture 清理，17 项定向测试通过。ClaudeConnection 的 Windows 活根清理改为先由助手持有 HANDLE，再通过原 ChildProcess 的 `kill(0)` 核实原始 HANDLE 仍存活，确认后才采用被持有 HANDLE 的创建时间；不扩大启动时间窗口。已退出根仍是不可采纳的新 PID 的墓碑，拒绝确认时不终止该 PID。以上早期候选的时间窗口限制继续适用于 legacy PTY/独立快照路径，但不再描述该 Claude 活根认证或 native Job 认证；Claude/PTY 仍不具有 Job 的完整后代包含保证。新增错误时钟窗口与拒绝确认的真实 Windows 用例待 CI，传输拆帧回归和原桌面 Claude 集成测试已通过。runtime 增加仅含资源类型计数的 Windows 诊断，并先以有截止的独立步骤定位残留，完整检查门槛保持。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第六候选 workspace/Linux/macOS 通过；Windows 的过滤环境准备失败仍在修复 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第六候选 Linux/macOS 通过；Windows 待前置检查 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第三/四候选 Linux、第五候选 macOS 通过；待同一候选三平台通过 |
+| 同一候选根 `npm run check` | 第七候选 workspace/macOS 通过，Windows native 包通过但桌面检查仍待修复；第八 workspace 通过 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第六候选 Linux、第七候选 macOS 各 67 项通过；Windows 待前置检查 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第五候选 Linux、第七候选 macOS 各 5 项通过；待同一候选三平台通过 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |

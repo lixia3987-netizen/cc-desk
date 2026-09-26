@@ -44,16 +44,20 @@ async function waitForGroupRelease(pid: number): Promise<boolean> {
   return false;
 }
 // Internal script builder is exported only from this module for the real Windows fixture.
-export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): string {
+export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number, rootChallenge?: string): string {
+  if (rootChallenge !== undefined && !/^[a-f0-9-]{36}$/.test(rootChallenge)) throw new TypeError('Invalid root ownership challenge.');
   // Retain parent anchors after exit and discover new descendants on every pass.
   // Hold each Windows handle while checking creation time and terminating it.
-  // Node does not expose its original spawn HANDLE: the first live-root capture
-  // is limited to the observed spawn window, not a proof against same-window reuse.
+  // Production confirms a live root through its original ChildProcess handle
+  // after this helper has opened and retained its own handle to the numeric PID.
+  // Timestamp-only mode remains solely for the internal standalone test builder.
   // A root already reported exited is a tombstone and can never be signaled.
   return `
 $ErrorActionPreference='Stop'
 $cleanupPhase='compile_handle_api'
+$rootHandle=[IntPtr]::Zero
 trap {
+  if($rootHandle -ne [IntPtr]::Zero) { [void][OwnedProcessHandle]::CloseHandle($rootHandle) }
   [Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:'+$cleanupPhase)
   exit 1
 }
@@ -76,6 +80,20 @@ $anchors=New-Object 'System.Collections.Generic.HashSet[int]'
 [void]$anchors.Add([int]${pid})
 $known=@{}
 if($rootExited) { $known[[string]$rootPid]='exited-before-inspection' }
+${rootChallenge && !rootExited ? `
+$cleanupPhase='open_root_handle'
+$rootHandle=[OwnedProcessHandle]::OpenProcess(0x101001,$false,$rootPid)
+if($rootHandle -eq [IntPtr]::Zero) { throw 'Cannot hold the root process.' }
+$cleanupPhase='confirm_original_root'
+[Console]::Out.WriteLine('CLAUDE_ROOT_HELD:${rootChallenge}')
+[Console]::Out.Flush()
+if([Console]::In.ReadLine() -ne 'confirm:${rootChallenge}') { throw 'Original root ownership is unconfirmed.' }
+$cleanupPhase='capture_root_identity'
+[long]$rootCreated=0; [long]$rootEnded=0; [long]$rootKernel=0; [long]$rootUser=0
+if(![OwnedProcessHandle]::GetProcessTimes($rootHandle,[ref]$rootCreated,[ref]$rootEnded,[ref]$rootKernel,[ref]$rootUser)) { throw 'Cannot capture the confirmed root identity.' }
+$earliest=[DateTime]::FromFileTimeUtc($rootCreated)
+$known[[string]$rootPid]=$earliest.ToString('yyyyMMddHHmmssffffff')
+` : ''}
 $deadline=[DateTime]::UtcNow.AddSeconds(5)
 do {
   $cleanupPhase='snapshot'
@@ -109,7 +127,14 @@ do {
       } else { $known[$key]='exited-before-inspection' }
     }
   }
-  if($targets.Count -eq 0) { exit 0 }
+  if($targets.Count -eq 0) {
+    if($rootHandle -ne [IntPtr]::Zero) {
+      $cleanupPhase='confirm_root_release'
+      if([OwnedProcessHandle]::WaitForSingleObject($rootHandle,0) -ne 0) { throw 'The confirmed root is still live.' }
+      [void][OwnedProcessHandle]::CloseHandle($rootHandle); $rootHandle=[IntPtr]::Zero
+    }
+    exit 0
+  }
   foreach($processItem in $targets) {
     $cleanupPhase='open_owned_handle'
     $handle=[OwnedProcessHandle]::OpenProcess(0x101001,$false,[int]$processItem.ProcessId)
@@ -134,17 +159,47 @@ do {
       }
     } finally { [void][OwnedProcessHandle]::CloseHandle($handle) }
   }
+  if($rootHandle -ne [IntPtr]::Zero -and [OwnedProcessHandle]::WaitForSingleObject($rootHandle,0) -eq 0) {
+    [void][OwnedProcessHandle]::CloseHandle($rootHandle); $rootHandle=[IntPtr]::Zero
+  }
   Start-Sleep -Milliseconds 25
 } while([DateTime]::UtcNow -lt $deadline)
 [Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:tree_deadline')
 exit 1
 `;
 }
-async function stopWindowsTree(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
+// Internal entry point also used by real Windows ownership regressions.
+export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams, 'pid' | 'kill'>, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
+  if (!child.pid) return true;
   const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const script = windowsTreeCleanupScript(pid, rootExited, spawnStartedAt, spawnCompletedAt);
+  const challenge = rootExited ? undefined : randomUUID();
+  const script = windowsTreeCleanupScript(child.pid, rootExited, spawnStartedAt, spawnCompletedAt, challenge);
   try {
-    await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 });
+    await new Promise<void>((resolve, reject) => {
+      const helper = execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 }, (error, _stdout, stderr) => {
+        if (error) reject(Object.assign(error, { stderr })); else resolve();
+      });
+      let pending = '', confirmed = false;
+      helper.stdin?.on('error', () => { /* helper completion remains the release barrier */ });
+      helper.stdout?.on('data', (chunk: string | Buffer) => {
+        if (!challenge || confirmed) return;
+        const text = chunk.toString();
+        if (Buffer.byteLength(pending) + Buffer.byteLength(text) > 1024) {
+          confirmed = true; pending = '';
+          helper.stdin?.end(`reject:${challenge}\n`);
+          return;
+        }
+        pending += text;
+        if (!pending.split(/\r?\n/).includes(`CLAUDE_ROOT_HELD:${challenge}`)) return;
+        confirmed = true;
+        // libuv's uv_process_kill(handle, 0) checks the original process HANDLE.
+        // A live original process after helper capture proves this held PID was
+        // not recycled. No wall-clock tolerance or numeric-PID health check.
+        let owned = false;
+        try { owned = child.kill(0); } catch { /* fail closed */ }
+        helper.stdin?.end(`${owned ? 'confirm' : 'reject'}:${challenge}\n`);
+      });
+    });
     return true;
   } catch (error) {
     // execFile's message contains its complete command. Emit only our bounded
@@ -224,7 +279,7 @@ export class ClaudeConnection {
       // Windows Stop-Process is already forceful. Starting a second PowerShell
       // snapshot on the POSIX escalation timer duplicates expensive CIM work
       // and can make concurrent sessions exceed the physical release budget.
-      this.termination = (this.child.pid ? stopWindowsTree(this.child.pid, this.rootExited, this.spawnStartedAt, this.spawnCompletedAt) : Promise.resolve(true)).then(stopped => {
+      this.termination = (this.child.pid ? stopWindowsTree(this.child, this.rootExited, this.spawnStartedAt, this.spawnCompletedAt) : Promise.resolve(true)).then(stopped => {
         this.child.stdin.destroy();
         return stopped;
       });

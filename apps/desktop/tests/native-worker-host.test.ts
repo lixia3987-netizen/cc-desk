@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
+import path from 'node:path';
 import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 import { MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
@@ -120,18 +121,24 @@ async function finish(worker: FakeWorker, context: ModelContext, extra: Partial<
 test('worker host starts with restricted environment and waits for done, finish, exit, and closes diagnostic readers', async () => {
   const h = harness(async worker => { const context = await begin(worker); worker.autoFinish = false; await finish(worker, context); });
   let settled = false;
-  void h.promise.then(() => { settled = true; });
-  while (!h.worker.sent.some(message => message.type === 'finish')) await tick();
-  assert.equal(settled, false);
-  assert.ok(h.forkPath?.endsWith('/native/worker.cjs'));
-  assert.deepEqual(h.forkOptions?.execArgv, []);
-  assert.equal(h.forkOptions?.stdio, 'pipe');
-  assert.ok(Object.keys(h.forkOptions!.env).every(name => ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'TZ'].includes(name)));
-  assert.ok(!JSON.stringify(h.forkOptions).includes('secret-key-sentinel'));
-  h.worker.exit(0, false);
-  assert.equal((await h.promise).status, 'completed');
-  assert.equal(h.worker.stdout.closed, true);
-  assert.equal(h.worker.stderr.closed, true);
+  void h.promise.then(() => { settled = true; }, () => { settled = true; });
+  try {
+    while (!h.worker.sent.some(message => message.type === 'finish')) await tick();
+    assert.equal(settled, false);
+    assert.equal(path.basename(h.forkPath ?? ''), 'worker.cjs');
+    assert.equal(path.basename(path.dirname(h.forkPath ?? '')), 'native');
+    assert.deepEqual(h.forkOptions?.execArgv, []);
+    assert.equal(h.forkOptions?.stdio, 'pipe');
+    assert.ok(Object.keys(h.forkOptions!.env).every(name => ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'TZ'].includes(name)));
+    assert.ok(!JSON.stringify(h.forkOptions).includes('secret-key-sentinel'));
+    h.worker.exit(0, false);
+    assert.equal((await h.promise).status, 'completed');
+    assert.equal(h.worker.stdout.closed, true);
+    assert.equal(h.worker.stderr.closed, true);
+  } finally {
+    h.worker.exit(1);
+    await h.promise.catch(() => {});
+  }
 });
 
 test('Electron exit can remove stream listeners without EOF; retained diagnostic readers still close', async () => {

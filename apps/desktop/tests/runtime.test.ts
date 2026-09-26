@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,6 +15,30 @@ import { createWorktree, gitInfo } from '../src/main/git';
 import { environment, execFileAsync } from '../src/main/commands';
 import { fileURLToPath } from 'node:url';
 import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
+
+// Windows CI has completed every assertion in this file without the owning test
+// process exiting. Record only fixed resource types/counts, never report paths,
+// commands or environments from the full diagnostic report.
+if (process.platform === 'win32') {
+  const counts = (types: readonly string[]) => Object.fromEntries([...new Set(types)].sort()
+    .map(type => [type, types.filter(value => value === type).length]));
+  const snapshot = (phase: string) => {
+    const report = process.report.getReport() as { libuv?: { type?: string; is_active?: boolean; is_referenced?: boolean }[] };
+    console.error(JSON.stringify({ phase: `runtime.test.${phase}`,
+      resources: counts(process.getActiveResourcesInfo()),
+      referencedActiveHandles: counts((report.libuv ?? []).filter(handle => handle.is_active && handle.is_referenced)
+        .map(handle => typeof handle.type === 'string' ? handle.type : 'unknown')),
+    }));
+  };
+  let completedTests = 0;
+  before(() => snapshot('before'));
+  afterEach(() => snapshot(`after-test-${++completedTests}`));
+  after(() => {
+    snapshot('after');
+    // An unref timer observes an existing leak without extending file lifetime.
+    for (const delay of [1000, 6000]) setTimeout(() => snapshot(`after-${delay}ms`), delay).unref();
+  });
+}
 
 async function until(check:()=>boolean, phase: string, diagnostics: () => string = () => '', timeout = 7000) {
   const deadline = Date.now() + timeout;

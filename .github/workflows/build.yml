@@ -38,6 +38,14 @@ jobs:
       - name: Verify native runner architecture
         run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture ' + process.arch)"
       - run: npm ci
+      - name: Verify Windows PTY test process exits
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        run: |
+          npm run build:packages
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node --import tsx --test --test-concurrency=1 apps/desktop/tests/runtime.test.ts
+          exit $LASTEXITCODE
       - id: check
         # Keep a stuck test process from consuming the entire job budget and
         # hiding its failure logs and platform diagnostics.

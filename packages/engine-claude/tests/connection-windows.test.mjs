@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, execFile } from 'node:child_process';
+import childProcess, { spawn, execFile } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
-import { windowsTreeCleanupScript } from '../dist/connection.js';
+import { windowsTreeCleanupScript, stopWindowsTree } from '../dist/connection.js';
 
 const execFileAsync = promisify(execFile);
 const psQuote = value => "'" + value.replaceAll("'", "''") + "'";
@@ -16,6 +18,39 @@ async function until(condition, phase, timeout = 3000) {
   const deadline = Date.now() + timeout;
   while (!await condition()) { assert.ok(Date.now() < deadline, phase); await pause(); }
 }
+
+test('root confirmation uses the original process handle only after the helper reports its held handle', async t => {
+  for (const confirm of [true, false]) await t.test(confirm ? 'confirm' : 'reject', async () => {
+    const originalExecFile = childProcess.execFile;
+    const originalWarning = console.warn;
+    let held = false, probes = 0, reply = '', warning = '';
+    childProcess.execFile = (_executable, argv, _options, callback) => {
+      const nonce = argv.at(-1).match(/CLAUDE_ROOT_HELD:([a-f0-9-]{36})/)?.[1];
+      assert.ok(nonce);
+      const helper = { stdout: new PassThrough(), stdin: new PassThrough() };
+      helper.stdin.on('data', data => { reply += data.toString(); });
+      helper.stdin.on('finish', () => {
+        assert.equal(reply, `${confirm ? 'confirm' : 'reject'}:${nonce}\n`);
+        callback(confirm ? null : new Error('raw command must not be logged'), '', confirm ? '' : 'CLAUDE_TREE_CLEANUP_FAILED:confirm_original_root');
+      });
+      queueMicrotask(() => {
+        held = true;
+        helper.stdout.write(`CLAUDE_ROOT_HELD:${nonce.slice(0, 12)}`);
+        helper.stdout.write(`${nonce.slice(12)}\r\n`);
+      });
+      return helper;
+    };
+    console.warn = value => { warning += value; };
+    syncBuiltinESMExports();
+    try {
+      const original = { pid: 123, kill(signal) { assert.equal(held, true); assert.equal(signal, 0); probes++; return confirm; } };
+      assert.equal(await stopWindowsTree(original, false, 1000, 1001), confirm);
+      assert.equal(probes, 1);
+      assert.equal(warning.includes('raw command'), false);
+      if (!confirm) assert.match(warning, /confirm_original_root/);
+    } finally { childProcess.execFile = originalExecFile; syncBuiltinESMExports(); console.warn = originalWarning; }
+  });
+});
 
 test('Windows cleanup discovers a new grandchild through an exited parent after its first snapshot', { skip: process.platform !== 'win32', timeout: 25000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-win-tree-'));
@@ -140,5 +175,27 @@ test('Windows cleanup refuses a failed termination while the held process is sti
       return true;
     });
     assert.equal(live(root.pid), true, 'a failed signal cannot be reported as released without observing exit');
+  } finally { root.kill('SIGKILL'); }
+});
+
+test('Windows cleanup binds the original live handle despite an incompatible wall-clock spawn window', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+  try {
+    // Deliberately excludes the actual creation time. A widened timestamp window
+    // must not be what authorizes this process: only the original HANDLE can.
+    assert.equal(await stopWindowsTree(root, false, Date.now() - 60000, Date.now() - 59999), true);
+    await until(() => !live(root.pid), 'confirmed original root must be stopped');
+  } finally { root.kill('SIGKILL'); }
+});
+
+test('Windows cleanup refuses a held PID when the original process handle does not confirm it', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  const startedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+  let probes = 0;
+  try {
+    const original = { pid: root.pid, kill(signal) { assert.equal(signal, 0); probes++; return false; } };
+    assert.equal(await stopWindowsTree(original, false, startedAt, Date.now()), false);
+    assert.equal(probes, 1);
+    assert.equal(live(root.pid), true, 'a numeric PID held by the helper cannot substitute for original ownership');
   } finally { root.kill('SIGKILL'); }
 });
