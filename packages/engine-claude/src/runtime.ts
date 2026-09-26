@@ -22,6 +22,7 @@ export interface ClaudeRuntimeOptions {
   onEvent?: (id: string, event: ChatJournalEvent) => void;
 }
 const MAX_TEXT = 256 * 1024;
+const PROCESS_RELEASE_TIMEOUT_MS = process.platform === 'win32' ? 12000 : 5000;
 const now = () => new Date().toISOString();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 
@@ -34,6 +35,8 @@ const messageOf = (error: unknown) => error instanceof Error ? error.message : S
 export class ClaudeRuntime {
   private entries = new Map<string, Entry>();
   private releasing = new Map<string, Entry>();
+  private releaseCompletions = new Map<string, Promise<void>>();
+  private releaseErrors = new Map<string, unknown>();
   private starting = new Set<string>();
   private busy = new Set<string>();
   private cancelled = new Set<string>();
@@ -90,15 +93,15 @@ export class ClaudeRuntime {
     if (this.isBusy(id)) throw new Error('请先停止正在执行的任务。');
     await this.stopAndWait(id);
   }
-  private async stopAndWait(id: string) {
+  async stopAndWait(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     if (entry) this.releasing.set(id, entry);
     this.stop(id);
-    if (!entry) return;
+    if (!entry) { await this.whenReleased(id); return; }
     // A root process may exit before its MCP/tool descendants. Wait for the
     // process-group escalation as well, rather than treating root exit as a
     // guarantee that the working directory is no longer held on Windows.
-    const deadline = Date.now() + 5000;
+    const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
     while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，工作目录未释放，请稍后重试。');
     if (entry.connection.termination) {
@@ -109,6 +112,43 @@ export class ClaudeRuntime {
       if (!stopped) throw new Error('无法确认 CLI 子进程已停止，工作目录操作已取消。请关闭残留的 Claude 进程并重新打开工作台后重试。');
     }
     this.releasing.delete(id);
+    await this.whenReleased(id);
+  }
+  /** Wait for the physical CLI/tree/stream/history barrier, never outer queue ACKs. */
+  async whenReleased(id: string): Promise<void> {
+    let streamDeadline: number | undefined;
+    while (this.entries.has(id) || this.starting.has(id) || this.busy.has(id)) {
+      const connection = this.entries.get(id)?.connection;
+      if (connection?.termination) {
+        if (!await connection.termination) throw new Error('无法确认 CLI 子进程已停止，工作目录未释放。');
+        streamDeadline ??= Date.now() + 5000;
+        if (Date.now() >= streamDeadline) throw new Error('CLI 流或当前运行尚未释放，工作目录未释放。');
+      }
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    await this.releaseCompletions.get(id);
+    const entry = this.releasing.get(id);
+    if (entry?.connection.termination && !await entry.connection.termination) throw new Error('无法确认 CLI 子进程已停止，工作目录未释放。');
+    this.history.flush();
+    if (this.releaseErrors.has(id)) throw new Error('CLI 资源或聊天记录释放失败。', { cause: this.releaseErrors.get(id) });
+    if (this.releasing.get(id) === entry) this.releasing.delete(id);
+  }
+  private trackRelease(id: string, entry: Entry, finalize?: () => void) {
+    this.releasing.set(id, entry);
+    if (this.releaseCompletions.has(id)) return;
+    const termination = entry.connection.termination;
+    if (termination) {
+      this.terminations.add(termination);
+      void termination.then(stopped => { if (!stopped) this.terminationFailed = true; this.terminations.delete(termination); });
+    }
+    const completion = (async () => {
+      const stopped = await entry.connection.termination;
+      if (stopped !== true) throw new Error('无法确认 CLI 后代进程已停止。');
+      if (this.releasing.get(id) === entry) this.releasing.delete(id);
+      finalize?.();
+      this.history.flush();
+    })().catch(error => { this.releaseErrors.set(id, error); this.terminationFailed = true; });
+    this.releaseCompletions.set(id, completion);
   }
   taskState(id: string): TaskState { this.session(id); return this.history.get(id).taskState; }
   private session(id: string) {
@@ -312,6 +352,8 @@ export class ClaudeRuntime {
   private async start(id: string, capabilities: Capabilities): Promise<Entry> {
     if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
     if (this.has(id)) throw new Error('会话正在启动。');
+    if (this.releaseErrors.has(id)) throw new Error('上一轮资源释放失败，请重启工作台后重试。');
+    this.releaseCompletions.delete(id);
     if (this.activeCount >= this.host.maxSessions()) throw new Error('已达到并发会话上限。');
     this.starting.add(id);
     let entry: Entry | undefined;
@@ -341,6 +383,8 @@ export class ClaudeRuntime {
           try { this.closed(id, current, code, signal); }
           catch (error) {
             this.entries.delete(id); this.starting.delete(id);
+            this.releaseErrors.set(id, error);
+            this.trackRelease(id, current);
             const message = '记录进程退出状态失败：' + messageOf(error);
             current.turn?.resolve({ success: false, summary: '', error: message }); current.turn = undefined;
             const snapshot = this.history.get(id); snapshot.taskState = 'error'; snapshot.error = message; snapshot.pending = [];
@@ -406,9 +450,16 @@ export class ClaudeRuntime {
       if (entry && patch.permissionMode !== undefined && entry.bypassEnabled !== (patch.permissionMode === 'bypassPermissions')) {
         this.update(id, { status: 'stopping' });
         this.terminate(entry);
-        const deadline = Date.now() + 5000;
+        const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
         while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
         if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，权限配置未保存。请等待停止后重试。');
+        // This method owns the runtime's busy flag. Await only the physical
+        // connection release here; whenReleased also waits busy and would wait
+        // on this very configuration operation. Root close alone is insufficient.
+        if (!entry.connection.termination || !await entry.connection.termination) throw new Error('CLI 后代进程尚未停止，权限配置未保存。');
+        await this.releaseCompletions.get(id);
+        if (this.releaseErrors.has(id)) throw new Error('CLI 资源释放失败，权限配置未保存。', { cause: this.releaseErrors.get(id) });
+        this.history.flush();
         entry = undefined;
       }
       if (entry) {
@@ -496,6 +547,14 @@ export class ClaudeRuntime {
   }
   private closed(id: string, entry: Entry, code: number | null, signal: NodeJS.Signals | null) {
     if (this.entries.get(id) !== entry) return;
+    entry.connection.terminate(true);
+    this.trackRelease(id, entry, () => {
+      const previous = this.history.get(id).taskState;
+      const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。';
+      this.update(id, { status: previous === 'error' || !entry.connection.ending && code !== 0 ? 'error' : 'stopped', exitCode: code ?? undefined,
+        error: previous === 'error' ? this.history.get(id).error : !entry.connection.ending && code !== 0 ? error : undefined });
+      this.notify(id, true);
+    });
     entry.connection.finish();
     this.entries.delete(id); this.starting.delete(id);
     const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。' + (entry.connection.stderr ? '\n' + entry.connection.stderr.trim() : '');
@@ -504,7 +563,7 @@ export class ClaudeRuntime {
     if (entry.turn) this.finish(id, entry, { success: false, summary: '', error: entry.connection.ending ? undefined : error, interrupted: entry.connection.ending });
     else this.subtasks.end(id, entry.connection.ending ? 'interrupted' : 'failed', entry.connection.ending ? undefined : error);
     const previous = this.history.get(id).taskState;
-    this.update(id, { status: previous === 'error' || !entry.connection.ending && code !== 0 ? 'error' : 'stopped', exitCode: code ?? undefined, error: previous === 'error' ? this.history.get(id).error : !entry.connection.ending && code !== 0 ? error : undefined });
+    this.update(id, { status: 'stopping', exitCode: code ?? undefined, error: previous === 'error' ? this.history.get(id).error : !entry.connection.ending && code !== 0 ? error : undefined });
     this.history.get(id).pending = []; this.notify(id, true);
   }
   async shutdown() {
@@ -520,8 +579,8 @@ export class ClaudeRuntime {
     let terminationDeadline: NodeJS.Timeout | undefined;
     try {
       const stopped = await Promise.race([
-        Promise.all([...this.terminations]).then(results => results.every(Boolean)),
-        new Promise<boolean>(resolve => { terminationDeadline = setTimeout(() => resolve(false), 5000); }),
+        Promise.all([...this.terminations, ...[...this.releaseCompletions.values()].map(completion => completion.then(() => true))]).then(results => results.every(Boolean)),
+        new Promise<boolean>(resolve => { terminationDeadline = setTimeout(() => resolve(false), PROCESS_RELEASE_TIMEOUT_MS); }),
       ]);
       if (!stopped || this.terminationFailed || this.terminations.size || this.entries.size) {
         errors.push(new Error('无法确认全部聊天子进程已停止，请关闭残留进程后重试退出。'));

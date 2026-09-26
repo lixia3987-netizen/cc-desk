@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme, net } from 'electron';
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme, net, safeStorage } from 'electron';
 import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
@@ -7,6 +7,9 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
 import { createExecutors } from './execution/create-executors';
+import { ConnectionStore } from './engines/native/connections';
+import type { NativeStructuredExecutor } from './engines/native/structured-executor';
+import { registerNativeHandlers } from './ipc/native-handlers';
 import type { ExecutionRegistry } from './execution/registry';
 import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
@@ -32,6 +35,8 @@ if(profileDirectory) {
 } else if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
 let window: BrowserWindow | null = null;
 let executors: ExecutionRegistry;
+let nativeExecutor: NativeStructuredExecutor;
+let connections: ConnectionStore;
 let sessionCreation: SessionCreation;
 let services: SessionService;
 const historySources = new HistorySources();
@@ -83,6 +88,15 @@ async function addProject(value: string): Promise<Project> {
   store.change(s => s.projects.push(project)); notify(); return project;
 }
 function registerIPC() {
+  registerNativeHandlers(handle, connections, notify);
+  handle('native:confirm-recovery', idSchema, async id => {
+    if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
+    const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请先核查工作目录的实际修改，并确认上次命令及其子进程已停止。', detail: '确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });
+    if (choice.response !== 1) return;
+    await nativeExecutor.confirmRecovery(id);
+    await services.refreshDirectoryRelease(id);
+    notify();
+  });
   handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, executors:executors.descriptors(), cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));
   // Explicit write-only bridge; browser clipboard permissions remain denied.
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
@@ -230,7 +244,12 @@ else {
     try {
       store = new StateStore(app.getPath('userData'),{onError:reportPersistenceError});
       fonts = new FontLibrary(store.directory);
-      executors = createExecutors(store,()=>capabilities,reportPersistenceError);
+      connections = new ConnectionStore(store.directory, { safeStorage, platform: process.platform,
+        isConnectionActive: id => nativeExecutor?.isConnectionActive(id) ?? false,
+        isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && session.engineConfig.options.connectionId === id),
+      });
+      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
+      await nativeExecutor.initialize();
       services = new SessionService(store,executors,notify,()=>window,{
         history:(cwd,options)=>historySources.query(cwd,options), diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),
       });

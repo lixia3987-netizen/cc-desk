@@ -12,6 +12,7 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { StateStore } from '../src/main/store';
 import type { Capabilities, Session } from '../src/shared/types';
 import type { ChatJournalEvent } from '../src/shared/execution-events';
+import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
 
 const fixture = String.raw`
 const readline = require('node:readline');
@@ -118,7 +119,10 @@ test('structured shutdown waits for an ignoring descendant after the CLI root ha
   const s = setup(); let childPid = 0, rootPid = 0;
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
   const processRunning = async (pid: number) => {
-    try { const result = await promisify(execFile)('ps', ['-o', 'stat=', '-p', String(pid)]); return Boolean(result.stdout.trim()) && !result.stdout.trim().startsWith('Z'); }
+    try {
+      if (process.platform === 'linux') return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
+      const result = await promisify(execFile)('ps', ['-o', 'stat=', '-p', String(pid)]); return Boolean(result.stdout.trim()) && !result.stdout.trim().startsWith('Z');
+    }
     catch { return false; }
   };
   const until = async (condition: () => boolean) => {

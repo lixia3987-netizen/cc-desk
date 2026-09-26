@@ -16,6 +16,15 @@ const until = async (condition: () => boolean, timeout = 4000) => {
   const end = Date.now() + timeout;
   while (!condition()) { if (Date.now() > end) throw new Error('Timed out waiting for subprocess event'); await new Promise(resolve => setTimeout(resolve, 10)); }
 };
+// Bound only release waits so a missing cleanup transition names the stalled session.
+async function released(runtime: ChatRuntime, id: string): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    await Promise.race([runtime.whenReleased(id), new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error('Timed out waiting for physical chat release: ' + id)), 20_000);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 // A real subprocess implementing the wire contract from the official Python SDK.
 // This validates transport/lifecycle behavior; it does NOT authenticate to a model.
 const fixture = String.raw`
@@ -432,7 +441,7 @@ test('persistent subprocess streams one assistant message, synchronizes identity
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     assert.equal(snapshot.usage?.inputTokens, 12); assert.equal(snapshot.mcpServers?.[0].name, 'memory');
     await s.runtime.send(s.session.id, 'second', capabilities); assert.equal(s.starts.length, 1);
-    s.runtime.stop(s.session.id); await until(() => !s.runtime.has(s.session.id));
+    s.runtime.stop(s.session.id); await released(s.runtime, s.session.id);
     await s.runtime.send(s.session.id, 'third', capabilities); assert.deepEqual(s.starts, [false, true]);
     snapshot = s.runtime.snapshot(s.session.id); assert.equal(snapshot.messages.filter(message => message.role === 'user').length, 3);
     assert.match(fs.readFileSync(s.runtime.exportPath(s.session.id), 'utf8'), /text_delta/);
@@ -532,10 +541,10 @@ test('protocol failure and model error are surfaced without hanging the pending 
   try {
     const result = await s.runtime.send(s.session.id, 'malformed', capabilities);
     assert.equal(result.success, false); assert.match(result.error!, /非 JSON/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
     const failed = await s.runtime.send(s.session.id, 'crash', capabilities);
     assert.equal(failed.success, false); assert.match(failed.error!, /fixture auth failure/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
     assert.match(s.runtime.snapshot(s.session.id).error!, /fixture auth failure/);
   } finally { await s.cleanup(); }
 });
@@ -562,7 +571,7 @@ test('missing final result after background completion fails closed instead of a
   try {
     const result = await s.runtime.send(s.session.id, 'background-no-final', capabilities);
     assert.equal(result.success, false); assert.match(result.error!, /未返回最终结果/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
   } finally { await s.cleanup(); }
 });
 
@@ -580,15 +589,15 @@ test('initialization and authentication failures without a transcript remain ret
   const s = setup({ initialFailure: true, noTranscript: true });
   try {
     await assert.rejects(s.runtime.send(s.session.id, 'hello', capabilities), /initialize failed/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
     assert.equal(s.store.state.sessions[0].started, false);
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.session.execution.conversationId);
     const auth = await s.runtime.send(s.session.id, 'crash', capabilities);
-    assert.equal(auth.success, false); await until(() => !s.runtime.has(s.session.id));
+    assert.equal(auth.success, false); await released(s.runtime, s.session.id);
     assert.equal(s.store.state.sessions[0].started, false);
     assert.equal((await s.runtime.send(s.session.id, 'hello', capabilities)).success, true);
     assert.equal(s.store.state.sessions[0].started, true);
-    s.runtime.stop(s.session.id); await until(() => !s.runtime.has(s.session.id));
+    s.runtime.stop(s.session.id); await released(s.runtime, s.session.id);
     await assert.rejects(s.runtime.send(s.session.id, 'missing established transcript', capabilities), /未找到原会话记录/);
   } finally { await s.cleanup(); }
 });
@@ -601,7 +610,7 @@ test('child session metadata cannot overwrite root settings and unacknowledged l
     assert.equal(s.store.state.sessions[0].engineConfig.options.permissionMode, 'default');
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
     await assert.rejects(s.runtime.updateConfig(s.session.id, { model: 'no-ack' }), /超时/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
     assert.match(s.runtime.snapshot(s.session.id).error!, /配置变更.*已停止会话/);
   } finally { await s.cleanup(); }
 });
@@ -626,11 +635,11 @@ test('resumed session identity mismatch stops execution and preserves the establ
   const s = setup();
   try {
     await s.runtime.send(s.session.id, 'hello', capabilities);
-    s.runtime.stop(s.session.id); await until(() => !s.runtime.has(s.session.id));
+    s.runtime.stop(s.session.id); await released(s.runtime, s.session.id);
     const result = await s.runtime.send(s.session.id, 'wrong-session', capabilities);
     assert.equal(result.success, false); assert.match(result.error!, /不同的会话 ID/);
     assert.equal(s.store.state.sessions[0].execution.conversationId, s.observedId);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
   } finally { await s.cleanup(); }
 });
 
@@ -949,7 +958,7 @@ test('interrupt and unexpected process exit settle active children without inven
     const crashed = await s.runtime.send(s.session.id, 'subtasks-crash', capabilities);
     assert.equal(crashed.success, false);
     assert.deepEqual(s.store.state.sessions[0].subtasks!.tasks.map(task => task.status), ['interrupted', 'failed']);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
   } finally { await s.cleanup(); }
 });
 

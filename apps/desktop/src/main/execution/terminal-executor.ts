@@ -13,6 +13,8 @@ export class PtyExecutor implements TerminalExecutor {
   snapshot(id: string) { return this.runtime.snapshot(id); }
   interrupt(id: string) { this.runtime.interrupt(id); }
   stop(id: string) { return this.runtime.stop(id); }
+  stopAndWait(id: string) { return this.runtime.stopAndWait(id); }
+  whenReleased(id: string) { return this.runtime.whenReleased(id); }
   async stopIdle(id: string) { if (this.has(id)) throw new Error('请先关闭终端释放工作目录。'); }
   forget(id: string) { this.runtime.forget(id, { deleteLogs: true }); }
   exports(id: string) { return this.exportSources(id); }

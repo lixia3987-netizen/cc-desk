@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFile, spawn as spawnProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { IPty } from 'node-pty';
 import type { Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
@@ -11,6 +11,7 @@ import { spawnTerminal } from './execution/spawn-terminal';
 import { SubtaskTracker } from './subtask-tracker';
 import { automaticSessionTitlePatch } from '../shared/session-title';
 import { signalPosixGroup } from './posix-process-group';
+import { linuxLiveProcesses, stopWindowsProcessTree } from '@cc-desk/agent-node/process-supervisor';
 
 const execFileAsync = promisify(execFile);
 const MEMORY_LIMIT = 1024 * 1024;
@@ -27,10 +28,18 @@ export class TerminalBuffer {
   }
 }
 
+// Fixed lifecycle labels retain the original OS code/cause without adding argv or environment data.
+function cleanupPhase(error: unknown, phase: string): Error {
+  const failure = error instanceof Error ? error : new Error('终端资源清理失败。', { cause: error });
+  try { Object.defineProperty(failure, 'cleanupPhase', { value: phase, enumerable: true, configurable: true }); return failure; }
+  catch { return Object.assign(new Error('终端资源清理失败。', { cause: failure }), { cleanupPhase: phase }); }
+}
 interface ProcessEntry {
   process: IPty; ending: boolean; paused?: boolean; token: object;
+  rootExited: boolean; spawnStartedAt: number; spawnCompletedAt: number;
   resource?: TerminalLaunchResource; resourceClose?: Promise<void>;
   release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
+  completion: Promise<void>; finishCompletion(): void;
 }
 export class Runtime {
   private running = new Map<string, ProcessEntry>();
@@ -76,7 +85,7 @@ export class Runtime {
     return tracked;
   }
   private closeResource(id: string, entry: ProcessEntry) {
-    return entry.resourceClose ??= this.trackCleanup(id, Promise.resolve().then(() => entry.resource?.close()), entry);
+    return entry.resourceClose ??= this.trackCleanup(id, Promise.resolve().then(() => entry.resource?.close()).catch(error => { throw cleanupPhase(error, 'resource.close'); }), entry);
   }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
@@ -201,11 +210,16 @@ export class Runtime {
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
       // Output observers may synchronously enter maintenance before native spawn.
       if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
+      const spawnStartedAt = Date.now();
       const child = spawnTerminal(launch, session.cwd);
-      const entry: ProcessEntry = spawned = { process: child, ending: false, token, resource };
+      const spawnCompletedAt = Date.now();
+      let finishCompletion!: () => void;
+      const completion = new Promise<void>(resolve => { finishCompletion = resolve; });
+      const entry: ProcessEntry = spawned = { process: child, ending: false, rootExited: false, spawnStartedAt, spawnCompletedAt, token, resource, completion, finishCompletion };
       this.running.set(id, entry);
       child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
+        entry.rootExited = true;
         if (this.running.get(id) !== entry) return;
         // Root exit does not release descendants, forwarding workers or hooks.
         // Keep UI state and ownership aligned until the same cleanup has settled.
@@ -221,9 +235,14 @@ export class Runtime {
         // Explicit stop already owns the process-tree cleanup. A natural exit
         // still owns PTY and launcher resources, including on POSIX.
         entry.cleanup ??= this.trackCleanup(id, (async () => {
-          if (process.platform === 'win32') await this.releasePty(id, entry);
-          else entry.released = true; // node-pty closes the POSIX descriptor before onExit.
-          await this.closeResource(id, entry);
+          try {
+            if (process.platform === 'win32') await this.stopWindowsTree(entry);
+            else await this.stopPosixTree(entry);
+          } finally {
+            if (process.platform === 'win32') await this.releasePty(id, entry);
+            else entry.released = true; // node-pty closes the POSIX descriptor before onExit.
+            await this.closeResource(id, entry);
+          }
         })(), entry);
         void entry.cleanup.then(() => {
           if (entry.released && this.stopping.get(id) === entry) this.stopping.delete(id);
@@ -232,6 +251,7 @@ export class Runtime {
             ...(entry.cleanupError ? { error: '会话进程已退出，但资源清理失败。请检查残留进程并重启工作台。' } : {}),
           }));
           this.trimBuffers();
+          entry.finishCompletion();
         });
       });
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
@@ -273,6 +293,36 @@ export class Runtime {
     this.guard(() => this.flush());
     this.update(id,{ status: 'stopping' });
   }
+  /** Physical release only. Queue/workflow acknowledgements belong to SessionService. */
+  async whenReleased(id: string): Promise<void> {
+    await this.startCompletions.get(id);
+    const entry = this.running.get(id) ?? this.stopping.get(id);
+    if (entry) {
+      // An interactive terminal may run indefinitely. Once cleanup begins its
+      // failure must reject even if a descendant still holds the PTY open.
+      while (!entry.cleanup && (this.running.get(id) === entry || this.stopping.get(id) === entry)) await new Promise(resolve => setTimeout(resolve, 25));
+      await entry.cleanup;
+      if (this.cleanupErrors.has(id)) throw new Error('终端清理失败，工作目录未释放。', { cause: this.cleanupErrors.get(id) });
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([entry.completion, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('终端输出流尚未释放，工作目录未释放。')), 5000); })]);
+      } finally { if (timer) clearTimeout(timer); }
+    }
+    for (;;) {
+      const cleanups = [...this.cleanups].filter(([, owner]) => owner === id).map(([cleanup]) => cleanup);
+      if (!cleanups.length) break;
+      await Promise.all(cleanups);
+    }
+    this.flush();
+    this.store.flush();
+    if (this.has(id) || this.cleanupErrors.has(id)) throw new Error('无法确认终端进程和资源已释放。', { cause: this.cleanupErrors.get(id) });
+  }
+  async stopAndWait(id: string): Promise<void> {
+    let stopError: unknown;
+    try { this.stop(id); } catch (error) { stopError = error; }
+    await this.whenReleased(id);
+    if (stopError) throw stopError;
+  }
   private beginStop(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.cleanup) return entry.cleanup;
     entry.ending = true;
@@ -292,20 +342,8 @@ export class Runtime {
     return entry.cleanup;
   }
   private stopWindowsTree(entry: ProcessEntry): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const killer = spawnProcess('taskkill', ['/PID',String(entry.process.pid),'/T','/F'], { windowsHide:true, stdio:'ignore' });
-      let done = false;
-      const finish = (error?: Error) => {
-        if (done) return;
-        done = true; clearTimeout(timer);
-        if (error) reject(error); else resolve();
-      };
-      const timer = setTimeout(() => {
-        try { killer.kill(); } catch { /* Already exited. */ }
-        finish(new Error('等待会话进程树停止超时。'));
-      }, 2500);
-      killer.once('error', error => finish(error));
-      killer.once('close', code => finish(code === 0 ? undefined : new Error('无法确认会话进程树已完全停止。')));
+    return stopWindowsProcessTree(entry.process.pid, undefined, {
+      rootExited: entry.rootExited, spawnStartedAt: entry.spawnStartedAt, spawnCompletedAt: entry.spawnCompletedAt,
     });
   }
   private releasePty(id: string, entry: ProcessEntry): Promise<void> {
@@ -316,7 +354,7 @@ export class Runtime {
         if (process.platform === 'win32') await releaseWindowsPty(entry.process);
         else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
         entry.released = true;
-      } finally {
+      } catch (error) { throw cleanupPhase(error, 'pty.release'); } finally {
         // The caller releases ownership after launcher and process-tree cleanup.
         this.trimBuffers();
       }
@@ -326,7 +364,7 @@ export class Runtime {
   private async stopPosixTree(entry: ProcessEntry) {
     const ids = new Set([entry.process.pid]);
     try {
-      const result = await execFileAsync('ps',['-eo','pid=,ppid='],{timeout:1500,maxBuffer:2*1024*1024});
+      const result = await execFileAsync('/bin/ps',['-eo','pid=,ppid='],{timeout:1500,maxBuffer:2*1024*1024});
       const processes = result.stdout.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
       let changed = true;
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
@@ -335,18 +373,54 @@ export class Runtime {
     const signal = async (name: NodeJS.Signals) => {
       for (const pid of [...ids].reverse()) {
         try { process.kill(pid,name); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = cleanupPhase(error, 'signal.pid.' + name); }
       }
       try { await signalPosixGroup(entry.process.pid, name); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = cleanupPhase(error, 'signal.group.' + name); }
     };
     await signal('SIGTERM');
     // Keep this cleanup even when the root exits before an ignoring descendant.
     // This is a tracked Promise, independent of the root PTY's exit event.
     await new Promise<void>(resolve => setTimeout(resolve,1500));
     await signal('SIGKILL');
-    if (failure) throw failure;
+    // Signal delivery (or an OS error racing exit) is not release proof. Fresh
+    // inspection decides whether every retained PID and group member is gone.
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      try {
+        if (!await this.posixTreeHasLiveMembers(ids, entry.process.pid)) break;
+        if (Date.now() >= deadline) throw new Error('无法确认终端后代进程已停止。');
+      } catch (error) {
+        const inspection = cleanupPhase(error, 'posix.release_inspection');
+        if (failure) throw new AggregateError([failure, inspection], '终端信号失败且无法确认进程树已释放。');
+        throw inspection;
+      }
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
   }
+  private async posixTreeHasLiveMembers(ids: ReadonlySet<number>, group: number): Promise<boolean> {
+    if (process.platform === 'linux') {
+      const members = await Promise.all([linuxLiveProcesses({ group }), ...[...ids].map(pid => linuxLiveProcesses({ pid }))]);
+      return members.some(items => items.length > 0);
+    }
+    const result = await execFileAsync('/bin/ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
+    return this.posixSnapshotHasLiveMembers(result.stdout, ids, group);
+  }
+  private posixSnapshotHasLiveMembers(output: string, ids: ReadonlySet<number>, group: number): boolean {
+    // A running ps must include at least itself. Empty or malformed output is
+    // unavailable release evidence, never proof that the owned tree is empty.
+    const lines = output.trim().split('\n');
+    const rows = lines.map(line => {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length !== 3 || !/^\d+$/.test(fields[0]) || !/^\d+$/.test(fields[1])
+        || !Number.isSafeInteger(Number(fields[0])) || !Number.isSafeInteger(Number(fields[1])) || !fields[2]) {
+        throw new Error('无法解析终端进程存活状态。');
+      }
+      return { pid: Number(fields[0]), group: Number(fields[1]), state: fields[2] };
+    });
+    return rows.some(row => (ids.has(row.pid) || row.group === group) && !/^[ZX]/.test(row.state));
+  }
+
   snapshot(id: string): TerminalSnapshot {
     const session = this.getSession(id);
     this.flush();

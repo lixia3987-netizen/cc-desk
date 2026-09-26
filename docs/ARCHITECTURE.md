@@ -4,7 +4,7 @@
 
 仓库由 npm workspaces 管理，根目录维护唯一 lockfile 和统一命令。`apps/desktop` 包含 Electron main/preload、React、桌面测试和打包配置，保留现有应用名称、appId 和数据位置；`packages/contracts` 输出平台中立的 ESM 与类型声明；`packages/engine-claude` 提供 Claude runtime、协议、CLI 参数、transcript 与专属配置。内部包保持 private，桌面构建将所需运行代码编入现有 CJS/renderer 产物，安装包不依赖仓库的 workspace 链接。
 
-公共契约包含执行身份、`EngineConfig`、能力与描述、聊天消息、审批、事件、`SessionStatus` / `TerminalChunk`，以及 `execution-ports` 中的公共执行生命周期、结构化和终端接口。桌面 `shared/execution.ts`、`chat.ts`、`execution-events.ts` 与 `main/execution/ports.ts` 保留单向再导出；依赖桌面 Session 的注册与装配接口、存储、共享 PTY、字体和主题仍在 desktop。Claude 配置语义属于 engine-claude。根 `build/typecheck/test/dev` 按 contracts → engine-claude → desktop 的顺序准备依赖；公共包不得反向导入 desktop 源码，engine-claude 不依赖 Electron。
+公共契约包含执行身份、`EngineConfig`、能力与描述、聊天消息、审批、事件、`SessionStatus` / `TerminalChunk`，以及 `execution-ports` 中的公共执行生命周期、结构化和终端接口。桌面 `shared/execution.ts`、`chat.ts`、`execution-events.ts` 与 `main/execution/ports.ts` 保留单向再导出；依赖桌面 Session 的注册与装配接口、存储、共享 PTY、字体和主题仍在 desktop。Claude 配置语义属于 engine-claude。根 `build/typecheck/test/dev` 先构建 contracts/engine-claude 与 agent-core/agent-node，再准备 desktop；公共包不得反向导入 desktop 源码，engine-claude 不依赖 Electron。
 
 桌面源码和配置位于 `apps/desktop/`；下文 `src/` 路径均相对此工作区，`packages/` 路径相对仓库根目录。根目录保留 `docs/`、`release/` 和 `test-results/`。当前源码使用 workspace v3 与按引擎维护；实现映射、迁移回退和固定候选验收见 [阶段二实现与验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)，阶段要求见 [阶段二计划](ENGINE-BOUNDARIES-PHASE-2.md)。
 
@@ -14,7 +14,7 @@ Electron main 是文件、进程、设置和 IPC 的唯一入口。renderer 无 
 
 SessionService 统一仲裁终端与结构化运行器，管理全局并发、生命周期锁、目录锁、配置、附件、导出和工作流。启动、删除、改配置和 Worktree 操作的锁跨越 await，避免检查后状态改变。进程存在与回合忙碌分别判定；目录操作先持锁确认没有真实任务，再等待空闲结构化进程退出。审批、后台任务、工作流及仍打开的 PTY 继续阻止目录操作。容量不足时可回收空闲结构化进程，回收后重新检查锁和并发额度。
 
-目录管理保护跨 provider 生效，但不是普通工具写入的租约。两个 Agent 或 Shell 对同一 cwd 的任意并发修改没有因此获得互斥；真实 native 编码开放前须在阶段三补齐写入策略。
+阶段三新增 DirectoryExecutionCoordinator：Git worktree 根和 canonical cwd、非 Git 项目根按同根/父子关系互斥，覆盖 Claude/native/Shell。executor 的物理释放与队列回执、workflow 跨阶段所有权分别等待；清理失败与未知副作用继续阻断目录。这只是应用登记根的协调，不是 OS 沙箱，也不覆盖外部程序或任意命令的全部影响。
 
 ## 公共会话身份与执行契约
 
@@ -23,7 +23,7 @@ SessionService 统一仲裁终端与结构化运行器，管理全局并发、�
 | 字段 | 职责 |
 | --- | --- |
 | `Session.id` | 稳定的本地 UUID；用于日志、附件、草稿、选中状态与工作流关联 |
-| `execution.providerId` | 执行提供方命名空间；当前注册 `claude` 和 `shell` |
+| `execution.providerId` | 执行提供方命名空间；当前注册 `claude`、`native` 和 `shell` |
 | `execution.mode` | `structured` 或 `terminal`，决定所需执行接口 |
 | `execution.conversationId` | 提供方的当前对话 ID；可以因 `/clear` 等已确认操作改变 |
 | `execution.forkFrom` | 尚需恢复或分支的来源对话 ID，与当前对话 ID 分开 |
@@ -161,3 +161,7 @@ Worktree 所有权记录写入该 worktree 的 Git 私有目录。只允许快�
 ## 后续演进
 
 SQLite 持久化全文索引、MCP 配置编辑/验证、后台服务、签名更新、远程环境属于后续工作。当前托盘只维持本机 Electron 进程；机器休眠、断电或退出应用不能继续运行任务。
+
+## Native Alpha
+
+`agent-core` 不依赖 Node/Electron；`agent-node` 提供 Responses、持久记录、工具和监管；desktop main 拥有权限、目录与副作用。每回合真实 utilityProcess 执行 core/模型，使用带 run/generation/seq 的受限 RPC。完整模型上下文位于 native 账本，ChatHistory 仅是可重建展示投影。`ExecutionSubmission` 贯通直接提交、队列消息及 workflow attempt，`stopAndWait/whenReleased` 等待物理清理，`recoveryRequired` 阻断跨引擎冲突目录。设计和数据路径见 [操作与实现说明](NATIVE-AGENT-ALPHA.md)，实际验证范围见 [阶段三验收](NATIVE-AGENT-PHASE-3-VALIDATION.md)。

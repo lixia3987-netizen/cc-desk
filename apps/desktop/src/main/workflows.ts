@@ -5,17 +5,20 @@ import type { NewWorkflow, WorkflowBinding, WorkflowRun, WorkflowStage, Workflow
 import { MAX_STORED_RUNS, newWorkflowSchema, validateGraph, workflowBindingSchema } from './workflow-schema';
 import type { WorkflowState } from './workflow-schema';
 import { WorkflowStorage } from './workflow-storage';
+import type { ExecutionSubmission } from './execution/ports';
 
 export { newWorkflowSchema } from './workflow-schema';
 
-interface ActiveRun { cancelled: boolean; completion: Promise<void> }
+interface ActiveRun { cancelled: boolean; completion: Promise<void>; persistenceFailed?: boolean }
 export interface WorkflowEngineOptions {
   /** Must reject deleted, archived, or non-structured sessions and return the declared executor identity. */
   getSession(sessionId: string): WorkflowBinding;
   /** Resolves only after a real structured turn result (not after writing stdin). */
-  runStage(sessionId: string, prompt: string, titlePrompt: string): Promise<WorkflowStageResult>;
+  runStage(sessionId: string, prompt: string, titlePrompt: string, submission?: ExecutionSubmission): Promise<WorkflowStageResult>;
   cancelSession(sessionId: string): void | Promise<void>;
   onChange?(runs: WorkflowRun[]): void;
+  /** All stage results/terminal status are durable before releasing this outer owner. */
+  settled?(sessionId: string): void | Promise<void>;
 }
 
 function errorText(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 4000); }
@@ -131,21 +134,33 @@ export class WorkflowEngine {
 
   async cancel(id: string): Promise<WorkflowRun> {
     const run = this.get(id);
-    if (['completed', 'cancelled'].includes(run.status)) return run;
     const token = this.active.get(id);
+    if (run.status === 'completed' || (run.status === 'cancelled' && !token && this.sessionOwners.get(run.sessionId) !== id)) return run;
+    const errors: unknown[] = [];
     // Invalidate late completions before awaiting the process termination callback.
     if (token) token.cancelled = true;
-    this.update(id, draft => {
+    try { this.update(id, draft => {
       draft.status = 'cancelled';
       draft.error = '工作流已取消；已执行的文件或外部操作不会自动撤销。';
       for (const stage of draft.stages) if (stage.status === 'running') {
         stage.status = 'cancelled'; stage.finishedAt = new Date().toISOString();
       }
-    });
+    }); if (token) token.persistenceFailed = false;
+    } catch (error) { if (token) token.persistenceFailed = true; errors.push(error); }
     if (token) {
       try { await this.options.cancelSession(run.sessionId); }
-      catch (error) { this.update(id, draft => { draft.error = `工作流已取消，但会话停止失败：${errorText(error)}`.slice(0, 4000); }); }
+      catch (error) {
+        errors.push(error);
+        try { this.update(id, draft => { draft.error = `工作流已取消，但会话停止失败：${errorText(error)}`.slice(0, 4000); }); }
+        catch (failure) { token.persistenceFailed = true; errors.push(failure); }
+      }
     }
+    else if (!errors.length && this.sessionOwners.get(run.sessionId) === id) {
+      // An explicit cancel can repair a prior failed terminal ACK without replaying a stage.
+      this.sessionOwners.delete(run.sessionId);
+      await this.options.settled?.(run.sessionId);
+    }
+    if (errors.length) throw new AggregateError(errors, `工作流取消或状态保存失败：${errors.map(errorText).join('\n')}`);
     return this.get(id);
   }
 
@@ -183,7 +198,7 @@ export class WorkflowEngine {
           run.status = 'interrupted'; run.error = reason;
           for (const stage of run.stages) if (stage.status === 'running') stage.status = 'interrupted';
         });
-      } catch(error) { errors.push(error); }
+      } catch(error) { const token = this.active.get(id); if (token) token.persistenceFailed = true; errors.push(error); }
     }
     for(const result of await Promise.allSettled(running.map(([id])=>Promise.resolve().then(()=>this.options.cancelSession(this.get(id).sessionId))))) {
       if(result.status==='rejected')errors.push(result.reason);
@@ -191,6 +206,11 @@ export class WorkflowEngine {
     // Failed persistence or cancellation must not release maintenance before its runners settle.
     if (waitForCompletion) for (const result of await Promise.allSettled(running.map(([,token]) => token.completion))) {
       if (result.status === 'rejected') errors.push(result.reason);
+    }
+    for (const run of this.state.runs) {
+      if ((sessionIds && !sessionIds.has(run.sessionId)) || this.active.has(run.id) || run.status === 'running' || this.sessionOwners.get(run.sessionId) !== run.id) continue;
+      this.sessionOwners.delete(run.sessionId);
+      try { await this.options.settled?.(run.sessionId); } catch (error) { errors.push(error); }
     }
     if(errors.length)throw new AggregateError(errors,`工作流停止或状态保存失败：${errors.map(errorText).join('\n')}`);
   }
@@ -231,11 +251,15 @@ export class WorkflowEngine {
       try { this.update(id, draft => {
         draft.status = 'interrupted'; draft.error = errorText(error);
         for (const stage of draft.stages) if (stage.status === 'running') stage.status = 'interrupted';
-      }); } catch { /* Preserve the last durable state for recovery on next launch. */ }
-    }).finally(() => {
+      }); } catch { token.persistenceFailed = true; /* Keep ownership until a durable repair. */ }
+    }).finally(async () => {
       if (this.active.get(id) === token) this.active.delete(id);
-      if (this.sessionOwners.get(run.sessionId) === id) this.sessionOwners.delete(run.sessionId);
+      if (!token.persistenceFailed && this.sessionOwners.get(run.sessionId) === id) {
+        this.sessionOwners.delete(run.sessionId);
+        await this.options.settled?.(run.sessionId);
+      }
     });
+    void token.completion.catch(() => { /* wait() still reports cleanup failure; avoid detached rejection. */ });
     return this.get(id);
   }
 
@@ -256,7 +280,10 @@ export class WorkflowEngine {
         delete current.finishedAt; delete current.error;
       });
       let result: WorkflowStageResult;
-      try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage), run.goal); }
+      try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage), run.goal, {
+        requestId: `workflow:${run.id}:${stage.id}:${stage.attempts + 1}`,
+        source: 'workflow', workflowRunId: run.id, stageId: stage.id, attempt: stage.attempts + 1,
+      }); }
       catch (error) { result = { success: false, summary: '', error: errorText(error) }; }
       if (token.cancelled) return;
       if (!result || typeof result.success !== 'boolean' || typeof result.summary !== 'string') {

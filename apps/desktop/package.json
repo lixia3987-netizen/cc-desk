@@ -37,7 +37,9 @@
     "remark-gfm": "4.0.1",
     "zod": "4.1.12",
     "@cc-desk/contracts": "0.0.0",
-    "@cc-desk/engine-claude": "0.0.0"
+    "@cc-desk/engine-claude": "0.0.0",
+    "@cc-desk/agent-core": "0.0.0",
+    "@cc-desk/agent-node": "0.0.0"
   },
   "devDependencies": {
     "@electron/asar": "3.4.1",

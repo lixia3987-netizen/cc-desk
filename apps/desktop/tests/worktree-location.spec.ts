@@ -84,6 +84,49 @@ async function gateSnapshotRead(app: ElectronApplication, sessionId: string, fai
   await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.captured)).toBe(true);
 }
 
+interface DeletionNotificationGate {
+  deleted: boolean;
+  verificationReads: number;
+  release: () => void;
+}
+
+/** Keep the real deletion committed while its response and state event are in transit. */
+async function gateDeletionNotification(app: ElectronApplication, sessionId: string) {
+  await app.evaluate(({ ipcMain, BrowserWindow }, sessionId) => {
+    const handlers = ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> };
+    const originalDelete = handlers._invokeHandlers.get('session:delete')!;
+    const originalSnapshot = handlers._invokeHandlers.get('workspace:snapshot')!;
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    const originalSend = contents.send.bind(contents);
+    let notification: unknown[] | undefined, released = false, finish: (() => void) | undefined;
+    const gate: DeletionNotificationGate = { deleted: false, verificationReads: 0, release: () => {
+      released = true;
+      contents.send = originalSend;
+      ipcMain.removeHandler('session:delete'); ipcMain.handle('session:delete', originalDelete);
+      ipcMain.removeHandler('workspace:snapshot'); ipcMain.handle('workspace:snapshot', originalSnapshot);
+      if (notification) originalSend('workspace:state', ...notification);
+      finish?.();
+    } };
+    (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate = gate;
+    contents.send = (channel, ...args) => {
+      if (!released && channel === 'workspace:state' && !args[0].sessions.some((session: { id: string }) => session.id === sessionId)) { notification = args; return; }
+      originalSend(channel, ...args);
+    };
+    ipcMain.removeHandler('workspace:snapshot');
+    ipcMain.handle('workspace:snapshot', (...args) => {
+      if (gate.deleted) gate.verificationReads++;
+      return originalSnapshot(...args);
+    });
+    ipcMain.removeHandler('session:delete');
+    ipcMain.handle('session:delete', async (...args) => {
+      const result = await originalDelete(...args);
+      gate.deleted = true;
+      if (!released) await new Promise<void>(resolve => { finish = resolve; });
+      return result;
+    });
+  }, sessionId);
+}
+
 test('worktree location: picker edits a draft; custom and project settings survive restart', async ({}, testInfo) => {
   const f = await workspace();
   let app = await f.launch();
@@ -434,4 +477,44 @@ test('session deletion: stale snapshot failures do not replace the workspace, wh
     await expect(page.locator('.error-banner')).toHaveText([]);
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.restore());
   } finally { await app.close(); await f.dispose(); }
+});
+
+test('session deletion: a committed deletion invalidates reads before its delayed UI notification unmounts the pane', async () => {
+  const f = await workspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+    const created = await page.evaluate(async projectId => {
+      const session = await window.desktop.createSession({ projectId, title: 'Deletion notification race', kind: 'agent', providerId: 'claude', mode: 'structured', engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, isolated: false });
+      await window.desktop.setSelection(session.id);
+      return session;
+    }, f.project.id);
+    const heading = page.getByRole('heading', { name: created.title, exact: true });
+    await expect(heading).toBeVisible();
+    await gateSnapshotRead(app, created.id);
+    await gateDeletionNotification(app, created.id);
+    const context = page.getByRole('region', { name: '上下文面板', exact: true });
+    await context.getByRole('button', { name: '删除会话', exact: true }).click();
+    await context.getByRole('button', { name: '确认删除会话', exact: true }).click();
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.deleted)).toBe(true);
+    await expect(heading).toBeVisible();
+    await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.rejection)).toBe('会话不存在。');
+    // The pane must resolve the failed read against current main-process state,
+    // even though neither the delete response nor workspace event reached it.
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.verificationReads)).toBeGreaterThan(0);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(heading).toBeVisible();
+    await expect(page.locator('.error-banner')).toHaveText([]);
+    await app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.release());
+    await expect(heading).toHaveCount(0);
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally {
+    await app.evaluate(() => {
+      const globals = globalThis as typeof globalThis & { snapshotReadGate?: SnapshotReadGate; deletionNotificationGate?: DeletionNotificationGate };
+      globals.snapshotReadGate?.release?.(); globals.snapshotReadGate?.restore(); globals.deletionNotificationGate?.release();
+    }).catch(() => {});
+    await app.close(); await f.dispose();
+  }
 });

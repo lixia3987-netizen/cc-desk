@@ -9,7 +9,7 @@ import type { BrowserWindow } from 'electron';
 import { SessionService } from '../src/main/session-service';
 import { StateStore } from '../src/main/store';
 import { Attachments } from '../src/main/attachments';
-import type { StructuredExecutor, TerminalExecutor } from '../src/main/execution/ports';
+import type { ExecutionSubmission, StructuredExecutor, TerminalExecutor } from '../src/main/execution/ports';
 import { ExecutionRegistry } from '../src/main/execution/registry';
 import { ClaudeStructuredExecutor } from '../src/main/engines/claude/structured-executor';
 import { claudeCapabilities } from '../src/main/engines/claude/capabilities';
@@ -38,6 +38,8 @@ async function fixture(window:BrowserWindow|null=null) {
   const runtime={
     getSession:(id:string)=>{const session=store.state.sessions.find(s=>s.id===id);if(!session)throw new Error('Session missing');return session;},
     has:(id:string)=>active.has(id),start:async(id:string)=>{if(maintained.has(id))throw new Error('maintained');active.add(id);},stop:(id:string)=>{active.delete(id);},
+    stopAndWait:async(id:string)=>{active.delete(id);},
+    whenReleased:async(id:string)=>{while(active.has(id))await new Promise(resolve=>setTimeout(resolve,5));},
     forget:(id:string)=>{active.delete(id);},shutdown:async()=>{active.clear();},get activeCount(){return active.size;},
     setMaintenance:(_value:boolean)=>{},disconnectAll:async()=>{active.clear();},
     setSessionMaintenance:(ids:readonly string[],value:boolean)=>{for(const id of ids){if(value)maintained.add(id);else maintained.delete(id);}},
@@ -59,7 +61,13 @@ async function fixture(window:BrowserWindow|null=null) {
       engineConfig:{schemaVersion:1,options:extra.execution?.providerId==='claude'?{model:'',effort:'default',permissionMode:'default'}:{}},status:'idle',archived:false,createdAt:now,updatedAt:now,...extra};
     store.change(s=>s.sessions.push(session));return session;
   };
-  return {dir,repo,store,service,runtime,chat,active,maintained,registry,add,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
+  const independent = async (name: string) => {
+    const root = path.join(dir,name); await fs.mkdir(root);
+    // A separate registered non-Git project has an independent authorized root.
+    const id = randomUUID(); store.change(state => state.projects.push({id,path:root,name,createdAt:now}));
+    return { cwd:root, projectId:id };
+  };
+  return {dir,repo,store,service,runtime,chat,active,maintained,registry,add,independent,call,dispose:async()=>{await service.shutdown();store.flush();await fs.rm(dir,{recursive:true,force:true,maxRetries:10,retryDelay:100});}};
 }
 
 test('context recovery holds the lifecycle lock and preserves a paused queue while rejecting racing sends and workflows', async t => {
@@ -154,8 +162,9 @@ test('engine maintenance stops only Claude while shared Shell and a non-Claude e
   try {
     const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
     const queuedClaude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
-    const shell = f.add(f.repo);
-    const native = f.add(f.repo, { kind: 'agent', execution: { providerId: 'test.native', mode: 'structured', conversationId: 'native/opaque' } });
+    const shellRoot = await f.independent('shell-root'), nativeRoot = await f.independent('native-root');
+    const shell = f.add(shellRoot.cwd, shellRoot);
+    const native = f.add(nativeRoot.cwd, { ...nativeRoot, kind: 'agent', execution: { providerId: 'test.native', mode: 'structured', conversationId: 'native/opaque' } });
     let nativeActive = true, nativeMaintenance = 0;
     const sent: string[] = [];
     const nativeSnapshot = (): ChatSnapshot => ({ sessionId: native.id, taskState: 'idle', messages: [], pending: [] });
@@ -167,6 +176,7 @@ test('engine maintenance stops only Claude while shared Shell and a non-Claude e
       prepareCommands: async () => nativeSnapshot(), respond: () => {}, updateConfig: async () => {}, exports: async () => [],
       send: async (_id: string, text: string) => { sent.push(text); return { success: true, summary: text }; },
       interrupt: () => {}, stop: () => { nativeActive = false; }, stopIdle: async () => { nativeActive = false; }, forget: () => {},
+      whenReleased: async () => {},
       setMaintenance: () => { nativeMaintenance++; }, disconnectAll: async () => { throw new Error('Native must not be disconnected'); },
       shutdown: async () => { nativeActive = false; },
     };
@@ -190,7 +200,7 @@ test('engine maintenance stops only Claude while shared Shell and a non-Claude e
     assert.equal(sent.length, 3);
     assert.equal(f.service.queue.snapshot(queuedClaude.id).paused, true);
     release(); await update;
-    assert.equal(f.active.has(shell.id), true); assert.equal(nativeActive, true);
+    assert.equal(f.active.has(shell.id), true); assert.equal(nativeMaintenance, 0);
     assert.equal(f.service.queue.snapshot(queuedClaude.id).paused, true);
     assert.equal(f.store.state.sessions.find(session => session.id === queuedClaude.id)?.draft, 'save during maintenance');
     await f.service.start(claude.id);
@@ -205,7 +215,8 @@ test('engine maintenance drains an admitted attachment read before installing an
   let update: Promise<void> | undefined;
   try {
     const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
-    const shell = f.add(f.repo);
+    const shellRoot = await f.independent('shell-root');
+    const shell = f.add(shellRoot.cwd, shellRoot);
     const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
     t.mock.method(attachments, 'retain', async () => { enter(); await reading; });
     let sent = 0, installed = false;
@@ -253,7 +264,8 @@ test('engine maintenance waits for queue completion ownership after the model tu
   let update: Promise<void> | undefined, submitting: Promise<void> | undefined;
   try {
     const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
-    const shell = f.add(f.repo);
+    const shellRoot = await f.independent('shell-root');
+    const shell = f.add(shellRoot.cwd, shellRoot);
     t.mock.method(f.service.chat, 'send', async () => { enterTurn(); await turn; return { success: true, summary: 'finished' }; });
     await f.call('chat:submit', { id: session.id, text: 'accepted first turn' });
     await turning;
@@ -288,7 +300,8 @@ test('engine maintenance attempts every selected cleanup after a save failure an
   const f = await fixture();
   try {
     const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() } });
-    const shell = f.add(f.repo);
+    const shellRoot = await f.independent('shell-root');
+    const shell = f.add(shellRoot.cwd, shellRoot);
     await f.service.start(claude.id); await f.service.start(shell.id);
     let chats = 0, terminals = 0, installed = 0;
     t.mock.method(f.service.queue, 'pauseSessions', () => { throw new Error('queue disk fault'); });
@@ -456,8 +469,10 @@ test('slot reclamation rechecks native conversation ownership after asynchronous
     t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{physical.delete(id);entered();await new Promise<void>(resolve=>{release=resolve;});});
     const pending=f.service.start(a.id);
     await Promise.race([ready,pending]);
-    // Another caller claims the native transcript while A is waiting on a slot.
-    await f.service.start(b.id);
+    // Admission itself prevents a competing public start; also test the final
+    // identity recheck against a late external/runtime registration.
+    await assert.rejects(f.service.start(b.id), /同一提供方的对话/);
+    f.active.add(b.id);
     release();await assert.rejects(pending,/同一提供方的对话/);
     assert.equal(f.active.has(a.id),false);assert.equal(f.active.has(b.id),true);
     assert.equal(physical.has(second.id),true,'identity conflicts must not evict another idle session');
@@ -480,7 +495,9 @@ test('archiving a queued session during idle eviction prevents its pending promp
     t.mock.method(f.service.chat,'send',async()=>{sent++;return {success:true,summary:'done'};});
     const pending=f.call('chat:send',{id:target.id,text:'queued task'});
     await Promise.race([ready,pending]);
-    await f.call('session:update',{id:target.id,archived:true});
+    await assert.rejects(f.call('session:update',{id:target.id,archived:true}), /请先停止/);
+    // Simulate an already-admitted metadata writer completing after our await.
+    f.store.change(state=>{state.sessions.find(session=>session.id===target.id)!.archived=true;});
     release();await assert.rejects(pending,/取消会话归档/);assert.equal(sent,0);
     await f.call('session:update',{id:target.id,archived:false});
     await f.call('chat:send',{id:target.id,text:'explicitly resumed'});assert.equal(sent,1);
@@ -1173,7 +1190,7 @@ test('a queue persistence error does not prevent explicit runtime stop or interr
     const session=f.add(f.repo,{kind:'agent',execution:{providerId:'claude',mode:'structured',conversationId:randomUUID()}});
     let stopped=0,interrupted=0;
     t.mock.method(f.service.queue,'pause',()=>{throw new Error('queue disk error');});
-    t.mock.method(f.service.chat,'stop',async()=>{stopped++;});
+    t.mock.method(f.service.chat,'stopAndWait',async()=>{stopped++;});
     t.mock.method(f.service.chat,'interrupt',async()=>{interrupted++;});
     await assert.rejects(f.service.stop(session.id),/queue disk error/);
     await assert.rejects(f.service.interrupt(session.id),/queue disk error/);
@@ -1194,4 +1211,244 @@ test('workflow cancellation invalidates a stage admission before it can become a
     await f.call('workflow:cancel',run.id);release();await f.service.workflows.wait(run.id);
     assert.equal(sends,0);assert.equal(f.service.workflows.isSessionBusy(session.id),false);
   } finally {release?.();t.mock.restoreAll();await f.dispose();}
+});
+
+function installNative(f: Awaited<ReturnType<typeof fixture>>, options: {
+  cwd?: string;
+  send?: (submission?: ExecutionSubmission) => Promise<ChatTurnResult>;
+  released?: () => Promise<void>;
+} = {}) {
+  const session = f.add(options.cwd ?? f.repo, { kind: 'agent', execution: { providerId: 'test.native', mode: 'structured', conversationId: randomUUID() } });
+  let active = false, recovery = false;
+  const submissions: (ExecutionSubmission | undefined)[] = [];
+  const snapshot = (): ChatSnapshot => ({ sessionId: session.id, taskState: active ? 'thinking' : 'completed', messages: [], pending: [] });
+  const executor: StructuredExecutor = {
+    get activeCount() { return Number(active); }, has: id => id === session.id && active, isBusy: id => id === session.id && active,
+    taskState: () => active ? 'thinking' : 'completed', hydrate: async () => {}, snapshot, attention: () => [],
+    page: async () => ({ messages: [], before: null, after: null, incomplete: false }),
+    search: async () => ({ hits: [], nextBefore: null, incomplete: false }),
+    prepareCommands: async () => snapshot(), respond: () => {}, updateConfig: async () => {}, exports: async () => [],
+    send: async (_id, _text, _attachments, _titlePrompt, submission) => {
+      active = true; submissions.push(submission);
+      try { return await options.send?.(submission) ?? { success: true, summary: 'native done' }; }
+      finally { active = false; }
+    },
+    interrupt: () => {}, stop: () => {}, stopAndWait: async () => { await options.released?.(); },
+    whenReleased: async () => { await options.released?.(); },
+    recoveryRequired: id => id === session.id && recovery,
+    stopIdle: async () => { if (active) throw new Error('busy'); }, forget: () => {},
+    setMaintenance: () => {}, disconnectAll: async () => {}, shutdown: async () => {},
+  };
+  f.registry.register({ providerId: 'test.native', mode: 'structured', executor, capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false }) });
+  return { session, executor, submissions, setRecovery(value: boolean) { recovery = value; } };
+}
+
+test('registered terminal lifetime blocks native and Claude across sibling directories while linked worktrees remain independent', async () => {
+  const f = await fixture();
+  try {
+    const terminal = f.add(path.join(f.repo, 'src'));
+    const native = installNative(f, { cwd: path.join(f.repo, 'other') });
+    const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+    await f.service.start(terminal.id);
+    await assert.rejects(f.call('chat:send', { id: native.session.id, text: 'native' }), /占用/);
+    await assert.rejects(f.call('chat:send', { id: claude.id, text: 'claude' }), /占用/);
+    const worktree = await createWorktree(f.repo, f.dir, randomUUID());
+    const isolated = f.add(worktree, { worktree, worktreeBase: f.repo });
+    await f.service.start(isolated.id);
+    assert.equal(f.active.has(isolated.id), true);
+    assert.equal(f.active.has(terminal.id), true);
+    await f.service.stop(terminal.id);
+    await f.call('chat:send', { id: native.session.id, text: 'released', requestId: 'direct-stable-id' });
+    assert.equal(native.submissions[0]?.requestId, 'direct-stable-id');
+    assert.equal(native.submissions[0]?.source, 'direct');
+  } finally { await f.dispose(); }
+});
+
+test('a final model result does not release its directory before the explicit physical barrier', async () => {
+  const f = await fixture();
+  let finish!: () => void, release!: () => void;
+  const turn = new Promise<void>(resolve => { finish = resolve; });
+  const physical = new Promise<void>(resolve => { release = resolve; });
+  let barrierEntered = false;
+  const native = installNative(f, { send: async () => { await turn; return { success: true, summary: 'done' }; }, released: async () => { barrierEntered = true; await physical; } });
+  const terminal = f.add(f.repo);
+  const sending = f.call('chat:send', { id: native.session.id, text: 'work' });
+  try {
+    await until(() => native.submissions.length === 1);
+    finish(); await until(() => barrierEntered);
+    assert.equal(native.executor.has(native.session.id), false, 'has=false alone is intentionally insufficient');
+    await assert.rejects(f.service.start(terminal.id), /占用/);
+    release(); await sending;
+    await f.service.start(terminal.id);
+    assert.equal(f.active.has(terminal.id), true);
+  } finally { finish(); release(); await sending.catch(() => {}); await f.dispose(); }
+});
+
+test('queue retains the directory after native release until its delayed durable ACK and keeps its stable message identity', async t => {
+  const f = await fixture();
+  let finish!: () => void, releaseAttachment!: () => void;
+  const turn = new Promise<void>(resolve => { finish = resolve; });
+  const attachmentsPending = new Promise<void>(resolve => { releaseAttachment = resolve; });
+  const native = installNative(f, { send: async () => { await turn; return { success: true, summary: 'done' }; } });
+  const terminal = f.add(f.repo);
+  let submitting: Promise<unknown> | undefined;
+  try {
+    const first = await f.call<ChatSubmission>('chat:submit', { id: native.session.id, text: 'first', requestId: 'submission-receipt' });
+    await until(() => native.submissions.length === 1);
+    const attachments = (f.service as unknown as { attachments: Attachments }).attachments;
+    const accept = attachments.acceptQueued.bind(attachments);
+    let attachmentEntered = false;
+    t.mock.method(attachments, 'acceptQueued', async (id: string, files: string[], commit: (names: string[]) => void) => {
+      attachmentEntered = true; await attachmentsPending; await accept(id, files, commit);
+    });
+    submitting = f.call('chat:submit', { id: native.session.id, text: 'queued after ACK' });
+    await until(() => attachmentEntered);
+    finish();
+    await until(() => !(f.service as unknown as { admissions: Set<string> }).admissions.has(native.session.id));
+    assert.equal(f.service.queue.hasActive(native.session.id), true);
+    assert.equal(native.executor.has(native.session.id), false);
+    await assert.rejects(f.service.start(terminal.id), /占用/);
+    f.service.queue.pause(native.session.id);
+    releaseAttachment(); await submitting;
+    await until(() => !f.service.queue.hasActive(native.session.id));
+    await f.service.start(terminal.id);
+    assert.deepEqual(native.submissions[0], { requestId: first.messageId, source: 'queue' });
+  } finally { finish(); releaseAttachment(); await submitting?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('workflow holds one directory owner across stages and passes distinct stable stage-attempt submissions', async () => {
+  const f = await fixture();
+  let finishSecond!: () => void;
+  const second = new Promise<void>(resolve => { finishSecond = resolve; });
+  let calls = 0;
+  const native = installNative(f, { send: async () => { calls++; if (calls === 2) await second; return { success: true, summary: 'done' }; } });
+  const terminal = f.add(f.repo);
+  try {
+    const run = f.service.workflows.create({ sessionId: native.session.id, goal: 'two stages', pauseAfterEachStage: false, maxAttempts: 2,
+      stages: [{ id: 'one', title: 'One', instruction: 'One', dependsOn: [] }, { id: 'two', title: 'Two', instruction: 'Two', dependsOn: ['one'] }] });
+    f.service.workflows.start(run.id);
+    await until(() => calls === 2);
+    assert.equal(f.service.workflows.isSessionBusy(native.session.id), true);
+    await assert.rejects(f.service.start(terminal.id), /占用/);
+    finishSecond(); assert.equal((await f.service.workflows.wait(run.id)).status, 'completed');
+    await f.service.start(terminal.id);
+    assert.deepEqual(native.submissions.map(item => item?.requestId), [`workflow:${run.id}:one:1`, `workflow:${run.id}:two:1`]);
+  } finally { finishSecond(); await f.dispose(); }
+});
+
+test('persisted recovery quarantine blocks every provider and Git management until explicit confirmation', async () => {
+  const f = await fixture();
+  try {
+    const native = installNative(f); native.setRecovery(true);
+    const terminal = f.add(path.join(f.repo, 'src'));
+    assert.equal(native.executor.has(native.session.id), false);
+    await assert.rejects(f.service.start(terminal.id), /需要核查/);
+    await assert.rejects(f.call('chat:send', { id: native.session.id, text: 'no replay' }), /需要核查/);
+    let mutated = false;
+    await assert.rejects(f.service.withSessionCreation(f.repo, true, async () => { mutated = true; }), /需要核查/);
+    await assert.rejects(f.call('session:delete', native.session.id), /核查/);
+    assert.equal(mutated, false);
+    native.setRecovery(false); await f.service.refreshDirectoryRelease(native.session.id);
+    await f.service.start(terminal.id);
+  } finally { await f.dispose(); }
+});
+
+test('retained history for an uninstalled provider does not block registered executors in other projects', async () => {
+  const f = await fixture();
+  try {
+    const missing = await f.independent('missing-provider-project');
+    f.add(missing.cwd, { projectId: missing.projectId, kind: 'agent', execution: { providerId: 'uninstalled', mode: 'structured', conversationId: randomUUID() } });
+    const native = installNative(f);
+    await f.call('chat:send', { id: native.session.id, text: 'registered engine remains available' });
+    assert.equal(native.submissions.length, 1);
+    const terminal = f.add(f.repo);
+    await f.service.start(terminal.id);
+    assert.equal(f.active.has(terminal.id), true);
+  } finally { await f.dispose(); }
+});
+
+test('native tool ownership requires an admitted live generation and the current canonical working directory', async () => {
+  const f = await fixture();
+  let finish!: () => void;
+  const waiting = new Promise<void>(resolve => { finish = resolve; });
+  const alias = path.join(f.dir, 'cwd-alias');
+  await fs.symlink(path.join(f.repo, 'src'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const native = installNative(f, { cwd: alias, send: async () => { await waiting; return { success: false, interrupted: true, summary: '' }; } });
+  let sending: Promise<unknown> | undefined;
+  try {
+    assert.throws(() => f.service.assertExecutionOwnership(native.session.id), /授权已失效/);
+    sending = f.call('chat:send', { id: native.session.id, text: 'held tool' });
+    await until(() => native.submissions.length === 1);
+    assert.doesNotThrow(() => f.service.assertExecutionOwnership(native.session.id));
+    await fs.unlink(alias); await fs.symlink(path.join(f.repo, 'other'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    assert.throws(() => f.service.assertExecutionOwnership(native.session.id), /授权已失效/);
+    await fs.unlink(alias); await fs.symlink(path.join(f.repo, 'src'), alias, process.platform === 'win32' ? 'junction' : 'dir');
+    assert.doesNotThrow(() => f.service.assertExecutionOwnership(native.session.id));
+    await f.service.interrupt(native.session.id);
+    assert.throws(() => f.service.assertExecutionOwnership(native.session.id), /授权已失效/, 'stop invalidates old tool continuations before physical release');
+    finish(); await sending;
+    assert.throws(() => f.service.assertExecutionOwnership(native.session.id), /授权已失效/);
+  } finally { finish(); await sending?.catch(() => {}); await f.dispose(); }
+});
+
+test('queue preemption renews native tool ownership while preserving the outer directory reservation', async () => {
+  const f = await fixture();
+  let finishFirst!: () => void, finishSecond!: () => void;
+  const first = new Promise<void>(resolve => { finishFirst = resolve; });
+  const second = new Promise<void>(resolve => { finishSecond = resolve; });
+  let calls = 0, stoppedOldGeneration = false;
+  const native = installNative(f, { send: async () => {
+    calls++; f.service.assertExecutionOwnership(native.session.id);
+    if (calls === 1) { await first; return { success: false, interrupted: true, summary: '' }; }
+    await second; return { success: true, summary: 'urgent completed' };
+  } });
+  native.executor.interrupt = async () => {
+    assert.throws(() => f.service.assertExecutionOwnership(native.session.id), /授权已失效/);
+    stoppedOldGeneration = true; finishFirst();
+  };
+  const terminal = f.add(f.repo);
+  try {
+    await f.call('chat:submit', { id: native.session.id, text: 'original' });
+    await until(() => calls === 1);
+    const urgent = await f.call<ChatSubmission>('chat:submit', { id: native.session.id, text: 'urgent' });
+    await f.service.queue.sendNow(native.session.id, urgent.messageId);
+    await until(() => calls === 2);
+    assert.equal(stoppedOldGeneration, true);
+    assert.doesNotThrow(() => f.service.assertExecutionOwnership(native.session.id));
+    await assert.rejects(f.service.start(terminal.id), /占用/);
+    finishSecond(); await until(() => !f.service.queue.hasActive(native.session.id));
+    await f.service.start(terminal.id);
+    assert.equal(native.submissions[1]?.requestId, urgent.messageId);
+  } finally { finishFirst(); finishSecond(); await f.dispose(); }
+});
+
+test('idle Claude retains its reusable CLI and lease until a competing provider finishes draining it', async t => {
+  const f = await fixture();
+  const claude = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+  const native = installNative(f);
+  let connected = false, drains = 0, physicalEntered = false, release!: () => void;
+  const physical = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(f.chat, 'has', (id: string) => id === claude.id && connected);
+  t.mock.method(f.chat, 'isBusy', () => false);
+  t.mock.method(f.chat, 'taskState', () => 'completed');
+  t.mock.method(f.service.chat, 'send', async (id: string, ...args: unknown[]) => {
+    if (id !== claude.id) return native.executor.send(id, args[0] as string, args[1] as string[] | undefined, args[2] as string | undefined, args[3] as ExecutionSubmission | undefined);
+    connected = true; return { success: true, summary: 'reusable CLI' };
+  });
+  t.mock.method(f.chat, 'stopIdle', async () => { drains++; connected = false; });
+  t.mock.method(f.chat, 'whenReleased', async () => { physicalEntered = true; await physical; });
+  let competing: Promise<unknown> | undefined;
+  try {
+    await f.call('chat:send', { id: claude.id, text: 'first' });
+    await f.call('chat:send', { id: claude.id, text: 'reuse' });
+    assert.equal(connected, true);
+    assert.equal(drains, 0, 'normal completed turns must preserve the CLI for live configuration');
+    competing = f.call('chat:send', { id: native.session.id, text: 'needs the directory' });
+    await until(() => physicalEntered);
+    assert.equal(drains, 1);
+    assert.equal(native.submissions.length, 0, 'directory transfer waits for physical release');
+    await assert.rejects(f.call('chat:send', { id: claude.id, text: 'racing reuse' }), /管理操作/);
+    release(); await competing;
+    assert.equal(native.submissions.length, 1);
+  } finally { release(); await competing?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
 });

@@ -14,11 +14,12 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 
 [下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.5.0 版本说明](docs/releases/v0.5.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
-客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
+客户端不是 Anthropic 官方产品，不附带模型服务或账户；稳定版和 Claude 会话需安装并登录本机 Claude Code CLI。开发分支的 native Alpha 使用独立模型连接，见 [操作说明](docs/NATIVE-AGENT-ALPHA.md)。
 
-## 当前源码进展：引擎边界与会话体验
+## 当前源码进展：自研 Agent Alpha 与引擎边界
 
-- **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。正式应用仍默认使用 Claude，并保留 Shell；第二引擎仅通过测试注入，真实 native 编码能力留待阶段三。
+- **自研 Agent Alpha**：Responses 模型连接、独立 worker、完整本地上下文、逐次文件/命令审批、文字队列与串行工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
+- **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。正式应用仍默认使用 Claude，并保留 Shell；开发分支已接入自研 native Alpha，按会话显式选择，阶段三统一验收进行中。
 - **独立配置与 v3 数据**：会话统一保存带版本的 `engineConfig`，按引擎描述显示可用功能。读取旧工作区时保留身份和路径，在首次写入 v3 前保存独立的原始迁移快照；回退方法见 [阶段二验证记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。未知引擎保留配置并可读取已有结构化展示日志，不自动回退到 Claude。
 - **CLI 更新只影响 Claude**：确认后暂停 Claude 队列、中断工作流并释放目标进程与资源，Shell 和其他已注册引擎继续运行。进入实际更新阶段后等待安装和检测结束再退出；完成后不会自动继续 Claude 任务。
 - **发送后即可继续输入**：结构化消息保存成功后立即清空对应输入和附件，任务执行期间可继续发送，按会话依次排队。悬停或聚焦排队消息，点击「立即发送」可中断当前任务并优先执行该消息，其余消息保留顺序。停止、失败或重启后队列暂停并保留，检查已产生的操作后可手动继续。
@@ -97,6 +98,8 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 | 目录 | 职责 |
 | --- | --- |
+| `packages/agent-core` | 平台中立的 Agent 循环、审批、预算与端口 |
+| `packages/agent-node` | Responses、完整记录库、本地工具、命令监管与项目指令 |
 | `apps/desktop` | Electron、React、IPC、数据存储、会话/队列/工作流调度、共享 PTY 与桌面装配 |
 | `packages/contracts` | 公共执行身份、配置、能力、消息、事件和生命周期接口 |
 | `packages/engine-claude` | Claude runtime、CLI 探测/参数、协议、transcript、hooks 与专属配置，通过宿主端口接入桌面 |

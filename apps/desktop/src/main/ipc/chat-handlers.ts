@@ -22,9 +22,9 @@ interface ChatPorts {
   captureAdmission(id: string): () => void;
   requireCommands(id: string): void;
   reserve(id: string): Promise<void>;
-  releaseAdmission(id: string): void;
+  releaseAdmission(id: string): void | Promise<void>;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
-  runChat(id: string, text: string, attachments: string[]): Promise<ChatTurnResult>;
+  runChat(id: string, text: string, attachments: string[], requestId?: string): Promise<ChatTurnResult>;
   getWindow(): BrowserWindow | null;
 }
 
@@ -39,6 +39,7 @@ const searchSchema = z.object({
 });
 const sendSchema = z.object({
   id: idSchema, text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8).optional(),
+  requestId: shortId.optional(),
 });
 const droppedFilesSchema = z.object({
   id: idSchema,
@@ -74,8 +75,13 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     if (ports.chat.has(id)) return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
     if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id)) throw new Error('请先结束当前会话任务。');
     await ports.reserve(id);
-    try { checkAdmission(); return { ...await ports.chat.prepareCommands(id), queue: ports.queue.snapshot(id) }; }
-    finally { ports.releaseAdmission(id); }
+    try {
+      checkAdmission();
+      const snapshot = await ports.chat.prepareCommands(id);
+      checkAdmission();
+      return { ...snapshot, queue: ports.queue.snapshot(id) };
+    }
+    finally { await ports.releaseAdmission(id); }
   });
   handle('chat:recover-context', idSchema, id => ports.manage(id, async () => {
     const session = ports.structured(id);
@@ -92,7 +98,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.chat.search(id, query, before);
   });
   handle('chat:attention', z.undefined(), () => ports.chat.attention());
-  handle('chat:send', sendSchema, async ({ id, text, attachments }) => {
+  handle('chat:send', sendSchema, async ({ id, text, attachments, requestId }) => {
     ports.structured(id);
     const checkAdmission = ports.captureAdmission(id);
     if (!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');
@@ -100,7 +106,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     const approved = await ports.attachments.validate(id, attachments);
     checkAdmission();
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流已开始，请先取消后再发送。');
-    return ports.runChat(id, text, approved);
+    return ports.runChat(id, text, approved, requestId);
   });
   handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId }) => {
     ports.structured(id);

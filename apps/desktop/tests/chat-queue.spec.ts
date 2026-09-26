@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import { chatQueueWorkspace, closeQueueApp } from './fixtures/chat-queue-fixture';
+import type { Session } from '../src/shared/types';
 
 const editor = (page: Page) => page.getByLabel('提示词编辑器', { exact: true });
 const queued = (page: Page, text: string) => page.getByLabel('待发送消息', { exact: true }).locator('.queued-chat-message').filter({ hasText: text });
@@ -150,7 +151,21 @@ test('chat queue: hover and keyboard send-now wait for the interrupted turn to s
 test('chat queue: session switches and restart retain isolated queues and require explicit recovery before sending', async () => {
   const f = await chatQueueWorkspace(); let app = await f.launch();
   try {
-    let page = await app.firstWindow(); const [a, b] = f.sessions;
+    let page = await app.firstWindow(); const [a, initialB] = f.sessions;
+    await expect(page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();
+    // This test exercises parallel queues; separate registered roots authorize
+    // that concurrency without bypassing same-directory execution exclusion.
+    const independentRoot = path.join(path.dirname(a.cwd), 'independent-queue-project');
+    await fs.mkdir(independentRoot);
+    const b = JSON.parse(await page.evaluate(async ({ root, initialId, title, selected }) => {
+      await window.desktop.deleteSession(initialId);
+      const project = await window.desktop.addProject(root);
+      const session = await window.desktop.createSession({ projectId: project.id, title, kind: 'agent', providerId: 'claude', mode: 'structured', isolated: false });
+      await window.desktop.setSelection(selected);
+      return JSON.stringify(session);
+    }, { root: independentRoot, initialId: initialB.id, title: initialB.title, selected: a.id })) as Session;
+    expect(b.projectId).not.toBe(a.projectId); expect(b.cwd).not.toBe(a.cwd);
+    await expect(page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();
     await submit(page, 'A 尚未完成'); await expect.poll(() => f.prompts(a)).toEqual(['A 尚未完成']);
     await submit(page, 'A 待发消息'); await editor(page).fill('A 独立草稿');
     await select(page, b.title);

@@ -1,0 +1,122 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { LocalToolPort } from '../dist/tools/local-tools.js';
+import { ProcessSupervisor } from '../dist/process-supervisor.js';
+import { contentHash } from '../dist/tools/project-files.js';
+import { loadProjectInstructions } from '../dist/project-instructions.js';
+
+const identity = { sessionId: 's', conversationId: 'c', runId: 'r', requestId: 'request', workerGeneration: 1 };
+const context = () => ({ identity: { ...identity }, policyRevision: 'policy-1', signal: new AbortController().signal, maxOutputBytes: 32768 });
+const call = (id, name, input) => ({ id, name, arguments: JSON.stringify(input) });
+const approve = (prepared, ctx) => ({ decision: 'approved', expiresAt: Date.now() + 60000, binding: { ...ctx.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: ctx.policyRevision } });
+async function fixture(t, options = {}) {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-tools-'));
+  const supervisor = new ProcessSupervisor();
+  t.after(async () => { await supervisor.dispose(); await fs.rm(root, { recursive: true, force: true }); });
+  return { root, supervisor, port: new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'owner', ...options }) };
+}
+async function executeRead(port, ctx, id, name, input) { return port.execute(await port.prepare(call(id, name, input), ctx), ctx); }
+
+test('ranged read keeps full-content hash and rejects approval-time changes outside the range', async t => {
+  const { root, port } = await fixture(t);
+  await fs.writeFile(path.join(root, 'file'), 'first\nsecond\nthird');
+  const ctx = context();
+  const read = await executeRead(port, ctx, 'read', 'read_file', { path: 'file', startLine: 1, endLine: 1 });
+  assert.equal(read.output.content, 'first');
+  assert.equal(read.output.hash, contentHash('first\nsecond\nthird'));
+  const update = await port.prepare(call('write', 'apply_patch', { path: 'file', content: 'replacement', expectedHash: read.output.hash }), ctx);
+  assert.equal(update.requiresApproval, true);
+  await fs.writeFile(path.join(root, 'file'), 'first\nchanged\nthird');
+  await assert.rejects(port.execute(update, ctx, approve(update, ctx)), /changed|conflict/i);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'first\nchanged\nthird');
+});
+test('write and sensitive read require exact unexpired approvals; changed inputs and owners are refused', async t => {
+  const { root, port } = await fixture(t);
+  const ctx = context();
+  await fs.writeFile(path.join(root, '.env.local'), 'TOKEN=private');
+  const sensitive = await port.prepare(call('sensitive', 'read_file', { path: '.env.local' }), ctx);
+  assert.equal(sensitive.requiresApproval, true);
+  await assert.rejects(port.execute(sensitive, ctx), /approval/);
+  const wrongOwner = approve(sensitive, ctx);
+  wrongOwner.binding.workerGeneration = 2;
+  await assert.rejects(port.execute(sensitive, ctx, wrongOwner), /approval/);
+  const expired = approve(sensitive, ctx);
+  expired.expiresAt = Date.now() - 1;
+  await assert.rejects(port.execute(sensitive, ctx, expired), /approval/);
+  const edited = structuredClone(sensitive);
+  edited.input.path = 'another-file';
+  await assert.rejects(port.execute(edited, ctx, approve(sensitive, ctx)), /changed/);
+  const result = await port.execute(sensitive, ctx, approve(sensitive, ctx));
+  assert.equal(result.output.content, 'TOKEN=private');
+  const create = await port.prepare(call('create', 'apply_patch', { path: 'created', content: 'yes', expectedHash: null }), ctx);
+  await assert.rejects(port.execute(create, ctx), /approval/);
+  assert.equal((await port.execute(create, ctx, approve(create, ctx))).status, 'completed');
+  await fs.writeFile(path.join(root, 'created'), 'external');
+  assert.equal((await port.execute(create, ctx, approve(create, ctx))).status, 'completed');
+  assert.equal(await fs.readFile(path.join(root, 'created'), 'utf8'), 'external');
+  await assert.rejects(port.prepare(call('create', 'apply_patch', { path: 'created', content: 'other', expectedHash: null }), ctx), /reused/);
+});
+test('nested instructions must be delivered to model before a write and rule changes invalidate approval', async t => {
+  const { root, supervisor } = await fixture(t);
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Root rule.');
+  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Nested rule.');
+  await fs.writeFile(path.join(root, 'src', 'file'), 'old');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root });
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'nested', initialInstructions });
+  const ctx = context();
+  await assert.rejects(port.prepare(call('unseen', 'apply_patch', { path: 'src/file', content: 'new', expectedHash: contentHash('old') }), ctx), /not been shown/);
+  const read = await executeRead(port, ctx, 'read', 'read_file', { path: 'src/file' });
+  assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
+  const prepared = await port.prepare(call('write', 'apply_patch', { path: 'src/file', content: 'new', expectedHash: read.output.hash }), ctx);
+  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Changed rule.');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
+  assert.equal(await fs.readFile(path.join(root, 'src', 'file'), 'utf8'), 'old');
+});
+test('literal search/list skip sensitive and protected paths, enforce output/count limits and never run query syntax', async t => {
+  const { root, port } = await fixture(t);
+  await fs.mkdir(path.join(root, '.git'));
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(root, '.git', 'config'), 'needle secret');
+  await fs.writeFile(path.join(root, '.env'), 'needle secret');
+  await fs.writeFile(path.join(root, 'src', 'file'), 'needle normal\nneedle more');
+  await fs.writeFile(path.join(root, 'syntax'), '$(touch hacked) --all');
+  const ctx = context();
+  const found = await executeRead(port, ctx, 'search', 'search', { path: '.', query: 'needle' });
+  assert.deepEqual(found.output.matches.map(match => match.path), ['src/file', 'src/file']);
+  const literal = await executeRead(port, ctx, 'literal', 'search', { path: '.', query: '$(touch hacked)' });
+  assert.equal(literal.output.matches[0].path, 'syntax');
+  await assert.rejects(fs.stat(path.join(root, 'hacked')), /ENOENT/);
+  const listed = await executeRead(port, ctx, 'list', 'list_directory', { path: '.', maxEntries: 1 });
+  assert.equal(listed.output.entries.length, 1);
+  assert.equal(listed.truncated, true);
+  const shallow = await executeRead(port, ctx, 'shallow', 'list_directory', { path: '.', depth: 0 });
+  assert.equal(shallow.output.entries.some(entry => entry.path === 'src/file'), false);
+  assert.equal(shallow.output.entries.some(entry => /\.git|\.env/.test(entry.path)), false);
+  const smallContext = { ...ctx, maxOutputBytes: 512 };
+  await assert.rejects(port.prepare(call('tiny', 'read_file', { path: 'src/file' }), smallContext), /budget/);
+});
+test('command uses approved literal argv/cwd and ownership is rechecked immediately before execution', async t => {
+  let owned = true;
+  const { root, port } = await fixture(t, { assertOwnership() { if (!owned) throw new Error('Lease lost.'); } });
+  const ctx = context();
+  const prepared = await port.prepare(call('command', 'run_command', { executable: process.execPath, argv: ['-e', 'process.stdout.write(JSON.stringify({cwd:process.cwd(),arg:process.argv[1],secret:process.env.OPENAI_API_KEY}))', 'literal ; echo unsafe'], cwd: '.' }), ctx);
+  await assert.rejects(port.execute(prepared, ctx), /approval/);
+  owned = false;
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /Lease lost/);
+  owned = true;
+  const result = await port.execute(prepared, ctx, approve(prepared, ctx));
+  assert.equal(result.status, 'completed');
+  assert.deepEqual(JSON.parse(result.output.stdout), { cwd: await fs.realpath(root), arg: 'literal ; echo unsafe' });
+  assert.equal(result.effects.cleanup, 'released');
+});
+test('schema rejects unknown fields and pre-aborted tools never run', async t => {
+  const { port } = await fixture(t);
+  const ctx = context();
+  await assert.rejects(port.prepare(call('bad', 'run_command', { executable: process.execPath, argv: [], cwd: '.', env: { OPENAI_API_KEY: 'x' } }), ctx), /unexpected/);
+  const controller = new AbortController(); controller.abort(new Error('Cancelled before prepare'));
+  await assert.rejects(port.prepare(call('aborted', 'list_directory', { path: '.' }), { ...ctx, signal: controller.signal }), /Cancelled/);
+});
