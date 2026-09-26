@@ -34,19 +34,94 @@ async function waitForGroupRelease(pid: number): Promise<boolean> {
         }
         if (!live) return true;
       } else {
-      const result = await execFileAsync('ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
-      if (!result.stdout.trim().split('\n').some(line => { const [group, state] = line.trim().split(/\s+/); return Number(group) === pid && state && !/^[ZX]/.test(state); })) return true;
+        // CLI selection may deliberately strip PATH; process inspection uses the OS binary.
+        const result = await execFileAsync('/bin/ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
+        if (!result.stdout.trim().split('\n').some(line => { const [group, state] = line.trim().split(/\s+/); return Number(group) === pid && state && !/^[ZX]/.test(state); })) return true;
       }
     } catch { return false; }
     await new Promise(resolve => setTimeout(resolve, 25));
   } while (Date.now() < deadline);
   return false;
 }
-async function stopWindowsTree(pid: number): Promise<boolean> {
+// Internal script builder is exported only from this module for the real Windows fixture.
+export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): string {
+  // Retain parent anchors after exit and discover new descendants on every pass.
+  // Hold each Windows handle while checking creation time and terminating it.
+  // Node does not expose its original spawn HANDLE: the first live-root capture
+  // is limited to the observed spawn window, not a proof against same-window reuse.
+  // A root already reported exited is a tombstone and can never be signaled.
+  return `
+$ErrorActionPreference='Stop'
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class OwnedProcessHandle {
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetProcessTimes(IntPtr handle, out long created, out long exited, out long kernel, out long user);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool TerminateProcess(IntPtr handle, uint code);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
+}
+'@
+$rootPid=[int]${pid}
+$rootExited=$${rootExited ? 'true' : 'false'}
+$earliest=[DateTimeOffset]::FromUnixTimeMilliseconds(${spawnStartedAt}).UtcDateTime
+$latest=[DateTimeOffset]::FromUnixTimeMilliseconds(${spawnCompletedAt + 1}).UtcDateTime
+$anchors=New-Object 'System.Collections.Generic.HashSet[int]'
+[void]$anchors.Add([int]${pid})
+$known=@{}
+if($rootExited) { $known[[string]$rootPid]='exited-before-inspection' }
+$deadline=[DateTime]::UtcNow.AddSeconds(5)
+do {
+  $all=@(Get-CimInstance Win32_Process)
+  $current=@{}
+  foreach($processItem in $all) { $current[[string]$processItem.ProcessId]=$processItem }
+  foreach($key in @($known.Keys)) {
+    if($current.ContainsKey($key)) {
+      $born=$current[$key].CreationDate
+      if(!$born -or $known[$key] -ne $born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')) { throw 'Process identity changed during cleanup.' }
+    }
+  }
+  do {
+    $before=$anchors.Count
+    foreach($processItem in $all) {
+      if($anchors.Contains([int]$processItem.ParentProcessId)) { [void]$anchors.Add([int]$processItem.ProcessId) }
+    }
+  } while($anchors.Count -ne $before)
+  $targets=@($all | Where-Object { $anchors.Contains([int]$_.ProcessId) })
+  foreach($anchor in $anchors) {
+    $key=[string]$anchor
+    if(!$known.ContainsKey($key)) {
+      if($current.ContainsKey($key)) {
+        $born=$current[$key].CreationDate
+        if(!$born) { throw 'Process identity is unavailable.' }
+        if($born.ToUniversalTime() -lt $earliest -or ($anchor -eq $rootPid -and $born.ToUniversalTime() -gt $latest)) { throw 'Process identity is outside the owned spawn window.' }
+        $known[$key]=$born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')
+      } else { $known[$key]='exited-before-inspection' }
+    }
+  }
+  if($targets.Count -eq 0) { exit 0 }
+  foreach($processItem in $targets) {
+    $handle=[OwnedProcessHandle]::OpenProcess(0x1001,$false,[int]$processItem.ProcessId)
+    if($handle -eq [IntPtr]::Zero) {
+      if([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { continue }
+      throw 'Cannot open owned process for termination.'
+    }
+    try {
+      [long]$created=0; [long]$exited=0; [long]$kernel=0; [long]$user=0
+      if(![OwnedProcessHandle]::GetProcessTimes($handle,[ref]$created,[ref]$exited,[ref]$kernel,[ref]$user)) { throw 'Process creation time is unavailable.' }
+      $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff')
+      if($known[[string]$processItem.ProcessId] -ne $identity) { throw 'Process identity changed before termination.' }
+      if($exited -eq 0 -and ![OwnedProcessHandle]::TerminateProcess($handle,1)) { throw 'Owned process termination failed.' }
+    } finally { [void][OwnedProcessHandle]::CloseHandle($handle) }
+  }
+  Start-Sleep -Milliseconds 25
+} while([DateTime]::UtcNow -lt $deadline)
+exit 1
+`;
+}
+async function stopWindowsTree(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
   const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  // CIM parent links retain an exited root's PID. Capture the tree before stopping
-  // it and verify those exact identities; an unavailable inspector fails closed.
-  const script = `$ErrorActionPreference='Stop'; $ids=@([int]${pid}); $all=@(Get-CimInstance Win32_Process); do { $before=$ids.Count; foreach($p in $all) { if(($ids -contains [int]$p.ParentProcessId) -and ($ids -notcontains [int]$p.ProcessId)) { $ids+= [int]$p.ProcessId } } } while($ids.Count -ne $before); $targets=@($all | Where-Object { $ids -contains [int]$_.ProcessId }); foreach($p in $targets) { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue }; $deadline=(Get-Date).AddSeconds(3); do { $live=@(Get-CimInstance Win32_Process | Where-Object { $ids -contains [int]$_.ProcessId }); if($live.Count -eq 0) { exit 0 }; Start-Sleep -Milliseconds 25 } while((Get-Date) -lt $deadline); exit 1`;
+  const script = windowsTreeCleanupScript(pid, rootExited, spawnStartedAt, spawnCompletedAt);
   try { await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 }); return true; } catch { return false; }
 }
 
@@ -60,10 +135,14 @@ export class ClaudeConnection {
   killTimer?: NodeJS.Timeout;
   termination?: Promise<boolean>;
   private rootExited = false;
+  private readonly spawnStartedAt: number;
+  private readonly spawnCompletedAt: number;
   constructor(invocation: { file: string; args: string[] }, cwd: string, env: NodeJS.ProcessEnv,
     private events: ConnectionEvents, private controlTimeoutMs = 15_000,
     private signalProcessGroup: (pid: number, signal: NodeJS.Signals) => Promise<void>) {
+    this.spawnStartedAt = Date.now();
     const child = this.child = spawn(invocation.file, invocation.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
+    this.spawnCompletedAt = Date.now();
     this.decoder = new JsonLineDecoder(value => events.frame(value));
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => { if (this.ending) return; try { this.decoder.push(chunk); } catch (error) { events.error(messageOf(error)); } });
@@ -114,7 +193,7 @@ export class ClaudeConnection {
       // Windows Stop-Process is already forceful. Starting a second PowerShell
       // snapshot on the POSIX escalation timer duplicates expensive CIM work
       // and can make concurrent sessions exceed the physical release budget.
-      this.termination = (this.child.pid ? stopWindowsTree(this.child.pid) : Promise.resolve(true)).then(stopped => {
+      this.termination = (this.child.pid ? stopWindowsTree(this.child.pid, this.rootExited, this.spawnStartedAt, this.spawnCompletedAt) : Promise.resolve(true)).then(stopped => {
         this.child.stdin.destroy();
         return stopped;
       });

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
+import { closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
 import type { NativeConnectionView } from '../src/shared/native-connections';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 // @ts-expect-error The same executable JS HTTP fixture is shared with agent-node tests.
@@ -52,23 +53,6 @@ async function readyWindow(app: ElectronApplication): Promise<Page> {
   // The workspace exists only after navigation, preload, and the state snapshot.
   await expect(page.locator('main.workspace')).toBeVisible();
   return page;
-}
-const appCleanups = new WeakMap<ElectronApplication, Promise<void>>();
-function cleanupApp(app: ElectronApplication): Promise<void> {
-  const previous = appCleanups.get(app);
-  if (previous) return previous;
-  // A closed Playwright application no longer exposes its process dispatcher.
-  // Share the first cleanup so explicit closes and finally blocks can coexist.
-  const cleanup = (async () => {
-    if (app.process().exitCode !== null) return;
-    const page = app.windows()[0];
-    if (page && !page.isClosed()) await page.evaluate(async () => {
-      for (const session of (await window.desktop.snapshot()).state.sessions) if (['running', 'stopping'].includes(session.status)) await window.desktop.stopSession(session.id);
-    }).catch(() => {});
-    await app.close();
-  })();
-  appCleanups.set(app, cleanup);
-  return cleanup;
 }
 async function noSavedSecret(directory: string): Promise<void> {
   for (const item of await fs.readdir(directory, { withFileTypes: true })) {
@@ -135,7 +119,7 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     expect(continued.success).toBe(true); expect(continued.summary).toContain('完整上下文 2');
     expect(fixture.requests.length).toBe(count + 1); expect(fixture.errors).toEqual([]);
     await noSavedSecret(f.data);
-  } finally { await cleanupApp(app); await fixture.close(); await f.dispose(); }
+  } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 
 test('native denial does not write, and missing credentials fail before a model request', async () => {
@@ -156,7 +140,7 @@ test('native denial does not write, and missing credentials fail before a model 
     await expect(page.locator('.chat-message.assistant').last()).toContainText('修改未执行');
     expect(fixture.errors).toEqual([]);
     expect(JSON.stringify(fixture.requests.at(-1)?.input)).toContain('denied');
-  } finally { await cleanupApp(app); await fixture.close(); await f.dispose(); }
+  } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 
 test('native interruption cancels a live HTTP model request and releases its real worker and directory lease', async () => {
@@ -175,7 +159,7 @@ test('native interruption cancels a live HTTP model request and releases its rea
     expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.status, shell.id)).toBe('running');
     await page.evaluate(id => window.desktop.stopSession(id), shell.id);
     expect(fixture.errors).toEqual([]);
-  } finally { await cleanupApp(app); await fixture.close(); await f.dispose(); }
+  } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 
 test('native queue executes two accepted messages in order with distinct durable submission identities', async () => {
@@ -212,7 +196,7 @@ test('native queue executes two accepted messages in order with distinct durable
       expect(new Set(runs.map(run => run.identity.runId)).size).toBe(2);
       expect(runs.every(run => ledger.lookupSubmission(run.identity.requestId)?.result?.committed)).toBe(true);
     } finally { await ledger.close(); }
-  } finally { firstResponse.release(); await cleanupApp(app); await fixture.close(); await f.dispose(); }
+  } finally { firstResponse.release(); try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 
 test('native automatic workflow crosses two real workers without deadlock and holds the directory across stages', async () => {
@@ -251,5 +235,5 @@ test('native automatic workflow crosses two real workers without deadlock and ho
       expect(runs.map(item => item.identity.requestId)).toEqual([`workflow:${run.id}:first:1`, `workflow:${run.id}:second:1`]);
       expect(new Set(runs.map(item => item.identity.workerGeneration)).size).toBe(2);
     } finally { await ledger.close(); }
-  } finally { stages.forEach(stage => stage.release()); await cleanupApp(app); await fixture.close(); await f.dispose(); }
+  } finally { stages.forEach(stage => stage.release()); try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });

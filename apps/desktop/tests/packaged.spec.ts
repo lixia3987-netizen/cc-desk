@@ -1,4 +1,5 @@
 import { electronLaunchArgs } from './helpers/electron-launch';
+import { closeNativeApp } from './helpers/native-app-cleanup';
 import { desktopRoot } from './helpers/paths';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import fs from 'node:fs/promises';
@@ -139,7 +140,7 @@ for (const target of targets) {
     };
     const close = async () => {
       const child = launchedProcess!;
-      await app!.close(); app = undefined; launchedProcess = undefined;
+      await closeNativeApp(app!); app = undefined; launchedProcess = undefined;
       expect(child.exitCode).toBe(0);
       expect(child.signalCode).toBeNull();
     };
@@ -209,18 +210,10 @@ for (const target of targets) {
       expect(errors).toEqual([]);
       await close();
     } finally {
-      if (app) {
-        const page = app.windows()[0];
-        if (page && !page.isClosed()) {
-          await page.screenshot({ path: testInfo.outputPath('native-failure.png') }).catch(() => {});
-          await page.evaluate(async () => {
-            for (const session of (await window.desktop.snapshot()).state.sessions) await window.desktop.stopSession(session.id);
-          }).catch(() => {});
-        }
-        await app.close().catch(() => launchedProcess?.kill());
-      }
-      await fixture.close();
-      await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      try {
+        if (app) await closeNativeApp(app);
+        await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+      } finally { await fixture.close(); }
     }
   });
 

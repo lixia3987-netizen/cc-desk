@@ -117,7 +117,7 @@ async function finish(worker: FakeWorker, context: ModelContext, extra: Partial<
   worker.send({ type: 'done', result });
 }
 
-test('worker host starts with restricted environment and waits for done, finish, exit, and stream closure', async () => {
+test('worker host starts with restricted environment and waits for done, finish, exit, and closes diagnostic readers', async () => {
   const h = harness(async worker => { const context = await begin(worker); worker.autoFinish = false; await finish(worker, context); });
   let settled = false;
   void h.promise.then(() => { settled = true; });
@@ -129,10 +129,51 @@ test('worker host starts with restricted environment and waits for done, finish,
   assert.ok(Object.keys(h.forkOptions!.env).every(name => ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'TZ'].includes(name)));
   assert.ok(!JSON.stringify(h.forkOptions).includes('secret-key-sentinel'));
   h.worker.exit(0, false);
-  await tick();
-  assert.equal(settled, false);
-  h.worker.stdout.end(); h.worker.stderr.end();
   assert.equal((await h.promise).status, 'completed');
+  assert.equal(h.worker.stdout.closed, true);
+  assert.equal(h.worker.stderr.closed, true);
+});
+
+test('Electron exit can remove stream listeners without EOF; retained diagnostic readers still close', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    worker.autoFinish = false;
+    await finish(worker, context);
+  });
+  const stdout = h.worker.stdout, stderr = h.worker.stderr;
+  while (!h.worker.sent.some(message => message.type === 'finish')) await tick();
+  assert.equal(stdout.readableEnded, false);
+  assert.equal(stderr.readableEnded, false);
+  // Electron removes its PassThrough listeners and getters as part of exit.
+  // Neither stream gets an EOF or an observable close event from the writer.
+  stdout.removeAllListeners(); stderr.removeAllListeners();
+  h.worker.emit('exit', 0);
+  assert.equal((await h.promise).status, 'completed');
+  assert.equal(stdout.closed, true);
+  assert.equal(stderr.closed, true);
+});
+
+test('requesting diagnostic destruction without a confirmed close retains the cleanup barrier', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    worker.autoFinish = false;
+    await finish(worker, context);
+  });
+  const stdout = h.worker.stdout;
+  const destroy = stdout.destroy.bind(stdout);
+  stdout.destroy = () => { stdout.destroyed = true; return stdout; };
+  const rejected = assert.rejects(h.promise, error => error instanceof NativeWorkerCleanupError && error.cleanupUnconfirmed);
+  while (!h.worker.sent.some(message => message.type === 'finish')) await tick();
+  h.worker.exit(0, false);
+  await tick();
+  assert.equal(stdout.destroyed, true);
+  assert.equal(stdout.closed, false);
+  t.mock.timers.tick(10_000);
+  t.mock.timers.tick(10_000);
+  await rejected;
+  stdout.destroyed = false;
+  destroy();
 });
 
 test('real tool port, committed preparation, exact approval, and journal results stay authoritative', async () => {

@@ -350,7 +350,7 @@ export class Runtime {
   private async stopPosixTree(entry: ProcessEntry) {
     const ids = new Set([entry.process.pid]);
     try {
-      const result = await execFileAsync('ps',['-eo','pid=,ppid='],{timeout:1500,maxBuffer:2*1024*1024});
+      const result = await execFileAsync('/bin/ps',['-eo','pid=,ppid='],{timeout:1500,maxBuffer:2*1024*1024});
       const processes = result.stdout.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
       let changed = true;
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
@@ -378,7 +378,7 @@ export class Runtime {
         const members = await Promise.all([linuxLiveProcesses({ group: entry.process.pid }), ...[...ids].map(pid => linuxLiveProcesses({ pid }))]);
         rows = members.flat().map(item => [String(item.pid), String(item.group), 'S']);
       } else {
-        const result = await execFileAsync('ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
+        const result = await execFileAsync('/bin/ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
         rows = result.stdout.trim().split('\n').map(line => line.trim().split(/\s+/));
       }
       if (!rows.some(([pid, group, state]) => (ids.has(Number(pid)) || Number(group) === entry.process.pid) && state && !/^[ZX]/.test(state))) break;

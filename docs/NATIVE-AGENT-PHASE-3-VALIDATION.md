@@ -26,6 +26,12 @@
 
 三平台工作流分别执行源码 E2E 和成品测试；根检查通过后，即使源码 E2E 失败也继续收集成品诊断，原失败仍使整个 job 失败。这不会降低验收门槛或触发发布。
 
+第二候选 `620c62c` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36216332200) 通过。三平台继续发现 macOS 最小 PATH 下无法找到进程检查工具，以及真实 Electron utilityProcess 退出后的诊断读端收尾问题：Electron 44 的 PassThrough 不自动产生 EOF，退出时还会移除监听器。修复使用系统 `/bin/ps`，并在 worker 已退出后显式关闭宿主读端、验证实际 `closed` 状态；工具、记录写入和未完成 RPC 的释放屏障保持。
+
+本地无窗口的真实 Electron 验证已经完成：四个 utilityProcess 分别覆盖正常回答、取消挂起 HTTP 请求、真实读取→审批补丁→审批命令，以及关闭/重开记录库后使用新 worker 续聊。四个 worker 均退出 0，命令退出 0，实际文件符合预期，监管器进程计数为 0；工具任务含两次审批、五次 HTTP 请求，续聊上下文保留 18 项。相应 worker-host 回归为 17/17 通过。这些使用本地协议服务，仍不是远程模型验收。
+
+补充 Windows 清理按创建时间核查进程身份、保留已退出父进程的发现锚点，并通过持有的进程句柄终止目标；新增首快照后产生孙进程、父进程先退出的实际 Windows 回归。Node 不公开原始 spawn HANDLE，首次活跃根进程捕获仅可核对启动时间窗口，不能声称绝对排除同窗口 PID 复用。无法确认身份时保持目录占用。测试等待与失败清理增加明确截止，强制清理只用于结束失败测试，不能记作正常退出通过。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛

@@ -10,7 +10,7 @@ interface Operations {
 }
 const nativeOperations: Operations = {
   signal: (pid, signal) => process.kill(pid, signal),
-  list: async () => (await execFileAsync('ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 })).stdout,
+  list: async () => (await execFileAsync('/bin/ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 })).stdout,
   ...(process.platform === 'linux' ? { isLive: async (pid: number) => (await linuxLiveProcesses({ group: pid })).length > 0 } : {}),
 };
 

@@ -5,7 +5,12 @@ import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentEvent, type AgentRunReques
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from '@cc-desk/agent-node/responses-model';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 
-interface NativeWorkerStream extends NodeJS.ReadableStream { destroyed?: boolean; readableEnded?: boolean }
+interface NativeWorkerStream extends NodeJS.ReadableStream {
+  destroyed?: boolean;
+  closed?: boolean;
+  readableEnded?: boolean;
+  destroy?(error?: Error): this;
+}
 export interface NativeWorkerChild extends EventEmitter {
   pid?: number;
   stdout: NativeWorkerStream | null;
@@ -145,6 +150,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let settled = false, outputBytes = 0;
     let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
     let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    let diagnosticTimer: ReturnType<typeof setTimeout> | undefined;
     const startupTimer = setTimeout(() => stop(new NativeWorkerError('startup', 'Native worker did not become ready.')), 10_000);
 
     function post(message: unknown): boolean {
@@ -164,6 +170,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       clearTimeout(startupTimer);
       clearTimeout(shutdownTimer);
       clearTimeout(hardTimer);
+      clearTimeout(diagnosticTimer);
       options.signal.removeEventListener('abort', cancel);
       child.off('message', onMessage);
       child.off('exit', onExit);
@@ -211,11 +218,28 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       armShutdown();
     }
     function onError(): void { stop(new NativeWorkerError('crash')); }
+    function closeDiagnostics(): void {
+      if (!exited || settled) return;
+      for (const stream of streams) {
+        // Electron utilityProcess diagnostics are host-owned PassThroughs. On
+        // exit it removes their listeners and nulls its getters without ending
+        // them, so waiting for EOF/close alone never proves release. Tools and
+        // their descendants are owned separately by the host ToolPort.
+        try { if (!stream.destroyed) stream.destroy?.(); }
+        catch { failure ??= new NativeWorkerError('stdio'); }
+        // destroyed only means close was requested. closed is the actual local
+        // read-handle release proof even when Electron removes close listeners.
+        if (stream.closed === true || stream.readableEnded === true) streams.delete(stream);
+      }
+      if (streams.size) diagnosticTimer = setTimeout(closeDiagnostics, 25);
+      checkFinished();
+    }
     function onExit(code: number): void {
       exited = true;
       exitCode = code;
       if (!done || code !== 0) stop(new NativeWorkerError('crash'));
       else { cancelControllers(); armShutdown(); }
+      closeDiagnostics();
       checkFinished();
     }
     function execution(value: unknown, signal: AbortSignal): ToolExecutionContext {
@@ -506,7 +530,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     child.on('exit', onExit);
     child.on('error', onError);
     for (const stream of [child.stdout, child.stderr]) {
-      if (!stream || stream.destroyed || stream.readableEnded) continue;
+      if (!stream || stream.closed === true || stream.readableEnded) continue;
       streams.add(stream);
       const ended = (): void => { streams.delete(stream); checkFinished(); };
       stream.once('end', ended);
