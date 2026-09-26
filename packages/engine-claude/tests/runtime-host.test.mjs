@@ -157,14 +157,26 @@ test('natural CLI root exit releases inherited descendant pipes and the explicit
 test('whenReleased rejects a known failed tree cleanup even while inherited streams remain open', { timeout: 8000 }, async () => {
   const fixture = setup();
   const id = fixture.ids[0];
+  let failure;
   try {
     await fixture.runtime.prepareCommands(id, capabilities);
     const connection = fixture.runtime.entries.get(id).connection;
+    const originalTermination = connection.termination;
+    assert.equal(originalTermination, undefined, 'the fixture must have a live, unclosed connection before injecting a failed release');
     // Model the exact state of a failed tree release while close is still pending.
     connection.termination = Promise.resolve(false);
-    await assert.rejects(fixture.runtime.whenReleased(id), /工作目录未释放/);
-    assert.equal(fixture.runtime.has(id), true);
-    connection.termination = undefined;
+    try {
+      await assert.rejects(fixture.runtime.whenReleased(id), /工作目录未释放/);
+      assert.equal(fixture.runtime.has(id), true);
+    } finally { connection.termination = originalTermination; }
     await fixture.runtime.stopAndWait(id);
-  } finally { await fixture.runtime.shutdown(); }
+  } catch (error) { failure = error; }
+  try { await fixture.runtime.shutdown(); }
+  catch (cleanup) {
+    // Preserve the real release failure: a second shutdown rejection must not
+    // replace it with the less specific aggregate seen in the Windows runner.
+    if (failure) throw new AggregateError([failure, cleanup], `Release fixture failed: ${failure.message}; shutdown failed: ${cleanup.message}`);
+    throw cleanup;
+  }
+  if (failure) throw failure;
 });

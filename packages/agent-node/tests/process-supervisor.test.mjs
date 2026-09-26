@@ -8,7 +8,20 @@ import { ProcessSupervisor, commandEnvironment, linuxLiveProcesses } from '../di
 async function fixture(t, options = {}) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'native-command-中文 '));
   const supervisor = new ProcessSupervisor({ terminationGraceMs: 25, ...options });
-  t.after(async () => { await supervisor.dispose(); await rm(cwd, { recursive: true, force: true }); });
+  t.after(async () => {
+    let failure;
+    try { await supervisor.dispose(); } catch (error) { failure = error; }
+    // Preserve a failed release assertion, but do not let its owned test guardian
+    // keep the entire Windows runner alive and hide the diagnostics indefinitely.
+    if (failure) for (const record of supervisor.records) {
+      try { record.child.kill('SIGKILL'); } catch { /* The original release still fails this test. */ }
+      record.child.stdout?.destroy(); record.child.stderr?.destroy();
+      record.child.channel?.unref(); record.child.unref();
+    }
+    try { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+    catch (error) { failure ??= error; }
+    if (failure) throw failure;
+  });
   return { cwd, supervisor, command: code => ({ executable: process.execPath, argv: ['-e', code], cwd }) };
 }
 
@@ -41,9 +54,10 @@ test('executes explicit argv and cwd without a shell and reports the actual exit
   request.argv.push('a b', '$(echo unsafe)', 'x; echo unsafe', '"quoted"');
   const result = await supervisor.run('run:1', request);
   assert.equal(result.exitCode, 7);
-  assert.deepEqual(JSON.parse(result.stdout), { cwd: await realpath(cwd), args: request.argv.slice(2) });
+  const actual = JSON.parse(result.stdout);
+  assert.deepEqual({ ...actual, cwd: await realpath(actual.cwd) }, { cwd: await realpath(cwd), args: request.argv.slice(2) });
   assert.equal(result.stderr, 'err\n');
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(result.cancelled, false);
   assert.equal(supervisor.activeCount, 0);
 });
@@ -72,7 +86,7 @@ test('bounds combined stdout/stderr while continuing to drain large output', asy
     maxOutputBytes: 1_024,
   });
   assert.equal(result.exitCode, 0);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(result.stdout.length + result.stderr.length, 1_024);
   assert.equal(result.outputBytes, 512 * 1_024);
   assert.equal(result.truncated, true);
@@ -80,7 +94,8 @@ test('bounds combined stdout/stderr while continuing to drain large output', asy
 
 test('per-run resolved secrets are removed even from operational allowlisted variables', async t => {
   const secret = 'credential-value-sentinel';
-  const { supervisor, command } = await fixture(t, { environment: { ...process.env, LANG: secret, HOME: secret, PATH: `prefix-${secret}` } });
+  const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => !['LANG', 'HOME', 'PATH'].includes(key.toUpperCase())));
+  const { supervisor, command } = await fixture(t, { environment: { ...inherited, LANG: secret, HOME: secret, PATH: `prefix-${secret}` } });
   const result = await supervisor.run('credential-run', command('process.stdout.write(JSON.stringify(process.env))'), undefined, [secret]);
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.includes(secret), false);
@@ -99,7 +114,7 @@ test('bounds timeout and waits for the stopped process before returning', async 
     ...command('setInterval(() => {}, 10_000)'), timeoutMs: 100,
   });
   assert.equal(result.timedOut, true);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(supervisor.has('timeout'), false);
 });
 
@@ -128,7 +143,7 @@ test('natural parent exit cleans a descendant with independent stdio', async t =
   `));
   const pid = Number(await readFile(ready, 'utf8'));
   assert.equal(result.exitCode, 0);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(await isLive(pid), false);
   assert.equal(supervisor.activeCount, 0);
 });
@@ -149,7 +164,7 @@ test('worker owner release kills descendants, waits for pipes, and revokes furth
   await supervisor.stopOwner('worker-generation-1');
   const result = await run;
   assert.equal(result.cancelled, true);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(await isLive(pid), false);
   assert.equal(supervisor.activeCount, 0);
   await assert.rejects(supervisor.run('worker-generation-1', command('process.exit(0)')), /released/);
@@ -162,7 +177,7 @@ test('AbortSignal cancels and an already aborted signal never executes a command
   controller.abort();
   const result = await run;
   assert.equal(result.cancelled, true);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   const preCancelled = await supervisor.run('already-aborted', command('throw new Error("must not run")'), controller.signal);
   assert.equal(preCancelled.cancelled, true);
   assert.equal(preCancelled.stderr, '');
@@ -176,7 +191,7 @@ test('invalid commands and excess budgets are rejected before launch; missing ex
   await assert.rejects(supervisor.run('bad', { ...command(''), maxOutputBytes: 1_048_577 }), /maxOutputBytes/);
   const result = await supervisor.run('missing', { executable: path.join(cwd, 'missing-program'), argv: [], cwd });
   assert.match(result.error, /not found/);
-  assert.equal(result.cleanup, 'released');
+  assert.equal(result.cleanup, 'released', result.error);
   assert.equal(result.exitCode, null);
 });
 

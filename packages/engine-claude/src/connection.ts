@@ -52,6 +52,11 @@ export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawn
   // A root already reported exited is a tombstone and can never be signaled.
   return `
 $ErrorActionPreference='Stop'
+$cleanupPhase='compile_handle_api'
+trap {
+  [Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:'+$cleanupPhase)
+  exit 1
+}
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -72,11 +77,13 @@ $known=@{}
 if($rootExited) { $known[[string]$rootPid]='exited-before-inspection' }
 $deadline=[DateTime]::UtcNow.AddSeconds(5)
 do {
+  $cleanupPhase='snapshot'
   $all=@(Get-CimInstance Win32_Process)
   $current=@{}
   foreach($processItem in $all) { $current[[string]$processItem.ProcessId]=$processItem }
   foreach($key in @($known.Keys)) {
     if($current.ContainsKey($key)) {
+      $cleanupPhase='verify_known_identity'
       $born=$current[$key].CreationDate
       if(!$born -or $known[$key] -ne $born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')) { throw 'Process identity changed during cleanup.' }
     }
@@ -93,36 +100,53 @@ do {
     if(!$known.ContainsKey($key)) {
       if($current.ContainsKey($key)) {
         $born=$current[$key].CreationDate
+        $cleanupPhase='read_creation_time'
         if(!$born) { throw 'Process identity is unavailable.' }
-        if($born.ToUniversalTime() -lt $earliest -or ($anchor -eq $rootPid -and $born.ToUniversalTime() -gt $latest)) { throw 'Process identity is outside the owned spawn window.' }
+        if($born.ToUniversalTime() -lt $earliest) { $cleanupPhase='creation_before_spawn'; throw 'Process identity is outside the owned spawn window.' }
+        if($anchor -eq $rootPid -and $born.ToUniversalTime() -gt $latest) { $cleanupPhase='creation_after_spawn'; throw 'Process identity is outside the owned spawn window.' }
         $known[$key]=$born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')
       } else { $known[$key]='exited-before-inspection' }
     }
   }
   if($targets.Count -eq 0) { exit 0 }
   foreach($processItem in $targets) {
+    $cleanupPhase='open_owned_handle'
     $handle=[OwnedProcessHandle]::OpenProcess(0x1001,$false,[int]$processItem.ProcessId)
     if($handle -eq [IntPtr]::Zero) {
       if([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { continue }
       throw 'Cannot open owned process for termination.'
     }
     try {
+      $cleanupPhase='read_handle_creation'
       [long]$created=0; [long]$exited=0; [long]$kernel=0; [long]$user=0
       if(![OwnedProcessHandle]::GetProcessTimes($handle,[ref]$created,[ref]$exited,[ref]$kernel,[ref]$user)) { throw 'Process creation time is unavailable.' }
       $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff')
+      $cleanupPhase='verify_handle_identity'
       if($known[[string]$processItem.ProcessId] -ne $identity) { throw 'Process identity changed before termination.' }
+      $cleanupPhase='terminate_owned_handle'
       if($exited -eq 0 -and ![OwnedProcessHandle]::TerminateProcess($handle,1)) { throw 'Owned process termination failed.' }
     } finally { [void][OwnedProcessHandle]::CloseHandle($handle) }
   }
   Start-Sleep -Milliseconds 25
 } while([DateTime]::UtcNow -lt $deadline)
+[Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:tree_deadline')
 exit 1
 `;
 }
 async function stopWindowsTree(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
   const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   const script = windowsTreeCleanupScript(pid, rootExited, spawnStartedAt, spawnCompletedAt);
-  try { await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 }); return true; } catch { return false; }
+  try {
+    await execFileAsync(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 });
+    return true;
+  } catch (error) {
+    // execFile's message contains its complete command. Emit only our bounded
+    // phase marker so CI/support can diagnose release failures without commands.
+    const failure = error as { stderr?: unknown; killed?: boolean };
+    const phase = typeof failure.stderr === 'string' ? failure.stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1] : undefined;
+    console.warn(`Claude process cleanup could not confirm release (${phase ?? (failure.killed ? 'helper_timeout' : 'helper_failed')}).`);
+    return false;
+  }
 }
 
 /** Owns stdio framing, bounded control traffic and whole-process-tree termination. */

@@ -28,7 +28,9 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
   const grandchild = `${record(grandchildReady)}setInterval(()=>{},1000);`;
   // Exactly two descendants. The child forks only after the first cleanup
   // snapshot, then exits before that snapshot is allowed to signal anything.
-  const child = `${record(childReady)}const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(poll);require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore'}).unref();process.exit(0)},10);`;
+  // Windows libuv kills non-detached children when their parent exits. Detach
+  // this one so the cleanup helper, rather than that job policy, must stop it.
+  const child = `${record(childReady)}const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(poll);const spawned=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true});spawned.once('spawn',()=>process.exit(0));spawned.unref()},10);`;
   const rootScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}).unref();setInterval(()=>{},1000);`;
   const startedAt = Date.now();
   const root = spawn(process.execPath, ['-e', rootScript], { cwd: directory, stdio: 'ignore', windowsHide: true });

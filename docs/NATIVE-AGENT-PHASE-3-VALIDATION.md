@@ -32,14 +32,20 @@
 
 补充 Windows 清理按创建时间核查进程身份、保留已退出父进程的发现锚点，并通过持有的进程句柄终止目标；新增首快照后产生孙进程、父进程先退出的实际 Windows 回归。Node 不公开原始 spawn HANDLE，首次活跃根进程捕获仅可核对启动时间窗口，不能声称绝对排除同窗口 PID 复用。无法确认身份时保持目录占用。测试等待与失败清理增加明确截止，强制清理只用于结束失败测试，不能记作正常退出通过。
 
+第三候选 `61584d8` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530271) 通过；[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530374) 中 Linux、macOS 的根检查和全部源码 Electron E2E 均通过，成品验证继续进行。Windows 的 engine-claude 回归仍有两个失败：孙进程 fixture 的非 detached 启动导致父退出时被系统终止，以及一次未能确认树释放。第二轮 Windows 的 agent-node 清理也未通过，原日志未区分具体清理阶段，不能据此猜测根因。
+
+后续候选修正 Windows fixture 和路径身份断言，并补充不含命令、路径、凭据或 helper 原始 stderr 的固定阶段诊断。清理助手沿用本回合已过滤的环境变量。失败测试保留原始错误并有界退出；Windows 根检查失败后仍执行一个独立 native 进程释放回归以取得诊断，不改变失败结论。agent-node 当前基于 CIM 快照和 taskkill 的清理仍存在首次身份捕获及检查到终止之间的 PID 复用窗口，不得将其描述为严格句柄身份保证。
+
+上述诊断候选的本地根 `npm run check` 已通过：contracts 3、engine-claude 13、agent-core 49、agent-node 87、desktop 497，共 649 项通过、0 项失败、2 项 Windows 平台测试跳过，包含完整类型检查与构建。这不替代 Windows 原生运行结果。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 首候选本地及 workspace CI 通过；平台修复候选待复验 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 待 CI |
+| 同一候选根 `npm run check` | 第三候选 workspace/Linux/macOS 通过；Windows 修复中 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第三候选 Linux/macOS 通过；Windows 未通过前置检查 |
 | 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 待 CI |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |

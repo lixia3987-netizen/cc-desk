@@ -40,6 +40,10 @@ jobs:
       - run: npm ci
       - id: check
         run: npm run check
+      - name: Diagnose native process release after a Windows check failure
+        if: ${{ !cancelled() && steps.check.outcome == 'failure' && runner.os == 'Windows' }}
+        timeout-minutes: 2
+        run: node --test --test-name-pattern="executes explicit argv and cwd" packages/agent-node/tests/process-supervisor.test.mjs
       - name: Verify real Windows npm Claude launcher
         if: runner.os == 'Windows'
         shell: pwsh

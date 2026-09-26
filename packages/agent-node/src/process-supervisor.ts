@@ -21,7 +21,35 @@ export interface CommandResult {
   timedOut: boolean;
   cancelled: boolean;
   cleanup: 'released' | 'cleanup_failed';
+  /** Fixed stage/counters only: never command text, paths, environment, or helper stderr. */
+  cleanupDiagnostic?: ProcessCleanupDiagnostic;
   error?: string;
+}
+
+export interface ProcessCleanupDiagnostic {
+  phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'posix_terminate';
+  code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'unreleased' | 'os_error';
+  elapsedMs: number;
+  snapshots: number;
+  terminationAttempts: number;
+  liveProcesses: number;
+  guardianExited: boolean;
+  streamsClosed: boolean;
+  helperExitCode?: number | null;
+  helperExited?: boolean;
+  helperOutputBytes?: number;
+  osCode?: 'ENOENT' | 'EACCES' | 'EPERM' | 'ESRCH' | 'UNKNOWN';
+}
+
+class CleanupError extends Error {
+  constructor(readonly detail: Pick<ProcessCleanupDiagnostic, 'phase' | 'code'> & Partial<ProcessCleanupDiagnostic>) {
+    super(`${detail.phase}:${detail.code}`);
+  }
+}
+
+function safeOsCode(error: unknown): NonNullable<ProcessCleanupDiagnostic['osCode']> {
+  const code = errno(error);
+  return code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || code === 'ESRCH' ? code : 'UNKNOWN';
 }
 
 export interface ProcessSupervisorOptions {
@@ -89,11 +117,13 @@ process.on('disconnect', () => {
 
 interface CommandRecord {
   owner: string;
+  environment: NodeJS.ProcessEnv;
   child: ChildProcess;
   pid?: number;
   commandPid?: number;
   windowsProcesses: Map<number, string>;
   closed: boolean;
+  guardianExited: boolean;
   exitSeen: boolean;
   result: CommandResult;
   stdout: Buffer[];
@@ -194,16 +224,16 @@ export async function linuxLiveProcesses(filter?: { pid?: number; group?: number
   return result;
 }
 
-function taskkill(pid: number, environment: NodeJS.ProcessEnv, timeoutMs: number): Promise<boolean> {
-  return new Promise(resolve => {
+function taskkill(pid: number, environment: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ stopped: boolean; exitCode: number | null }> {
+  return new Promise((resolve, reject) => {
     const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? environment.WINDIR;
     const executable = systemRoot ? path.join(systemRoot, 'System32', 'taskkill.exe') : 'taskkill.exe';
     const killer = spawn(executable, ['/PID', String(pid), '/T', '/F'], {
       shell: false, windowsHide: true, env: environment, stdio: 'ignore',
     });
-    const timer = setTimeout(() => { killer.kill(); resolve(false); }, timeoutMs);
-    killer.once('error', () => { clearTimeout(timer); resolve(false); });
-    killer.once('close', code => { clearTimeout(timer); resolve(code === 0); });
+    const timer = setTimeout(() => { killer.kill(); reject(new CleanupError({ phase: 'windows_terminate', code: 'timeout' })); }, timeoutMs);
+    killer.once('error', error => { clearTimeout(timer); reject(new CleanupError({ phase: 'windows_terminate', code: 'spawn_error', osCode: safeOsCode(error) })); });
+    killer.once('close', code => { clearTimeout(timer); resolve({ stopped: code === 0, exitCode: code }); });
   });
 }
 
@@ -221,36 +251,40 @@ function windowsProcessSnapshot(environment: NodeJS.ProcessEnv, timeoutMs: numbe
   // Only process identities and parent links are returned, never command lines.
   // An exited intermediate parent can disappear from taskkill's tree traversal;
   // CIM still exposes its PID as the surviving child's ParentProcessId.
-  const script = "$ErrorActionPreference='Stop'; @(Get-CimInstance Win32_Process | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; created=$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks.ToString() } else { 'unknown' }) } }) | ConvertTo-Json -Compress";
+  const script = "$ErrorActionPreference='Stop'; @(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process' | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; created=$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks.ToString() } else { 'unknown' }) } }) | ConvertTo-Json -Compress; exit 0";
   return new Promise((resolve, reject) => {
     const reader = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
       shell: false, windowsHide: true, env: environment, stdio: ['ignore', 'pipe', 'ignore'],
     });
     const chunks: Buffer[] = [];
     let bytes = 0;
+    let exited = false;
+    let exitCode: number | null = null;
+    reader.once('exit', code => { exited = true; exitCode = code; });
     const timer = setTimeout(() => {
       reader.kill();
-      reject(new Error('Process enumeration timed out.'));
+      reject(new CleanupError({ phase: 'windows_snapshot', code: 'timeout', helperExited: exited, helperExitCode: exitCode, helperOutputBytes: bytes }));
     }, timeoutMs);
     reader.stdout.on('data', (data: Buffer) => {
       bytes += data.length;
       if (bytes > 1_048_576) {
         reader.kill();
-        reject(new Error('Process enumeration exceeded its limit.'));
+        reject(new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperOutputBytes: bytes }));
       } else chunks.push(data);
     });
-    reader.once('error', () => { clearTimeout(timer); reject(new Error('Process enumeration is unavailable.')); });
+    reader.once('error', error => { clearTimeout(timer); reject(new CleanupError({ phase: 'windows_snapshot', code: 'spawn_error', osCode: safeOsCode(error) })); });
     reader.once('close', code => {
       clearTimeout(timer);
       try {
-        if (code !== 0 || bytes > 1_048_576) throw new Error('Process enumeration failed.');
+        if (code !== 0) throw new CleanupError({ phase: 'windows_snapshot', code: 'helper_exit', helperExitCode: code, helperOutputBytes: bytes });
+        if (bytes > 1_048_576) throw new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperOutputBytes: bytes });
         const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, ''));
         if (!Array.isArray(value) || !value.every(item => item && typeof item === 'object'
           && Number.isSafeInteger(item.pid) && Number.isSafeInteger(item.parent) && typeof item.created === 'string')) {
           throw new Error('Invalid process enumeration.');
         }
         resolve(value as WindowsProcess[]);
-      } catch { reject(new Error('Process enumeration failed.')); }
+      } catch (error) { reject(error instanceof CleanupError ? error : new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperExitCode: code, helperOutputBytes: bytes })); }
     });
   });
 }
@@ -263,7 +297,7 @@ function windowsTree(record: Pick<CommandRecord, 'pid' | 'commandPid' | 'windows
     const knownCreation = record.windowsProcesses.get(pid);
     // Do not signal a PID that has been reused since an earlier cleanup attempt.
     if (knownCreation && current.has(pid) && current.get(pid)!.created !== knownCreation) {
-      throw new Error('Process identity changed during cleanup.');
+      throw new CleanupError({ phase: 'windows_snapshot', code: 'identity_changed' });
     }
     anchors.add(pid);
   }
@@ -368,7 +402,7 @@ export class ProcessSupervisor {
       finish = () => resolve(result);
     });
     const record: CommandRecord = {
-      owner: ownerId, child, pid: child.pid, closed: false, exitSeen: false,
+      owner: ownerId, environment: launchEnvironment, child, pid: child.pid, closed: false, guardianExited: false, exitSeen: false,
       windowsProcesses: new Map(),
       result, stdout: [], stderr: [], capturedBytes: 0, outputLimit,
       cleanupFailed: false, done, finish, signal,
@@ -390,6 +424,7 @@ export class ProcessSupervisor {
       result.error = 'Unable to start the command runtime.';
       void this.stopRecord(record);
     });
+    child.once('exit', () => { record.guardianExited = true; });
     child.once('close', () => {
       record.closed = true;
       if (!record.exitSeen && !record.cleanupPromise) result.error ??= 'Command runtime exited before reporting a result.';
@@ -454,10 +489,26 @@ export class ProcessSupervisor {
     if (record.cleanupPromise) return record.cleanupPromise;
     if (record.timer) clearTimeout(record.timer);
     if (record.abort) record.signal?.removeEventListener('abort', record.abort);
-    record.cleanupPromise = this.releaseTree(record).catch(() => false).then(released => {
+    const startedAt = Date.now();
+    record.result.cleanupDiagnostic = {
+      phase: process.platform === 'win32' ? 'windows_snapshot' : 'posix_terminate', code: 'running',
+      elapsedMs: 0, snapshots: 0, terminationAttempts: 0, liveProcesses: 0,
+      guardianExited: record.guardianExited, streamsClosed: record.closed,
+    };
+    record.cleanupPromise = this.releaseTree(record).catch(error => {
+      Object.assign(record.result.cleanupDiagnostic!, error instanceof CleanupError ? error.detail : { code: 'os_error', osCode: safeOsCode(error) });
+      return false;
+    }).then(released => {
       record.cleanupFailed = !released;
       record.result.cleanup = released ? 'released' : 'cleanup_failed';
-      if (!released) record.result.error = 'Command process cleanup failed; the owner remains occupied.';
+      if (!released) {
+        const diagnostic = record.result.cleanupDiagnostic!;
+        if (diagnostic.code === 'running') diagnostic.code = 'unreleased';
+        diagnostic.elapsedMs = Date.now() - startedAt;
+        diagnostic.guardianExited = record.guardianExited;
+        diagnostic.streamsClosed = record.closed;
+        record.result.error = 'Command process cleanup failed; the owner remains occupied. ' + JSON.stringify(diagnostic);
+      } else delete record.result.cleanupDiagnostic;
       if (released) this.records.delete(record);
       // Always keep draining until the bounded release attempt finishes. Failed
       // cleanup is retained as occupied even though host stream handles are closed.
@@ -479,12 +530,19 @@ export class ProcessSupervisor {
       // return code, including an already-exited command parent. If this platform
       // cannot enumerate processes, fail closed and retain owner occupancy.
       while (Date.now() < deadline) {
-        const snapshot = await windowsProcessSnapshot(this.environment, Math.max(1, deadline - Date.now()));
+        const diagnostic = record.result.cleanupDiagnostic!;
+        diagnostic.phase = 'windows_snapshot';
+        const snapshot = await windowsProcessSnapshot(record.environment, Math.max(1, deadline - Date.now()));
+        diagnostic.snapshots++;
         const tree = windowsTree(record, snapshot);
+        diagnostic.liveProcesses = tree.length;
         if (tree.length === 0 && record.closed) return true;
+        diagnostic.phase = tree.length ? 'windows_terminate' : 'windows_streams';
         for (const item of tree) {
           if (Date.now() >= deadline) return false;
-          await taskkill(item.pid, this.environment, Math.max(1, deadline - Date.now()));
+          diagnostic.terminationAttempts++;
+          const killed = await taskkill(item.pid, record.environment, Math.max(1, deadline - Date.now()));
+          diagnostic.helperExitCode = killed.exitCode;
         }
         await delay(10);
       }
