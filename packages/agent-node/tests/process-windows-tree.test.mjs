@@ -5,7 +5,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { buildWindowsTreeCleanupScript } from '../dist/windows-process-tree.js';
+import { buildWindowsTreeCleanupScript, runWindowsTreeCleanup } from '../dist/windows-process-tree.js';
+import { commandEnvironment } from '../dist/process-supervisor.js';
 
 const execFileAsync = promisify(execFile);
 const quote = value => "'" + value.replaceAll("'", "''") + "'";
@@ -30,6 +31,35 @@ async function cleanupFixture(root, directory) {
   await fs.rm(directory, { recursive: true, force: true });
 }
 
+test('Windows cleanup uses the production filtered environment and stdin identities through physical helper close', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-filtered-'));
+  const ready = path.join(directory, 'ready');
+  const spawnStartedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  const spawnCompletedAt = Date.now();
+  let helper, helperClosed = false;
+  try {
+    await until(() => exists(ready), 'fixture process must start');
+    const environment = commandEnvironment(process.env);
+    assert.equal(Object.keys(environment).some(key => key.toUpperCase() === 'PSMODULEPATH'), false);
+    const result = await runWindowsTreeCleanup({
+      anchors: [{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], environment, timeoutMs: 8000,
+      onHelper: (child, whenClosed) => { helper = child; void whenClosed.then(() => { helperClosed = true; }); },
+    });
+    assert.equal(result.released, true, JSON.stringify(result.diagnostic));
+    assert.equal(helperClosed, true, 'success must include the actual helper close event');
+    assert.equal(live(root.pid), false);
+  } finally {
+    root.kill('SIGKILL');
+    // Failure still fails the test; its original helper handle must not keep
+    // the runner alive after the bounded production release attempt rejected.
+    if (helper && !helperClosed) {
+      helper.kill('SIGKILL'); helper.stdin?.destroy(); helper.stdout?.destroy(); helper.stderr?.destroy(); helper.unref();
+    }
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
 test('Windows handle cleanup retains an exited parent anchor and finds the later detached grandchild', { skip: process.platform !== 'win32', timeout: 35000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-identity-'));
   const childReady = path.join(directory, 'child.pid');
@@ -53,10 +83,10 @@ test('Windows handle cleanup retains an exited parent anchor and finds the later
     const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot
-if(!(Test-Path -LiteralPath ${quote(captured)})) {
+if(!([IO.File]::Exists(${quote(captured)}))) {
   [IO.File]::WriteAllText(${quote(captured)},'captured')
   $handshakeDeadline=[DateTime]::UtcNow.AddSeconds(3)
-  while(!(Test-Path -LiteralPath ${quote(resume)})) {
+  while(!([IO.File]::Exists(${quote(resume)}))) {
     if([DateTime]::UtcNow -ge $handshakeDeadline) { throw 'Fixture handshake timeout.' }
     Start-Sleep -Milliseconds 10
   }
@@ -88,7 +118,7 @@ test('Windows exited-unbound anchors cannot adopt a live process and unknown cre
   const spawnCompletedAt = Date.now();
   try {
     await until(() => exists(ready), 'fixture process must start');
-    await assert.rejects(run(buildWindowsTreeCleanupScript([{ pid: root.pid, exited: true }], 8000)), error => {
+    await assert.rejects(run(buildWindowsTreeCleanupScript([{ pid: root.pid, exited: true, spawnStartedAt, spawnCompletedAt }], 8000)), error => {
       const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
       assert.equal(result?.code, 'identity_changed'); return true;
     });

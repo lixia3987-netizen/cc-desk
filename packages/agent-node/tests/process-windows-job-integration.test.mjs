@@ -5,7 +5,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { setImmediate as tick } from 'node:timers/promises';
-import { ProcessSupervisor } from '../dist/process-supervisor.js';
+import { ProcessSupervisor, commandEnvironment } from '../dist/process-supervisor.js';
 
 function fixture({ failedSpawn = false } = {}) {
   const originalSpawn = childProcess.spawn;
@@ -52,6 +52,21 @@ function fixture({ failedSpawn = false } = {}) {
     },
   };
 }
+
+test('Windows environment deduplicates names and explicitly masks every libuv host fallback', () => {
+  const f = fixture();
+  try {
+    const environment = commandEnvironment({ Path: 'credential-sentinel', PATH: 'unrelated-path', SystemRoot: 'C:\\Windows', USERNAME: 'private-identity' }, ['credential-sentinel']);
+    assert.equal(environment.PATH, '', 'a filtered duplicate cannot restore executable lookup');
+    assert.equal(environment.SYSTEMROOT, 'C:\\Windows');
+    assert.equal(environment.Path, undefined);
+    assert.equal(environment.SystemRoot, undefined);
+    for (const key of ['HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'SYSTEMDRIVE', 'TEMP', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'WINDIR']) assert.equal(environment[key], '', key);
+    assert.equal(environment.NODE_V8_COVERAGE, '');
+    assert.equal(JSON.stringify(environment).includes('credential-sentinel'), false);
+    assert.equal(JSON.stringify(environment).includes('private-identity'), false);
+  } finally { f.restore(); }
+});
 
 test('a guardian spawn error with no PID still waits for Node close without requiring an exit event', async () => {
   const f = fixture({ failedSpawn: true });

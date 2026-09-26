@@ -42,9 +42,11 @@
 
 macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`，依据 [Electron 44 的官方测试修复](https://releases.electronjs.org/pr/53790) 避免系统 Keychain 提示阻塞。生产启动参数不变，成品报告明确真实 OS Keychain 持久保存和交互提示未覆盖；需后续候选验证该启动修复。
 
-第五候选 `2b2e11a` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36219515255) 通过；[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36219515233) 中 macOS 完整通过根检查、66 项源码 E2E 和 5 项成品测试，包括 ZIP/DMG 内真实 ASAR native worker、工具与重启闭环。Linux 根检查和 5 项成品测试通过，源码 E2E 为 65 项通过、1 项失败：worktree 删除后的迟到读取向仍未卸载的界面报“会话不存在”。修复在读取失败后核对主进程的最新会话记录，只丢弃已删除会话的旧错误，并加入删除已完成但 UI 通知尚在途的确定性回归。Windows 根检查尚在运行，不能将单个平台结果扩展为整个候选通过。本地根检查为 655 项通过、0 项失败、6 项按平台跳过。
+第五候选 `2b2e11a` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36219515255) 通过；[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36219515233) 中 macOS 完整通过根检查、66 项源码 E2E 和 5 项成品测试，包括 ZIP/DMG 内真实 ASAR native worker、工具与重启闭环。Linux 根检查和 5 项成品测试通过，源码 E2E 为 65 项通过、1 项失败：worktree 删除后的迟到读取向仍未卸载的界面报“会话不存在”。修复在读取失败后核对主进程的最新会话记录，只丢弃已删除会话的旧错误，并加入删除已完成但 UI 通知尚在途的确定性回归。Windows 的 Claude 包回归通过，但 native 清理超时且失败后的测试资源未全部收尾；该轮被后续候选取消，不能将单个平台结果扩展为整个候选通过。本地根检查为 655 项通过、0 项失败、6 项按平台跳过。
 
 随后审查发现 native Windows 的快照方案无法发现“中间父进程在首次清理快照之前已退出”的独立后代。为此改为命令启动前绑定私有 Job Object：助手先持有 guardian HANDLE，再通过原 Node IPC 的随机挑战确认身份，绑定且核实成功后才授权 launch；关闭 breakaway，启用 KILL_ON_JOB_CLOSE。清理要求 Job 的 ActiveProcesses 为零及助手、guardian 的实际 close，不以一次终止调用或根进程退出替代。绑定失败不执行命令，助手异常或证明缺失保留占用；Claude/PTY 的既有身份快照路径不由此宣称获得相同覆盖。新增首次清理前父进程已退出的 detached 双 fork、助手崩溃和 owner 隔离等真实 Windows 回归，仍须后续候选在 Windows 执行。此机制不是操作系统沙箱，不能管理通过外部服务或代理另行创建的进程。启动前还同步复核 Job 状态，防止 ready 后紧随协议失败仍执行命令；缺失或被凭据过滤的 SystemRoot 直接拒绝，系统助手不通过项目 cwd/PATH 查找。最新相关本地回归为 37 项通过、0 项失败、6 项真实 Windows 测试待 CI。
+
+第六候选 `257af660` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36220653021) 及本地完整根检查通过（679 项通过、0 项失败、10 项平台测试跳过）。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36220653028) 中 macOS 完整通过根检查、67 项源码 E2E 和 5 项成品测试，含实际的删除通知延迟回归；Linux 根检查及源码 E2E 通过，成品继续验证。Windows 的四项真实 Job 回归全部通过：首次清理前父进程已退出的 detached 后代、助手崩溃与 owner 隔离、绑定失败、取消。正常 native 命令仍在过滤环境中的 PowerShell 编译准备阶段超时，未授权命令执行，根检查未通过。独立诊断显示完整环境 CIM 查询约 0.33 秒完成，过滤环境启动正常但查询超时，故后续修复显式加载系统内置模块，不恢复完整宿主环境或原 PSModulePath。另根据 Node/libuv 的实际启动行为，以空值阻止 Windows 必需变量及 NODE_V8_COVERAGE 被重新从宿主注入，并保留真实子进程凭据隔离回归；这些修复仍需下一候选验证。
 
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
@@ -52,8 +54,8 @@ macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`�
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第五候选 workspace/Linux/macOS 通过；Windows 验证中，新 Job 实现待复验 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第五候选 macOS 通过、Linux 有失败；Windows 待前置检查 |
+| 同一候选根 `npm run check` | 第六候选 workspace/Linux/macOS 通过；Windows 的过滤环境准备失败仍在修复 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第六候选 Linux/macOS 通过；Windows 待前置检查 |
 | 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第三/四候选 Linux、第五候选 macOS 通过；待同一候选三平台通过 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |

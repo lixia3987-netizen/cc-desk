@@ -10,6 +10,7 @@ export interface WindowsCommandJobDiagnostic {
   activeProcesses?: number;
   helperExitCode?: number | null;
   helperStarted?: boolean;
+  modulesLoaded?: boolean;
 }
 
 export interface WindowsCommandJob {
@@ -55,6 +56,12 @@ $ErrorActionPreference='Stop'
 [Console]::Out.WriteLine('{"type":"progress","stage":"compile"}')
 [Console]::Out.Flush()
 try {
+$PSModuleAutoLoadingPreference='None'
+# Resolve built-in cmdlets directly, without user/project module discovery or
+# restoring PSModulePath values removed from the command environment.
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+[Console]::Out.WriteLine('{"type":"progress","stage":"compile","modulesLoaded":true}')
+[Console]::Out.Flush()
 Add-Type -TypeDefinition @'
 using System;
 using System.Diagnostics;
@@ -233,8 +240,10 @@ export function connectWindowsCommandJob(options: WindowsCommandJobOptions, help
     let value: Record<string, unknown>;
     try { value = JSON.parse(line) as Record<string, unknown>; } catch { fail('protocol_error'); return; }
     if (!value || typeof value !== 'object') { fail('protocol_error'); return; }
-    if (value.type === 'progress' && value.stage === 'compile' && !diagnostic.helperStarted && !held && !resultSeen) {
-      diagnostic = { ...diagnostic, helperStarted: true };
+    if (value.type === 'progress' && value.stage === 'compile' && !held && !resultSeen
+      && (!diagnostic.helperStarted && value.modulesLoaded === undefined
+        || diagnostic.helperStarted && !diagnostic.modulesLoaded && value.modulesLoaded === true)) {
+      diagnostic = { ...diagnostic, helperStarted: true, ...(value.modulesLoaded === true ? { modulesLoaded: true } : {}) };
     } else if (value.type === 'held' && value.nonce === nonce && !held && !bound && !resultSeen) {
       held = true; diagnostic = { ...diagnostic, stage: 'challenge' };
       void Promise.resolve().then(() => options.challenge(nonce)).then(() => {

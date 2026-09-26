@@ -38,12 +38,13 @@ export interface ProcessCleanupDiagnostic {
   liveProcesses: number;
   guardianExited: boolean;
   streamsClosed: boolean;
-  helperStage?: 'bootstrap' | 'compile' | 'snapshot' | 'capture' | 'terminate';
+  helperStage?: 'bootstrap' | 'modules' | 'input' | 'compile' | 'snapshot' | 'capture' | 'terminate';
   jobStage?: 'compile' | 'open' | 'challenge' | 'bind' | 'active' | 'terminate' | 'query' | 'closed';
   nativeCode?: number;
   helperExitCode?: number | null;
   helperExited?: boolean;
   helperStarted?: boolean;
+  modulesLoaded?: boolean;
   helperOutputBytes?: number;
   osCode?: 'ENOENT' | 'EACCES' | 'EPERM' | 'ESRCH' | 'UNKNOWN';
 }
@@ -72,12 +73,30 @@ const ENVIRONMENT_KEYS = new Set([
   'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE',
 ]);
 
+// Node/libuv make_program_env restores these Windows keys from the host when
+// absent (nodejs/node v22.x, deps/uv/src/win/process.c required_vars). Explicit
+// empty entries prevent that fallback; no additional host values are copied.
+const WINDOWS_BACKFILLED_KEYS = [
+  'HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'PATH', 'SYSTEMDRIVE', 'SYSTEMROOT',
+  'TEMP', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'WINDIR',
+];
+
 /** No NODE_OPTIONS, shell startup hooks, npm config, or model/provider variables. */
 export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: readonly string[] = []): NodeJS.ProcessEnv {
-  const result: NodeJS.ProcessEnv = {};
+  // Node's JS launcher also restores NODE_V8_COVERAGE on every platform unless
+  // the supplied environment owns that key. Empty disables coverage inheritance.
+  const result: NodeJS.ProcessEnv = { NODE_V8_COVERAGE: '' };
+  const blocked = new Set<string>();
+  const windows = process.platform === 'win32';
   for (const [key, value] of Object.entries(source)) {
-    if (value !== undefined && ENVIRONMENT_KEYS.has(key.toUpperCase()) && !forbiddenValues.some(secret => secret.length > 0 && value.includes(secret))) result[key] = value;
+    const normalized = key.toUpperCase();
+    if (value === undefined || !ENVIRONMENT_KEYS.has(normalized)) continue;
+    const destination = windows ? normalized : key;
+    if (forbiddenValues.some(secret => secret.length > 0 && value.includes(secret))) blocked.add(destination);
+    else result[destination] = value;
   }
+  for (const key of blocked) delete result[key];
+  if (windows) for (const key of WINDOWS_BACKFILLED_KEYS) result[key] ??= '';
   return result;
 }
 
@@ -339,7 +358,7 @@ export class ProcessSupervisor {
     // without changing another concurrent run's launch environment.
     const launchEnvironment = commandEnvironment(this.environment, forbiddenValues);
     if (!path.isAbsolute(command.executable) && !/[\\/]/.test(command.executable)
-      && !Object.keys(launchEnvironment).some(key => key.toUpperCase() === 'PATH')) {
+      && !Object.entries(launchEnvironment).some(([key, value]) => key.toUpperCase() === 'PATH' && Boolean(value))) {
       result.error = 'Executable lookup requires PATH; select an absolute executable when PATH is unavailable or filtered.';
       return result;
     }
@@ -571,7 +590,7 @@ export class ProcessSupervisor {
         Object.assign(record.result.cleanupDiagnostic!, {
           phase: 'windows_job', code: progress.code, jobStage: progress.stage,
           nativeCode: progress.nativeCode, liveProcesses: progress.activeProcesses ?? 0,
-          helperExitCode: progress.helperExitCode, helperStarted: progress.helperStarted,
+          helperExitCode: progress.helperExitCode, helperStarted: progress.helperStarted, modulesLoaded: progress.modulesLoaded,
         });
       }
       if (record.windowsJob) {
@@ -580,7 +599,7 @@ export class ProcessSupervisor {
         Object.assign(record.result.cleanupDiagnostic!, {
           phase: 'windows_job', code: progress.code, jobStage: progress.stage,
           nativeCode: progress.nativeCode, liveProcesses: progress.activeProcesses ?? 0,
-          helperExitCode: progress.helperExitCode, helperExited: record.windowsJob.closed, helperStarted: progress.helperStarted,
+          helperExitCode: progress.helperExitCode, helperExited: record.windowsJob.closed, helperStarted: progress.helperStarted, modulesLoaded: progress.modulesLoaded,
         });
         if (!released) return false;
       } else if (record.commandLaunched) {

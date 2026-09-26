@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ProcessSupervisor, commandEnvironment, linuxLiveProcesses } from '../dist/process-supervisor.js';
@@ -17,6 +17,14 @@ async function fixture(t, options = {}) {
       try { record.child.kill('SIGKILL'); } catch { /* The original release still fails this test. */ }
       record.child.stdout?.destroy(); record.child.stderr?.destroy();
       record.child.channel?.unref(); record.child.unref();
+      // A failed attempt also retains its cleaner process until physical close.
+      // Rescue those original handles too; otherwise their pipes keep the test
+      // file alive long after its intentionally failing release assertion.
+      for (const helper of record.windowsHelpers.values()) {
+        try { helper.kill('SIGKILL'); } catch { /* Preserve the original failure. */ }
+        helper.stdin?.destroy(); helper.stdout?.destroy(); helper.stderr?.destroy();
+        helper.unref();
+      }
     }
     try { await rm(cwd, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
     catch (error) { failure ??= error; }
@@ -100,12 +108,34 @@ test('per-run resolved secrets are removed even from operational allowlisted var
   assert.equal(result.exitCode, 0);
   assert.equal(result.stdout.includes(secret), false);
   const variables = JSON.parse(result.stdout);
-  for (const key of ['LANG', 'HOME', 'PATH']) assert.equal(variables[key], undefined);
+  for (const key of ['LANG', 'HOME', 'PATH']) assert.equal(variables[key], process.platform === 'win32' && key === 'PATH' ? '' : undefined);
   const missingPath = await supervisor.run('credential-path', { ...command(''), executable: 'node' }, undefined, [secret]);
   assert.match(missingPath.error, /absolute executable/);
   assert.equal(missingPath.cleanup, 'released');
   const independent = await supervisor.run('unrelated-run', command('process.stdout.write(process.env.LANG || "")'));
   assert.equal(independent.stdout, secret, 'scrubbing is bound to this run, not mutable global state');
+});
+
+test('host identity and coverage variables cannot be backfilled into a restricted real child', async t => {
+  const keys = ['USERNAME', 'USERDOMAIN', 'LOGONSERVER', 'NODE_V8_COVERAGE'];
+  const previous = keys.map(key => process.env[key]);
+  const sentinel = 'forbidden-host-identity-sentinel';
+  try {
+    for (const key of keys) process.env[key] = sentinel;
+    const { supervisor, command, cwd } = await fixture(t);
+    const result = await supervisor.run('host-backfill', command('process.stdout.write(JSON.stringify(process.env))'));
+    assert.equal(result.exitCode, 0, result.error);
+    assert.equal(result.cleanup, 'released', result.error);
+    assert.equal(result.stdout.includes(sentinel), false);
+    assert.equal((await readdir(cwd)).includes(sentinel), false, 'empty coverage must not create a project coverage directory');
+    const actual = JSON.parse(result.stdout);
+    for (const key of keys) assert.equal(actual[key], process.platform === 'win32' || key === 'NODE_V8_COVERAGE' ? '' : undefined, key);
+  } finally {
+    for (let i = 0; i < keys.length; i++) {
+      if (previous[i] === undefined) delete process.env[keys[i]];
+      else process.env[keys[i]] = previous[i];
+    }
+  }
 });
 
 test('bounds timeout and waits for the stopped process before returning', async t => {

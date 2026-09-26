@@ -8,6 +8,7 @@ import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { buildWindowsCommandJobScript, connectWindowsCommandJob, createWindowsCommandJob, WindowsCommandJobError } from '../dist/windows-command-job.js';
+import { commandEnvironment } from '../dist/process-supervisor.js';
 
 const nonce = 'a'.repeat(64);
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -79,7 +80,8 @@ test('job binding waits for the original IPC challenge and release waits for phy
   let accept;
   const challenge = new Promise(resolve => { accept = resolve; });
   let reachedChallenge = false, helperClosed = false, initialized = false;
-  const helper = fakeHelper(`${held}let bound=false;lines.on('line',line=>{if(!bound){if(line!==${JSON.stringify('bind ' + nonce)})process.exit(4);bound=true;${ready}}else{${result}setTimeout(()=>process.exit(0),120);}});`);
+  const bootstrap = emit({ type: 'progress', stage: 'compile' }) + emit({ type: 'progress', stage: 'compile', modulesLoaded: true });
+  const helper = fakeHelper(`${bootstrap}${held}let bound=false;lines.on('line',line=>{if(!bound){if(line!==${JSON.stringify('bind ' + nonce)})process.exit(4);bound=true;${ready}}else{${result}setTimeout(()=>process.exit(0),120);}});`);
   const preparing = connectWindowsCommandJob(options({ challenge: async received => { assert.equal(received, nonce); reachedChallenge = true; await challenge; }, onHelper: (_helper, closed) => { void closed.then(() => { helperClosed = true; }); } }), helper, nonce);
   void preparing.then(() => { initialized = true; });
   try {
@@ -88,6 +90,7 @@ test('job binding waits for the original IPC challenge and release waits for phy
     accept();
     const job = await preparing;
     assert.equal(job.diagnostic.stage, 'active');
+    assert.equal(job.diagnostic.modulesLoaded, true);
     const stopping = job.stop(1000);
     await delay(50);
     assert.equal(helperClosed, false, 'the emitted empty-job result is not a physical close');
@@ -339,4 +342,20 @@ test('Windows abort during held-handle challenge leaves the unlaunched guardian 
     assert.equal(live(root.child.pid), true, 'cancellation must occur before Assign can authorize launch');
   } catch (error) { originalFailure = error; throw error; }
   finally { await finishFixtures(directory, [[root, undefined, helper]], originalFailure); }
+});
+
+test('Windows job loads its built-in compiler with the production filtered environment', { skip: process.platform !== 'win32', timeout: 30_000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-job-env-'));
+  const root = guardian(directory);
+  let job, helper, originalFailure;
+  try {
+    const environment = commandEnvironment({ ...process.env, PSModulePath: directory });
+    assert.equal(Object.keys(environment).some(key => key.toUpperCase() === 'PSMODULEPATH'), false);
+    job = await startJob(root, { environment, onHelper: child => { helper = child; } });
+    assert.equal(job.diagnostic.modulesLoaded, true, 'explicit system module load must finish before binding');
+    assert.equal(job.usable, true);
+    assert.equal(await job.stop(10_000), true, JSON.stringify(job.diagnostic));
+    await bounded(root.whenClosed, 'Filtered-environment guardian must physically close.');
+  } catch (error) { originalFailure = error; throw error; }
+  finally { await finishFixtures(directory, [[root, job, helper]], originalFailure); }
 });

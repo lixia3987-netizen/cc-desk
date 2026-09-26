@@ -19,7 +19,7 @@ export interface WindowsCleanupProgress {
   snapshots: number;
   terminationAttempts: number;
   liveProcesses: number;
-  helperStage?: 'bootstrap' | 'compile' | 'snapshot' | 'capture' | 'terminate';
+  helperStage?: 'bootstrap' | 'modules' | 'input' | 'compile' | 'snapshot' | 'capture' | 'terminate';
   nativeCode?: number;
   helperExitCode?: number | null;
   helperExited?: boolean;
@@ -47,6 +47,11 @@ export function buildWindowsTreeCleanupScript(anchors: readonly WindowsProcessAn
   return `
 [Console]::Out.WriteLine('{"type":"progress","phase":"windows_snapshot","code":"running","snapshots":0,"terminationAttempts":0,"liveProcesses":0,"nativeCode":0,"helperStage":"bootstrap"}')
 $ErrorActionPreference='Stop'
+$PSModuleAutoLoadingPreference='None'
+[Console]::Out.WriteLine('{"type":"progress","phase":"windows_snapshot","code":"running","snapshots":0,"terminationAttempts":0,"liveProcesses":0,"nativeCode":0,"helperStage":"modules"}')
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','Microsoft.PowerShell.Utility','Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdlets.psd1')) -ErrorAction Stop
+[Console]::Out.WriteLine('{"type":"progress","phase":"windows_snapshot","code":"running","snapshots":0,"terminationAttempts":0,"liveProcesses":0,"nativeCode":0,"helperStage":"input"}')
 $specifications=@(ConvertFrom-Json -InputObject ${input === 'stdin' ? '([Console]::In.ReadToEnd())' : `'${serialized}'`})
 $anchors=New-Object 'System.Collections.Generic.HashSet[int]'
 $specs=@{}; $known=@{}; $handles=@{}; $bound=@{}; $minimum=@{}
@@ -291,7 +296,7 @@ export function runWindowsTreeCleanup(options: {
         if (finished) return;
         diagnostic = { phase: item.phase as WindowsCleanupProgress['phase'], code: item.code as WindowsCleanupProgress['code'],
           snapshots: Number(item.snapshots), terminationAttempts: Number(item.terminationAttempts), liveProcesses: Number(item.liveProcesses), nativeCode: Number(item.nativeCode) };
-        if (typeof item.helperStage === 'string' && ['bootstrap', 'compile', 'snapshot', 'capture', 'terminate'].includes(item.helperStage)) {
+        if (typeof item.helperStage === 'string' && ['bootstrap', 'modules', 'input', 'compile', 'snapshot', 'capture', 'terminate'].includes(item.helperStage)) {
           diagnostic.helperStage = item.helperStage as WindowsCleanupProgress['helperStage'];
         }
         options.onProgress?.(diagnostic);
