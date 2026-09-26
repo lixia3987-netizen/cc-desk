@@ -11,6 +11,9 @@ import { claudeCapabilities, validateClaudeSession } from '../engines/claude/cap
 import { claudeExports } from '../engines/claude/exports';
 import { ShellTerminalLauncher } from '../engines/shell/terminal-launcher';
 import { Runtime } from '../runtime';
+import { NativeStructuredExecutor } from '../engines/native/structured-executor';
+import { ConnectionStore } from '../engines/native/connections';
+import { createNativeConfig, parseNativeConfig } from '../engines/native/config';
 import type { StateStore } from '../store';
 import { ExecutionStatePublisher } from './events';
 import { ExecutionRegistry } from './registry';
@@ -24,7 +27,7 @@ const shellCapabilities: ExecutionCapabilities = {
 };
 
 /** The only place that chooses and wires concrete execution providers. */
-export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void) {
+export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void } = {}) {
   const registry = new ExecutionRegistry(id => {
     const session = store.state.sessions.find(session => session.id === id);
     if (!session) throw new Error('会话不存在。');
@@ -80,5 +83,19 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
       return config;
     },
     createIdentity: () => ({ providerId: 'shell', mode: 'terminal' }) });
+  const connections = options.connections ?? new ConnectionStore(store.directory);
+  const native = new NativeStructuredExecutor(store, connections, registry.events, { onError, assertOwnership: id => options.assertNativeOwnership?.(id) });
+  options.onNative?.(native);
+  registry.register({
+    providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,
+    capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false, export: true }),
+    configuration: () => ({ schemaVersion: 1, defaults: createNativeConfig(), fields: [
+      { key: 'connectionId', label: '模型连接', type: 'select', apply: 'stopped', options: [{ value: '', label: '请先在设置中配置连接' }, ...connections.list().connections.map(item => ({ value: item.id, label: item.name + (item.ready ? '' : '（未就绪）') }))] },
+      { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。每次写入和命令均需单独审批。' },
+    ] }),
+    validateConfig: createNativeConfig,
+    validateSession: session => { parseNativeConfig(session.engineConfig); if (!session.execution.conversationId || session.execution.forkFrom || session.execution.imported) throw new Error('自研 agent Alpha 不支持导入或分叉会话。'); },
+    createIdentity: input => { if (input.conversationId || input.fork) throw new Error('自研 agent Alpha 不支持导入或分叉会话。'); return { providerId: 'native', mode: 'structured', conversationId: randomUUID() }; },
+  });
   return registry;
 }

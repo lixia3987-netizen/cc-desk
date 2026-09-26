@@ -1,5 +1,7 @@
 name: Verify and package desktop
 on:
+  pull_request:
+    branches: [dev/native-agent]
   workflow_dispatch:
     inputs:
       publish_release:

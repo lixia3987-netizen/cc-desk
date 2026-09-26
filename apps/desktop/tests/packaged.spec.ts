@@ -9,6 +9,8 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { extractFile, listPackage } from '@electron/asar';
 import { persistedStateSchema as legacyWorkspaceSchema } from '../src/shared/workspace-v2';
+// @ts-expect-error The shared loopback-only protocol fixture is implemented in JavaScript.
+import { startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type Target = { format: string; artifact: string; executable: string; arch: string };
 const manifest = process.env.WORKBENCH_PACKAGED_TARGETS;
@@ -91,6 +93,137 @@ test('packaged default profile: unchanged application identity and userData with
 });
 
 for (const target of targets) {
+  test(`packaged ${target.format}: native ASAR worker completes an approved local task without Claude`, async ({}, testInfo) => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-native-packaged-'));
+    const profile = path.join(directory, '用户 profile with spaces');
+    const project = path.join(directory, '项目 with spaces');
+    const isolatedHome = path.join(directory, 'home');
+    const config = path.join(directory, 'config');
+    const localAppData = path.join(directory, 'local-appdata');
+    const claudeConfig = path.join(directory, 'claude');
+    await Promise.all([profile, project, isolatedHome, config, localAppData, claudeConfig].map(p => fs.mkdir(p, { recursive: true })));
+    await fs.writeFile(path.join(project, 'fixture.txt'), 'before packaged native task\n');
+    await fs.writeFile(path.join(profile, 'workspace.json'), JSON.stringify({ version: 3, projects: [], sessions: [], settings: {
+      claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {},
+    } }));
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined && !/^(?:WORKBENCH_|CLAUDE|ANTHROPIC|OPENAI|ELECTRON_RUN_AS_NODE|NODE_OPTIONS)/i.test(key)) env[key] = value;
+    }
+    Object.assign(env, { HOME: isolatedHome, USERPROFILE: isolatedHome, APPDATA: config, LOCALAPPDATA: localAppData, XDG_CONFIG_HOME: config, CLAUDE_CONFIG_DIR: claudeConfig });
+    const content = '打包 native 任务完成 ✅\n';
+    const commandMarker = 'packaged-native-command-' + randomUUID();
+    const fixture = await startResponsesFixture({ task: {
+      path: 'fixture.txt', content,
+      // This is the Playwright Node host, not the packaged Electron GUI executable.
+      command: { executable: process.execPath, argv: ['-e', 'require("node:fs").writeFileSync("command-result.txt", process.argv[1]);', commandMarker], cwd: '.' },
+    } });
+    const secret = 'sk-packaged-native-dummy-' + randomUUID();
+    const errors: string[] = [];
+    let app: ElectronApplication | undefined;
+    let launchedProcess: ReturnType<ElectronApplication['process']> | undefined;
+    const launch = async () => {
+      app = await electron.launch({ executablePath: target.executable, args: electronLaunchArgs([`--user-data-dir=${profile}`]), env, cwd: directory, timeout: 45_000 });
+      launchedProcess = app.process();
+      const identity = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, profile: app.getPath('userData'), appPath: app.getAppPath(), arch: process.arch }));
+      expect(identity.packaged).toBe(true);
+      expect(identity.arch).toBe(target.arch);
+      expect(await fs.realpath(identity.profile)).toBe(await fs.realpath(profile));
+      expect(identity.appPath).toMatch(/[/\\][Rr]esources[/\\]app\.asar$/);
+      expect(listPackage(identity.appPath, { isPack: false }).map(file => file.replaceAll('\\', '/'))).toContain('/dist/native/worker.cjs');
+      expect(extractFile(identity.appPath, 'dist/native/worker.cjs').length).toBeGreaterThan(1024);
+      const page = await app.firstWindow();
+      page.on('pageerror', error => errors.push(error.message));
+      await page.waitForFunction(() => !!window.desktop);
+      return page;
+    };
+    const close = async () => {
+      const child = launchedProcess!;
+      await app!.close(); app = undefined; launchedProcess = undefined;
+      expect(child.exitCode).toBe(0);
+      expect(child.signalCode).toBeNull();
+    };
+    try {
+      let page = await launch();
+      const created = await page.evaluate(async ({ folder, baseURL, secret }) => {
+        const connection = await window.desktop.nativeConnections.upsert({
+          name: 'Packaged local fixture', protocol: 'responses', baseURL, model: 'packaged-fixture-model',
+          allowLoopbackHttp: true, enabled: true, auth: { mode: 'memory' },
+        });
+        await window.desktop.nativeConnections.setCredential({ id: connection.id, revision: connection.revision, mode: 'memory', secret });
+        const project = await window.desktop.addProject(folder);
+        const session = await window.desktop.createSession({ projectId: project.id, title: '打包 native 任务', kind: 'agent', providerId: 'native', mode: 'structured', isolated: false,
+          engineConfig: { schemaVersion: 1, options: { connectionId: connection.id, model: '', maxActiveMs: 60_000 } } });
+        await window.desktop.setSelection(session.id);
+        await window.desktop.submitChat(session.id, '读取 fixture.txt，修改内容并运行验证命令。');
+        return { session, connectionId: connection.id };
+      }, { folder: project, baseURL: fixture.baseURL, secret });
+      const sessionId = created.session.id;
+      await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).pending[0]?.toolName, sessionId)).toBe('apply_patch');
+      expect(await fs.readFile(path.join(project, 'fixture.txt'), 'utf8')).toBe('before packaged native task\n');
+      // Observe the real Electron utility process while it waits for normal IPC approval.
+      // Neither the executor nor the worker launch is replaced by a test implementation.
+      const utility = await app!.evaluate(({ app }) => app.getAppMetrics().find(metric => metric.type === 'Utility' && (metric.name === 'cc-desk native agent' || metric.serviceName === 'cc-desk native agent')));
+      expect(utility?.pid).toBeGreaterThan(0);
+      expect(utility?.pid).not.toBe(launchedProcess!.pid);
+      await page.evaluate(async id => {
+        const approval = (await window.desktop.chatSnapshot(id)).pending[0];
+        await window.desktop.respondChat(id, approval.requestId, { behavior: 'allow' });
+      }, sessionId);
+      await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).pending[0]?.toolName, sessionId)).toBe('run_command');
+      expect(await fs.readFile(path.join(project, 'fixture.txt'), 'utf8')).toBe(content);
+      await expect(fs.stat(path.join(project, 'command-result.txt'))).rejects.toThrow();
+      await page.evaluate(async id => {
+        const approval = (await window.desktop.chatSnapshot(id)).pending[0];
+        await window.desktop.respondChat(id, approval.requestId, { behavior: 'allow' });
+      }, sessionId);
+      await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, sessionId), { timeout: 30_000 }).toBe('completed');
+      expect(await fs.readFile(path.join(project, 'command-result.txt'), 'utf8')).toBe(commandMarker);
+      const chat = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
+      expect(chat.messages.filter(message => message.role === 'assistant').map(message => message.text).join('\n')).toContain('本地任务完成 ✅ command=completed');
+      expect(chat.pending).toEqual([]);
+      expect(fixture.errors).toEqual([]);
+      expect(fixture.requests).toHaveLength(4);
+      expect(fixture.requests.every((request: { model: string }) => request.model === 'packaged-fixture-model')).toBe(true);
+      await expect.poll(() => app!.evaluate(({ app }, pid) => app.getAppMetrics().some(metric => metric.pid === pid), utility!.pid)).toBe(false);
+      const publicState = await page.evaluate(() => Promise.all([window.desktop.snapshot(), window.desktop.nativeConnections.list()]));
+      expect(JSON.stringify([publicState, chat])).not.toContain(secret);
+      await testInfo.attach('packaged-native-worker.json', { contentType: 'application/json', body: Buffer.from(JSON.stringify({ target: target.format, archiveWorker: 'dist/native/worker.cjs', utilityPid: utility!.pid, requests: fixture.requests.length, taskState: chat.taskState }, null, 2)) });
+      await page.screenshot({ path: testInfo.outputPath('packaged-native.png') });
+      await close();
+      expect(await fs.readFile(path.join(profile, 'native', 'connections.json'), 'utf8')).not.toContain(secret);
+      expect(await fs.readFile(path.join(profile, 'workspace.json'), 'utf8')).not.toContain(secret);
+      const journal = await fs.readFile(path.join(profile, 'native', 'conversations', created.session.execution.conversationId!, 'journal.jsonl'), 'utf8');
+      expect(journal).not.toContain(secret);
+      expect(journal).toContain('"type":"run_finished"');
+      page = await launch();
+      const restored = await page.evaluate(async ({ sessionId, connectionId }) => ({
+        chat: await window.desktop.chatSnapshot(sessionId), readiness: await window.desktop.nativeConnections.readiness({ id: connectionId }),
+        state: (await window.desktop.snapshot()).state,
+      }), { sessionId, connectionId: created.connectionId });
+      expect(restored.chat.messages.filter(message => message.role === 'assistant').map(message => message.text).join('\n')).toContain('本地任务完成 ✅ command=completed');
+      expect(restored.readiness.ready).toBe(false);
+      expect(restored.readiness.error).toContain('凭据');
+      expect(restored.state.sessions.find(session => session.id === sessionId)?.execution).toEqual(created.session.execution);
+      expect(fixture.requests).toHaveLength(4);
+      expect(errors).toEqual([]);
+      await close();
+    } finally {
+      if (app) {
+        const page = app.windows()[0];
+        if (page && !page.isClosed()) {
+          await page.screenshot({ path: testInfo.outputPath('native-failure.png') }).catch(() => {});
+          await page.evaluate(async () => {
+            for (const session of (await window.desktop.snapshot()).state.sessions) await window.desktop.stopSession(session.id);
+          }).catch(() => {});
+        }
+        await app.close().catch(() => launchedProcess?.kill());
+      }
+      await fixture.close();
+      await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
+  });
+
   test(`packaged ${target.format}: PTY, persistence, second instance and quit`, async ({}, testInfo) => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-packaged-'));
     const profile = path.join(directory, 'profile');

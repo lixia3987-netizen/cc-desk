@@ -87,7 +87,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     expect(first.execution.conversationId).toMatch(/^native\//);
     expect(first.engineConfig).toEqual({ schemaVersion: 7, options: { route: 'project-route', responseStyle: 'expanded' } });
     expect(first).not.toHaveProperty('permissionMode');
-    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('hello');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();

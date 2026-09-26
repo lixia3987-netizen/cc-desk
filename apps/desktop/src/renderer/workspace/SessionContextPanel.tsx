@@ -77,9 +77,9 @@ export function SessionContextPanel({
     </div>
     {active.kind === 'agent' && <>
       <SessionConfig key={active.id} session={active} descriptor={descriptor} onError={report} />
-      <button className="secondary full" disabled={readOnly || !!descriptor?.maintenance || !active.started || !executionCapabilities?.fork || activeBusy || active.identityPending} onClick={() => openNew('agent', active)}>
+      {executionCapabilities?.fork && <button className="secondary full" disabled={readOnly || !!descriptor?.maintenance || !active.started || activeBusy || active.identityPending} onClick={() => openNew('agent', active)}>
         <GitBranch size={14} />从此会话创建分支
-      </button>
+      </button>}
     </>}
     <button className="text-button archive-button" disabled={readOnly || busy || (structured ? activeBusy : ['running', 'stopping'].includes(active.status))} onClick={() => void perform(async () => {
       await window.desktop.updateSession({ id: active.id, archived: !active.archived });

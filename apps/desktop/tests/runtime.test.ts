@@ -14,6 +14,7 @@ import type { TerminalLauncher, TerminalLaunchCallbacks } from '../src/main/exec
 import { createWorktree, gitInfo } from '../src/main/git';
 import { environment, execFileAsync } from '../src/main/commands';
 import { fileURLToPath } from 'node:url';
+import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
 
 async function until(check:()=>boolean, phase: string, diagnostics: () => string = () => '', timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -21,6 +22,15 @@ async function until(check:()=>boolean, phase: string, diagnostics: () => string
     if (Date.now() > deadline) throw new Error(`Timed out waiting for PTY ${phase}: ${diagnostics()}`);
     await new Promise(resolve => setTimeout(resolve,25));
   }
+}
+async function processIsRunning(pid: number): Promise<boolean> {
+  try {
+    if (process.platform === 'linux') {
+      return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
+    }
+    const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]);
+    return Boolean(result.stdout.trim()) && !result.stdout.trim().startsWith('Z');
+  } catch { return false; }
 }
 test('real PTY supports Unicode/spaces, isolated output, input, resize, concurrency and stopping', { timeout: 40000 }, async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-pty-'));const cwd=path.join(root,'项目 space & quote');fs.mkdirSync(cwd);
@@ -240,6 +250,7 @@ test('shutdown reports launch-resource failure even when the terminal process al
     assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
     assert.equal(runtime.lastError, failure);
     assert.equal(f.store.state.sessions[0].status, 'error', 'failed cleanup must not advertise a successful stop');
+    await assert.rejects(runtime.whenReleased(f.session.id), /资源已释放|清理失败/);
     assert.match(f.store.state.sessions[0].error ?? '', /资源清理失败/);
     await assert.rejects(runtime.shutdown(), /资源已释放/, 'failed resource cleanup cannot be reported as successful on retry');
   } finally {
@@ -264,6 +275,8 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
     }) });
     try {
       await runtime.start(f.session.id);
+      let released = false;
+      const releaseBarrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
       await until(() => fs.existsSync(ready), `${ending} fixture ready`);
       if (ending === 'stop') runtime.stop(f.session.id); else fs.writeFileSync(exit, 'exit');
       await until(() => closing, `${ending} resource close began`);
@@ -271,7 +284,9 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
       assert.equal(runtime.has(f.session.id), true);
       assert.equal(runtime.activeCount, 1);
       assert.deepEqual(finalOwnership, [], 'no stopped/error event may precede cleanup');
+      assert.equal(released, false, 'physical release waits for process and launch resources');
       release();
+      await releaseBarrier;
       await until(() => !runtime.has(f.session.id), `${ending} complete cleanup`);
       assert.equal(f.store.state.sessions[0].status, ending === 'failure' ? 'error' : 'stopped');
       assert.deepEqual(finalOwnership, [false], 'final status is published only after ownership is released');
@@ -550,12 +565,7 @@ test('session disconnect waits for a target descendant after its PTY root exits 
     file: process.execPath, args: ['-e', session.id === target.id ? rootCode : 'setInterval(()=>{},1000)'], env: environment(),
   }) });
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const processRunning = async (pid: number) => {
-    try {
-      const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]);
-      return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z');
-    } catch { return false; }
-  };
+  const processRunning = processIsRunning;
   let rootPid = 0, childPid = 0;
   try {
     await runtime.start(f.session.id); await runtime.start(target.id);
@@ -615,10 +625,7 @@ test('state failure after spawn terminates the process before start rejects', { 
 test('shutdown waits for an ignoring descendant after its root PTY has exited', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
   const f = lifecycleFixture(); let childPid = 0; let rootPid = 0;
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const processRunning = async (pid: number) => {
-    try { const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]); return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z'); }
-    catch { return false; }
-  };
+  const processRunning = processIsRunning;
   try {
     const rootFile = path.join(f.root, 'root-pid'); const childFile = path.join(f.root, 'child-pid'); const heartbeat = path.join(f.root, 'heartbeat');
     const script = path.join(f.root, 'fixture-shell');
@@ -646,6 +653,35 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
   } finally {
     for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
     await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('natural PTY root exit kills surviving descendants before whenReleased resolves', { skip: process.platform === 'win32', timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const childFile = path.join(f.root, 'natural-child'), exitFile = path.join(f.root, 'natural-exit');
+  const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childFile)},String(process.pid));process.on('SIGTERM',()=>{});process.on('SIGHUP',()=>{});setInterval(()=>{},1000);`;
+  const rootCode = `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(0)},10);`;
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async () => ({ file: process.execPath, args: ['-e', rootCode], env: environment() }) });
+  let childPid = 0;
+  try {
+    await runtime.start(f.session.id);
+    await until(() => fs.existsSync(childFile), 'natural descendant ready');
+    childPid = Number(fs.readFileSync(childFile, 'utf8'));
+    let released = false;
+    const barrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
+    fs.writeFileSync(exitFile, 'exit');
+    await until(() => f.store.state.sessions[0].status === 'stopping', 'natural root exit');
+    assert.equal(await processIsRunning(childPid), true);
+    assert.equal(runtime.has(f.session.id), true);
+    assert.equal(released, false);
+    await barrier;
+    assert.equal(await processIsRunning(childPid), false);
+    assert.equal(runtime.has(f.session.id), false);
+    await runtime.stopAndWait(f.session.id);
+  } finally {
+    if (childPid && await processIsRunning(childPid)) process.kill(childPid, 'SIGKILL');
+    await runtime.shutdown(); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
 

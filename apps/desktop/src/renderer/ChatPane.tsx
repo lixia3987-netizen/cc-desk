@@ -62,6 +62,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
+  const [confirmingNativeRecovery,setConfirmingNativeRecovery]=useState(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
@@ -149,7 +150,15 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   },[highlight,visible,content]);
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
   const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
-  const composerDisabled=disabled||session.archived;
+  const nativeRecovery=session.execution.providerId==='native'&&[snapshot?.error,session.error].some(error=>error?.includes('此会话只读'));
+  const composerDisabled=disabled||session.archived||nativeRecovery;
+  const nativeRecoveryConfirmed=nativeRecovery&&[snapshot?.error,session.error].some(error=>error?.includes('已核查执行现场并解除目录隔离'));
+  const confirmNativeRecovery=async()=>{
+    if(confirmingNativeRecovery||running)return;
+    setConfirmingNativeRecovery(true);
+    try { await window.desktop.confirmNativeRecovery(session.id);if(mounted.current)await load(); }
+    catch(error){onError(error);}finally{if(mounted.current)setConfirmingNativeRecovery(false);}
+  };
   const recoveryAvailable=!!descriptor?.capabilities.recoverContext&&!readOnly&&session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
   const recoverContext=async()=>{
     if(recovering)return;
@@ -158,7 +167,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     catch(error){onError(error);}finally{if(mounted.current)setRecovering(false);}
   };
   const queued=running||!!snapshot?.queue?.items.length;
-  const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
+  const visibleAttachments=descriptor?.capabilities.attachments?attachments:[];
+  const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
     onAccepted:jumpToLatest,onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
@@ -175,6 +185,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName}/>)}
       {!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
+      {!archive&&nativeRecovery&&!nativeRecoveryConfirmed&&<div className="chat-recovery native-recovery"><p className="panel-note">请核查上次工具执行涉及的文件、命令和残留进程。确认只解除工作目录隔离，旧会话仍为只读；需新建会话继续，不会重放结果未知的工具。</p><button className="secondary compact" disabled={confirmingNativeRecovery||running||readOnly} onClick={()=>void confirmNativeRecovery()}>{confirmingNativeRecovery?'正在确认…':'确认已核查执行现场'}</button></div>}
       {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{session.status==='stopping'?'正在停止':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} queue={snapshot?.queue} disabled={composerDisabled} onError={onError} refresh={load}/>}
@@ -193,11 +204,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     </Dialog>}
     <div className="composer chat-composer">
       {unavailable&&<p className="inline-warning engine-unavailable" role="status">{unavailable}</p>}
-      {attachments.length>0&&<div className="attachment-chips">{attachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={attachmentsBlocked} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
+      {visibleAttachments.length>0&&<div className="attachment-chips">{visibleAttachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={attachmentsBlocked} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
-        commands={snapshot?.commands} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
-      <div className="chat-composer-actions"><button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button><button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title="Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；文件可拖入聊天区成为待发送附件；草稿自动保存">Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{attachments.length>0&&' · '+attachments.length+' 个附件 · '+(attachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={readOnly||session.archived||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!attachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
+        commands={descriptor?.capabilities.commands?snapshot?.commands:undefined} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
+      <div className="chat-composer-actions">{descriptor?.capabilities.attachments&&<button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button>}<button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title={'Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；'+(descriptor?.capabilities.attachments?'文件可拖入聊天区成为待发送附件；':'')+'草稿自动保存'}>Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{visibleAttachments.length>0&&' · '+visibleAttachments.length+' 个附件 · '+(visibleAttachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" disabled={readOnly||session.archived||session.status==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{session.status==='stopping'?'正在停止':'中断'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!visibleAttachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
     </div>
   </div>;
 }

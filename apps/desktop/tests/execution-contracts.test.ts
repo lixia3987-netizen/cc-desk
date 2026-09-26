@@ -93,28 +93,44 @@ class FakeStructured implements StructuredExecutor {
 
 class FakeTerminal implements TerminalExecutor {
   active = new Set<string>();
+  private releases = new Map<string, { promise: Promise<void>; resolve(): void; reject(error: unknown): void }>();
   maintenance: boolean[] = [];
   disconnects = 0;
   shutdowns = 0;
   get activeCount() { return this.active.size; }
   has(id: string) { return this.active.has(id); }
   isBusy(id: string) { return this.has(id); }
-  async start(id: string) { this.active.add(id); }
+  async start(id: string) {
+    if (this.active.has(id)) return;
+    this.active.add(id);
+    let resolve!: () => void, reject!: (error: unknown) => void;
+    const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    void promise.catch(() => {});
+    this.releases.set(id, { promise, resolve, reject });
+  }
   write(_id: string, _data: string) {}
   resize(_id: string, _cols: number, _rows: number) {}
   snapshot(_id: string) { return { status: 'running' as const, chunks: [] }; }
   async exports(_id: string) { return []; }
   async interrupt(_id: string) {}
-  async stop(id: string) { this.active.delete(id); }
+  private release(id: string) { this.active.delete(id); this.releases.get(id)?.resolve(); this.releases.delete(id); }
+  async stop(id: string) { this.release(id); }
+  async stopAndWait(id: string) {
+    try { await this.stop(id); }
+    catch (error) { this.releases.get(id)?.reject(error); throw error; }
+    await this.whenReleased(id);
+  }
+  async whenReleased(id: string) { await this.releases.get(id)?.promise; if (this.active.has(id)) throw new Error('Fake terminal is still active'); }
   async stopIdle(id: string) { await this.stop(id); }
-  forget(id: string) { this.active.delete(id); }
+  forget(id: string) { this.release(id); }
   setMaintenance(value: boolean) { this.maintenance.push(value); }
-  async disconnectAll() { this.disconnects++; this.active.clear(); }
-  async shutdown() { this.shutdowns++; this.active.clear(); }
+  async disconnectAll() { this.disconnects++; for (const id of this.active) this.release(id); }
+  async shutdown() { this.shutdowns++; for (const id of this.active) this.release(id); }
 }
 
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-execution-contract-'));
+  const additionalDirectories = new Set<string>();
   const store = new StateStore(directory);
   const projectId = randomUUID(), now = new Date().toISOString();
   store.change(state => state.projects.push({ id: projectId, path: directory, name: 'Fake provider', createdAt: now }));
@@ -131,11 +147,17 @@ function fixture() {
   const handlers = new Map<string, (input: unknown) => unknown>();
   service.register(<T>(name: string, schema: z.ZodType<T>, action: (data: T) => unknown) => handlers.set(name, input => action(schema.parse(input))));
   const call = async <T>(name: string, input?: unknown): Promise<T> => await handlers.get(name)!(input) as T;
-  const add = (providerId = 'test.engine', mode: SessionExecution['mode'] = 'structured', conversationId = 'opaque/conversation:42') => {
-    const value: Session = { id: randomUUID(), projectId, title: providerId, kind: providerId === 'shell' ? 'shell' : 'agent',
+  const add = (providerId = 'test.engine', mode: SessionExecution['mode'] = 'structured', conversationId = 'opaque/conversation:42', location = { cwd: directory, projectId }) => {
+    const value: Session = { id: randomUUID(), projectId: location.projectId, title: providerId, kind: providerId === 'shell' ? 'shell' : 'agent',
       execution: providerId === 'shell' ? { providerId, mode } : { providerId, mode, conversationId },
-      cwd: directory, started: false, engineConfig: providerId === 'shell' ? { schemaVersion: 1, options: {} } : independentConfig(), status: 'idle', archived: false, createdAt: now, updatedAt: now };
+      cwd: location.cwd, started: false, engineConfig: providerId === 'shell' ? { schemaVersion: 1, options: {} } : independentConfig(), status: 'idle', archived: false, createdAt: now, updatedAt: now };
     store.change(state => state.sessions.push(value)); return value;
+  };
+  const independent = () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-execution-independent-')), projectId = randomUUID();
+    additionalDirectories.add(cwd);
+    store.change(state => state.projects.push({ id: projectId, path: cwd, name: 'Independent project', createdAt: now }));
+    return { cwd, projectId };
   };
   const register = (providerId = 'test.engine', caps = capabilities()) => {
     const executor = new FakeStructured(registry, (id, config) => store.change(state => { state.sessions.find(session => session.id === id)!.engineConfig = config; }));
@@ -151,8 +173,8 @@ function fixture() {
     }); return { executor, caps, identities };
   };
   const creation = new SessionCreation(store, service, () => { changed++; }, 'test.engine');
-  return { store, registry, service, creation, projectId, sent, call, add, register, changes: () => changed, directory,
-    dispose: async () => { try { await service.shutdown(); } finally { fs.rmSync(directory, { recursive: true, force: true }); } } };
+  return { store, registry, service, creation, projectId, sent, call, add, independent, register, changes: () => changed, directory,
+    dispose: async () => { try { await service.shutdown(); } finally { for (const root of [directory, ...additionalDirectories]) fs.rmSync(root, { recursive: true, force: true }); } } };
 }
 
 test('a non-Claude executor handles commands, messages and approvals through real SessionService IPC', async () => {
@@ -259,7 +281,9 @@ test('conversation ownership is isolated by provider and rejects duplicate ident
   const f = fixture();
   try {
     const a = f.register(), b = f.register('other.engine'); a.executor.hold = true; b.executor.hold = true;
-    const first = f.add(), other = f.add('other.engine'), duplicate = f.add();
+    const first = f.add(), other = f.add('other.engine', 'structured', 'opaque/conversation:42', f.independent());
+    // Different directories isolate the identity contract from directory exclusion.
+    const duplicate = f.add('test.engine', 'structured', 'opaque/conversation:42', f.independent());
     const firstTurn = f.call('chat:send', { id: first.id, text: 'first' });
     await until(() => a.executor.isBusy(first.id));
     const otherTurn = f.call('chat:send', { id: other.id, text: 'other' });
@@ -276,7 +300,7 @@ test('one terminal driver shared by multiple registrations is counted and mainta
   try {
     const executor = new FakeTerminal();
     for (const providerId of ['test.engine', 'shell']) f.registry.register({ providerId, mode: 'terminal', executor, capabilities });
-    const agent = f.add('test.engine', 'terminal'), shell = f.add('shell', 'terminal');
+    const agent = f.add('test.engine', 'terminal'), shell = f.add('shell', 'terminal', undefined, f.independent());
     await f.service.start(agent.id); await f.service.start(shell.id); assert.equal(f.service.activeCount, 2);
     await f.service.withDisconnectedWorkspaces(async () => { assert.equal(executor.activeCount, 0); });
     assert.equal(executor.disconnects, 1); assert.deepEqual(executor.maintenance, [true, false]);

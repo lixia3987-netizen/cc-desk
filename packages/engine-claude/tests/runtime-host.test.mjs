@@ -3,11 +3,14 @@ import test from 'node:test';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { ClaudeRuntime } from '@cc-desk/engine-claude';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 const capabilities = { available: true, executable: process.execPath, version: 'fixture', flags: [], efforts: ['default'] };
 
 /** No Electron, desktop imports, StateStore or application state shape are required. */
-function setup(count = 1, { throwObservers = false } = {}) {
+function setup(count = 1, { throwObservers = false, invocation } = {}) {
   const sessions = new Map(Array.from({ length: count }, () => {
     const id = randomUUID();
     return [id, { id, kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
@@ -51,7 +54,7 @@ function setup(count = 1, { throwObservers = false } = {}) {
     onAcceptedPrompt() {},
   };
   const runtime = new ClaudeRuntime(host, {
-    invocation: () => ({ file: process.execPath, args: [fileURLToPath(new URL('./fixtures/claude-process.mjs', import.meta.url))] }),
+    invocation: invocation ?? (() => ({ file: process.execPath, args: [fileURLToPath(new URL('./fixtures/claude-process.mjs', import.meta.url))] })),
     transcriptExists: async () => false,
     onEvent() { if (throwObservers) throw new Error('journal observer failed'); },
   });
@@ -104,4 +107,64 @@ test('confirmed model persists across a later permission rejection; host write f
     await assert.rejects(runtime.send(id, 'must not reuse inconsistent process', capabilities), /停止|正在启动/);
     assert.equal(runtime.snapshot(id).taskState, 'error');
   } finally { await runtime.shutdown(); }
+});
+
+test('natural CLI root exit releases inherited descendant pipes and the explicit lifetime barrier', { skip: process.platform !== 'linux', timeout: 12000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-natural-release-'));
+  const childFile = path.join(directory, 'child');
+  const exitFile = path.join(directory, 'exit');
+  const childCode = `process.on('SIGTERM',()=>{});process.on('SIGHUP',()=>{});require('node:fs').writeFileSync(${JSON.stringify(childFile)}, String(process.pid));setInterval(()=>{},1000);`;
+  const rootCode = `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:['ignore',1,2]});require('node:readline').createInterface({input:process.stdin}).on('line',line=>{const frame=JSON.parse(line);process.stdout.write(JSON.stringify({type:'control_response',response:{subtype:'success',request_id:frame.request_id,response:{commands:[]}}})+'\\n')});setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(0)},10);`;
+  const fixture = setup(1, { invocation: () => ({ file: process.execPath, args: ['-e', rootCode] }) });
+  const id = fixture.ids[0];
+  let childPid = 0;
+  const live = async pid => {
+    const namespace = await fs.readlink('/proc/self/ns/pid');
+    const depth = (await fs.readFile('/proc/self/status', 'utf8')).match(/^NSpid:\s+(.+)$/m)[1].trim().split(/\s+/).length;
+    for (const entry of await fs.readdir('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const status = await fs.readFile(`/proc/${entry}/status`, 'utf8');
+        if (status.match(/^NSpid:\s+(.+)$/m)?.[1].trim().split(/\s+/).length !== depth || /^State:\s+[ZX]/m.test(status)) continue;
+        if (Number(status.match(/^NSpid:\s+(.+)$/m)?.[1].trim().split(/\s+/).at(-1)) === pid && await fs.readlink(`/proc/${entry}/ns/pid`) === namespace) return true;
+      } catch (error) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error; }
+    }
+    return false;
+  };
+  try {
+    await fixture.runtime.prepareCommands(id, capabilities);
+    for (let n = 0; n < 100; n++) { try { childPid = Number(await fs.readFile(childFile, 'utf8')); break; } catch { await new Promise(resolve => setTimeout(resolve, 10)); } }
+    assert.ok(childPid);
+    let released = false;
+    const barrier = fixture.runtime.whenReleased(id).then(() => { released = true; });
+    await fs.writeFile(exitFile, 'exit');
+    await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(released, false);
+    assert.equal(await live(childPid), true);
+    assert.equal(fixture.runtime.has(id), true);
+    await barrier;
+    assert.equal(await live(childPid), false);
+    assert.equal(fixture.runtime.has(id), false);
+    assert.equal(fixture.sessions.get(id).status, 'stopped');
+    await fixture.runtime.stopAndWait(id);
+  } finally {
+    if (childPid && await live(childPid)) process.kill(childPid, 'SIGKILL');
+    await fixture.runtime.shutdown();
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('whenReleased rejects a known failed tree cleanup even while inherited streams remain open', { timeout: 8000 }, async () => {
+  const fixture = setup();
+  const id = fixture.ids[0];
+  try {
+    await fixture.runtime.prepareCommands(id, capabilities);
+    const connection = fixture.runtime.entries.get(id).connection;
+    // Model the exact state of a failed tree release while close is still pending.
+    connection.termination = Promise.resolve(false);
+    await assert.rejects(fixture.runtime.whenReleased(id), /工作目录未释放/);
+    assert.equal(fixture.runtime.has(id), true);
+    connection.termination = undefined;
+    await fixture.runtime.stopAndWait(id);
+  } finally { await fixture.runtime.shutdown(); }
 });

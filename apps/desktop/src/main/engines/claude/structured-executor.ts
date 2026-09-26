@@ -6,7 +6,7 @@ import { ChatRuntime } from '../../chat-runtime';
 import type { ChatRuntimeOptions } from '../../chat-runtime';
 import type { ExecutionEvents } from '../../execution/events';
 import { ExecutionStatePublisher } from '../../execution/events';
-import type { StructuredExecutor } from '../../execution/ports';
+import type { ExecutionSubmission, StructuredExecutor } from '../../execution/ports';
 import type { StateStore } from '../../store';
 import { claudeExports } from './exports';
 import { validateClaudeSession } from './capabilities';
@@ -40,7 +40,7 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   page(id: string, options?: ChatPageOptions) { return this.runtime.page(id, options); }
   search(id: string, query: string, before?: string) { return this.runtime.search(id, query, before); }
   attention() { return this.runtime.attention(); }
-  send(id: string, text: string, attachments?: string[], titlePrompt?: string) {
+  send(id: string, text: string, attachments?: string[], titlePrompt?: string, _submission?: ExecutionSubmission) {
     validateClaudeSession(this.session(id));
     return this.runtime.send(id, text, this.capabilities(), attachments, titlePrompt);
   }
@@ -60,6 +60,8 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   interrupt(id: string) { return this.runtime.interrupt(id); }
   interruptAndWait(id: string) { return this.runtime.interruptAndWait(id); }
   stop(id: string) { return this.runtime.stop(id); }
+  stopAndWait(id: string) { return this.runtime.stopAndWait(id); }
+  whenReleased(id: string) { return this.runtime.whenReleased(id); }
   stopIdle(id: string) { return this.runtime.stopIdle(id); }
   forget(id: string) { this.runtime.forget(id); }
   exports(id: string) { return claudeExports(this.session(id), () => this.runtime.exportPath(id)); }

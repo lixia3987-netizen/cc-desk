@@ -1,14 +1,17 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
 
 const execFileAsync = promisify(execFile);
 interface Operations {
   signal(pid: number, signal: NodeJS.Signals): unknown;
   list(): Promise<string>;
+  isLive?(pid: number): Promise<boolean>;
 }
 const nativeOperations: Operations = {
   signal: (pid, signal) => process.kill(pid, signal),
   list: async () => (await execFileAsync('ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 })).stdout,
+  ...(process.platform === 'linux' ? { isLive: async (pid: number) => (await linuxLiveProcesses({ group: pid })).length > 0 } : {}),
 };
 
 /** Signal an owned process group; only proven absent or zombie-only groups count as stopped. */
@@ -22,6 +25,10 @@ export async function signalPosixGroup(pid: number, signal: NodeJS.Signals, oper
       // Darwin killpg filters zombies, then returns EPERM when no eligible member
       // remains. A real permission failure must still prevent a CLI update.
       try {
+        if (operations.isLive) {
+          if (!await operations.isLive(pid)) return;
+          throw error;
+        }
         const rows = (await operations.list()).trim().split('\n').map(line => line.match(/^\s*(\d+)\s+([A-Z]\S*)\s*$/));
         if (rows.every(row => row !== null) && !rows.some(row => Number(row![1]) === pid && !row![2].startsWith('Z'))) return;
       } catch { /* Failure to inspect the group cannot establish that it stopped. */ }
