@@ -28,8 +28,15 @@ export class TerminalBuffer {
   }
 }
 
+// Fixed lifecycle labels retain the original OS code/cause without adding argv or environment data.
+function cleanupPhase(error: unknown, phase: string): Error {
+  const failure = error instanceof Error ? error : new Error('终端资源清理失败。', { cause: error });
+  try { Object.defineProperty(failure, 'cleanupPhase', { value: phase, enumerable: true, configurable: true }); return failure; }
+  catch { return Object.assign(new Error('终端资源清理失败。', { cause: failure }), { cleanupPhase: phase }); }
+}
 interface ProcessEntry {
   process: IPty; ending: boolean; paused?: boolean; token: object;
+  rootExited: boolean; spawnStartedAt: number; spawnCompletedAt: number;
   resource?: TerminalLaunchResource; resourceClose?: Promise<void>;
   release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
   completion: Promise<void>; finishCompletion(): void;
@@ -78,7 +85,7 @@ export class Runtime {
     return tracked;
   }
   private closeResource(id: string, entry: ProcessEntry) {
-    return entry.resourceClose ??= this.trackCleanup(id, Promise.resolve().then(() => entry.resource?.close()), entry);
+    return entry.resourceClose ??= this.trackCleanup(id, Promise.resolve().then(() => entry.resource?.close()).catch(error => { throw cleanupPhase(error, 'resource.close'); }), entry);
   }
   private trimBuffers() {
     const stopped = [...this.buffers.keys()].filter(id => !this.has(id));
@@ -203,13 +210,16 @@ export class Runtime {
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
       // Output observers may synchronously enter maintenance before native spawn.
       if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
+      const spawnStartedAt = Date.now();
       const child = spawnTerminal(launch, session.cwd);
+      const spawnCompletedAt = Date.now();
       let finishCompletion!: () => void;
       const completion = new Promise<void>(resolve => { finishCompletion = resolve; });
-      const entry: ProcessEntry = spawned = { process: child, ending: false, token, resource, completion, finishCompletion };
+      const entry: ProcessEntry = spawned = { process: child, ending: false, rootExited: false, spawnStartedAt, spawnCompletedAt, token, resource, completion, finishCompletion };
       this.running.set(id, entry);
       child.onData(data => this.guard(() => this.queue(id,data)));
       child.onExit(({ exitCode }) => {
+        entry.rootExited = true;
         if (this.running.get(id) !== entry) return;
         // Root exit does not release descendants, forwarding workers or hooks.
         // Keep UI state and ownership aligned until the same cleanup has settled.
@@ -331,7 +341,11 @@ export class Runtime {
     })(), entry);
     return entry.cleanup;
   }
-  private stopWindowsTree(entry: ProcessEntry): Promise<void> { return stopWindowsProcessTree(entry.process.pid); }
+  private stopWindowsTree(entry: ProcessEntry): Promise<void> {
+    return stopWindowsProcessTree(entry.process.pid, undefined, {
+      rootExited: entry.rootExited, spawnStartedAt: entry.spawnStartedAt, spawnCompletedAt: entry.spawnCompletedAt,
+    });
+  }
   private releasePty(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.release) return entry.release;
     this.stopping.set(id, entry);
@@ -340,7 +354,7 @@ export class Runtime {
         if (process.platform === 'win32') await releaseWindowsPty(entry.process);
         else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
         entry.released = true;
-      } finally {
+      } catch (error) { throw cleanupPhase(error, 'pty.release'); } finally {
         // The caller releases ownership after launcher and process-tree cleanup.
         this.trimBuffers();
       }
@@ -359,33 +373,54 @@ export class Runtime {
     const signal = async (name: NodeJS.Signals) => {
       for (const pid of [...ids].reverse()) {
         try { process.kill(pid,name); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = cleanupPhase(error, 'signal.pid.' + name); }
       }
       try { await signalPosixGroup(entry.process.pid, name); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = error; }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = cleanupPhase(error, 'signal.group.' + name); }
     };
     await signal('SIGTERM');
     // Keep this cleanup even when the root exits before an ignoring descendant.
     // This is a tracked Promise, independent of the root PTY's exit event.
     await new Promise<void>(resolve => setTimeout(resolve,1500));
     await signal('SIGKILL');
-    if (failure) throw failure;
-    // Signal delivery is not release proof. Wait until no live group/tree member remains.
+    // Signal delivery (or an OS error racing exit) is not release proof. Fresh
+    // inspection decides whether every retained PID and group member is gone.
     const deadline = Date.now() + 2000;
     for (;;) {
-      let rows: string[][];
-      if (process.platform === 'linux') {
-        const members = await Promise.all([linuxLiveProcesses({ group: entry.process.pid }), ...[...ids].map(pid => linuxLiveProcesses({ pid }))]);
-        rows = members.flat().map(item => [String(item.pid), String(item.group), 'S']);
-      } else {
-        const result = await execFileAsync('/bin/ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
-        rows = result.stdout.trim().split('\n').map(line => line.trim().split(/\s+/));
+      try {
+        if (!await this.posixTreeHasLiveMembers(ids, entry.process.pid)) break;
+        if (Date.now() >= deadline) throw new Error('无法确认终端后代进程已停止。');
+      } catch (error) {
+        const inspection = cleanupPhase(error, 'posix.release_inspection');
+        if (failure) throw new AggregateError([failure, inspection], '终端信号失败且无法确认进程树已释放。');
+        throw inspection;
       }
-      if (!rows.some(([pid, group, state]) => (ids.has(Number(pid)) || Number(group) === entry.process.pid) && state && !/^[ZX]/.test(state))) break;
-      if (Date.now() >= deadline) throw new Error('无法确认终端后代进程已停止。');
       await new Promise(resolve => setTimeout(resolve, 25));
     }
   }
+  private async posixTreeHasLiveMembers(ids: ReadonlySet<number>, group: number): Promise<boolean> {
+    if (process.platform === 'linux') {
+      const members = await Promise.all([linuxLiveProcesses({ group }), ...[...ids].map(pid => linuxLiveProcesses({ pid }))]);
+      return members.some(items => items.length > 0);
+    }
+    const result = await execFileAsync('/bin/ps', ['-eo', 'pid=,pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
+    return this.posixSnapshotHasLiveMembers(result.stdout, ids, group);
+  }
+  private posixSnapshotHasLiveMembers(output: string, ids: ReadonlySet<number>, group: number): boolean {
+    // A running ps must include at least itself. Empty or malformed output is
+    // unavailable release evidence, never proof that the owned tree is empty.
+    const lines = output.trim().split('\n');
+    const rows = lines.map(line => {
+      const fields = line.trim().split(/\s+/);
+      if (fields.length !== 3 || !/^\d+$/.test(fields[0]) || !/^\d+$/.test(fields[1])
+        || !Number.isSafeInteger(Number(fields[0])) || !Number.isSafeInteger(Number(fields[1])) || !fields[2]) {
+        throw new Error('无法解析终端进程存活状态。');
+      }
+      return { pid: Number(fields[0]), group: Number(fields[1]), state: fields[2] };
+    });
+    return rows.some(row => (ids.has(row.pid) || row.group === group) && !/^[ZX]/.test(row.state));
+  }
+
   snapshot(id: string): TerminalSnapshot {
     const session = this.getSession(id);
     this.flush();

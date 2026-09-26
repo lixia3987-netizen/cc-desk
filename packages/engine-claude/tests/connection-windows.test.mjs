@@ -86,3 +86,59 @@ foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId 
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
+
+test('Windows cleanup proves exit on its held handle when the process exits between inspection and termination', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-win-exit-race-'));
+  const captured = path.join(directory, 'captured'), resume = path.join(directory, 'resume'), checked = path.join(directory, 'exit-checked');
+  const startedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  const spawnedAt = Date.now();
+  const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  let cleaning;
+  try {
+    const script = windowsTreeCleanupScript(root.pid, false, startedAt, spawnedAt)
+      .replace("$cleanupPhase='terminate_owned_handle'", `$cleanupPhase='terminate_owned_handle'
+      [IO.File]::WriteAllText(${psQuote(captured)},'held-live-handle')
+      $handshakeDeadline=[DateTime]::UtcNow.AddSeconds(3)
+      while(!(Test-Path -LiteralPath ${psQuote(resume)})) {
+        if([DateTime]::UtcNow -ge $handshakeDeadline) { throw 'Fixture exit handshake timed out.' }
+        Start-Sleep -Milliseconds 10
+      }`)
+      .replace("$cleanupPhase='wait_failed_termination'", `$cleanupPhase='wait_failed_termination'
+        [IO.File]::WriteAllText(${psQuote(checked)},'termination-failed-exit-must-be-proven')`);
+    cleaning = execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 8192 });
+    void cleaning.catch(() => {});
+    await until(() => exists(captured), 'cleanup must hold a handle that was observed live', 8000);
+    root.kill('SIGKILL');
+    await until(() => root.exitCode !== null || root.signalCode !== null, 'the original process must exit before termination resumes');
+    await fs.writeFile(resume, 'continue');
+    await cleaning;
+    assert.equal(await exists(checked), true, 'the test must exercise a failed TerminateProcess, not skip termination');
+    assert.equal(live(root.pid), false);
+  } finally {
+    await fs.writeFile(resume, 'continue');
+    root.kill('SIGKILL');
+    await cleaning?.catch(() => {});
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('Windows cleanup refuses a failed termination while the held process is still live', { skip: process.platform !== 'win32', timeout: 12000 }, async () => {
+  const startedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+  const spawnedAt = Date.now();
+  const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+  try {
+    // Inject only the unsuccessful termination result. The process, opened
+    // handle, creation check and bounded wait all remain real Windows operations.
+    const script = windowsTreeCleanupScript(root.pid, false, startedAt, spawnedAt)
+      .replace('![OwnedProcessHandle]::TerminateProcess($handle,1)', '$true');
+    await assert.rejects(execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
+      windowsHide: true, timeout: 8000, maxBuffer: 8192,
+    }), error => {
+      assert.match(error.stderr, /CLAUDE_TREE_CLEANUP_FAILED:wait_failed_termination/);
+      return true;
+    });
+    assert.equal(live(root.pid), true, 'a failed signal cannot be reported as released without observing exit');
+  } finally { root.kill('SIGKILL'); }
+});

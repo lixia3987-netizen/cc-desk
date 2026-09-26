@@ -64,6 +64,7 @@ public static class OwnedProcessHandle {
   [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetProcessTimes(IntPtr handle, out long created, out long exited, out long kernel, out long user);
   [DllImport("kernel32.dll", SetLastError=true)] public static extern bool TerminateProcess(IntPtr handle, uint code);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
   [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr handle);
 }
 '@
@@ -111,7 +112,7 @@ do {
   if($targets.Count -eq 0) { exit 0 }
   foreach($processItem in $targets) {
     $cleanupPhase='open_owned_handle'
-    $handle=[OwnedProcessHandle]::OpenProcess(0x1001,$false,[int]$processItem.ProcessId)
+    $handle=[OwnedProcessHandle]::OpenProcess(0x101001,$false,[int]$processItem.ProcessId)
     if($handle -eq [IntPtr]::Zero) {
       if([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { continue }
       throw 'Cannot open owned process for termination.'
@@ -124,7 +125,13 @@ do {
       $cleanupPhase='verify_handle_identity'
       if($known[[string]$processItem.ProcessId] -ne $identity) { throw 'Process identity changed before termination.' }
       $cleanupPhase='terminate_owned_handle'
-      if($exited -eq 0 -and ![OwnedProcessHandle]::TerminateProcess($handle,1)) { throw 'Owned process termination failed.' }
+      if($exited -eq 0 -and ![OwnedProcessHandle]::TerminateProcess($handle,1)) {
+        # A parent/job can terminate this process after GetProcessTimes. Prove
+        # exit using the same handle; never treat access denied as proof itself.
+        $cleanupPhase='wait_failed_termination'
+        $remaining=[uint32][Math]::Max(0,[Math]::Min(250,[Math]::Ceiling(($deadline-[DateTime]::UtcNow).TotalMilliseconds)))
+        if([OwnedProcessHandle]::WaitForSingleObject($handle,$remaining) -ne 0) { throw 'Owned process termination failed and exit is unconfirmed.' }
+      }
     } finally { [void][OwnedProcessHandle]::CloseHandle($handle) }
   }
   Start-Sleep -Milliseconds 25

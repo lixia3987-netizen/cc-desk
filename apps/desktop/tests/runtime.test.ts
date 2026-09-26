@@ -295,16 +295,37 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
   }
 });
 
-test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async () => {
+test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async t => {
   const f = lifecycleFixture();
+  let phase = 'initial start';
+  const failures: { phase: string; error: unknown }[] = [];
   try {
     await f.runtime.start(f.session.id);
+    phase = 'maintenance disconnect';
     f.runtime.setMaintenance(true); await f.runtime.disconnectAll();
+    phase = 'maintenance release assertions';
     assert.equal(f.runtime.activeCount, 0); assert.equal(f.runtime.pendingCleanupCount, 0);
     await assert.rejects(f.runtime.start(f.session.id), /正在更新/);
+    phase = 'restart after maintenance';
     f.runtime.setMaintenance(false); await f.runtime.start(f.session.id);
     assert.equal(f.runtime.activeCount, 1);
-  } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
+  } catch (error) { failures.push({ phase, error }); }
+  finally {
+    phase = 'final shutdown';
+    try {
+      await f.runtime.shutdown();
+      phase = 'fixture removal';
+      fs.rmSync(f.root, { recursive: true, force: true });
+    } catch (error) { failures.push({ phase, error }); }
+  }
+  if (failures.length) {
+    // A failed disconnect is retained by Runtime and shutdown reports it again. Preserve both
+    // phases and onError causes: the test runner does not print nested Error causes by default.
+    t.diagnostic(inspect({ failures, reportedErrors: f.errors, activeCount: f.runtime.activeCount,
+      pendingCleanupCount: f.runtime.pendingCleanupCount, sessionStatus: f.store.state.sessions[0].status },
+    { depth: 8, maxArrayLength: 20, maxStringLength: 6000, breakLength: 100 }));
+    throw new AggregateError(failures.map(failure => failure.error), `CLI update lifecycle failed during ${failures[0].phase}`, { cause: failures[0].error });
+  }
 });
 
 function deferred<T>() {

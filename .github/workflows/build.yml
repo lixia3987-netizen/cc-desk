@@ -43,7 +43,13 @@ jobs:
       - name: Diagnose native process release after a Windows check failure
         if: ${{ !cancelled() && steps.check.outcome == 'failure' && runner.os == 'Windows' }}
         timeout-minutes: 2
-        run: node --test --test-name-pattern="executes explicit argv and cwd" packages/agent-node/tests/process-supervisor.test.mjs
+        run: |
+          node packages/agent-node/tests/helpers/windows-cleanup-probe.mjs
+          $probeExitCode = $LASTEXITCODE
+          node --test --test-name-pattern="executes explicit argv and cwd" packages/agent-node/tests/process-supervisor.test.mjs
+          $testExitCode = $LASTEXITCODE
+          if ($probeExitCode -ne 0) { exit $probeExitCode }
+          exit $testExitCode
       - name: Verify real Windows npm Claude launcher
         if: runner.os == 'Windows'
         shell: pwsh

@@ -32,11 +32,15 @@
 
 补充 Windows 清理按创建时间核查进程身份、保留已退出父进程的发现锚点，并通过持有的进程句柄终止目标；新增首快照后产生孙进程、父进程先退出的实际 Windows 回归。Node 不公开原始 spawn HANDLE，首次活跃根进程捕获仅可核对启动时间窗口，不能声称绝对排除同窗口 PID 复用。无法确认身份时保持目录占用。测试等待与失败清理增加明确截止，强制清理只用于结束失败测试，不能记作正常退出通过。
 
-第三候选 `61584d8` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530271) 通过；[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530374) 中 Linux、macOS 的根检查和全部源码 Electron E2E 均通过，成品验证继续进行。Windows 的 engine-claude 回归仍有两个失败：孙进程 fixture 的非 detached 启动导致父退出时被系统终止，以及一次未能确认树释放。第二轮 Windows 的 agent-node 清理也未通过，原日志未区分具体清理阶段，不能据此猜测根因。
+第三候选 `61584d8` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530271) 通过；[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36217530374) 中 Linux、macOS 的根检查和各 66 项源码 Electron E2E 均通过。Linux 的 5 项成品测试通过；macOS 成品有 4 项在应用启动时超时。Windows 的 engine-claude 回归仍有两个失败：孙进程 fixture 未观察到预期后代，以及一次未能确认树释放。第二轮 Windows 的 agent-node 清理也未通过，原日志未区分具体清理阶段，不能据此猜测根因。
 
-后续候选修正 Windows fixture 和路径身份断言，并补充不含命令、路径、凭据或 helper 原始 stderr 的固定阶段诊断。清理助手沿用本回合已过滤的环境变量。失败测试保留原始错误并有界退出；Windows 根检查失败后仍执行一个独立 native 进程释放回归以取得诊断，不改变失败结论。agent-node 当前基于 CIM 快照和 taskkill 的清理仍存在首次身份捕获及检查到终止之间的 PID 复用窗口，不得将其描述为严格句柄身份保证。
+第四候选修正 Windows fixture 和路径身份断言，并补充不含命令、路径、凭据或 helper 原始 stderr 的固定阶段诊断。清理助手沿用本回合已过滤的环境变量。失败测试保留原始错误并有界退出；Windows 根检查失败后仍执行一个独立 native 进程释放回归以取得诊断，不改变失败结论。该候选基于 CIM 快照和 taskkill 的清理仍有检查到终止之间的 PID 复用窗口，后续改为单个助手持有已验证的 HANDLE 执行终止，保留父进程发现锚点及助手本身的 close 屏障；首次根身份捕获的时间窗口限制仍适用。
 
 上述诊断候选的本地根 `npm run check` 已通过：contracts 3、engine-claude 13、agent-core 49、agent-node 87、desktop 497，共 649 项通过、0 项失败、2 项 Windows 平台测试跳过，包含完整类型检查与构建。这不替代 Windows 原生运行结果。
+
+第四候选 `d4057cad` 的 [三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36218469627) 中 Linux 全部检查再次通过。Windows 诊断区分出两条路径：Claude helper 的 `TerminateProcess` 与进程退出竞争；native helper 首次查询超时且尚无输出。前者通过同一已验证 HANDLE 的有界退出等待修复；后者继续核对最小环境和管道启动，不直接继承完整环境或放宽释放条件。macOS 有一项终端关闭回归未确认释放；后续保留信号错误并执行完整存活核查，只有明确无活进程后才继续 PTY/启动资源屏障，失败仍保留占用。
+
+macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`，依据 [Electron 44 的官方测试修复](https://releases.electronjs.org/pr/53790) 避免系统 Keychain 提示阻塞。生产启动参数不变，成品报告明确真实 OS Keychain 持久保存和交互提示未覆盖；需后续候选验证该启动修复。
 
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 

@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
+import { runWindowsTreeCleanup, type WindowsProcessAnchor } from './windows-process-tree.js';
 
 export interface CommandRequest {
   executable: string;
@@ -27,24 +28,20 @@ export interface CommandResult {
 }
 
 export interface ProcessCleanupDiagnostic {
-  phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'posix_terminate';
-  code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'unreleased' | 'os_error';
+  phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'windows_helper_release' | 'posix_terminate';
+  code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'identity_unavailable' | 'unreleased' | 'os_error';
   elapsedMs: number;
   snapshots: number;
   terminationAttempts: number;
   liveProcesses: number;
   guardianExited: boolean;
   streamsClosed: boolean;
+  helperStage?: 'bootstrap' | 'compile' | 'snapshot' | 'capture' | 'terminate';
+  nativeCode?: number;
   helperExitCode?: number | null;
   helperExited?: boolean;
   helperOutputBytes?: number;
   osCode?: 'ENOENT' | 'EACCES' | 'EPERM' | 'ESRCH' | 'UNKNOWN';
-}
-
-class CleanupError extends Error {
-  constructor(readonly detail: Pick<ProcessCleanupDiagnostic, 'phase' | 'code'> & Partial<ProcessCleanupDiagnostic>) {
-    super(`${detail.phase}:${detail.code}`);
-  }
 }
 
 function safeOsCode(error: unknown): NonNullable<ProcessCleanupDiagnostic['osCode']> {
@@ -80,9 +77,8 @@ export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: r
   return result;
 }
 
-// The guardian stays alive after the approved command exits. In particular, Windows
-// taskkill /T must still have a live tree root when an unref'ed descendant outlives
-// its parent. The guardian never interprets command strings or uses a shell.
+// The guardian stays alive after the approved command exits, providing a host-owned
+// root during descendant discovery. It never interprets commands or uses a shell.
 const GUARDIAN = String.raw`
 const { spawn } = require('node:child_process');
 let started = false;
@@ -91,11 +87,13 @@ process.on('message', message => {
   if (started || !message || message.type !== 'launch') return;
   started = true;
   try {
+    const spawnStartedAt = Date.now();
     const child = spawn(message.command.executable, message.command.argv, {
       cwd: message.command.cwd, env: message.environment, shell: false,
       windowsHide: true, stdio: ['ignore', 1, 2],
     });
-    child.once('spawn', () => process.send?.({ type: 'command-started', pid: child.pid }));
+    const spawnCompletedAt = Date.now();
+    child.once('spawn', () => process.send?.({ type: 'command-started', pid: child.pid, spawnStartedAt, spawnCompletedAt }));
     child.once('error', error => process.send?.({ type: 'launch-error', code: error.code }));
     child.once('exit', (code, signal) => process.send?.({ type: 'command-exit', code, signal }));
   } catch {
@@ -121,7 +119,12 @@ interface CommandRecord {
   child: ChildProcess;
   pid?: number;
   commandPid?: number;
-  windowsProcesses: Map<number, string>;
+  spawnStartedAt: number;
+  spawnCompletedAt: number;
+  commandSpawnStartedAt?: number;
+  commandSpawnCompletedAt?: number;
+  windowsProcesses: Map<number, WindowsProcessAnchor>;
+  windowsHelpers: Map<Promise<void>, ChildProcess>;
   closed: boolean;
   guardianExited: boolean;
   exitSeen: boolean;
@@ -224,111 +227,53 @@ export async function linuxLiveProcesses(filter?: { pid?: number; group?: number
   return result;
 }
 
-function taskkill(pid: number, environment: NodeJS.ProcessEnv, timeoutMs: number): Promise<{ stopped: boolean; exitCode: number | null }> {
-  return new Promise((resolve, reject) => {
-    const systemRoot = environment.SystemRoot ?? environment.SYSTEMROOT ?? environment.WINDIR;
-    const executable = systemRoot ? path.join(systemRoot, 'System32', 'taskkill.exe') : 'taskkill.exe';
-    const killer = spawn(executable, ['/PID', String(pid), '/T', '/F'], {
-      shell: false, windowsHide: true, env: environment, stdio: 'ignore',
-    });
-    const timer = setTimeout(() => { killer.kill(); reject(new CleanupError({ phase: 'windows_terminate', code: 'timeout' })); }, timeoutMs);
-    killer.once('error', error => { clearTimeout(timer); reject(new CleanupError({ phase: 'windows_terminate', code: 'spawn_error', osCode: safeOsCode(error) })); });
-    killer.once('close', code => { clearTimeout(timer); resolve({ stopped: code === 0, exitCode: code }); });
-  });
+export interface WindowsRootIdentity {
+  rootExited: boolean;
+  spawnStartedAt?: number;
+  spawnCompletedAt?: number;
 }
 
-interface WindowsProcess {
-  pid: number;
-  parent: number;
-  created: string;
-}
+const standaloneWindowsOwners = new Map<number, {
+  anchors: Map<number, WindowsProcessAnchor>;
+  helpers: Map<Promise<void>, ChildProcess>;
+  attempt?: Promise<void>;
+}>();
 
-function windowsProcessSnapshot(environment: NodeJS.ProcessEnv, timeoutMs: number): Promise<WindowsProcess[]> {
-  const systemRoot = Object.entries(environment).find(([key]) => key.toUpperCase() === 'SYSTEMROOT')?.[1];
-  const executable = systemRoot
-    ? path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
-    : 'powershell.exe';
-  // Only process identities and parent links are returned, never command lines.
-  // An exited intermediate parent can disappear from taskkill's tree traversal;
-  // CIM still exposes its PID as the surviving child's ParentProcessId.
-  const script = "$ErrorActionPreference='Stop'; @(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process' | ForEach-Object { @{ pid=[int]$_.ProcessId; parent=[int]$_.ParentProcessId; created=$(if ($_.CreationDate) { $_.CreationDate.ToUniversalTime().Ticks.ToString() } else { 'unknown' }) } }) | ConvertTo-Json -Compress; exit 0";
-  return new Promise((resolve, reject) => {
-    const reader = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-      shell: false, windowsHide: true, env: environment, stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const chunks: Buffer[] = [];
-    let bytes = 0;
-    let exited = false;
-    let exitCode: number | null = null;
-    reader.once('exit', code => { exited = true; exitCode = code; });
-    const timer = setTimeout(() => {
-      reader.kill();
-      reject(new CleanupError({ phase: 'windows_snapshot', code: 'timeout', helperExited: exited, helperExitCode: exitCode, helperOutputBytes: bytes }));
-    }, timeoutMs);
-    reader.stdout.on('data', (data: Buffer) => {
-      bytes += data.length;
-      if (bytes > 1_048_576) {
-        reader.kill();
-        reject(new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperOutputBytes: bytes }));
-      } else chunks.push(data);
-    });
-    reader.once('error', error => { clearTimeout(timer); reject(new CleanupError({ phase: 'windows_snapshot', code: 'spawn_error', osCode: safeOsCode(error) })); });
-    reader.once('close', code => {
-      clearTimeout(timer);
-      try {
-        if (code !== 0) throw new CleanupError({ phase: 'windows_snapshot', code: 'helper_exit', helperExitCode: code, helperOutputBytes: bytes });
-        if (bytes > 1_048_576) throw new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperOutputBytes: bytes });
-        const value: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8').replace(/^\uFEFF/, ''));
-        if (!Array.isArray(value) || !value.every(item => item && typeof item === 'object'
-          && Number.isSafeInteger(item.pid) && Number.isSafeInteger(item.parent) && typeof item.created === 'string')) {
-          throw new Error('Invalid process enumeration.');
-        }
-        resolve(value as WindowsProcess[]);
-      } catch (error) { reject(error instanceof CleanupError ? error : new CleanupError({ phase: 'windows_snapshot', code: 'invalid_snapshot', helperExitCode: code, helperOutputBytes: bytes })); }
-    });
-  });
-}
-
-function windowsTree(record: Pick<CommandRecord, 'pid' | 'commandPid' | 'windowsProcesses'>, snapshot: WindowsProcess[]): WindowsProcess[] {
-  const current = new Map(snapshot.map(item => [item.pid, item]));
-  const anchors = new Set<number>();
-  for (const pid of [record.pid, record.commandPid, ...record.windowsProcesses.keys()]) {
-    if (!pid) continue;
-    const knownCreation = record.windowsProcesses.get(pid);
-    // Do not signal a PID that has been reused since an earlier cleanup attempt.
-    if (knownCreation && current.has(pid) && current.get(pid)!.created !== knownCreation) {
-      throw new CleanupError({ phase: 'windows_snapshot', code: 'identity_changed' });
-    }
-    anchors.add(pid);
-  }
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (const item of snapshot) {
-      if (anchors.has(item.parent) && !anchors.has(item.pid)) {
-        anchors.add(item.pid);
-        changed = true;
-      }
-    }
-  }
-  const tree = snapshot.filter(item => anchors.has(item.pid));
-  for (const item of tree) record.windowsProcesses.set(item.pid, item.created);
-  return tree;
-}
-
-/** Release a host-owned Windows tree even if its root exited before cleanup began. */
-export async function stopWindowsProcessTree(pid: number, timeoutMs = 10000): Promise<void> {
+/**
+ * An unqualified PID is an exited-parent anchor, never authority to kill a live
+ * process. Following descendants requires the original parent's birth lower
+ * bound (spawnStartedAt), including when the root already exited. A live root
+ * additionally needs spawnCompletedAt. Node does not
+ * expose the original Windows HANDLE, so initial capture is not an absolute
+ * identity guarantee against PID reuse inside that same millisecond window.
+ */
+export async function stopWindowsProcessTree(pid: number, timeoutMs = 10000, identity?: WindowsRootIdentity): Promise<void> {
   if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 1) throw new Error('Invalid Windows process tree.');
-  const environment = commandEnvironment(process.env);
-  const record = { pid, windowsProcesses: new Map<number, string>() };
-  const deadline = Date.now() + timeoutMs;
-  const remaining = () => Math.max(1, deadline - Date.now());
-  let tree = windowsTree(record, await windowsProcessSnapshot(environment, remaining()));
-  while (tree.length && Date.now() < deadline) {
-    for (const process of [...tree].reverse()) await taskkill(process.pid, environment, remaining());
-    tree = windowsTree(record, await windowsProcessSnapshot(environment, remaining()));
+  positiveInteger(timeoutMs, 'timeoutMs', 30_000);
+  let owner = standaloneWindowsOwners.get(pid);
+  if (!owner) {
+    owner = { anchors: new Map([[pid, { pid, exited: identity?.rootExited ?? true,
+      spawnStartedAt: identity?.spawnStartedAt, spawnCompletedAt: identity?.spawnCompletedAt }]]), helpers: new Map() };
+    standaloneWindowsOwners.set(pid, owner);
   }
-  if (tree.length) throw new Error('Windows process descendants have not released.');
+  if (owner.attempt) return owner.attempt;
+  const current = owner;
+  current.attempt = (async () => {
+    const deadline = Date.now() + timeoutMs;
+    while (current.helpers.size && Date.now() < deadline) await delay(10);
+    if (current.helpers.size || Date.now() >= deadline) throw new Error('Windows cleanup helper has not released: windows_helper_release:timeout.');
+    const result = await runWindowsTreeCleanup({
+      anchors: [...current.anchors.values()], environment: commandEnvironment(process.env), timeoutMs: Math.max(1, deadline - Date.now()),
+      onAnchor: anchor => current.anchors.set(anchor.pid, { ...current.anchors.get(anchor.pid), ...anchor }),
+      onHelper: (helper, whenClosed) => {
+        current.helpers.set(whenClosed, helper);
+        void whenClosed.then(() => current.helpers.delete(whenClosed));
+      },
+    });
+    if (!result.released || current.helpers.size) throw new Error('Windows process descendants have not released. ' + JSON.stringify(result.diagnostic));
+    standaloneWindowsOwners.delete(pid);
+  })().finally(() => { current.attempt = undefined; });
+  return current.attempt;
 }
 
 /**
@@ -392,18 +337,20 @@ export class ProcessSupervisor {
     }
     const guardianEnvironment = { ...launchEnvironment };
     if (process.versions.electron) guardianEnvironment.ELECTRON_RUN_AS_NODE = '1';
+    const spawnStartedAt = Date.now();
     const child = spawn(this.nodeExecutable, ['-e', GUARDIAN], {
       cwd: command.cwd, env: guardianEnvironment, shell: false,
       detached: process.platform !== 'win32', windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    const spawnCompletedAt = Date.now();
     let finish!: () => void;
     const done = new Promise<CommandResult>(resolve => {
       finish = () => resolve(result);
     });
     const record: CommandRecord = {
       owner: ownerId, environment: launchEnvironment, child, pid: child.pid, closed: false, guardianExited: false, exitSeen: false,
-      windowsProcesses: new Map(),
+      windowsProcesses: new Map(), windowsHelpers: new Map(), spawnStartedAt, spawnCompletedAt,
       result, stdout: [], stderr: [], capturedBytes: 0, outputLimit,
       cleanupFailed: false, done, finish, signal,
     };
@@ -435,15 +382,20 @@ export class ProcessSupervisor {
       const value = message as Record<string, unknown>;
       if (value.type === 'command-started' && Number.isSafeInteger(value.pid) && Number(value.pid) > 0) {
         record.commandPid = Number(value.pid);
+        if (Number.isSafeInteger(value.spawnStartedAt) && Number.isSafeInteger(value.spawnCompletedAt)) {
+          record.commandSpawnStartedAt = Number(value.spawnStartedAt);
+          record.commandSpawnCompletedAt = Number(value.spawnCompletedAt);
+        }
         return;
       }
-      if (record.cleanupPromise) return;
       if (value.type === 'command-exit') {
         record.exitSeen = true;
+        if (record.cleanupPromise) return;
         result.exitCode = typeof value.code === 'number' ? value.code : null;
         result.signal = typeof value.signal === 'string' ? value.signal as NodeJS.Signals : null;
         void this.stopRecord(record);
       } else if (value.type === 'launch-error') {
+        if (record.cleanupPromise) return;
         result.error = value.code === 'ENOENT' ? 'Executable or working directory was not found.' : 'Unable to launch the command.';
         void this.stopRecord(record);
       }
@@ -496,7 +448,7 @@ export class ProcessSupervisor {
       guardianExited: record.guardianExited, streamsClosed: record.closed,
     };
     record.cleanupPromise = this.releaseTree(record).catch(error => {
-      Object.assign(record.result.cleanupDiagnostic!, error instanceof CleanupError ? error.detail : { code: 'os_error', osCode: safeOsCode(error) });
+      Object.assign(record.result.cleanupDiagnostic!, { code: 'os_error', osCode: safeOsCode(error) });
       return false;
     }).then(released => {
       record.cleanupFailed = !released;
@@ -526,27 +478,38 @@ export class ProcessSupervisor {
     if (!record.pid) return true; // spawn failure: no OS process was created.
     const deadline = Date.now() + this.cleanupTimeoutMs;
     if (process.platform === 'win32') {
-      // Verify identities and surviving descendants independently of taskkill's
-      // return code, including an already-exited command parent. If this platform
-      // cannot enumerate processes, fail closed and retain owner occupancy.
-      while (Date.now() < deadline) {
-        const diagnostic = record.result.cleanupDiagnostic!;
-        diagnostic.phase = 'windows_snapshot';
-        const snapshot = await windowsProcessSnapshot(record.environment, Math.max(1, deadline - Date.now()));
-        diagnostic.snapshots++;
-        const tree = windowsTree(record, snapshot);
-        diagnostic.liveProcesses = tree.length;
-        if (tree.length === 0 && record.closed) return true;
-        diagnostic.phase = tree.length ? 'windows_terminate' : 'windows_streams';
-        for (const item of tree) {
-          if (Date.now() >= deadline) return false;
-          diagnostic.terminationAttempts++;
-          const killed = await taskkill(item.pid, record.environment, Math.max(1, deadline - Date.now()));
-          diagnostic.helperExitCode = killed.exitCode;
-        }
-        await delay(10);
-      }
-      return false;
+      // A timed-out helper still owns process handles until its own close event.
+      // Never overlap a retry with that helper, or forget its physical ownership.
+      record.result.cleanupDiagnostic!.phase = 'windows_helper_release';
+      while (record.windowsHelpers.size && Date.now() < deadline) await delay(10);
+      if (record.windowsHelpers.size || Date.now() >= deadline) return false;
+      const anchors = new Map<number, WindowsProcessAnchor>();
+      for (const [pid, anchor] of record.windowsProcesses) anchors.set(pid, { ...anchor });
+      if (!anchors.has(record.pid)) anchors.set(record.pid, {
+        pid: record.pid, exited: record.guardianExited,
+        spawnStartedAt: record.spawnStartedAt, spawnCompletedAt: record.spawnCompletedAt,
+      });
+      if (record.commandPid && !anchors.has(record.commandPid)) anchors.set(record.commandPid, {
+        pid: record.commandPid, exited: record.exitSeen,
+        spawnStartedAt: record.commandSpawnStartedAt, spawnCompletedAt: record.commandSpawnCompletedAt,
+      });
+      const cleaned = await runWindowsTreeCleanup({
+        anchors: [...anchors.values()], environment: record.environment,
+        timeoutMs: Math.max(1, deadline - Date.now()),
+        onAnchor: anchor => record.windowsProcesses.set(anchor.pid, { ...record.windowsProcesses.get(anchor.pid), ...anchor }),
+        onProgress: progress => Object.assign(record.result.cleanupDiagnostic!, progress),
+        onHelper: (helper, whenClosed) => {
+          record.windowsHelpers.set(whenClosed, helper);
+          void whenClosed.then(() => record.windowsHelpers.delete(whenClosed));
+        },
+      });
+      Object.assign(record.result.cleanupDiagnostic!, cleaned.diagnostic);
+      if (!cleaned.released) return false;
+      // OS process release and Node's owned process/IPC/stdio handles are
+      // separate barriers. Neither a root exit nor helper success replaces close.
+      record.result.cleanupDiagnostic!.phase = 'windows_streams';
+      while (!record.closed && Date.now() < deadline) await delay(10);
+      return record.closed && record.guardianExited && record.windowsHelpers.size === 0;
     }
     killGroup(record.pid, 'SIGTERM');
     await delay(Math.min(this.terminationGraceMs, Math.max(0, deadline - Date.now())));

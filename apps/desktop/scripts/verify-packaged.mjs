@@ -103,7 +103,8 @@ try {
     platform: process.platform, arch: expectedArch, version,
     sourceCommit: process.env.GITHUB_SHA ?? null, verified: false, targets,
     limitations: ['No signing, notarization, SmartScreen or Gatekeeper acceptance check.',
-      'Windows self-extracting portable launcher and Linux FUSE mounting are not exercised.'],
+      'Windows self-extracting portable launcher and Linux FUSE mounting are not exercised.',
+      ...(process.platform === 'darwin' ? ['macOS test launches use --use-mock-keychain; real OS Keychain storage and prompts are not exercised.'] : [])],
   };
   await fs.writeFile(report, JSON.stringify(reportData, null, 2));
   run(process.execPath, [require.resolve('@playwright/test/cli'), 'test', '--config', path.join(desktopRoot, 'playwright.packaged.config.ts')], {
