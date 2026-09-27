@@ -1,6 +1,6 @@
 # 自研 Agent Alpha 操作与实现说明
 
-阶段三开发候选，2026-09-27。三平台技术验收尚未全部通过：第十五候选 Linux 完整通过；macOS 根检查与成品通过，1 项源码诊断 probe 安装时机失败已调整、待复验；Windows 根检查有 1 项 Claude shutdown 清理失败，源码及成品本轮未执行。第十四候选 Windows 终端停止失败的底层原因仍待定位。真实远程模型验收尚未执行；服务、模型、凭据来源及预算待用户指定，本地 HTTP 协议测试不替代真实模型验收。实现与验收状态见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。此功能尚未包含在 v0.5.0 稳定版；默认引擎仍为 Claude Code。变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，未合入 main，不发布 Release。
+阶段三开发候选，2026-09-27。固定代码候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 的三平台技术验收已通过，包括完整检查、源码 E2E、实际成品及三次独立 Windows 终端布局/停止回归；后续纯文档更新不改变该已验收代码候选。第十四候选 Windows 终端停止失败的底层原因仍未知，该症状本轮未重现。真实远程模型验收尚未执行；服务、模型、凭据来源及预算待用户指定，本地 HTTP 协议测试不替代真实模型验收。实现与验收状态见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。此功能尚未包含在 v0.5.0 稳定版；默认引擎仍为 Claude Code。变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，main 与 dev/native-agent 基线均未移动，不发布 Release。
 
 ## 配置并开始
 

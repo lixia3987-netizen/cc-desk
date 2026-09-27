@@ -2,7 +2,7 @@
 
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
-当前状态：**实现候选已形成，三平台技术验收尚未全部通过，真实远程模型验收待完成**。最近完成 CI 的代码候选为 `fac96f8b43c62ab730426b5755bf11c78948d099`。Linux 完整通过；macOS 根检查与成品通过，源码有 1 项新诊断 probe 安装时机失败，后续已调整为等待现有页面就绪断言通过后安装，待复验。Windows 根检查有 1 项 Claude 关闭清理失败，源码、三次独立终端用例及成品本轮未执行；正在修复原始子进程退出与首次清理身份捕获之间的竞态。第十四候选 Windows 终端停止失败的底层原因仍未取得，不能将两轮失败视为同一根因。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`，不合入 main、不发布 Release。
+当前状态：**固定代码候选的三平台技术验收已通过，真实远程模型验收待完成**。代码候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 的 Windows、macOS、Linux 完整检查、源码 Electron E2E 及实际成品测试全部通过；Windows 三次独立终端布局/停止回归也通过。本文后续纯文档更新不改变该已验收代码候选，不能把它的 CI 结果计作后续文档提交的新运行结果。第十四候选 Windows 终端停止失败的底层原因仍未取得，该症状本轮未重现，不能与 Claude shutdown 竞态视为同一根因。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`；main 与 dev/native-agent 基线均未移动，不发布 Release。
 
 ## 已实现
 
@@ -88,19 +88,27 @@ Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有 POSIX fixture �
 
 源码核查发现 shutdown 的 2500 毫秒超时会通过原始 ChildProcess 强制停止根进程，而清理助手此前可能已固化 `rootExited=false`；这一竞态可解释本轮 `open_root_handle` 诊断，但日志未提供原始 OS 错误码。正在修复为严格证明原始进程退出、等待首个助手实际关闭后，在共享 8 秒预算内最多再执行一次保留已退出根标记的后代清理；不能仅按根进程退出宣称整棵进程树释放。该路径仍需回归验证，也不能将历史 PTY 故障一并归为同因。第十四候选 inspector 的底层 PTY 清理原因仍未取得，新源码诊断 probe 在本轮 Windows 尚未执行。后续补丁新增六类退出证明/拒绝场景及两个真实 Windows 竞争节点，要求根已退出后仍存活的独立后代由后续扫描实际清理；本地 engine 构建、类型检查和测试通过（23 项通过、6 项 Windows 跳过），context-refresh 业务回归 11 项通过。真实 Windows 竞争用例仍待 CI。
 
+第十六候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 修复 Claude 原始根进程在首次身份捕获前退出的竞态：只在原 ChildProcess 已明确记录退出、首助手实际关闭且失败处于 `open_root_handle` 或 `confirm_original_root` 时，在同一单调时钟计量的 8 秒预算内串行执行一次已退出根的后代清理；仍需证明后代实际释放，不以根退出替代释放屏障。另将 inspector 诊断 probe 移至既有页面就绪断言后安装，保留全部业务断言。
+
+该固定代码候选的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36301348769) 和 [三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36301348758) 均成功，发布步骤跳过。workspace 与 Linux 根检查均为 700 项通过、0 项失败、17 项平台跳过；macOS 为 695 项通过、0 项失败、22 项平台跳过；Windows 为 687 项通过、0 项失败、32 项平台跳过。三平台完整类型检查与构建均通过。
+
+Windows 独立 Runtime 为 19 项通过、0 项失败、4 项平台跳过；完整检查中 engine-claude 为 30 项通过、1 项平台跳过，agent-node 为 121 项通过、3 项平台跳过，desktop 为 484 项通过、28 项平台跳过，contracts 3 项、agent-core 49 项均通过。新增两个真实根退出竞争节点 `open_root_handle` 和 `confirm_original_root` 均通过，要求根退出后仍存活的后代由随后生产清理实际终止；context-refresh 业务回归及真实 npm Claude launcher 也通过。
+
+同一候选的源码 Electron E2E：macOS、Linux 各 67 项通过；Windows 65 项通过、2 项既有 POSIX fixture 跳过，另加的三次独立 inspector 终端布局/停止回归全部通过。三平台成品各 5 项通过，覆盖 Windows ZIP/NSIS、macOS ZIP/复制安装的 DMG、Linux tar.gz/提取的 AppImage；实际 ASAR worker、审批、工具、重启与终端释放闭环均通过。Windows inspector 症状本轮未重现，不能据此补写第十四候选尚未取得的底层原因，或宣称该故障与 Claude 竞态同源。真实远程服务任务仍未执行，完整 P3 Alpha 的真实模型验收保持待完成。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十五候选 Linux/workspace 693 项通过/16 项跳过，macOS 688/21，均无失败；Windows 676 项通过、1 项 Claude shutdown 清理失败、32 项跳过 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第十五候选 Linux 67 项通过；macOS 66 项通过、1 项诊断 probe 安装时机失败，修正待复验；Windows 本轮未执行，包括三次独立 inspector 用例 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十五候选 macOS/Linux 各 5 项通过；Windows 本轮未执行，第十四候选的 5 项通过不能替代同候选验收 |
-| 未知副作用、审批、目录占用与 ACK 故障回归 | 第十五候选 Linux 完整通过、macOS 根检查与成品通过；Windows 根检查清理失败仍待修复复验，其余 Windows 门槛未执行 |
+| 同一候选根 `npm run check` | 第十六代码候选通过：Windows 687/0/32，macOS 695/0/22，Linux/workspace 700/0/17（通过/失败/平台跳过） |
+| Windows/macOS/Linux 全部源码 Electron E2E | 同一第十六代码候选通过：Windows 65 项通过、2 项既有 POSIX fixture 跳过，macOS/Linux 各 67 项通过；三次独立 Windows inspector 用例全部通过 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 同一第十六代码候选三平台各 5 项成品测试通过，分发边界见下文 |
+| 未知副作用、审批、目录占用与 ACK 故障回归 | 同一第十六代码候选三平台必需检查、源码与成品门槛均通过；历史 PTY 偶发失败的底层原因仍未知，本轮未重现 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
-| 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；未合入 main，未发布 Release |
+| 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；main 与 dev/native-agent 基线均未移动，未发布 Release |
 
 真实模型验收按计划分别完成带失败测试的缺陷修复、小功能及测试、嵌套 AGENTS 局部重构，记录实际代码、退出码、用量与人工介入。未指定的模型/密钥不会被猜测使用，也不自动产生远程费用。
 
