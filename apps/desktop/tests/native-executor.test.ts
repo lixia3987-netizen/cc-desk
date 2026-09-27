@@ -319,7 +319,10 @@ test('snapshot-only history remains readable and permanently read-only after rec
 
 test('native shutdown waits through an empty writer-lock opening and late history reads cannot reopen it', async t => {
   const f = await fixture();
-  const lock = path.join(f.data, 'native', 'conversations', f.conversationId, '.writer-lock');
+  // safeDirectory resolves the ledger root. macOS temp roots and test TMPDIR
+  // aliases can spell the same directory differently from fs.open's real path.
+  const root = await fs.realpath(path.join(f.data, 'native', 'conversations'));
+  const lock = path.join(root, f.conversationId, '.writer-lock');
   const originalOpen = fs.open.bind(fs);
   let enter!: () => void, release!: () => void, opens = 0, shutdownFinished = false;
   const entered = new Promise<void>(resolve => { enter = resolve; });
@@ -334,8 +337,14 @@ test('native shutdown waits through an empty writer-lock opening and late histor
   syncBuiltinESMExports();
   const hydration = f.executor.hydrate(f.id);
   let shutdown: Promise<void> | undefined;
+  let enterTimeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await entered;
+    await Promise.race([
+      entered,
+      hydration.then(() => { throw new Error('Writer-lock injection did not intercept the admitted ledger open'); }),
+      new Promise<never>((_, reject) => { enterTimeout = setTimeout(() => reject(new Error('Writer-lock injection was not reached within 5 seconds')), 5_000); }),
+    ]);
+    clearTimeout(enterTimeout);
     assert.equal((await fs.stat(lock)).size, 0, 'pause after O_EXCL creates the lock, before its owner record is written');
     shutdown = f.executor.shutdown().then(() => { shutdownFinished = true; });
     await new Promise<void>(resolve => setImmediate(resolve));
@@ -353,6 +362,7 @@ test('native shutdown waits through an empty writer-lock opening and late histor
     try { assert.equal(reopened.recoveryRequired, false); assert.deepEqual(reopened.listRuns(), []); }
     finally { await reopened.close(); }
   } finally {
+    clearTimeout(enterTimeout);
     release(); await hydration.catch(() => {}); await shutdown?.catch(() => {});
     t.mock.restoreAll(); syncBuiltinESMExports(); await f.dispose();
   }
