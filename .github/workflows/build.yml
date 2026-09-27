@@ -77,6 +77,13 @@ jobs:
           node --import tsx apps/desktop/scripts/verify-windows-npm.ts (Join-Path $claudeNpmPrefix 'claude.cmd')
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm run test:e2e
+      - name: Verify Windows terminal layout cleanup
+        # The full source suite exposed an intermittent stop failure after all
+        # layout assertions passed. Keep its targeted repeats as an independent
+        # required gate and retain their diagnostics even if source E2E failed.
+        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
+        timeout-minutes: 3
+        run: npm run test:e2e -- tests/inspector.spec.ts --grep "vertical rail and stacked panels" --repeat-each=3 --output ../../test-results/windows-inspector
       # Source E2E and packaged smoke are independent gates. A source failure
       # must remain a failed job, but should not hide packaging diagnostics.
       - id: package_windows

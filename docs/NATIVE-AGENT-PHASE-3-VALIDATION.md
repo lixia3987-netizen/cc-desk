@@ -2,7 +2,7 @@
 
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
-当前状态：**实现候选已形成，验收进行中**。不得将本地协议 fixture 测试扩展为真实远程模型或三平台成品已通过。最终固定候选和 CI 链接在验证完成后补入。
+当前状态：**实现候选已形成，三平台技术验收尚未全部通过，真实远程模型验收待完成**。最近完成 CI 的代码候选为 `38a909e16adb0bb0f1df4ad88650eecd00a9ddbe`，三平台根检查与成品测试均已通过，macOS、Linux 源码测试通过。Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有平台跳过；唯一失败发生在布局用例结束后的终端停止和测试收尾，底层清理阶段待补充诊断。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`，不合入 main、不发布 Release。
 
 ## 已实现
 
@@ -16,7 +16,7 @@
 
 使用和恢复说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。设计基线见 [阶段三计划](NATIVE-AGENT-PHASE-3.md)。
 
-## 本地证据与范围
+## 验证记录（按候选顺序）
 
 实现候选 `13df7e6d67d95db6afec7f8bf8b61a1043d8c295` 已完成本地根 `npm run check`：contracts 3 项、engine-claude 13 项、agent-core 49 项、agent-node 86 项、desktop 495 项通过及 1 项跳过，共 646 项通过、0 项失败、1 项跳过；包括全部类型检查和桌面构建。GitHub 独立 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36215567007) 同样通过。
 
@@ -76,19 +76,25 @@ Windows 第十二候选的成品构建与实际 Electron 原生模块校验通�
 
 第十三候选 `63c74881` 的 [三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36288439432) 中，macOS 通过 685 项根检查（21 项平台跳过）、67 项源码 E2E 和 5 项成品测试；Linux 通过 690 项根检查（16 项平台跳过）、67 项源码 E2E 和 5 项成品测试。Windows 完成 marker2 原生编译和独立 Runtime 检查（19 项通过、4 项跳过），随后 engine-claude 有 2 项旧清理 fixture 失败（18 项通过、1 项平台跳过）：退出竞争 fixture 未进入预期阶段，活进程拒绝 fixture 提前收到 `creation_after_spawn`。核对发现这三个旧 Windows race fixture 直接调用脚本构造器，仍走时间窗口身份；生产 `stopWindowsTree` 的原始 HANDLE 握手正/反向回归均通过。后续将旧 fixture 改为实际调用生产握手，仅注入原有受控竞争节点，保留真实进程、退出证明及拒绝误杀断言。新创建身份拒绝、非公历区域设置专用回归和 Windows 成品在本候选尚未执行，不能记作通过。
 
+第十四候选 `38a909e16adb0bb0f1df4ad88650eecd00a9ddbe` 将上述 Windows 清理 fixture 接入生产 `stopWindowsTree` 的原始 HANDLE 握手，并保留受控竞争节点及实际退出、拒绝误杀断言；生产清理逻辑未改变。[workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36298587692) 通过，690 项通过、0 项失败、16 项平台跳过。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36298587693) 中，macOS 整个 job 成功，根检查 685 项通过、0 项失败、21 项平台跳过，源码 E2E 67 项通过，成品 5 项通过。Linux 整个 job 成功，根检查 690 项通过、0 项失败、16 项平台跳过，源码 E2E 67 项通过，成品 5 项通过。
+
+同一第十四候选的 Windows 独立 Runtime 检查为 19 项通过、4 项平台跳过；完整根检查为 674 项通过、0 项失败、32 项平台跳过，其中 engine-claude 20 项通过、1 项跳过，agent-node 121 项通过、3 项跳过，desktop 481 项通过、28 项跳过。三个清理竞争 fixture、原始 PTY 创建身份的正确/错误匹配保护及非公历 `th-TH` 回归均实际通过，真实 npm Claude launcher 也通过。`dist:win` 和 5 项成品测试通过，覆盖默认应用身份、ZIP/NSIS 各自的 native 任务与 PTY；真实 ASAR worker 提取、工具审批与重启链路已通过。
+
+Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有 POSIX fixture 跳过。唯一失败为 `apps/desktop/tests/inspector.spec.ts:315` 的宽窄布局切换时保持终端测试：trace 证明全部布局、终端标记及运行状态断言通过；随后 `stopSession` 在约 2 秒后拒绝，报告终端清理失败，该错误被测试吞掉，`app.close()` 随后挂起，最终用例与 worker teardown 各超时 60 秒。trace 没有保留主进程错误链，尚不能确定失败属于进程树身份、原生关闭还是管道释放。后续修复只改测试的失败记录和有界回收，捕获跨 IPC 前的固定阶段/计数诊断，并增加三次独立 Windows 目标用例门槛；不重试到成功，不放宽清理证明。源码失败仍使 Windows job 及本候选三平台技术门槛未通过，不能由根检查和成品通过推断整个候选已通过。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十三候选 macOS/Linux 通过；Windows 两项旧 fixture 待修复复验 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第十三候选 Linux/macOS 各 67 项通过；第十二候选 Windows 65 项通过、2 项既有平台跳过，待同候选通过 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十三候选 macOS/Linux 各 5 项通过；Windows ASAR 路径已修正，待成品复验 |
-| 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
+| 同一候选根 `npm run check` | 第十四候选三平台及独立 workspace 检查通过；Windows 674 项通过/32 项跳过，macOS 685/21，Linux 及 workspace 690/16，均无失败 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第十四候选 macOS/Linux 各 67 项通过；Windows 64 项通过、1 项终端停止/测试收尾失败、2 项既有 POSIX fixture 跳过，底层清理阶段待定位 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十四候选三平台各 5 项通过 |
+| 未知副作用、审批、目录占用与 ACK 故障回归 | 第十四候选三平台根检查与成品通过；源码整体门槛仍受 Windows 的 1 项失败阻断 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
-| 仅集成 dev/native-agent，main/Release 不变 | 待验收后集成 |
+| 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；未合入 main，未发布 Release |
 
 真实模型验收按计划分别完成带失败测试的缺陷修复、小功能及测试、嵌套 AGENTS 局部重构，记录实际代码、退出码、用量与人工介入。未指定的模型/密钥不会被猜测使用，也不自动产生远程费用。
 

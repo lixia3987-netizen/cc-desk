@@ -4,7 +4,7 @@
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**阶段三实现候选已形成，统一验收进行中**。本文保留设计与完成定义，实际实现、证据和待确认项见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)，操作说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。真实服务、凭据与预算尚未指定，不能将本地 fixture 结果记为真实模型验收通过。所有变更仅在开发分支，不合入 main、不发布 Release。
+状态：**阶段三实现候选已形成，三平台技术验收尚未全部通过，真实模型验收待完成**。第十四候选的三平台根检查、成品测试及 macOS/Linux 源码测试已通过；Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有平台跳过，唯一布局保持终端测试的超时正在通过 trace 定位。本文保留设计与完成定义，实际实现、证据和待确认项见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)，操作说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。真实服务、模型、凭据来源及预算尚未指定，不能将本地 fixture 结果记为真实模型验收通过。所有变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main、不发布 Release。
 
 关联：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段二边界设计](ENGINE-BOUNDARIES-PHASE-2.md)、[架构说明](ARCHITECTURE.md)。下文路径相对于仓库根目录。
 
@@ -265,7 +265,7 @@ native 模型和连接配置只在停止且没有 queue/workflow 所有权时修
 
 00 的契约和平台验证是基础任务门槛；实际服务、凭据与预算可单独标为待确认，不阻塞 01/02。它们必须在 05 的远程 smoke 和最终真实模型验收前落实，不能把待确认项记成已验证。
 
-实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。沿用验证后自动合入开发分支的偏好；main 和 Release 仍需用户另行授权。实现已在 feat/native-agent-alpha 开始，候选统一按上述门槛验收。
+实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。当前实现保留在 `feat/native-agent-alpha`，PR #33 的目标为 `dev/native-agent`。技术与真实模型验收门槛未完成前保持 Draft；本轮不合入 main、不发布 Release。候选统一按上述门槛验收。
 
 ## 10. 验收矩阵与完成定义
 
