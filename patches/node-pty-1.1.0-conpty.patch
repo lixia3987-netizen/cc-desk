@@ -1,0 +1,468 @@
+--- a/src/win/conpty.cc
++++ b/src/win/conpty.cc
+@@ -13,6 +13,11 @@
+ #define NODE_ADDON_API_DISABLE_DEPRECATED
+ #include <node_api.h>
+ #include <assert.h>
++#include <algorithm>
++#include <atomic>
++#include <memory>
++#include <mutex>
++#include <utility>
+ #include <Shlwapi.h> // PathCombine, PathIsRelative
+ #include <sstream>
+ #include <iostream>
+@@ -38,76 +43,112 @@
+ 
+ #endif
+ 
++// CC Desk: shared ownership and short index locking backport node-pty #922.
++// A watcher can outlive index removal; native console close must run exactly once.
++static std::atomic<unsigned int> livePseudoconsoles{0};
+ struct pty_baton {
+   int id;
+   HANDLE hIn;
+   HANDLE hOut;
+   HPCON hpc;
+-
+-  HANDLE hShell;
+-
+-  pty_baton(int _id, HANDLE _hIn, HANDLE _hOut, HPCON _hpc) : id(_id), hIn(_hIn), hOut(_hOut), hpc(_hpc) {};
++  HANDLE hShell = nullptr;
++  PFNCLOSEPSEUDOCONSOLE closePseudoConsole;
++  std::mutex mutex;
++  HANDLE closeRequest = nullptr;
++  bool useConptyDll;
++
++  pty_baton(int _id, HANDLE _hIn, HANDLE _hOut, HPCON _hpc, PFNCLOSEPSEUDOCONSOLE close, HANDLE request, bool dll) :
++    id(_id), hIn(_hIn), hOut(_hOut), hpc(_hpc), closePseudoConsole(close), closeRequest(request), useConptyDll(dll) {
++    ++livePseudoconsoles;
++  }
+ };
+ 
+-static std::vector<std::unique_ptr<pty_baton>> ptyHandles;
++static std::vector<std::shared_ptr<pty_baton>> ptyHandles;
++static std::mutex ptyHandlesMutex;
+ static volatile LONG ptyCounter;
+ 
+-static pty_baton* get_pty_baton(int id) {
+-  auto it = std::find_if(ptyHandles.begin(), ptyHandles.end(), [id](const auto& ptyHandle) {
+-    return ptyHandle->id == id;
++static std::shared_ptr<pty_baton> get_pty_baton(int id) {
++  std::lock_guard<std::mutex> lock(ptyHandlesMutex);
++  auto it = std::find_if(ptyHandles.begin(), ptyHandles.end(), [id](const auto& handle) {
++    return handle->id == id;
+   });
+-  if (it != ptyHandles.end()) {
+-    return it->get();
+-  }
+-  return nullptr;
+-}
+-
+-static bool remove_pty_baton(int id) {
+-  auto it = std::remove_if(ptyHandles.begin(), ptyHandles.end(), [id](const auto& ptyHandle) {
+-    return ptyHandle->id == id;
+-  });
+-  if (it != ptyHandles.end()) {
+-    ptyHandles.erase(it);
+-    return true;
+-  }
+-  return false;
++  return it == ptyHandles.end() ? nullptr : *it;
++}
++
++static void remove_pty_baton(int id) {
++  std::lock_guard<std::mutex> lock(ptyHandlesMutex);
++  ptyHandles.erase(std::remove_if(ptyHandles.begin(), ptyHandles.end(), [id](const auto& handle) {
++    return handle->id == id;
++  }), ptyHandles.end());
++}
++
++// Only the watcher closes a connected console. A failed connect has no watcher
++// and uses this same helper while unwinding. The JS thread only requests close.
++static void close_pty_baton(const std::shared_ptr<pty_baton>& handle) {
++  HPCON hpc;
++  HANDLE hIn, hOut;
++  {
++    std::lock_guard<std::mutex> lock(handle->mutex);
++    hpc = std::exchange(handle->hpc, nullptr);
++    hIn = std::exchange(handle->hIn, nullptr);
++    hOut = std::exchange(handle->hOut, nullptr);
++  }
++  // No global/baton lock is held while the independent conout worker and JS
++  // consumer drain output. ClosePseudoConsole may wait for that drain.
++  if (hpc != nullptr) {
++    handle->closePseudoConsole(hpc);
++    --livePseudoconsoles;
++  }
++  if (hIn != nullptr && hIn != INVALID_HANDLE_VALUE) CloseHandle(hIn);
++  if (hOut != nullptr && hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
+ }
+ 
+ struct ExitEvent {
+   int exit_code = 0;
+ };
+ 
+-void SetupExitCallback(Napi::Env env, Napi::Function cb, pty_baton* baton) {
+-  std::thread *th = new std::thread;
+-  // Don't use Napi::AsyncWorker which is limited by UV_THREADPOOL_SIZE.
+-  auto tsfn = Napi::ThreadSafeFunction::New(
+-      env,
+-      cb,                           // JavaScript function called asynchronously
+-      "SetupExitCallback_resource", // Name
+-      0,                            // Unlimited queue
+-      1,                            // Only one thread will use this initially
+-      [th](Napi::Env) {   // Finalizer used to clean threads up
+-        th->join();
+-        delete th;
++static void CallExit(Napi::Env env, Napi::Function cb, std::thread*, ExitEvent* event) {
++  std::unique_ptr<ExitEvent> ownedEvent(event);
++  if (env != nullptr && !cb.IsEmpty()) cb.Call({Napi::Number::New(env, event->exit_code)});
++}
++using ExitFunction = Napi::TypedThreadSafeFunction<std::thread, ExitEvent, CallExit>;
++
++void SetupExitCallback(Napi::Env env, Napi::Function cb, std::shared_ptr<pty_baton> baton) {
++  auto thread = std::make_unique<std::thread>();
++  auto th = thread.get();
++  // Typed TSFN also delivers queued data with a null environment during teardown,
++  // allowing CallExit to free it without invoking JavaScript.
++  auto tsfn = ExitFunction::New(env, cb, "SetupExitCallback_resource", 0, 1, th,
++      [](Napi::Env, void*, std::thread* owner) {
++        if (owner->joinable()) owner->join();
++        delete owner;
+       });
+-  *th = std::thread([tsfn = std::move(tsfn), baton] {
+-    auto callback = [](Napi::Env env, Napi::Function cb, ExitEvent *exit_event) {
+-      cb.Call({Napi::Number::New(env, exit_event->exit_code)});
+-      delete exit_event;
+-    };
+-
++  thread.release(); // The TSFN finalizer owns the thread from here.
++  try {
++  *th = std::thread([tsfn, baton] {
+     ExitEvent *exit_event = new ExitEvent;
+-    // Wait for process to complete.
++    HANDLE watched[] = { baton->hShell, baton->closeRequest };
++    WaitForMultipleObjects(2, watched, FALSE, INFINITE);
++    if (baton->useConptyDll) TerminateProcess(baton->hShell, 1);
++    // The watcher exclusively owns native close. It never requires the JS thread
++    // to block, and no consumer may stop its output worker before this callback.
++    close_pty_baton(baton);
+     WaitForSingleObject(baton->hShell, INFINITE);
+-    // Get process exit code.
+-    GetExitCodeProcess(baton->hShell, (LPDWORD)(&exit_event->exit_code));
+-    // Clean up handles
+-    CloseHandle(baton->hShell);
+-    assert(remove_pty_baton(baton->id));
+-
+-    auto status = tsfn.BlockingCall(exit_event, callback); // In main thread
++    {
++      std::lock_guard<std::mutex> lock(baton->mutex);
++      GetExitCodeProcess(baton->hShell, (LPDWORD)(&exit_event->exit_code));
++      CloseHandle(baton->hShell);
++      baton->hShell = nullptr;
++      CloseHandle(baton->closeRequest);
++      baton->closeRequest = nullptr;
++    }
++    remove_pty_baton(baton->id);
++
++    auto status = tsfn.BlockingCall(exit_event); // In main thread
+     switch (status) {
+       case napi_closing:
++        // The call was not queued; napi_closing already releases this thread.
++        delete exit_event;
+         break;
+ 
+       case napi_queue_full:
+@@ -123,6 +164,10 @@
+         Napi::Error::Fatal("SetupExitCallback", "ThreadSafeFunction.BlockingCall() failed");
+     }
+   });
++  } catch (...) {
++    tsfn.Abort();
++    throw;
++  }
+ }
+ 
+ Napi::Error errorWithCode(const Napi::CallbackInfo& info, const char* text) {
+@@ -197,7 +242,8 @@
+                                          std::wstring& inName,
+                                          std::wstring& outName,
+                                          const std::wstring& pipeName,
+-                                         const bool useConptyDll)
++                                         const bool useConptyDll,
++                                         PFNCLOSEPSEUDOCONSOLE* closePseudoConsole)
+ {
+   HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
+   DWORD error = GetLastError();
+@@ -207,7 +253,9 @@
+     PFNCREATEPSEUDOCONSOLE const pfnCreate = (PFNCREATEPSEUDOCONSOLE)GetProcAddress(
+         (HMODULE)hLibrary,
+         useConptyDll ? "ConptyCreatePseudoConsole" : "CreatePseudoConsole");
+-    if (pfnCreate)
++    *closePseudoConsole = (PFNCLOSEPSEUDOCONSOLE)GetProcAddress(
++        (HMODULE)hLibrary, useConptyDll ? "ConptyClosePseudoConsole" : "ClosePseudoConsole");
++    if (pfnCreate && *closePseudoConsole)
+     {
+       if (phPC == NULL || phInput == NULL || phOutput == NULL)
+       {
+@@ -287,9 +335,10 @@
+     throw Napi::Error::New(env, why);
+   }
+ 
+-  HANDLE hIn, hOut;
+-  HPCON hpc;
+-  HRESULT hr = CreateNamedPipesAndPseudoConsole(info, {cols, rows}, inheritCursor ? 1/*PSEUDOCONSOLE_INHERIT_CURSOR*/ : 0, &hIn, &hOut, &hpc, inName, outName, pipeName, useConptyDll);
++  HANDLE hIn = nullptr, hOut = nullptr;
++  HPCON hpc = nullptr;
++  PFNCLOSEPSEUDOCONSOLE closePseudoConsole = nullptr;
++  HRESULT hr = CreateNamedPipesAndPseudoConsole(info, {cols, rows}, inheritCursor ? 1/*PSEUDOCONSOLE_INHERIT_CURSOR*/ : 0, &hIn, &hOut, &hpc, inName, outName, pipeName, useConptyDll, &closePseudoConsole);
+ 
+   // Restore default handling of ctrl+c
+   SetConsoleCtrlHandler(NULL, FALSE);
+@@ -301,9 +350,19 @@
+     // We were able to instantiate a conpty
+     const int ptyId = InterlockedIncrement(&ptyCounter);
+     marshal.Set("pty", Napi::Number::New(env, ptyId));
++    HANDLE closeRequest = CreateEventW(nullptr, TRUE, FALSE, nullptr);
++    if (closeRequest == nullptr) {
++      closePseudoConsole(hpc);
++      CloseHandle(hIn); CloseHandle(hOut);
++      throw Napi::Error::New(env, "Cannot create conpty close event");
++    }
++    std::lock_guard<std::mutex> lock(ptyHandlesMutex);
+     ptyHandles.emplace_back(
+-        std::make_unique<pty_baton>(ptyId, hIn, hOut, hpc));
++        std::make_shared<pty_baton>(ptyId, hIn, hOut, hpc, closePseudoConsole, closeRequest, useConptyDll));
+   } else {
++    if (hpc != nullptr && closePseudoConsole) closePseudoConsole(hpc);
++    if (hIn != nullptr && hIn != INVALID_HANDLE_VALUE) CloseHandle(hIn);
++    if (hOut != nullptr && hOut != INVALID_HANDLE_VALUE) CloseHandle(hOut);
+     throw Napi::Error::New(env, "Cannot launch conpty");
+   }
+ 
+@@ -351,11 +410,12 @@
+   Napi::Function exitCallback = info[5].As<Napi::Function>();
+ 
+   // Fetch pty handle from ID and start process
+-  pty_baton* handle = get_pty_baton(id);
++  auto handle = get_pty_baton(id);
+   if (!handle) {
+     throw Napi::Error::New(env, "Invalid pty handle");
+   }
+ 
++  try {
+   // Prepare command line
+   std::unique_ptr<wchar_t[]> mutableCommandline = std::make_unique<wchar_t[]>(cmdline.length() + 1);
+   HRESULT hr = StringCchCopyW(mutableCommandline.get(), cmdline.length() + 1, cmdline.c_str());
+@@ -391,13 +451,19 @@
+ 
+   SIZE_T size = 0;
+   InitializeProcThreadAttributeList(NULL, 1, 0, &size);
+-  BYTE *attrList = new BYTE[size];
+-  siEx.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attrList);
++  std::unique_ptr<BYTE[]> attrList = std::make_unique<BYTE[]>(size);
++  siEx.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attrList.get());
++  struct AttributeListCleanup {
++    PPROC_THREAD_ATTRIBUTE_LIST list;
++    bool initialized = false;
++    ~AttributeListCleanup() { if (initialized) DeleteProcThreadAttributeList(list); }
++  } attributeListCleanup{siEx.lpAttributeList};
+ 
+   fSuccess = InitializeProcThreadAttributeList(siEx.lpAttributeList, 1, 0, &size);
+   if (!fSuccess) {
+     throw errorWithCode(info, "InitializeProcThreadAttributeList failed");
+   }
++  attributeListCleanup.initialized = true;
+   fSuccess = UpdateProcThreadAttribute(siEx.lpAttributeList,
+                                        0,
+                                        PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
+@@ -426,6 +492,8 @@
+     throw errorWithCode(info, "Cannot create process");
+   }
+ 
++  handle->hShell = piClient.hProcess;
++  CloseHandle(piClient.hThread);
+   HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
+   bool fLoadedDll = hLibrary != nullptr;
+   if (useConptyDll && fLoadedDll)
+@@ -438,21 +506,33 @@
+     }
+   }
+ 
+-  // Update handle
+-  handle->hShell = piClient.hProcess;
+-
+-  // Close the thread handle to avoid resource leak
+-  CloseHandle(piClient.hThread);
+   // Close the input read and output write handle of the pseudoconsole
+   CloseHandle(handle->hIn);
+   CloseHandle(handle->hOut);
+-
+-  SetupExitCallback(env, exitCallback, handle);
+-
+-  // Return
++  handle->hIn = nullptr;
++  handle->hOut = nullptr;
++
+   auto marshal = Napi::Object::New(env);
+   marshal.Set("pid", Napi::Number::New(env, piClient.dwProcessId));
++  SetupExitCallback(env, exitCallback, handle);
++  // No throwing allocation after the watcher takes ownership.
+   return marshal;
++  } catch (...) {
++    // No watcher owns this failed connection. The process (if allocated) and all
++    // native resources must be released before the constructor rethrows.
++    if (handle->hShell != nullptr) {
++      TerminateProcess(handle->hShell, 1);
++      WaitForSingleObject(handle->hShell, INFINITE);
++      CloseHandle(handle->hShell);
++      handle->hShell = nullptr;
++    }
++    close_pty_baton(handle);
++    if (handle->closeRequest != nullptr) {
++      CloseHandle(handle->closeRequest); handle->closeRequest = nullptr;
++    }
++    remove_pty_baton(handle->id);
++    throw;
++  }
+ }
+ 
+ static Napi::Value PtyResize(const Napi::CallbackInfo& info) {
+@@ -472,9 +552,11 @@
+   SHORT rows = static_cast<SHORT>(info[2].As<Napi::Number>().Uint32Value());
+   const bool useConptyDll = info[3].As<Napi::Boolean>().Value();
+ 
+-  const pty_baton* handle = get_pty_baton(id);
++  auto handle = get_pty_baton(id);
+ 
+   if (handle != nullptr) {
++    std::lock_guard<std::mutex> lock(handle->mutex);
++    if (handle->hpc == nullptr) return env.Undefined();
+     HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
+     bool fLoadedDll = hLibrary != nullptr;
+     if (fLoadedDll)
+@@ -513,9 +595,11 @@
+     return env.Undefined();
+   }
+ 
+-  const pty_baton* handle = get_pty_baton(id);
++  auto handle = get_pty_baton(id);
+ 
+   if (handle != nullptr) {
++    std::lock_guard<std::mutex> lock(handle->mutex);
++    if (handle->hpc == nullptr) return env.Undefined();
+     HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
+     bool fLoadedDll = hLibrary != nullptr;
+     if (fLoadedDll)
+@@ -544,23 +628,14 @@
+   int id = info[0].As<Napi::Number>().Int32Value();
+   const bool useConptyDll = info[1].As<Napi::Boolean>().Value();
+ 
+-  const pty_baton* handle = get_pty_baton(id);
++  auto handle = get_pty_baton(id);
+ 
+   if (handle != nullptr) {
+-    HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
+-    bool fLoadedDll = hLibrary != nullptr;
+-    if (fLoadedDll)
+     {
+-      PFNCLOSEPSEUDOCONSOLE const pfnClosePseudoConsole = (PFNCLOSEPSEUDOCONSOLE)GetProcAddress(
+-        (HMODULE)hLibrary,
+-        useConptyDll ? "ConptyClosePseudoConsole" : "ClosePseudoConsole");
+-      if (pfnClosePseudoConsole)
+-      {
+-        pfnClosePseudoConsole(handle->hpc);
+-      }
+-    }
+-    if (useConptyDll) {
+-      TerminateProcess(handle->hShell, 1);
++      std::lock_guard<std::mutex> lock(handle->mutex);
++      // The watcher owns native close; protect the event HANDLE against its
++      // concurrent close/reuse without blocking the JavaScript output consumer.
++      if (handle->closeRequest != nullptr) SetEvent(handle->closeRequest);
+     }
+   }
+ 
+@@ -572,6 +647,14 @@
+ */
+ 
+ Napi::Object init(Napi::Env env, Napi::Object exports) {
++  exports.Set("ccDeskConptyFix", Napi::Number::New(env, 1));
++  exports.Set("ccDeskConptyStats", Napi::Function::New(env, [](const Napi::CallbackInfo& info) {
++    auto stats = Napi::Object::New(info.Env());
++    stats.Set("livePseudoconsoles", Napi::Number::New(info.Env(), livePseudoconsoles.load()));
++    std::lock_guard<std::mutex> lock(ptyHandlesMutex);
++    stats.Set("indexedPseudoconsoles", Napi::Number::New(info.Env(), ptyHandles.size()));
++    return stats;
++  }));
+   exports.Set("startProcess", Napi::Function::New(env, PtyStartProcess));
+   exports.Set("connect", Napi::Function::New(env, PtyConnect));
+   exports.Set("resize", Napi::Function::New(env, PtyResize));
+--- a/lib/windowsPtyAgent.js
++++ b/lib/windowsPtyAgent.js
+@@ -28,6 +28,7 @@
+ var WindowsPtyAgent = /** @class */ (function () {
+     function WindowsPtyAgent(file, args, env, cwd, cols, rows, debug, _useConpty, _useConptyDll, conptyInheritCursor) {
+         var _this = this;
++        this.nativeExit = new Promise(function (resolve) { _this._resolveNativeExit = resolve; });
+         if (_useConptyDll === void 0) { _useConptyDll = false; }
+         if (conptyInheritCursor === void 0) { conptyInheritCursor = false; }
+         this._useConpty = _useConpty;
+@@ -73,6 +74,7 @@
+         // The conout socket must be ready out on another thread to avoid deadlocks
+         this._conoutSocketWorker = new windowsConoutConnection_1.ConoutConnection(term.conout, this._useConptyDll);
+         this._conoutSocketWorker.onReady(function () {
++            if (_this._spawnFailed) return;
+             _this._conoutSocketWorker.connectSocket(_this._outSocket);
+         });
+         this._outSocket.on('connect', function () {
+@@ -86,8 +88,18 @@
+         });
+         this._inSocket.setEncoding('utf8');
+         if (this._useConpty) {
+-            var connect = this._ptyNative.connect(this._pty, commandLine, cwd, env, this._useConptyDll, function (c) { return _this._$onProcessExit(c); });
+-            this._innerPid = connect.pid;
++            try {
++                var connect = this._ptyNative.connect(this._pty, commandLine, cwd, env, this._useConptyDll, function (c) { return _this._$onProcessExit(c); });
++                this._innerPid = connect.pid;
++            } catch (error) {
++                // The patched native connect has released its failed baton.
++                // Constructor failure still owns these JavaScript resources.
++                this._spawnFailed = true;
++                this._inSocket.destroy();
++                this._outSocket.destroy();
++                this._conoutSocketWorker.dispose();
++                throw error;
++            }
+         }
+     }
+     Object.defineProperty(WindowsPtyAgent.prototype, "inSocket", {
+@@ -221,6 +233,7 @@
+     WindowsPtyAgent.prototype._$onProcessExit = function (exitCode) {
+         var _this = this;
+         this._exitCode = exitCode;
++        this._resolveNativeExit(exitCode);
+         if (!this._useConptyDll) {
+             this._flushDataAndCleanUp();
+             this._outSocket.on('data', function () { return _this._flushDataAndCleanUp(); });
+--- a/lib/windowsTerminal.js
++++ b/lib/windowsTerminal.js
+@@ -95,8 +95,15 @@
+             });
+             // Cleanup after the socket is closed.
+             _this._socket.on('close', function () {
+-                _this.emit('exit', _this._agent.exitCode);
+-                _this._close();
++                if (_this._agent._useConpty) {
++                    _this._agent.nativeExit.then(function (exitCode) {
++                        _this.emit('exit', exitCode);
++                        _this._close();
++                    });
++                } else {
++                    _this.emit('exit', _this._agent.exitCode);
++                    _this._close();
++                }
+             });
+         });
+         _this._file = file;

@@ -1,6 +1,6 @@
 # 阶段三实现与验收记录
 
-日期：2026-09-26。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
+更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
 当前状态：**实现候选已形成，验收进行中**。不得将本地协议 fixture 测试扩展为真实远程模型或三平台成品已通过。最终固定候选和 CI 链接在验证完成后补入。
 
@@ -54,15 +54,21 @@ macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`�
 
 随后修复 worker 路径断言并补齐失败时的 fixture 清理，17 项定向测试通过。ClaudeConnection 的 Windows 活根清理改为先由助手持有 HANDLE，再通过原 ChildProcess 的 `kill(0)` 核实原始 HANDLE 仍存活，确认后才采用被持有 HANDLE 的创建时间；不扩大启动时间窗口。已退出根仍是不可采纳的新 PID 的墓碑，拒绝确认时不终止该 PID。以上早期候选的时间窗口限制继续适用于 legacy PTY/独立快照路径，但不再描述该 Claude 活根认证或 native Job 认证；Claude/PTY 仍不具有 Job 的完整后代包含保证。新增错误时钟窗口与拒绝确认的真实 Windows 用例待 CI，传输拆帧回归和原桌面 Claude 集成测试已通过。runtime 增加仅含资源类型计数的 Windows 诊断，并先以有截止的独立步骤定位残留，完整检查门槛保持。
 
+第九候选 `b7c85980` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36222456496) 通过（684 项通过、0 项失败、14 项平台测试跳过）。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36222456465) 中 Linux 完整通过根检查、67 项源码 E2E 和 5 项成品测试。macOS 只有 agent-node 的释放后 PID 存活断言失败，原测试未区分 macOS 的僵尸进程，待核对和修复；不能因此宣称生产释放已确认有缺陷或已无缺陷。Windows 独立 runtime 测试在第六项通过后出现进程级异常退出 `0xC0000374`，后续完整检查未执行；该结果区别于第七轮的测试结束后挂起，正在核查原生 PTY 的生命周期。
+
+2026-09-27 继续修复：macOS 测试改为一次完整、严格解析的 `ps` 状态快照，只把僵尸进程或有效快照中已消失的目标视为退出；快照异常、未知字段和缺失观察者使测试失败，原释放与 owner 断言保留，没有新增等待重试。Windows 源码审查确认 `node-pty 1.1.0` 存在上游 [#922](https://github.com/microsoft/node-pty/pull/922) 修复的跨线程句柄表竞态，以及 [#965](https://github.com/microsoft/node-pty/issues/965) 描述的自然退出未关闭伪控制台路径；这支持修复相应源码，但仅凭退出码仍不能断定第九轮崩溃的具体调用栈。
+
+Windows 保持固定 `node-pty 1.1.0`，以仓库补丁修复原生所有权、关闭顺序和启动失败回收。安装时检查三份原始/修复源码 SHA-256，使用固定 `node-gyp 12.4.0` 重建并验证实际 Release 加载路径和原生修复标记；未知源码或旧预编译模块不被接受。打包后再次核对二进制与修复 JS，并用实际成品 Electron 验证 ASAR 加载。Windows 源码开发因此需要 Python、Visual Studio C++ 构建工具及对应 SDK/库，成品用户不需要编译工具。此构建链的三项本地回归通过，真实 MSVC 编译、并发/自然退出和三平台成品结果待下一候选 CI。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第七候选 workspace/macOS 通过，Windows native 包通过但桌面检查仍待修复；第八 workspace 通过 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第六候选 Linux、第七候选 macOS 各 67 项通过；Windows 待前置检查 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第五候选 Linux、第七候选 macOS 各 5 项通过；待同一候选三平台通过 |
+| 同一候选根 `npm run check` | 第九候选 workspace/Linux 通过；macOS 存活断言及 Windows 原生 PTY 问题待修复 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第九候选 Linux、第七候选 macOS 各 67 项通过；Windows 待前置检查 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第九候选 Linux、第七候选 macOS 各 5 项通过；待同一候选三平台通过 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |

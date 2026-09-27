@@ -123,7 +123,9 @@ npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
-Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
+Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windows SDK 和对应的 Spectre-mitigated C++ 库。`npm ci` 的 postinstall 会核对 node-pty 1.1.0 源码 SHA-256、应用仓库中的 ConPTY 生命周期补丁，并用固定的 node-gyp 12.4.0 编译 N-API 模块；编译或修复标记验证失败会直接终止，不回退旧预编译模块。重复运行 `node apps/desktop/scripts/prepare-native.mjs` 可重新构建。打包时还会通过成品 Electron 加载 ASAR 中的模块，确认 `build/Release/conpty.node` 与已验证的构建一致。安装包用户不需要编译工具链。
+
+Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。macOS/Linux 的 postinstall 保留 node-pty macOS spawn-helper 执行权限修复，不编译 Windows 模块。所有打包命令显式关闭自动发布。
 
 PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。三平台安装包仍仅手动触发：在 Actions → Verify and package desktop → Run workflow 选择待验证的分支；默认只验证和打包，产物保存在 Artifacts。测试报告位于根 `test-results/`，安装包位于根 `release/`。
 

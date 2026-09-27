@@ -1,13 +1,17 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { prepareWindowsNodePty } from './prepare-node-pty-windows.mjs';
+
+const require = createRequire(import.meta.url);
+const root = path.dirname(require.resolve('node-pty/package.json'));
+
+if (process.platform === 'win32') await prepareWindowsNodePty(root);
 
 // node-pty 1.1.0 ships Darwin spawn-helper files without executable mode bits.
 // macOS uses posix_spawnp on this helper, so a successful npm install alone is
 // insufficient. Run after dependency installation, before tests and packaging.
 if (process.platform !== 'win32') {
-  const require = createRequire(import.meta.url);
-  const root = path.dirname(require.resolve('node-pty/package.json'));
   const directories = ['prebuilds/darwin-arm64', 'prebuilds/darwin-x64', 'build/Release', 'build/Debug'];
   let prepared = 0;
   for (const directory of directories) {

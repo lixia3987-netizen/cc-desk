@@ -1,9 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import os from 'node:os';
 import path from 'node:path';
 import { ProcessSupervisor, commandEnvironment, linuxLiveProcesses } from '../dist/process-supervisor.js';
+
+const execFileAsync = promisify(execFile);
 
 async function fixture(t, options = {}) {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'native-command-中文 '));
@@ -34,17 +38,58 @@ async function fixture(t, options = {}) {
 }
 
 async function isLive(pid) {
-  try {
-    process.kill(pid, 0);
-    if (process.platform === 'linux') {
-      return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
-    }
-    return true;
-  } catch (error) {
-    if (['ESRCH', 'ENOENT'].includes(error.code)) return false;
+  try { process.kill(pid, 0); }
+  catch (error) {
+    if (error.code === 'ESRCH') return false;
     throw error;
   }
+  if (process.platform === 'linux') {
+    return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
+  }
+  if (process.platform === 'darwin') {
+    // kill(pid, 0) also succeeds for an exited, unreaped zombie. Observe its
+    // actual state once; do not delay/retry a failed live-process assertion.
+    const { stdout, stderr } = await execFileAsync('/bin/ps', ['-A', '-o', 'pid=,stat='], {
+      timeout: 1_500, maxBuffer: 2 * 1024 * 1024,
+    });
+    if (stderr.trim()) throw new Error(`Darwin process inspection failed: ${stderr.trim()}`);
+    return darwinSnapshotIsLive(stdout, pid, process.pid);
+  }
+  return true;
 }
+
+function darwinSnapshotIsLive(snapshot, pid, observerPid) {
+  const states = new Map();
+  for (const line of snapshot.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    // Only Z proves exit; halted, stopped and unknown states still count live.
+    // Apple adv_cmds ps/tasks.c defines states; ps/print.c defines modifiers.
+    const match = /^\s*(\d+)\s+([HIRSTUZ?][<NXEVLs+]*)\s*$/.exec(line);
+    if (!match || !Number.isSafeInteger(Number(match[1])) || states.has(Number(match[1]))) {
+      throw new Error('Invalid Darwin process-state snapshot.');
+    }
+    states.set(Number(match[1]), match[2]);
+  }
+  // An empty/truncated snapshot is not proof that the target disappeared.
+  if (!states.has(observerPid) || states.get(observerPid).startsWith('Z')) {
+    throw new Error('Darwin process-state snapshot is missing the live observer.');
+  }
+  return states.has(pid) && !states.get(pid).startsWith('Z');
+}
+
+test('Darwin descendant inspection distinguishes zombies and fails closed on invalid snapshots', () => {
+  const observer = '0 Ss\n101 R+\n';
+  for (const state of ['H', 'I', 'R', 'S', 'T', 'U', '?', 'Ss', 'SN', 'RE', 'S<XLs+']) {
+    assert.equal(darwinSnapshotIsLive(`${observer}202 ${state}\n`, 202, 101), true, state);
+  }
+  for (const state of ['Z', 'ZN', 'Zs']) {
+    assert.equal(darwinSnapshotIsLive(`${observer}202 ${state}\n`, 202, 101), false, state);
+  }
+  assert.equal(darwinSnapshotIsLive(observer, 202, 101), false);
+  for (const snapshot of ['', '202 Z\n', '101 Z\n', `${observer}202 invalid\n`, `${observer}202 Zgarbage\n`, `${observer}202 S\n202 Z\n`]) {
+    assert.throws(() => darwinSnapshotIsLive(snapshot, 202, 101), /snapshot/);
+  }
+});
 
 async function eventually(read, predicate, timeoutMs = 4_000) {
   const deadline = Date.now() + timeoutMs;
