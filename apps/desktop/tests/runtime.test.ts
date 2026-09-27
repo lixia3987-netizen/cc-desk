@@ -17,17 +17,14 @@ import { fileURLToPath } from 'node:url';
 import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
 
 // Windows CI has completed every assertion in this file without the owning test
-// process exiting. Record only fixed resource types/counts, never report paths,
-// commands or environments from the full diagnostic report.
+// process exiting. Record only fixed resource types/counts. The native diagnostic
+// report API is exercised separately so it cannot alter every lifecycle test.
 if (process.platform === 'win32') {
   const counts = (types: readonly string[]) => Object.fromEntries([...new Set(types)].sort()
     .map(type => [type, types.filter(value => value === type).length]));
   const snapshot = (phase: string) => {
-    const report = process.report.getReport() as { libuv?: { type?: string; is_active?: boolean; is_referenced?: boolean }[] };
     console.error(JSON.stringify({ phase: `runtime.test.${phase}`,
       resources: counts(process.getActiveResourcesInfo()),
-      referencedActiveHandles: counts((report.libuv ?? []).filter(handle => handle.is_active && handle.is_referenced)
-        .map(handle => typeof handle.type === 'string' ? handle.type : 'unknown')),
     }));
   };
   let completedTests = 0;

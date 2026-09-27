@@ -127,7 +127,7 @@ Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windo
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。macOS/Linux 的 postinstall 保留 node-pty macOS spawn-helper 执行权限修复，不编译 Windows 模块。所有打包命令显式关闭自动发布。
 
-PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。三平台安装包仍仅手动触发：在 Actions → Verify and package desktop → Run workflow 选择待验证的分支；默认只验证和打包，产物保存在 Artifacts。测试报告位于根 `test-results/`，安装包位于根 `release/`。
+PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。面向 `dev/native-agent` 的 PR 还会自动触发三平台桌面验证与打包；也可在 Actions → Verify and package desktop → Run workflow 选择待验证的分支手动运行。默认只验证和打包，产物保存在 Artifacts，不发布 Release。测试报告位于根 `test-results/`，安装包位于根 `release/`。
 
 维护者发布版本时，先更新 `apps/desktop/package.json` 的应用版本、根锁文件中的对应 workspace 元数据及 `docs/releases/v<版本>.md`。根编排包和内部包的版本不作为应用发布版本。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 

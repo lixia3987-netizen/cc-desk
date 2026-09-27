@@ -60,6 +60,8 @@ macOS 成品自动化为未签名应用增加测试专用 `--use-mock-keychain`�
 
 Windows 保持固定 `node-pty 1.1.0`，以仓库补丁修复原生所有权、关闭顺序和启动失败回收。安装时检查三份原始/修复源码 SHA-256，使用固定 `node-gyp 12.4.0` 重建并验证实际 Release 加载路径和原生修复标记；未知源码或旧预编译模块不被接受。打包后再次核对二进制与修复 JS，并用实际成品 Electron 验证 ASAR 加载。Windows 源码开发因此需要 Python、Visual Studio C++ 构建工具及对应 SDK/库，成品用户不需要编译工具。此构建链的三项本地回归通过，真实 MSVC 编译、并发/自然退出和三平台成品结果待下一候选 CI。
 
+第十候选 `64254cba` 的本地完整根检查通过：689 项通过、0 项失败、15 项平台测试跳过，包括类型检查与构建。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36285770713) 的 Windows 安装步骤完成真实 MSVC 编译及 Release 模块校验，编译约 144 秒，验证二进制 SHA-256 为 `1c5cb799724c48ac77198fb847be8b397af7f57a8020e9518bbff15a82969f00`。随后 Runtime 在首条诊断输出前以 `0xC0000409` 退出，没有执行测试；此时不能将成功编译扩展为 PTY 生命周期已通过。下一步用独立进程分别检查普通 Node、tsx、Runtime 加载、`process.report` 与首次 PTY，将诊断 API 与真实运行断言分开。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
