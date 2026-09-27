@@ -11,6 +11,8 @@
 
 阶段三 native Alpha 已实现，固定候选 `9a8c4ba` 的三平台技术验收通过；真实远程模型任务仍待验收，详见 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 与 [阶段三记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。阶段四按用户要求继续在开发分支推进，首批范围为增量编辑、上下文预算/用量展示和显式连接诊断，见 [阶段四计划与验收](NATIVE-AGENT-PHASE-4.md)。这不改变阶段三真实模型验收尚未完成的状态。
 
+P4a 已完成并通过固定提交的三平台技术验证。下一批 P4b 在开发分支增加显式安全恢复与手动压缩，具体范围见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)；自动压缩、真实远程模型验收及 P4c 扩展仍未完成。
+
 ## 1. 目标与实施原则
 
 先迁移为 monorepo，再逐步接入能独立工作的自研 Agent。过渡期在同一桌面应用中保留 Claude Code CLI 与自研 Agent，按会话选择执行引擎。新引擎达到日常开发要求后，再调整新会话默认值并推进替代。

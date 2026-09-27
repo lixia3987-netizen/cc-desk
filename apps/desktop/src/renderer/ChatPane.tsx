@@ -11,6 +11,7 @@ import { SubtaskPanel } from './SubtaskPanel';
 import { PromptEditor } from './PromptEditor';
 import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 import { ContextMeter } from './ContextMeter';
+import { NativeRecoveryPanel } from './NativeRecoveryPanel';
 import { ChatQueue } from './ChatQueue';
 import { useChatSubmission } from './useChatSubmission';
 import { useChatFileDrop } from './useChatFileDrop';
@@ -63,6 +64,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
   const [confirmingNativeRecovery,setConfirmingNativeRecovery]=useState(false);
+  const [compactingNativeContext,setCompactingNativeContext]=useState(false),[nativeNotice,setNativeNotice]=useState('');
+  const nativeOperation=useRef(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
@@ -156,16 +159,29 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       if(selected&&row instanceof HTMLDetailsElement)row.open=true;
     }
   },[highlight,visible,content]);
-  const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping';
-  const taskLabel=hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
-  const nativeRecovery=session.execution.providerId==='native'&&[snapshot?.error,session.error].some(error=>error?.includes('此会话只读'));
-  const composerDisabled=disabled||session.archived||nativeRecovery;
-  const nativeRecoveryConfirmed=nativeRecovery&&[snapshot?.error,session.error].some(error=>error?.includes('已核查执行现场并解除目录隔离'));
-  const confirmNativeRecovery=async()=>{
-    if(confirmingNativeRecovery||running)return;
-    setConfirmingNativeRecovery(true);
-    try { await window.desktop.confirmNativeRecovery(session.id);if(mounted.current)await load(); }
-    catch(error){onError(error);}finally{if(mounted.current)setConfirmingNativeRecovery(false);}
+  const nativeRecovery=session.execution.providerId==='native'?snapshot?.nativeRecovery:undefined;
+  const nativeMaintenance=session.execution.providerId==='native'?snapshot?.nativeContextMaintenance:undefined;
+  const compacting=compactingNativeContext||!!nativeMaintenance?.compacting;
+  const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping'||compacting;
+  const taskLabel=compacting?'正在压缩上下文':hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
+  const composerDisabled=disabled||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery;
+  const recoverNative=async(resume:boolean)=>{
+    if(nativeOperation.current||running||readOnly||session.archived||!nativeRecovery||descriptor?.maintenance)return;
+    nativeOperation.current=true;setConfirmingNativeRecovery(true);setNativeNotice('');
+    try {
+      if(resume)await window.desktop.resumeNativeRecovery(session.id,nativeRecovery.headHash);
+      else await window.desktop.confirmNativeRecovery(session.id);
+      if(mounted.current){await load();if(resume&&mounted.current)setNativeNotice('记录已恢复；请发送新指令继续。已完成工具不会重放，排队消息保持暂停。');}
+    }
+    catch(error){onError(error);if(mounted.current)await load().catch(onError);}
+    finally{nativeOperation.current=false;if(mounted.current)setConfirmingNativeRecovery(false);}
+  };
+  const compactNative=async()=>{
+    if(nativeOperation.current||running||composerDisabled||readOnly||!nativeMaintenance?.canCompact||descriptor?.maintenance||snapshot?.queue?.items.length)return;
+    nativeOperation.current=true;setCompactingNativeContext(true);setNativeNotice('');
+    try { await window.desktop.compactNativeContext(session.id,nativeMaintenance.headHash);if(mounted.current)await load(); }
+    catch(error){onError(error);if(mounted.current)await load().catch(onError);}
+    finally{nativeOperation.current=false;if(mounted.current)setCompactingNativeContext(false);}
   };
   const recoveryAvailable=!!descriptor?.capabilities.recoverContext&&!readOnly&&session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
   const recoverContext=async()=>{
@@ -177,7 +193,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const queued=running||!!snapshot?.queue?.items.length;
   const visibleAttachments=descriptor?.capabilities.attachments?attachments:[];
   const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
-    onAccepted:jumpToLatest,onSent,onAttachmentsSent,onError,refresh:load});
+    onAccepted:()=>{setNativeNotice('');jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
@@ -193,7 +209,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName}/>)}
       {!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
-      {!archive&&nativeRecovery&&!nativeRecoveryConfirmed&&<div className="chat-recovery native-recovery"><p className="panel-note">请核查上次工具执行涉及的文件、命令和残留进程。确认只解除工作目录隔离，旧会话仍为只读；需新建会话继续，不会重放结果未知的工具。</p><button className="secondary compact" disabled={confirmingNativeRecovery||running||readOnly} onClick={()=>void confirmNativeRecovery()}>{confirmingNativeRecovery?'正在确认…':'确认已核查执行现场'}</button></div>}
+      {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
+      {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
       {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&running&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{session.status==='stopping'?'正在停止':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} queue={snapshot?.queue} disabled={composerDisabled} onError={onError} refresh={load}/>}
@@ -202,7 +219,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
     <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'服务返回的本回合累计用量；未估算费用':'引擎实际返回的用量与费用估算'}>{session.execution.providerId==='native'&&Object.values(snapshot.usage).some(value=>typeof value==='number')&&'本回合累计 · '}{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
-    {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}/>}
+    {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}
+      maintenance={nativeMaintenance?{...nativeMaintenance,compacting}:undefined}
+      compactDisabled={running||composerDisabled||readOnly||!!descriptor.maintenance||!!snapshot?.queue?.items.length}
+      onCompact={session.execution.providerId==='native'&&descriptor.capabilities.compactContext?()=>void compactNative():undefined}
+      onCancelCompact={readOnly||session.archived||session.status==='stopping'?undefined:()=>void window.desktop.interruptSession(session.id).catch(onError)}/>}
     {confirmRecovery&&<Dialog label="重建空白上下文" onClose={()=>setConfirmRecovery(false)} closeDisabled={recovering}>
       <h2>重建空白上下文</h2>
       <p>此操作不能恢复原来的引擎上下文。将创建新的引擎会话标识，之前的聊天不会自动发送给引擎。</p>

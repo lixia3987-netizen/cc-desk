@@ -95,8 +95,17 @@ function registerIPC() {
     if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
     const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请先核查工作目录的实际修改，并确认上次命令及其子进程已停止。', detail: '确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });
     if (choice.response !== 1) return;
-    await nativeExecutor.confirmRecovery(id);
+    await services.maintainNativeContext(id, true, () => nativeExecutor.confirmRecovery(id));
     await services.refreshDirectoryRelease(id);
+    notify();
+  });
+  const nativeContextOperation = z.object({ id: idSchema, expectedHead: z.string().regex(/^[a-f0-9]{64}$/) }).strict();
+  handle('native:resume-recovery', nativeContextOperation, async ({ id, expectedHead }) => {
+    await services.maintainNativeContext(id, true, () => nativeExecutor.resumeRecovery(id, expectedHead));
+    notify();
+  });
+  handle('native:compact-context', nativeContextOperation, async ({ id, expectedHead }) => {
+    await services.maintainNativeContext(id, false, () => nativeExecutor.compactContext(id, expectedHead));
     notify();
   });
   handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, executors:executors.descriptors(), cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));

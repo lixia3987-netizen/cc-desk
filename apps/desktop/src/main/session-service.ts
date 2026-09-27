@@ -279,6 +279,38 @@ export class SessionService {
       }
     }
   }
+  /** Explicit native context operations share session, queue and directory ownership. */
+  async maintainNativeContext<T>(id: string, allowRecovery: boolean, action: () => Promise<T>): Promise<T> {
+    const session = this.structured(id);
+    if (session.execution.providerId !== 'native') throw new Error('此操作只适用于自研 Agent 会话。');
+    if (session.archived) throw new Error('请先取消会话归档。');
+    this.assertUnlocked(session);
+    if (this.admissions.has(id) || this.chat.has(id) || this.runtime.has(id) || this.releaseOperations.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id) || !allowRecovery && this.recoveryRequired(id)) throw new Error('请先停止当前任务并核查恢复状态。');
+    const checkAdmission = this.captureEngineAdmission(session.execution.providerId);
+    const epoch = this.cancellations.get(id) ?? 0;
+    const original = JSON.stringify([session.cwd, session.projectId, session.execution]);
+    this.queue.pause(id, '上下文维护已暂停队列，请检查结果后手动继续。');
+    this.lifecycle.add(id);
+    let keys: string[] = [];
+    try {
+      const roots = await this.executionRoots(session);
+      checkAdmission();
+      if (epoch !== (this.cancellations.get(id) ?? 0) || original !== JSON.stringify([this.session(id).cwd, this.session(id).projectId, this.session(id).execution])) throw new Error('上下文操作已取消或会话身份已改变。');
+      this.assertDirectoriesUnlocked(roots);
+      if (this.directoryExecution.conflicts(roots, id).length || this.directorySessions(roots).some(other => other.id !== id && this.taskOccupied(other.id))) throw new Error('同一工作目录还有执行或恢复任务，请先处理后重试。');
+      if (!allowRecovery && this.store.state.sessions.filter(other => this.occupied(other.id)).length >= this.store.state.settings.maxSessions) throw new Error('已达到最大并发会话数，请等待其他任务完成后再压缩。');
+      // No await between the final checks and acquiring both kinds of ownership.
+      const existing = this.executionLeases.get(id);
+      if (!existing) this.executionLeases.set(id, this.directoryExecution.acquire({ sessionId: id, providerId: session.execution.providerId, generation: epoch }, roots));
+      keys = roots;
+      for (const key of keys) this.directoryLocks.add(key);
+      return await action();
+    } finally {
+      for (const key of keys) this.directoryLocks.delete(key);
+      this.lifecycle.delete(id);
+      await this.refreshDirectoryRelease(id);
+    }
+  }
   private worktreeBase(s: Session) { return s.worktreeBase ?? this.project(s.projectId).path; }
   private directorySessions(keys: string[]) {
     return this.store.state.sessions.filter(s => keys.some(key => this.overlaps(key,this.pathKey(s.cwd))));

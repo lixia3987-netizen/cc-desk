@@ -2,7 +2,7 @@ name: Verify workspaces
 
 on:
   pull_request:
-    branches: [main, dev/native-agent, feat/native-agent-alpha]
+    branches: [main, dev/native-agent, feat/native-agent-alpha, feat/native-agent-daily-use]
   workflow_dispatch:
 
 permissions:

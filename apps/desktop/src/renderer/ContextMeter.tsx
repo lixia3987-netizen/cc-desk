@@ -1,8 +1,17 @@
 import type { ContextUsage } from '../shared/execution';
+import type { NativeContextMaintenance } from '../shared/chat';
 
 const count = (value: number) => value.toLocaleString();
-export function ContextMeter({ context, native = false }: { context?: ContextUsage; native?: boolean }) {
-  if (native || context?.budget) return <NativeContextMeter context={context}/>;
+interface ContextMeterProps {
+  context?: ContextUsage;
+  native?: boolean;
+  maintenance?: NativeContextMaintenance;
+  compactDisabled?: boolean;
+  onCompact?: () => void;
+  onCancelCompact?: () => void;
+}
+export function ContextMeter({ context, native = false, ...actions }: ContextMeterProps) {
+  if (native || context?.budget) return <NativeContextMeter context={context} {...actions}/>;
   const used = context?.inputTokens, capacity = context?.contextWindow;
   const percentage = used !== undefined && capacity ? used / capacity * 100 : undefined;
   const waiting = context?.status === 'compacted';
@@ -30,11 +39,12 @@ export function ContextMeter({ context, native = false }: { context?: ContextUsa
   </details>;
 }
 
-function NativeContextMeter({ context }: { context?: ContextUsage }) {
+function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, onCancelCompact }: Omit<ContextMeterProps, 'native'>) {
   const budget = context?.budget;
   const ratio = budget ? Math.max(budget.estimatedInputTokens / budget.maxInputTokens, budget.contextBytes / budget.maxContextBytes) : undefined;
   const percentage = ratio === undefined ? undefined : ratio * 100;
-  const label = budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} 估算 tokens` : '等待本回合预算数据';
+  const compacting = maintenance?.compacting;
+  const label = compacting ? '正在压缩上下文…' : budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} 估算 tokens` : '等待本回合预算数据';
   return <details className={'context-meter' + (budget && budget.status !== 'within_budget' ? ' context-high' : '')}>
     <summary aria-label={'上下文运行预算：' + label}>
       <span>Context · 运行预算</span>
@@ -46,11 +56,17 @@ function NativeContextMeter({ context }: { context?: ContextUsage }) {
       <span className="context-count">{label}</span>
     </summary>
     <div className="context-details">
+      {onCompact && <>
+        <span>使用当前模型生成摘要，可能产生费用；不会执行工具。摘要会省略细节，原始记录保留，后续任务可重新读取项目文件。</span>
+        {compacting ? <div className="panel-actions"><span role="status">正在生成摘要，完成前原上下文保持不变。</span>{onCancelCompact && <button type="button" className="secondary compact" onClick={onCancelCompact}>取消压缩</button>}</div>
+          : <button type="button" className="secondary compact" disabled={compactDisabled || !maintenance?.canCompact} onClick={onCompact}>压缩上下文（可能计费）</button>}
+      </>}
+      {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
       <span>这是本地运行预算，不是模型的真实上下文窗口或计费用量。预算按输入估算与上下文字节两项中较高的占比显示。</span>
       <span>按已保存历史和项目指令的 UTF-8 字节保守估算，不含工具定义和协议封装。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}
       {budget?.status === 'near_limit' && <span>接近预算上限；超过上限时会在下一次模型请求前停止。</span>}
-      {budget?.status === 'exceeded' && <span>已超过预算；下一次模型请求将停止。请调整输入预算或新建会话继续。</span>}
+      {budget?.status === 'exceeded' && <span>已超过预算；下一次模型请求将停止。请调整输入预算{onCompact ? '，或在可压缩时压缩上下文' : '或新建会话继续'}。</span>}
       <span>{context?.inputTokens === undefined ? '本回合最近一次模型响应未提供输入 token 用量。' : `服务返回的最近一次请求输入：${count(context.inputTokens)} tokens（非累计）。`}</span>
       {(context?.requestModel || context?.model) && <span>请求模型：{context.requestModel ?? context.model}</span>}
       {context?.measuredAt && <span>服务响应时间：{new Date(context.measuredAt).toLocaleString()}</span>}
