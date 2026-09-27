@@ -18,6 +18,7 @@ const firstGoal = 'AUTO_ORIGINAL_GOAL_保留此原始目标：只读取 fixture.
 const recentGoal = 'AUTO_RECENT_TURN_读取 fixture.txt，保留完整工具调用与返回。';
 const nextGoal = 'AUTO_NEXT_TASK_沿用历史继续，不重复先前操作。';
 const summaryText = 'AUTO_COMPACTED_HISTORY_前两轮分析已完成，文件没有改动；后续仍遵守最初约束。';
+const automaticAttemptNotice = '本次发送尝试自动压缩。原始记录保留；若未完成，请手动压缩或调整设置后继续。摘要可能产生费用，不会自动重复尝试。';
 // Three completed turns exceed 90% of a 50,000-byte input budget. The first
 // two turns still fit in one summary request, and the last complete turn fits
 // comfortably alongside the summary and the next instruction.
@@ -174,7 +175,7 @@ test('native cancelling an automatic summary keeps the queued message and origin
     expect(cancelled.nativeContextMaintenance?.lastCompaction).toBeUndefined();
     expect(cancelled.messages).toHaveLength(before.messages.length + 1);
     expect(cancelled.messages.slice(0, before.messages.length)).toEqual(before.messages);
-    expect(cancelled.messages.at(-1)).toMatchObject({ role: 'system', text: expect.stringContaining('发送前自动压缩未完成') });
+    expect(cancelled.messages.at(-1)).toMatchObject({ role: 'system', text: automaticAttemptNotice });
     expect(cancelled.messages.at(-1)!.text).toContain('不会自动重复尝试');
     await expect(page.getByRole('region', { name: '待发送消息' })).toContainText('队列已暂停');
     await expect(page.getByRole('region', { name: '待发送消息' })).toContainText(nextGoal);
@@ -222,7 +223,7 @@ test('native rejected automatic summary pauses the queue without losing the mess
     expect(failed.nativeContextMaintenance?.lastCompaction).toBeUndefined();
     expect(failed.messages).toHaveLength(before.messages.length + 1);
     expect(failed.messages.slice(0, before.messages.length)).toEqual(before.messages);
-    expect(failed.messages.at(-1)).toMatchObject({ role: 'system', text: expect.stringContaining('发送前自动压缩未完成') });
+    expect(failed.messages.at(-1)).toMatchObject({ role: 'system', text: automaticAttemptNotice });
     expect(failed.messages.at(-1)!.text).toContain('不会自动重复尝试');
     await noWorker(app);
     expect(fixture.requests).toHaveLength(5);
