@@ -22,15 +22,15 @@ async function until(condition, phase, timeout = 3000) {
 // Use the production ownership handshake even when injecting a race checkpoint.
 // The bridge is restored immediately after synchronous helper creation; all
 // process handles, challenge transport and exit barriers remain production code.
-function runOwnedCleanup(root, startedAt, spawnedAt, transform) {
+function runOwnedCleanup(root, startedAt, spawnedAt, transform, onHelperClose) {
   const originalExecFile = childProcess.execFile;
-  let failurePhase, failed = false;
+  let failurePhase;
   childProcess.execFile = (executable, argv, options, callback) => originalExecFile(
     executable, [...argv.slice(0, -1), transform(argv.at(-1))], options,
     (error, stdout, stderr) => {
-      failed = Boolean(error);
       failurePhase = stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1]
         ?? (error?.killed ? 'helper_timeout' : 'helper_failed');
+      onHelperClose?.(error ? failurePhase : undefined);
       callback(error, stdout, stderr);
     });
   syncBuiltinESMExports();
@@ -38,7 +38,7 @@ function runOwnedCleanup(root, startedAt, spawnedAt, transform) {
   try { cleaning = stopWindowsTree(root, false, startedAt, spawnedAt); }
   finally { childProcess.execFile = originalExecFile; syncBuiltinESMExports(); }
   return cleaning.then(released => {
-    if (!released || failed) {
+    if (!released) {
       const marker = `CLAUDE_TREE_CLEANUP_FAILED:${failurePhase ?? 'helper_failed'}`;
       throw Object.assign(new Error(marker), { stderr: marker });
     }
@@ -84,6 +84,54 @@ test('root confirmation uses the original process handle only after the helper r
       assert.equal(probes, 1);
       assert.equal(warning.includes('raw command'), false);
       if (!confirm) assert.match(warning, /confirm_original_root/);
+    } finally { childProcess.execFile = originalExecFile; syncBuiltinESMExports(); console.warn = originalWarning; }
+  });
+});
+
+test('Windows cleanup retries only an observed original exit before root confirmation and preserves later failures', async t => {
+  const cases = [
+    { name: 'exit code zero after failed open', phase: 'open_root_handle', exitCode: 0, attempts: 2, released: true },
+    { name: 'original signal after failed confirmation', phase: 'confirm_original_root', signalCode: 'SIGKILL', attempts: 2, released: true },
+    { name: 'live original remains unconfirmed', phase: 'open_root_handle', attempts: 1, released: false },
+    { name: 'missing original exit information is unconfirmed', phase: 'confirm_original_root', unknown: true, attempts: 1, released: false },
+    { name: 'an exited original cannot excuse descendant inspection failure', phase: 'verify_known_identity', exitCode: 0, attempts: 1, released: false },
+    { name: 'the tombstone scan must itself prove release', phase: 'open_root_handle', exitCode: 0, retryFailure: true, attempts: 2, released: false },
+  ];
+  for (const scenario of cases) await t.test(scenario.name, async () => {
+    const originalExecFile = childProcess.execFile, originalWarning = console.warn;
+    const original = { pid: 123, kill() { return false; }, ...(scenario.unknown ? {} : { exitCode: null, signalCode: null }) };
+    let calls = 0, firstClosed = false, firstTimeout, warning = '';
+    childProcess.execFile = (_executable, argv, options, callback) => {
+      calls++;
+      const script = argv.at(-1);
+      if (calls === 1) {
+        firstTimeout = options.timeout;
+        assert.match(script, /CLAUDE_ROOT_HELD:/);
+      } else {
+        assert.equal(firstClosed, true, 'a second cleaner must wait for the first helper close callback');
+        assert.equal(calls, 2, 'recovery is bounded to one tombstone scan');
+        assert.match(script, /\$rootExited=\$true/);
+        assert.doesNotMatch(script, /CLAUDE_ROOT_HELD:/);
+        assert.ok(options.timeout > 0 && options.timeout <= firstTimeout && firstTimeout <= 8000);
+      }
+      queueMicrotask(() => {
+        if (calls === 1) {
+          if (scenario.exitCode !== undefined) original.exitCode = scenario.exitCode;
+          if (scenario.signalCode !== undefined) original.signalCode = scenario.signalCode;
+          firstClosed = true;
+          callback(new Error('raw helper command'), '', `CLAUDE_TREE_CLEANUP_FAILED:${scenario.phase}`);
+        } else callback(scenario.retryFailure ? new Error('raw retry command') : null, '', scenario.retryFailure ? 'CLAUDE_TREE_CLEANUP_FAILED:verify_known_identity' : '');
+      });
+      return { stdout: new PassThrough(), stdin: new PassThrough() };
+    };
+    console.warn = value => { warning += value; };
+    syncBuiltinESMExports();
+    try {
+      assert.equal(await stopWindowsTree(original, false, 1000, 1001), scenario.released);
+      assert.equal(calls, scenario.attempts);
+      assert.equal(warning.includes('raw'), false);
+      if (scenario.released) assert.equal(warning, '');
+      if (scenario.retryFailure) assert.match(warning, /verify_known_identity/);
     } finally { childProcess.execFile = originalExecFile; syncBuiltinESMExports(); console.warn = originalWarning; }
   });
 });
@@ -155,6 +203,61 @@ foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId 
     await run(cleanup);
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Windows cleanup follows an original root exit during helper startup with a fresh descendant scan', { skip: process.platform !== 'win32', timeout: 45000 }, async t => {
+  for (const phase of ['open_root_handle', 'confirm_original_root']) await t.test(phase, async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-win-startup-exit-'));
+    const childReady = path.join(directory, 'child.pid'), captured = path.join(directory, 'captured'), resume = path.join(directory, 'resume');
+    const childScript = `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(childReady)},String(process.pid));setInterval(()=>{},1000);`;
+    const rootScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'ignore',detached:true,windowsHide:true}).unref();setInterval(()=>{},1000);`;
+    const startedAt = Date.now();
+    const root = spawn(process.execPath, ['-e', rootScript], { cwd: directory, stdio: 'ignore', windowsHide: true });
+    const spawnedAt = Date.now();
+    const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    let cleaning, childPid, firstFailure;
+    try {
+      await until(() => exists(childReady), 'the detached descendant must start');
+      childPid = Number(await fs.readFile(childReady, 'utf8'));
+      assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
+      cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => {
+        const checkpoint = `$cleanupPhase='${phase}'`;
+        assert.equal(script.split(checkpoint).length, 2, 'inject exactly the intended pre-identity checkpoint');
+        return script.replace(checkpoint, `${checkpoint}
+[IO.File]::WriteAllText(${psQuote(captured)},'helper-started')
+$handshakeDeadline=[DateTime]::UtcNow.AddSeconds(3)
+while(!(Test-Path -LiteralPath ${psQuote(resume)})) {
+  if([DateTime]::UtcNow -ge $handshakeDeadline) { throw 'Fixture startup handshake timed out.' }
+  Start-Sleep -Milliseconds 10
+}`);
+      }, failure => { firstFailure = failure; });
+      void cleaning.catch(() => {});
+      await untilCleanupCheckpoint(() => exists(captured), 'cleanup must reach the pre-identity checkpoint', cleaning);
+      // Match shutdown's escalation through the original ChildProcess HANDLE,
+      // while a detached descendant deliberately survives that root exit.
+      root.kill('SIGKILL');
+      await until(() => root.exitCode !== null || root.signalCode !== null, 'the original HANDLE must report exit');
+      assert.equal(live(childPid), true, 'root exit alone does not release its descendant');
+      await fs.writeFile(resume, 'continue');
+      await cleaning;
+      assert.equal(firstFailure, phase, 'the original helper must exercise the failed pre-identity path');
+      assert.equal(live(root.pid), false);
+      assert.equal(live(childPid), false, 'the subsequent tombstone scan must actually stop the descendant');
+    } finally {
+      await fs.writeFile(resume, 'continue');
+      await cleaning?.catch(() => {});
+      root.kill('SIGKILL');
+      // Recovery is restricted to this fixture's unique command-line marker;
+      // production still determines whether the original cleanup passed.
+      const cleanup = windowsTreeCleanupScript(2147483647, true, startedAt, Date.now()).replace('$known=@{}', `$known=@{}
+foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${psQuote(path.basename(directory))}) })) {
+  [void]$anchors.Add([int]$owned.ProcessId)
+  $known[[string]$owned.ProcessId]=$owned.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')
+}`);
+      await execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cleanup], { windowsHide: true, timeout: 8000, maxBuffer: 8192 });
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 test('Windows cleanup proves exit on its held handle when the process exits between inspection and termination', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {

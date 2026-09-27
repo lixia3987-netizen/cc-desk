@@ -4,7 +4,7 @@
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**阶段三实现候选已形成，三平台技术验收尚未全部通过，真实模型验收待完成**。第十四候选的三平台根检查、成品测试及 macOS/Linux 源码测试已通过；Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有平台跳过，唯一布局保持终端测试的超时正在通过 trace 定位。本文保留设计与完成定义，实际实现、证据和待确认项见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)，操作说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。真实服务、模型、凭据来源及预算尚未指定，不能将本地 fixture 结果记为真实模型验收通过。所有变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main、不发布 Release。
+状态：**阶段三实现候选已形成，三平台技术验收尚未全部通过，真实模型验收待完成**。第十五候选 Linux 完整通过；macOS 根检查与成品通过，源码有 1 项诊断 probe 安装时机失败，修正待复验；Windows 根检查有 1 项 Claude shutdown 清理失败，源码及成品本轮未执行。第十四候选 Windows 终端停止失败的底层原因仍未确定。本文保留设计与完成定义，实际实现、证据和待确认项见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)，操作说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。真实服务、模型、凭据来源及预算尚未指定，不能将本地 fixture 结果记为真实模型验收通过。所有变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main、不发布 Release。
 
 关联：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段二边界设计](ENGINE-BOUNDARIES-PHASE-2.md)、[架构说明](ARCHITECTURE.md)。下文路径相对于仓库根目录。
 

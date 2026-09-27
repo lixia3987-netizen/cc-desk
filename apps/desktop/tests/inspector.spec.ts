@@ -317,10 +317,10 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
   const f = await workspace(true), app = await f.launch();
   const failures: unknown[] = [];
   try {
-    await app.evaluate(installInspectorStopDiagnostics, f.shell.id);
     const page = await app.firstWindow(), errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await expect(page.getByRole('heading', { name: f.shell.title, exact: true })).toBeVisible();
+    await app.evaluate(installInspectorStopDiagnostics, f.shell.id);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await expectOpenPanels(page, ['上下文']);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);

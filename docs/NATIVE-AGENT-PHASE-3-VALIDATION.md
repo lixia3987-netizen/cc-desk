@@ -2,7 +2,7 @@
 
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
-当前状态：**实现候选已形成，三平台技术验收尚未全部通过，真实远程模型验收待完成**。最近完成 CI 的代码候选为 `38a909e16adb0bb0f1df4ad88650eecd00a9ddbe`，三平台根检查与成品测试均已通过，macOS、Linux 源码测试通过。Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有平台跳过；唯一失败发生在布局用例结束后的终端停止和测试收尾，底层清理阶段待补充诊断。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`，不合入 main、不发布 Release。
+当前状态：**实现候选已形成，三平台技术验收尚未全部通过，真实远程模型验收待完成**。最近完成 CI 的代码候选为 `fac96f8b43c62ab730426b5755bf11c78948d099`。Linux 完整通过；macOS 根检查与成品通过，源码有 1 项新诊断 probe 安装时机失败，后续已调整为等待现有页面就绪断言通过后安装，待复验。Windows 根检查有 1 项 Claude 关闭清理失败，源码、三次独立终端用例及成品本轮未执行；正在修复原始子进程退出与首次清理身份捕获之间的竞态。第十四候选 Windows 终端停止失败的底层原因仍未取得，不能将两轮失败视为同一根因。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`，不合入 main、不发布 Release。
 
 ## 已实现
 
@@ -82,16 +82,22 @@ Windows 第十二候选的成品构建与实际 Electron 原生模块校验通�
 
 Windows 源码 E2E 为 64 项通过、1 项失败、2 项既有 POSIX fixture 跳过。唯一失败为 `apps/desktop/tests/inspector.spec.ts:315` 的宽窄布局切换时保持终端测试：trace 证明全部布局、终端标记及运行状态断言通过；随后 `stopSession` 在约 2 秒后拒绝，报告终端清理失败，该错误被测试吞掉，`app.close()` 随后挂起，最终用例与 worker teardown 各超时 60 秒。trace 没有保留主进程错误链，尚不能确定失败属于进程树身份、原生关闭还是管道释放。后续修复只改测试的失败记录和有界回收，捕获跨 IPC 前的固定阶段/计数诊断，并增加三次独立 Windows 目标用例门槛；不重试到成功，不放宽清理证明。源码失败仍使 Windows job 及本候选三平台技术门槛未通过，不能由根检查和成品通过推断整个候选已通过。
 
+第十五候选 `fac96f8b43c62ab730426b5755bf11c78948d099` 的 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36300316328) 通过，693 项通过、0 项失败、16 项平台跳过。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36300316352) 中，Linux 整个 job 成功：根检查 693 项通过、0 项失败、16 项平台跳过，源码 E2E 67 项通过，成品 5 项通过。macOS 根检查 688 项通过、0 项失败、21 项平台跳过，成品 5 项通过；源码 E2E 为 66 项通过、1 项失败。唯一源码失败是新诊断 probe 在首个窗口及页面标题就绪前安装，未找到真实 `session:stop` handler。后续已改为等待既有页面标题可见断言通过后安装；没有新增 sleep 或跳过项，修复仍需下一候选复验。
+
+同一第十五候选的 Windows 独立 Runtime 为 19 项通过、0 项失败、4 项平台跳过；完整根检查为 676 项通过、1 项失败、32 项平台跳过，其中 engine-claude 20 项通过、0 项失败、1 项跳过，agent-node 121 项通过、0 项失败、3 项跳过，desktop 483 项通过、1 项失败、28 项跳过。唯一失败是 context-refresh 模型容量回归在 shutdown 时清理失败，固定阶段诊断为 Claude `open_root_handle`。源码 E2E、新增的三次独立 Windows inspector 用例及成品测试均未执行，不能沿用第十四候选的成品成功结果记作本轮通过。
+
+源码核查发现 shutdown 的 2500 毫秒超时会通过原始 ChildProcess 强制停止根进程，而清理助手此前可能已固化 `rootExited=false`；这一竞态可解释本轮 `open_root_handle` 诊断，但日志未提供原始 OS 错误码。正在修复为严格证明原始进程退出、等待首个助手实际关闭后，在共享 8 秒预算内最多再执行一次保留已退出根标记的后代清理；不能仅按根进程退出宣称整棵进程树释放。该路径仍需回归验证，也不能将历史 PTY 故障一并归为同因。第十四候选 inspector 的底层 PTY 清理原因仍未取得，新源码诊断 probe 在本轮 Windows 尚未执行。后续补丁新增六类退出证明/拒绝场景及两个真实 Windows 竞争节点，要求根已退出后仍存活的独立后代由后续扫描实际清理；本地 engine 构建、类型检查和测试通过（23 项通过、6 项 Windows 跳过），context-refresh 业务回归 11 项通过。真实 Windows 竞争用例仍待 CI。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十四候选三平台及独立 workspace 检查通过；Windows 674 项通过/32 项跳过，macOS 685/21，Linux 及 workspace 690/16，均无失败 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第十四候选 macOS/Linux 各 67 项通过；Windows 64 项通过、1 项终端停止/测试收尾失败、2 项既有 POSIX fixture 跳过，底层清理阶段待定位 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十四候选三平台各 5 项通过 |
-| 未知副作用、审批、目录占用与 ACK 故障回归 | 第十四候选三平台根检查与成品通过；源码整体门槛仍受 Windows 的 1 项失败阻断 |
+| 同一候选根 `npm run check` | 第十五候选 Linux/workspace 693 项通过/16 项跳过，macOS 688/21，均无失败；Windows 676 项通过、1 项 Claude shutdown 清理失败、32 项跳过 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第十五候选 Linux 67 项通过；macOS 66 项通过、1 项诊断 probe 安装时机失败，修正待复验；Windows 本轮未执行，包括三次独立 inspector 用例 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十五候选 macOS/Linux 各 5 项通过；Windows 本轮未执行，第十四候选的 5 项通过不能替代同候选验收 |
+| 未知副作用、审批、目录占用与 ACK 故障回归 | 第十五候选 Linux 完整通过、macOS 根检查与成品通过；Windows 根检查清理失败仍待修复复验，其余 Windows 门槛未执行 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
 | 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；未合入 main，未发布 Release |

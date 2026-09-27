@@ -169,46 +169,66 @@ exit 1
 `;
 }
 // Internal entry point also used by real Windows ownership regressions.
-export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams, 'pid' | 'kill'>, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
+export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams, 'pid' | 'kill'> & Partial<Pick<ChildProcessWithoutNullStreams, 'exitCode' | 'signalCode'>>, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
   if (!child.pid) return true;
   const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const challenge = rootExited ? undefined : randomUUID();
-  const script = windowsTreeCleanupScript(child.pid, rootExited, spawnStartedAt, spawnCompletedAt, challenge);
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const helper = execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 1024 }, (error, _stdout, stderr) => {
-        if (error) reject(Object.assign(error, { stderr })); else resolve();
+  const deadline = performance.now() + 8000;
+  const originalExited = () => child.exitCode != null || child.signalCode != null;
+  let exited = rootExited || originalExited();
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const challenge = exited ? undefined : randomUUID();
+    const script = windowsTreeCleanupScript(child.pid, exited, spawnStartedAt, spawnCompletedAt, challenge);
+    const timeout = Math.ceil(deadline - performance.now());
+    if (timeout <= 0) {
+      console.warn('Claude process cleanup could not confirm release (helper_timeout).');
+      return false;
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const helper = execFile(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout, maxBuffer: 1024 }, (error, _stdout, stderr) => {
+          if (error) reject(Object.assign(error, { stderr })); else resolve();
+        });
+        let pending = '', confirmed = false;
+        helper.stdin?.on('error', () => { /* helper completion remains the release barrier */ });
+        helper.stdout?.on('data', (chunk: string | Buffer) => {
+          if (!challenge || confirmed) return;
+          const text = chunk.toString();
+          if (Buffer.byteLength(pending) + Buffer.byteLength(text) > 1024) {
+            confirmed = true; pending = '';
+            helper.stdin?.end(`reject:${challenge}\n`);
+            return;
+          }
+          pending += text;
+          if (!pending.split(/\r?\n/).includes(`CLAUDE_ROOT_HELD:${challenge}`)) return;
+          confirmed = true;
+          // libuv's uv_process_kill(handle, 0) checks the original process HANDLE.
+          // A live original process after helper capture proves this held PID was
+          // not recycled. No wall-clock tolerance or numeric-PID health check.
+          let owned = false;
+          try { owned = child.kill(0); } catch { /* fail closed */ }
+          helper.stdin?.end(`${owned ? 'confirm' : 'reject'}:${challenge}\n`);
+        });
       });
-      let pending = '', confirmed = false;
-      helper.stdin?.on('error', () => { /* helper completion remains the release barrier */ });
-      helper.stdout?.on('data', (chunk: string | Buffer) => {
-        if (!challenge || confirmed) return;
-        const text = chunk.toString();
-        if (Buffer.byteLength(pending) + Buffer.byteLength(text) > 1024) {
-          confirmed = true; pending = '';
-          helper.stdin?.end(`reject:${challenge}\n`);
-          return;
-        }
-        pending += text;
-        if (!pending.split(/\r?\n/).includes(`CLAUDE_ROOT_HELD:${challenge}`)) return;
-        confirmed = true;
-        // libuv's uv_process_kill(handle, 0) checks the original process HANDLE.
-        // A live original process after helper capture proves this held PID was
-        // not recycled. No wall-clock tolerance or numeric-PID health check.
-        let owned = false;
-        try { owned = child.kill(0); } catch { /* fail closed */ }
-        helper.stdin?.end(`${owned ? 'confirm' : 'reject'}:${challenge}\n`);
-      });
-    });
-    return true;
-  } catch (error) {
-    // execFile's message contains its complete command. Emit only our bounded
-    // phase marker so CI/support can diagnose release failures without commands.
-    const failure = error as { stderr?: unknown; killed?: boolean };
-    const phase = typeof failure.stderr === 'string' ? failure.stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1] : undefined;
-    console.warn(`Claude process cleanup could not confirm release (${phase ?? (failure.killed ? 'helper_timeout' : 'helper_failed')}).`);
-    return false;
+      return true;
+    } catch (error) {
+      // execFile's message contains its complete command. Emit only our bounded
+      // phase marker so CI/support can diagnose release failures without commands.
+      const failure = error as { stderr?: unknown; killed?: boolean };
+      const phase = typeof failure.stderr === 'string' ? failure.stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1] : undefined;
+      // The original root can exit while PowerShell starts (including shutdown's
+      // original-handle escalation). Only its observed exit authorizes one fresh
+      // tombstone scan after the first helper physically closes. A numeric-PID
+      // probe or an arbitrary inspection failure must never authorize this path.
+      if (attempt === 0 && !exited && originalExited() && performance.now() < deadline &&
+        (phase === 'open_root_handle' || phase === 'confirm_original_root')) {
+        exited = true;
+        continue;
+      }
+      console.warn(`Claude process cleanup could not confirm release (${phase ?? (failure.killed ? 'helper_timeout' : 'helper_failed')}).`);
+      return false;
+    }
   }
+  return false;
 }
 
 /** Owns stdio framing, bounded control traffic and whole-process-tree termination. */
