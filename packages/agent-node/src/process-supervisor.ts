@@ -256,6 +256,8 @@ export async function linuxLiveProcesses(filter?: { pid?: number; group?: number
 
 export interface WindowsRootIdentity {
   rootExited: boolean;
+  /** UTC yyyyMMddHHmmssffffff from the original process HANDLE, when available. */
+  created?: string;
   spawnStartedAt?: number;
   spawnCompletedAt?: number;
 }
@@ -268,7 +270,8 @@ const standaloneWindowsOwners = new Map<number, {
 
 /**
  * An unqualified PID is an exited-parent anchor, never authority to kill a live
- * process. Following descendants requires the original parent's birth lower
+ * process. An original-HANDLE creation identity is the preferred exact anchor.
+ * Following descendants otherwise requires the original parent's birth lower
  * bound (spawnStartedAt), including when the root already exited. A live root
  * additionally needs spawnCompletedAt. Node does not
  * expose the original Windows HANDLE, so initial capture is not an absolute
@@ -280,6 +283,7 @@ export async function stopWindowsProcessTree(pid: number, timeoutMs = 10000, ide
   let owner = standaloneWindowsOwners.get(pid);
   if (!owner) {
     owner = { anchors: new Map([[pid, { pid, exited: identity?.rootExited ?? true,
+      created: identity?.created,
       spawnStartedAt: identity?.spawnStartedAt, spawnCompletedAt: identity?.spawnCompletedAt }]]), helpers: new Map() };
     standaloneWindowsOwners.set(pid, owner);
   }

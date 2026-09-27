@@ -3,7 +3,7 @@ import { loadNativeModule } from 'node-pty/lib/utils';
 import type { TerminalLaunchSpec } from './terminal-launch';
 
 export function assertPatchedWindowsPty(nativeModule: { ccDeskConptyFix?: unknown } = loadNativeModule('conpty').module) {
-  if (nativeModule.ccDeskConptyFix !== 1) {
+  if (nativeModule.ccDeskConptyFix !== 2) {
     throw new Error('Windows 终端组件未正确安装，请重新安装应用；源码运行需先完成依赖构建。');
   }
 }

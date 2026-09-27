@@ -6,7 +6,7 @@ import type { IPty } from 'node-pty';
 import type { Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
 import { StateStore } from './store';
 import type { TerminalLauncher, TerminalLaunchResource } from './execution/terminal-launch';
-import { releaseWindowsPty } from './execution/windows-pty-resources';
+import { releaseWindowsPty, windowsPtyCreationIdentity } from './execution/windows-pty-resources';
 import { spawnTerminal } from './execution/spawn-terminal';
 import { SubtaskTracker } from './subtask-tracker';
 import { automaticSessionTitlePatch } from '../shared/session-title';
@@ -37,6 +37,7 @@ function cleanupPhase(error: unknown, phase: string): Error {
 interface ProcessEntry {
   process: IPty; ending: boolean; paused?: boolean; token: object;
   rootExited: boolean; spawnStartedAt: number; spawnCompletedAt: number;
+  windowsCreated?: string;
   resource?: TerminalLaunchResource; resourceClose?: Promise<void>;
   release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
   completion: Promise<void>; finishCompletion(): void;
@@ -254,6 +255,7 @@ export class Runtime {
           entry.finishCompletion();
         });
       });
+      if (process.platform === 'win32') entry.windowsCreated = windowsPtyCreationIdentity(child);
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
         terminalSync: launch.terminalSync });
     } catch (error) {
@@ -342,8 +344,9 @@ export class Runtime {
     return entry.cleanup;
   }
   private stopWindowsTree(entry: ProcessEntry): Promise<void> {
+    if (!entry.windowsCreated) return Promise.reject(cleanupPhase(new Error('无法确认 Windows PTY 原始进程身份。'), 'windows.tree'));
     return stopWindowsProcessTree(entry.process.pid, undefined, {
-      rootExited: entry.rootExited, spawnStartedAt: entry.spawnStartedAt, spawnCompletedAt: entry.spawnCompletedAt,
+      rootExited: entry.rootExited, created: entry.windowsCreated,
     }).catch(error => { throw cleanupPhase(error, 'windows.tree'); });
   }
   private releasePty(id: string, entry: ProcessEntry): Promise<void> {

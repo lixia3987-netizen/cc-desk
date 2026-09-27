@@ -48,7 +48,7 @@ test('native verification rejects a stale binary or loader fallback even when th
   const prebuild = path.join(root, 'prebuilds', 'win32-x64', 'conpty.node');
   for (const file of [release, prebuild]) {
     await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.writeFile(file, 'exports.ccDeskConptyFix = 1;');
+    await fs.writeFile(file, 'exports.ccDeskConptyFix = 2;');
   }
   const loader = path.join(root, 'lib', 'utils.js');
   const select = async (directory: string) => fs.writeFile(loader,
@@ -60,13 +60,13 @@ test('native verification rejects a stale binary or loader fallback even when th
   await select('../build/Release');
   let result = verify();
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /CC_DESK_CONPTY_FIX=1/);
+  assert.match(result.stdout, /CC_DESK_CONPTY_FIX=2/);
   await select('../prebuilds/win32-x64');
   result = verify();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /prebuild fallback is forbidden/);
   await select('../build/Release');
-  await fs.writeFile(release, 'exports.ccDeskConptyFix = 0;');
+  await fs.writeFile(release, 'exports.ccDeskConptyFix = 1;');
   result = verify();
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /prebuild fallback is forbidden/);

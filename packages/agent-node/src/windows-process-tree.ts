@@ -64,7 +64,7 @@ function Report-Progress {
 }
 function Report-Anchor([int]$number,[string]$identity) {
   $lower=$null
-  if($minimum.ContainsKey([string]$number)) { $lower=$minimum[[string]$number].ToString('yyyyMMddHHmmssffffff') }
+  if($minimum.ContainsKey([string]$number)) { $lower=$minimum[[string]$number].ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture) }
   [Console]::Out.WriteLine((@{type='anchor';pid=$number;created=$identity;exited=($identity -eq 'tombstone');minimumCreated=$lower} | ConvertTo-Json -Compress))
 }
 function Parse-Identity([string]$identity) {
@@ -129,7 +129,7 @@ public static class NativeOwnedProcess {
       }
       $born=$current[$key].CreationDate
       if(!$born) { $failure='identity_unavailable'; throw 'Creation identity unavailable.' }
-      $snapshotIdentity=$born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')
+      $snapshotIdentity=$born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)
       if($known.ContainsKey($key) -and $known[$key] -ne 'tombstone' -and $known[$key] -ne $snapshotIdentity) {
         $failure='identity_changed'; throw 'Snapshot identity changed.'
       }
@@ -150,7 +150,7 @@ public static class NativeOwnedProcess {
         if(![NativeOwnedProcess]::GetProcessTimes($handle,[ref]$created,[ref]$exited,[ref]$kernel,[ref]$user)) {
           $nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); $failure='os_error'; throw 'Cannot query process times.'
         }
-        $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff')
+        $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)
         if($identity -ne $snapshotIdentity) { $failure='identity_changed'; throw 'Handle identity changed.' }
         if($minimum.ContainsKey($key) -and [DateTime]::FromFileTimeUtc($created) -lt $minimum[$key]) { $failure='identity_changed'; throw 'Handle predates its owner.' }
         if($specs.ContainsKey($key) -and !$specs[$key].created -and $null -ne $specs[$key].spawnStartedAt -and $null -ne $specs[$key].spawnCompletedAt) {

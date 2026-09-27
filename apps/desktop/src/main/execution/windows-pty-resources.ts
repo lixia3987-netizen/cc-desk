@@ -6,10 +6,17 @@ interface WindowsTerminalResources {
   _isReady: boolean;
   _deferreds: unknown[];
   _agent: {
-    _pty: number; _useConptyDll: boolean; _exitCode?: number;
+    _pty: number; _useConptyDll: boolean; _exitCode?: number; readonly _created?: string;
     _ptyNative: { ccDeskConptyFix: number; kill(pty: number, useConptyDll: boolean): void };
     _inSocket: Socket; _outSocket: Socket; _conoutSocketWorker: { _worker: Worker; dispose(): void };
   };
+}
+
+/** Birth identity captured from CreateProcessW's original, still-owned HANDLE. */
+export function windowsPtyCreationIdentity(terminal: IPty): string {
+  const created = (terminal as unknown as WindowsTerminalResources)._agent?._created;
+  if (typeof created !== 'string' || !/^\d{20}$/.test(created)) throw new Error('无法确认 Windows PTY 原始进程身份。');
+  return created;
 }
 
 async function nativeClosed(agent: WindowsTerminalResources['_agent'], timeoutMs: number) {
@@ -53,7 +60,7 @@ export async function releaseWindowsPty(terminal: IPty, timeoutMs = 3000): Promi
   const worker = connection?._worker;
   const input = internal._agent?._inSocket, output = internal._agent?._outSocket;
   if (typeof internal._isReady !== 'boolean' || !Array.isArray(internal._deferreds) ||
-    agent?._ptyNative?.ccDeskConptyFix !== 1 || typeof agent._ptyNative.kill !== 'function' ||
+    agent?._ptyNative?.ccDeskConptyFix !== 2 || typeof agent._ptyNative.kill !== 'function' ||
     !Number.isSafeInteger(agent._pty) || typeof agent._useConptyDll !== 'boolean' ||
     typeof connection?.dispose !== 'function' || !worker || typeof worker.threadId !== 'number' ||
     typeof worker.once !== 'function' || typeof worker.removeListener !== 'function' || typeof worker.terminate !== 'function' ||

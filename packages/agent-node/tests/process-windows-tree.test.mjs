@@ -25,7 +25,7 @@ async function cleanupFixture(root, directory) {
   // identified by a unique command-line marker, then bound to its creation time
   // before the production helper opens and verifies the same process identity.
   const marker = path.basename(directory);
-  const result = await run(`$ErrorActionPreference='Stop'; $owned=@(Get-CimInstance -Query 'SELECT ProcessId,CreationDate,CommandLine FROM Win32_Process' | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${quote(marker)}) } | ForEach-Object { @{ pid=[int]$_.ProcessId; created=$_.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff') } }); ConvertTo-Json -InputObject @($owned) -Compress; exit 0`);
+  const result = await run(`$ErrorActionPreference='Stop'; $owned=@(Get-CimInstance -Query 'SELECT ProcessId,CreationDate,CommandLine FROM Win32_Process' | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${quote(marker)}) } | ForEach-Object { @{ pid=[int]$_.ProcessId; created=$_.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture) } }); ConvertTo-Json -InputObject @($owned) -Compress; exit 0`);
   const anchors = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
   if (anchors.length) await run(buildWindowsTreeCleanupScript(anchors, 8000));
   await fs.rm(directory, { recursive: true, force: true });
@@ -56,6 +56,31 @@ test('Windows cleanup uses the production filtered environment and stdin identit
     if (helper && !helperClosed) {
       helper.kill('SIGKILL'); helper.stdin?.destroy(); helper.stdout?.destroy(); helper.stderr?.destroy(); helper.unref();
     }
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('Windows creation identities retain Gregorian UTC under a non-Gregorian helper culture', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-culture-'));
+  const ready = path.join(directory, 'ready');
+  const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  try {
+    await until(() => exists(ready), 'fixture process must start');
+    const observed = await run(`$ErrorActionPreference='Stop'; (Get-CimInstance -Query 'SELECT CreationDate FROM Win32_Process WHERE ProcessId=${root.pid}').CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)`);
+    const created = observed.stdout.trim();
+    assert.match(created, /^\d{20}$/);
+    const script = `[Threading.Thread]::CurrentThread.CurrentCulture=[Globalization.CultureInfo]::GetCultureInfo('th-TH')
+if([DateTime]::UtcNow.ToString('yyyy') -eq [DateTime]::UtcNow.ToString('yyyy',[Globalization.CultureInfo]::InvariantCulture)) { throw 'Fixture requires a non-Gregorian calendar.' }
+${buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)}`;
+    const result = await run(script);
+    const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(events.findLast(item => item.type === 'result')?.released, true);
+    const anchor = events.find(item => item.type === 'anchor' && item.pid === root.pid);
+    assert.equal(anchor?.created, created, 'CIM and held-HANDLE identities must use the input calendar');
+    assert.equal(anchor?.minimumCreated, created, 'retained ancestry must keep the same invariant format');
+    assert.equal(live(root.pid), false);
+  } finally {
+    root.kill('SIGKILL');
     await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

@@ -8,8 +8,8 @@ const require = createRequire(import.meta.url);
 export const nodePtyPatch = Object.freeze({
   version: '1.1.0', nodeGypVersion: '12.4.0',
   files: Object.freeze({
-    'src/win/conpty.cc': Object.freeze({ before: '52c893b689ab3210c0961e2a6aa805a82350003767b21069b164926b5becd4e2', after: '56040475d1eab06e7db234fd45ae95c8d18b202384f41a3eb38044c6234f876e' }),
-    'lib/windowsPtyAgent.js': Object.freeze({ before: '8636d16b38266112204061a22b135734177c242837982fd3a4055be726efa64a', after: '81014dfe6a7f76f83cf20da16ba89402da83fb6bcc79f096fcf1fc4f70f9f46d' }),
+    'src/win/conpty.cc': Object.freeze({ before: '52c893b689ab3210c0961e2a6aa805a82350003767b21069b164926b5becd4e2', after: 'ba5e9dc31012b4539ee14267b2582de434523848200adf25dcb71fb11acf4f56' }),
+    'lib/windowsPtyAgent.js': Object.freeze({ before: '8636d16b38266112204061a22b135734177c242837982fd3a4055be726efa64a', after: '2c24fe608aa036af41836f8314c50cc5ad3a252dde5b36452aeceebf127981a9' }),
     'lib/windowsTerminal.js': Object.freeze({ before: 'c3a65716f53fed0135a8a633373d5f9c2ab092544d651f27ef0a67096dd3bcd9', after: '3fcca67eda34ec8ea44dc1949135c88f8fef392cab5f86fb13706ca78393b28b' }),
   }),
 });
@@ -84,10 +84,10 @@ export function conptyVerificationSource(root) {
     const direct = require(expected);
     const loaded = require(path.join(root, 'lib', 'utils.js')).loadNativeModule('conpty');
     const selected = path.resolve(root, 'lib', loaded.dir, 'conpty.node');
-    if (selected !== expected || direct.ccDeskConptyFix !== 1 || loaded.module.ccDeskConptyFix !== 1) {
+    if (selected !== expected || direct.ccDeskConptyFix !== 2 || loaded.module.ccDeskConptyFix !== 2) {
       throw new Error('node-pty must load the compiled cc-desk ConPTY fix from build/Release; prebuild fallback is forbidden.');
     }
-    console.log('CC_DESK_CONPTY_FIX=1');
+    console.log('CC_DESK_CONPTY_FIX=2');
   `;
 }
 
@@ -96,7 +96,7 @@ export function verifyBuiltConpty(root, executable = process.execPath, electron 
     encoding: 'utf8', timeout: 30_000, windowsHide: true,
     env: { ...process.env, NODE_OPTIONS: '', NODE_V8_COVERAGE: '', ...(electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
   });
-  if (result.error || result.status !== 0 || !result.stdout?.includes('CC_DESK_CONPTY_FIX=1')) {
+  if (result.error || result.status !== 0 || !result.stdout?.includes('CC_DESK_CONPTY_FIX=2')) {
     throw new Error(`Compiled ConPTY verification failed: ${result.error?.message ?? result.stderr ?? result.status}`);
   }
 }

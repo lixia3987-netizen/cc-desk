@@ -1,9 +1,10 @@
 --- a/src/win/conpty.cc
 +++ b/src/win/conpty.cc
-@@ -13,6 +13,11 @@
+@@ -13,6 +13,12 @@
  #define NODE_ADDON_API_DISABLE_DEPRECATED
  #include <node_api.h>
  #include <assert.h>
++#include <cstdio>
 +#include <algorithm>
 +#include <atomic>
 +#include <memory>
@@ -12,7 +13,7 @@
  #include <Shlwapi.h> // PathCombine, PathIsRelative
  #include <sstream>
  #include <iostream>
-@@ -38,76 +43,112 @@
+@@ -38,76 +44,112 @@
  
  #endif
  
@@ -174,7 +175,7 @@
          break;
  
        case napi_queue_full:
-@@ -123,6 +164,10 @@
+@@ -123,6 +165,10 @@
          Napi::Error::Fatal("SetupExitCallback", "ThreadSafeFunction.BlockingCall() failed");
      }
    });
@@ -185,7 +186,7 @@
  }
  
  Napi::Error errorWithCode(const Napi::CallbackInfo& info, const char* text) {
-@@ -197,7 +242,8 @@
+@@ -197,7 +243,8 @@
                                           std::wstring& inName,
                                           std::wstring& outName,
                                           const std::wstring& pipeName,
@@ -195,7 +196,7 @@
  {
    HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
    DWORD error = GetLastError();
-@@ -207,7 +253,9 @@
+@@ -207,7 +254,9 @@
      PFNCREATEPSEUDOCONSOLE const pfnCreate = (PFNCREATEPSEUDOCONSOLE)GetProcAddress(
          (HMODULE)hLibrary,
          useConptyDll ? "ConptyCreatePseudoConsole" : "CreatePseudoConsole");
@@ -206,7 +207,7 @@
      {
        if (phPC == NULL || phInput == NULL || phOutput == NULL)
        {
-@@ -287,9 +335,10 @@
+@@ -287,9 +336,10 @@
      throw Napi::Error::New(env, why);
    }
  
@@ -220,7 +221,7 @@
  
    // Restore default handling of ctrl+c
    SetConsoleCtrlHandler(NULL, FALSE);
-@@ -301,9 +350,19 @@
+@@ -301,9 +351,19 @@
      // We were able to instantiate a conpty
      const int ptyId = InterlockedIncrement(&ptyCounter);
      marshal.Set("pty", Napi::Number::New(env, ptyId));
@@ -241,7 +242,7 @@
      throw Napi::Error::New(env, "Cannot launch conpty");
    }
  
-@@ -351,11 +410,12 @@
+@@ -351,11 +411,12 @@
    Napi::Function exitCallback = info[5].As<Napi::Function>();
  
    // Fetch pty handle from ID and start process
@@ -255,7 +256,7 @@
    // Prepare command line
    std::unique_ptr<wchar_t[]> mutableCommandline = std::make_unique<wchar_t[]>(cmdline.length() + 1);
    HRESULT hr = StringCchCopyW(mutableCommandline.get(), cmdline.length() + 1, cmdline.c_str());
-@@ -391,13 +451,19 @@
+@@ -391,13 +452,19 @@
  
    SIZE_T size = 0;
    InitializeProcThreadAttributeList(NULL, 1, 0, &size);
@@ -277,16 +278,37 @@
    fSuccess = UpdateProcThreadAttribute(siEx.lpAttributeList,
                                         0,
                                         PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-@@ -426,6 +492,8 @@
+@@ -426,6 +493,29 @@
      throw errorWithCode(info, "Cannot create process");
    }
  
 +  handle->hShell = piClient.hProcess;
 +  CloseHandle(piClient.hThread);
++  // Capture creation identity through CreateProcessW's original HANDLE while it
++  // is still owned. JS Date.now is a different clock and cannot define this
++  // process's exact birth, especially for immediate stop/natural exit.
++  FILETIME createdTime{}, exitedTime{}, kernelTime{}, userTime{};
++  SYSTEMTIME createdUtc{};
++  if (!GetProcessTimes(handle->hShell, &createdTime, &exitedTime, &kernelTime, &userTime)) {
++    throw errorWithCode(info, "GetProcessTimes failed");
++  }
++  if (!FileTimeToSystemTime(&createdTime, &createdUtc)) {
++    throw errorWithCode(info, "FileTimeToSystemTime failed");
++  }
++  ULARGE_INTEGER createdTicks{};
++  createdTicks.LowPart = createdTime.dwLowDateTime;
++  createdTicks.HighPart = createdTime.dwHighDateTime;
++  char createdIdentity[21];
++  const int identityLength = sprintf_s(createdIdentity, sizeof(createdIdentity), "%04u%02u%02u%02u%02u%02u%06u",
++      static_cast<unsigned int>(createdUtc.wYear), static_cast<unsigned int>(createdUtc.wMonth),
++      static_cast<unsigned int>(createdUtc.wDay), static_cast<unsigned int>(createdUtc.wHour),
++      static_cast<unsigned int>(createdUtc.wMinute), static_cast<unsigned int>(createdUtc.wSecond),
++      static_cast<unsigned int>((createdTicks.QuadPart % 10000000ULL) / 10ULL));
++  if (identityLength != 20) throw Napi::Error::New(env, "Invalid process creation identity");
    HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
    bool fLoadedDll = hLibrary != nullptr;
    if (useConptyDll && fLoadedDll)
-@@ -438,21 +506,33 @@
+@@ -438,21 +528,34 @@
      }
    }
  
@@ -307,6 +329,7 @@
 +
    auto marshal = Napi::Object::New(env);
    marshal.Set("pid", Napi::Number::New(env, piClient.dwProcessId));
++  marshal.Set("created", Napi::String::New(env, createdIdentity));
 +  SetupExitCallback(env, exitCallback, handle);
 +  // No throwing allocation after the watcher takes ownership.
    return marshal;
@@ -329,7 +352,7 @@
  }
  
  static Napi::Value PtyResize(const Napi::CallbackInfo& info) {
-@@ -472,9 +552,11 @@
+@@ -472,9 +575,11 @@
    SHORT rows = static_cast<SHORT>(info[2].As<Napi::Number>().Uint32Value());
    const bool useConptyDll = info[3].As<Napi::Boolean>().Value();
  
@@ -342,7 +365,7 @@
      HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
      bool fLoadedDll = hLibrary != nullptr;
      if (fLoadedDll)
-@@ -513,9 +595,11 @@
+@@ -513,9 +618,11 @@
      return env.Undefined();
    }
  
@@ -355,7 +378,7 @@
      HANDLE hLibrary = LoadConptyDll(info, useConptyDll);
      bool fLoadedDll = hLibrary != nullptr;
      if (fLoadedDll)
-@@ -544,23 +628,14 @@
+@@ -544,23 +651,14 @@
    int id = info[0].As<Napi::Number>().Int32Value();
    const bool useConptyDll = info[1].As<Napi::Boolean>().Value();
  
@@ -384,11 +407,11 @@
      }
    }
  
-@@ -572,6 +647,14 @@
+@@ -572,6 +670,14 @@
  */
  
  Napi::Object init(Napi::Env env, Napi::Object exports) {
-+  exports.Set("ccDeskConptyFix", Napi::Number::New(env, 1));
++  exports.Set("ccDeskConptyFix", Napi::Number::New(env, 2));
 +  exports.Set("ccDeskConptyStats", Napi::Function::New(env, [](const Napi::CallbackInfo& info) {
 +    auto stats = Napi::Object::New(info.Env());
 +    stats.Set("livePseudoconsoles", Napi::Number::New(info.Env(), livePseudoconsoles.load()));
@@ -417,7 +440,7 @@
              _this._conoutSocketWorker.connectSocket(_this._outSocket);
          });
          this._outSocket.on('connect', function () {
-@@ -86,8 +88,18 @@
+@@ -86,8 +88,19 @@
          });
          this._inSocket.setEncoding('utf8');
          if (this._useConpty) {
@@ -426,6 +449,7 @@
 +            try {
 +                var connect = this._ptyNative.connect(this._pty, commandLine, cwd, env, this._useConptyDll, function (c) { return _this._$onProcessExit(c); });
 +                this._innerPid = connect.pid;
++                Object.defineProperty(this, '_created', { value: connect.created, writable: false, configurable: false });
 +            } catch (error) {
 +                // The patched native connect has released its failed baton.
 +                // Constructor failure still owns these JavaScript resources.
@@ -438,7 +462,7 @@
          }
      }
      Object.defineProperty(WindowsPtyAgent.prototype, "inSocket", {
-@@ -221,6 +233,7 @@
+@@ -221,6 +234,7 @@
      WindowsPtyAgent.prototype._$onProcessExit = function (exitCode) {
          var _this = this;
          this._exitCode = exitCode;

@@ -66,15 +66,23 @@ Windows 保持固定 `node-pty 1.1.0`，以仓库补丁修复原生所有权、�
 
 同一第十一候选的 macOS 已完整通过：根检查 684 项通过、0 项失败、20 项平台跳过，源码 E2E 67 项通过，ZIP 与复制安装的 DMG 成品共 5 项通过。Linux 也完整通过：根检查 689 项通过、0 项失败、15 项平台跳过，源码 E2E 67 项通过，tar.gz 与提取后的 AppImage 成品共 5 项通过。
 
+第十二候选 `30d28fd1` 只增加白名单清理阶段诊断、保留测试原始/关闭错误及及时处理异步拒绝。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36287092225) 中 macOS 再次通过 684 项根检查、67 项源码 E2E 和 5 项成品测试，Linux 再次通过 689 项根检查、67 项源码 E2E 和 5 项成品测试。Windows 独立 Runtime、完整根检查（672 项通过、0 项失败、32 项平台跳过）、真实 npm Claude launcher 及源码 E2E（65 项通过、2 项既有 POSIX fixture 跳过）均通过；第十一轮的 3 项 Runtime 失败没有在这轮重现，不能把未输出的诊断当作根因已证实。
+
+Windows 第十二候选的成品构建与实际 Electron 原生模块校验通过，成品测试为 3 项通过、2 项失败。两项 native 用例均在测试提取 ASAR 成员时失败：此前文件列表断言已确认 worker 存在，但 `@electron/asar` 按宿主 `path.sep` 拆分路径，测试传入固定正斜杠路径导致 Windows 查找失败。修正测试的宿主路径构造，保留提取大小、真实 ASAR worker、审批、工具及重启的全部断言，待下一候选实际执行。源码的两个 Windows 跳过项分别为 POSIX 可执行协议 fixture 和 POSIX shebang IDE 捕获 fixture；没有新增跳过项。
+
+为消除 PTY 身份对 JavaScript 启动时间窗口的依赖，后续补丁直接从 `CreateProcessW` 返回的原始 HANDLE 读取 UTC 创建身份，保留到终端退出后，并传给清理助手进行严格匹配；未知或不匹配的身份仍拒绝。C++ 与 PowerShell 使用固定的 UTC 微秒格式，不随系统区域设置改变；原生修复标记升为 2，安装及成品加载均拒绝旧模块。新增真实 Windows 回归要求正确原始身份在错误 JavaScript 时间窗口下仍能清理，而错误身份不能杀死目标。此前时间窗口限制不再描述采用原始身份的 PTY；仅有 PID/时间窗口的独立旧入口仍保留该限制。Claude/PTY 的后代发现仍基于快照，不能据此宣称获得 native Job 的完整后代包含保证。原始句柄链路仍待下一候选的真实 Windows 验证。
+
+该补丁的本地完整根检查通过：690 项通过、0 项失败、16 项按平台跳过，包括所有类型检查与桌面构建；Windows 专属创建身份、错误身份保护和非公历区域设置回归由 CI 实际执行。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十一候选 workspace/Linux/macOS 通过；Windows 3 项 Runtime 释放失败待修复 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第十一候选 Linux/macOS 各 67 项通过；Windows 待前置检查 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十一候选 macOS/Linux 各 5 项通过；待同一候选 Windows 通过 |
+| 同一候选根 `npm run check` | 第十二候选三平台通过；新增原始身份补丁待同一候选复验 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第十二候选 Linux/macOS 各 67 项通过；Windows 65 项通过、2 项既有平台跳过 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十二候选 macOS/Linux 各 5 项通过；Windows 3 项通过、2 项 ASAR 测试路径失败待复验 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |

@@ -11,7 +11,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import type { IPty } from 'node-pty';
-import { releaseWindowsPty } from '../src/main/execution/windows-pty-resources';
+import { releaseWindowsPty, windowsPtyCreationIdentity } from '../src/main/execution/windows-pty-resources';
 import { spawnTerminal, assertPatchedWindowsPty } from '../src/main/execution/spawn-terminal';
 
 const require = createRequire(import.meta.url);
@@ -41,7 +41,7 @@ test('silent Windows terminal cleanup bypasses the real first-output gate and aw
     _agent: {
       kill: () => { nativeKills++; },
       _pty: 1, _useConptyDll: false, _exitCode: undefined as number | undefined,
-      _ptyNative: { ccDeskConptyFix: 1, kill: () => { nativeKills++; } },
+      _ptyNative: { ccDeskConptyFix: 2, kill: () => { nativeKills++; } },
       _inSocket: sockets.input, _outSocket: sockets.output,
       _conoutSocketWorker: { _worker: worker, dispose: () => { disposalStarted = true; void worker.terminate(); } },
     },
@@ -70,7 +70,7 @@ test('Windows cleanup retains the draining worker when native close cannot be co
     _agent: {
       kill: () => { throw new Error('Native close failed'); },
       _pty: 1, _useConptyDll: false,
-      _ptyNative: { ccDeskConptyFix: 1, kill: () => { throw new Error('Native close failed'); } },
+      _ptyNative: { ccDeskConptyFix: 2, kill: () => { throw new Error('Native close failed'); } },
       _inSocket: new Socket(), _outSocket: new Socket(),
       _conoutSocketWorker: { _worker: worker, dispose: () => { void worker.terminate(); } },
     },
@@ -87,7 +87,7 @@ test('Windows cleanup fails explicitly for unknown internals or a worker that do
   const terminal = Object.assign(Object.create(WindowsTerminal.prototype), {
     _isReady: false, _deferreds: [], _socket: { readable: true },
     _agent: { kill: () => {}, _pty: 1, _useConptyDll: false, _exitCode: 0,
-      _ptyNative: { ccDeskConptyFix: 1, kill: () => {} }, _inSocket: new Socket(), _outSocket: new Socket(),
+      _ptyNative: { ccDeskConptyFix: 2, kill: () => {} }, _inSocket: new Socket(), _outSocket: new Socket(),
       _conoutSocketWorker: { _worker: worker, dispose: () => {} } },
   });
   try { await assert.rejects(releaseWindowsPty(terminal, 30), /转发资源释放超时/); }
@@ -96,8 +96,14 @@ test('Windows cleanup fails explicitly for unknown internals or a worker that do
 
 test('Windows terminal startup rejects an unpatched native module', () => {
   assert.throws(() => assertPatchedWindowsPty({}), /终端组件未正确安装/);
-  assert.throws(() => assertPatchedWindowsPty({ ccDeskConptyFix: '1' }), /终端组件未正确安装/);
-  assert.doesNotThrow(() => assertPatchedWindowsPty({ ccDeskConptyFix: 1 }));
+  assert.throws(() => assertPatchedWindowsPty({ ccDeskConptyFix: 1 }), /终端组件未正确安装/);
+  assert.doesNotThrow(() => assertPatchedWindowsPty({ ccDeskConptyFix: 2 }));
+});
+
+test('Windows PTY creation identity requires the original native birth value', () => {
+  assert.throws(() => windowsPtyCreationIdentity({} as IPty), /原始进程身份/);
+  assert.throws(() => windowsPtyCreationIdentity({ _agent: { _created: 'unknown' } } as unknown as IPty), /原始进程身份/);
+  assert.equal(windowsPtyCreationIdentity({ _agent: { _created: '20260927012345123456' } } as unknown as IPty), '20260927012345123456');
 });
 
 test('Windows rejects an empty provider environment before native allocation without inheriting variables', () => {
@@ -124,13 +130,15 @@ test('Windows native PTY closes concurrent consoles and failed spawns before the
     const script = `
       import fs from 'node:fs'; import path from 'node:path'; import assert from 'node:assert/strict';
       import { createRequire } from 'node:module';
+      import { pathToFileURL } from 'node:url';
       const require = createRequire(${JSON.stringify(import.meta.url)});
       const { loadNativeModule } = require('node-pty/lib/utils');
       const native = loadNativeModule('conpty').module;
+      const { stopWindowsProcessTree } = await import(pathToFileURL(require.resolve('@cc-desk/agent-node/process-supervisor')).href);
       const { spawnTerminal } = await import(${JSON.stringify(spawnModule)}).then(m => m.default ?? m);
-      const { releaseWindowsPty } = await import(${JSON.stringify(resourcesModule)}).then(m => m.default ?? m);
+      const { releaseWindowsPty, windowsPtyCreationIdentity } = await import(${JSON.stringify(resourcesModule)}).then(m => m.default ?? m);
       const root = ${JSON.stringify(root)};
-      assert.equal(native.ccDeskConptyFix, 1);
+      assert.equal(native.ccDeskConptyFix, 2);
       const empty = () => assert.deepEqual(native.ccDeskConptyStats(), { livePseudoconsoles: 0, indexedPseudoconsoles: 0 });
       const until = async check => {
         const deadline = Date.now() + 10000;
@@ -172,6 +180,30 @@ test('Windows native PTY closes concurrent consoles and failed spawns before the
           for (const result of cleanup) if (result.status === 'rejected') failures.push(result.reason);
         }
         if (failures.length) throw new AggregateError(failures, 'PTY round failed: ' + round);
+      }
+      for (const mismatch of [false, true]) {
+        const terminal = spawnTerminal({ file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: process.env }, root);
+        terminal.onData(() => {});
+        const captured = windowsPtyCreationIdentity(terminal);
+        assert.match(captured, /^\\d{20}$/);
+        const failures = [];
+        try {
+          const cleanup = stopWindowsProcessTree(terminal.pid, 10000, { rootExited: false,
+            created: mismatch ? '20000101000000000000' : captured,
+            spawnStartedAt: 0, spawnCompletedAt: 1 });
+          if (mismatch) {
+            await assert.rejects(cleanup, /identity_changed/);
+            assert.doesNotThrow(() => process.kill(terminal.pid, 0), 'mismatched creation identity must not kill the process');
+          } else {
+            await cleanup; // Exact original-HANDLE identity overrides the deliberately wrong JS clock window.
+          }
+        } catch (error) { failures.push(error); }
+        finally {
+          try { await releaseWindowsPty(terminal); } catch (error) { failures.push(error); }
+        }
+        if (failures.length) throw new AggregateError(failures, 'Original PTY creation identity regression failed');
+        assert.equal(windowsPtyCreationIdentity(terminal), captured, 'natural/native exit preserves the original birth identity');
+        empty();
       }
       // This reaches CreateProcessW after HPCON, pipes and forwarding worker
       // exist, unlike a missing executable rejected before allocation.

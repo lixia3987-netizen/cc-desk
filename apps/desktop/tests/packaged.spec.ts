@@ -132,7 +132,8 @@ for (const target of targets) {
       expect(await fs.realpath(identity.profile)).toBe(await fs.realpath(profile));
       expect(identity.appPath).toMatch(/[/\\][Rr]esources[/\\]app\.asar$/);
       expect(listPackage(identity.appPath, { isPack: false }).map(file => file.replaceAll('\\', '/'))).toContain('/dist/native/worker.cjs');
-      expect(extractFile(identity.appPath, 'dist/native/worker.cjs').length).toBeGreaterThan(1024);
+      // asar 3.x traverses filenames with the host path.sep, including Windows.
+      expect(extractFile(identity.appPath, path.join('dist', 'native', 'worker.cjs')).length).toBeGreaterThan(1024);
       const page = await app.firstWindow();
       page.on('pageerror', error => errors.push(error.message));
       await expect(page.locator('main.workspace')).toBeVisible();
