@@ -244,15 +244,16 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    },20);return;
   }
   if(current==='subtasks-updated-only'){
+   afterRelease('updated-only',()=>{
+    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'completed'}});
+    output({type:'system',subtype:'task_updated',task_id:'shell-task',patch:{status:'stopped'}});
+    done('updated done');
+   });
    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'pending',description:'Queued task'}});
    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'running',description:'Running task'}});
    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'paused',is_backgrounded:true}});
    output({type:'system',subtype:'task_started',task_id:'shell-task',task_type:'local_bash',description:'Background shell'});
-   setTimeout(()=>{
-    output({type:'system',subtype:'task_updated',task_id:'updated-agent',patch:{status:'completed'}});
-    output({type:'system',subtype:'task_updated',task_id:'shell-task',patch:{status:'stopped'}});
-    done('updated done');
-   },100);return;
+   return;
   }
   if(current==='subtasks-interrupt'||current==='subtasks-crash'||current==='subtasks-child'||current==='subtasks-child-approval'){
    output({type:'assistant',message:{id:'child-request',content:[{type:'tool_use',id:'child-agent',name:'Agent',input:{description:'Child task'}}]}});
@@ -917,9 +918,13 @@ test('task_updated alone exposes pending, running and paused states and settles 
   try {
     const result = s.runtime.send(s.session.id, 'subtasks-updated-only', capabilities);
     await until(() => s.store.state.sessions[0].subtasks?.tasks.length === 2);
+    // A delayed observer must still see paused state; only its release may
+    // advance the fixture, not the former 100 ms completion timer.
+    await new Promise(resolve => setTimeout(resolve, 250));
     assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'paused');
     assert.equal(s.store.state.sessions[0].subtasks!.tasks[1].kind, 'shell');
-    assert.equal((await result).success, true);
+    assert.equal(s.runtime.isBusy(s.session.id), true);
+    assert.equal((await s.releaseAndWait('updated-only', result)).success, true);
     assert.deepEqual(s.store.state.sessions[0].subtasks!.tasks.map(task => task.status), ['completed', 'stopped']);
   } finally { await s.cleanup(); }
 });

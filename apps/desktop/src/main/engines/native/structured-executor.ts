@@ -57,6 +57,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   private publisher: ExecutionStatePublisher;
   private supervisor: ProcessSupervisor;
   private hydration = new Map<string, Promise<void>>();
+  private hydrationClosed = false;
+  private hydrationLedgers = new Set<NativeRunStore>();
   constructor(private store: StateStore, private connections: ConnectionStore, events: ExecutionEvents, private options: NativeExecutorOptions = {}) {
     this.supervisor = options.supervisor ?? new ProcessSupervisor();
     this.publisher = new ExecutionStatePublisher(events);
@@ -91,11 +93,16 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     }
   }
   hydrate(id: string): Promise<void> {
+    // Renderer refreshes can arrive after quit starts. Preserve the existing
+    // projection, but never open another writer behind the shutdown barrier.
+    if (this.hydrationClosed) return Promise.resolve();
     const pending = this.hydration.get(id); if (pending) return pending;
     const operation = (async () => {
       const active = this.active.get(id) ?? this.contextOperations.get(id);
       if (active && !active.store) return;
+      const ownsLedger = !active?.store;
       const ledger = active?.store ?? await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: this.session(id).execution.conversationId! });
+      if (ownsLedger) this.hydrationLedgers.add(ledger);
       try {
         await this.refreshProjection(id, ledger);
         if (ledger.recoveryRequired || this.projection.hasMissingContext(id)) {
@@ -109,7 +116,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           } catch { this.acknowledged.delete(id); }
           this.projection.state(id, 'error', this.recoveryMessage(id));
         } else if (!active?.cleanupUnconfirmed) { this.recovery.delete(id); this.acknowledged.delete(id); }
-      } finally { if (!active?.store) await ledger.close(); }
+      } finally {
+        if (ownsLedger) { await ledger.close(); this.hydrationLedgers.delete(ledger); }
+      }
     })();
     this.hydration.set(id, operation);
     void operation.finally(() => { if (this.hydration.get(id) === operation) this.hydration.delete(id); }).catch(() => {});
@@ -437,5 +446,21 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   setSessionMaintenance(ids: readonly string[], value: boolean) { for (const id of ids) value ? this.sessionMaintenance.add(id) : this.sessionMaintenance.delete(id); }
   async disconnectSessions(ids: readonly string[]) { await Promise.all(ids.map(id => this.stopAndWait(id))); }
   disconnectAll() { return this.disconnectSessions([...this.active.keys(), ...this.contextOperations.keys()]); }
-  async shutdown() { this.maintenance = true; await this.disconnectAll(); await this.supervisor.dispose(); this.projection.flush(); }
+  async shutdown() {
+    this.maintenance = true;
+    this.hydrationClosed = true;
+    // Even an idle history refresh owns a writer while opening/rebuilding its
+    // ledger. Wait through open, projection and close before the app can exit.
+    const results = await Promise.allSettled([this.disconnectAll(), ...this.hydration.values()]);
+    const errors: unknown[] = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+    // A failed close remains owned, so a later quit attempt can retry its actual
+    // release instead of treating an already-rejected hydration as cleanup.
+    const releases = await Promise.allSettled([...this.hydrationLedgers].map(async ledger => {
+      await ledger.close(); this.hydrationLedgers.delete(ledger);
+    }));
+    for (const result of releases) if (result.status === 'rejected') errors.push(result.reason);
+    try { await this.supervisor.dispose(); } catch (error) { errors.push(error); }
+    try { this.projection.flush(); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, '自研 Agent 记录或执行资源尚未完全释放，请检查磁盘并重试退出。');
+  }
 }
