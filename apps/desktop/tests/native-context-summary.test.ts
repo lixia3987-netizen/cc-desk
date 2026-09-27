@@ -128,6 +128,34 @@ test('hung summary request times out without retrying and unknown usage remains 
   finally { await server.close(); }
 });
 
+test('a committed core deadline is reported as timeout before the outer timer fires', async () => {
+  const server = await startResponsesFixture({ handler: () => ({ output: [assistantMessage('expired', '不能提交的超时摘要')] }) });
+  let coreTimedOut = false;
+  try {
+    await assert.rejects(summarizeNativeContext(options(server.baseURL, { maxActiveMs: 60_000, worker: async worker => {
+      let now = 0;
+      const model = new ResponsesModel(worker.model), generate = model.generate.bind(model);
+      model.generate = async request => {
+        const response = await generate(request);
+        // Deterministically exhaust the core clock while the outer real-time
+        // deadline remains open, independent of OS timer callback ordering.
+        now = worker.request.budget!.maxActiveMs!;
+        return response;
+      };
+      const result = await runAgent({ ...worker.request, signal: worker.signal }, {
+        model, tools: worker.tools, store: worker.store, approvals: worker.approvals,
+        host: { now: () => now, digest: value => createHash('sha256').update(value).digest('hex'), emit: worker.onEvent,
+          deadline: (_timeout, parent) => ({ signal: parent, dispose() {} }) },
+      });
+      assert.equal(result.status, 'budget_exhausted'); assert.equal(result.reason, 'active_time_budget');
+      assert.equal(result.committed, true); assert.equal(worker.signal.aborted, false, 'outer timeout callback has not run');
+      coreTimedOut = true;
+      return result;
+    } })), { code: 'timeout' });
+    assert.equal(coreTimedOut, true); assert.equal(server.requests.length, 1); assert.deepEqual(server.errors, []);
+  } finally { await server.close(); }
+});
+
 test('pre-cancelled requests and invalid budgets never create a worker; cleanup failures preserve the ownership barrier', async () => {
   const controller = new AbortController(); controller.abort();
   let starts = 0;

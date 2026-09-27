@@ -57,8 +57,10 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
 
   const identity = clone(options.identity);
   const duration = Math.min(options.maxActiveMs, 60_000);
+  const expiresAt = performance.now() + duration;
   const controller = new AbortController();
   let timedOut = false;
+  const deadlineExpired = () => timedOut || performance.now() >= expiresAt;
   const cancel = () => controller.abort();
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, duration);
   options.signal.addEventListener('abort', cancel, { once: true });
@@ -106,7 +108,9 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
     });
     // Always await actual worker cleanup; cancellation cannot commit a late result.
     if (options.signal.aborted) throw new NativeContextSummaryError('cancelled');
-    if (timedOut) throw new NativeContextSummaryError('timeout');
+    // Core's active deadline can settle before this process dispatches its
+    // timeout callback. Its committed timeout is authoritative even then.
+    if (deadlineExpired() || result.status === 'budget_exhausted' && result.reason === 'active_time_budget') throw new NativeContextSummaryError('timeout');
     if (!committed || !equal(result, committed) || result.status !== 'completed' || !result.committed || result.modelRequests !== 1 || result.toolCalls !== 0 || !response) invalid();
     const summary = response.outputItems.flatMap(item => object(item) && item.type === 'message' && Array.isArray(item.content)
       ? item.content.map(part => (part as { text: string }).text) : []).join('\n').trim();
@@ -117,7 +121,7 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
     // The executor must retain ownership if utilityProcess release could not be confirmed.
     if (object(error) && error.cleanupUnconfirmed === true) throw error;
     if (options.signal.aborted) throw new NativeContextSummaryError('cancelled');
-    if (timedOut) throw new NativeContextSummaryError('timeout');
+    if (deadlineExpired()) throw new NativeContextSummaryError('timeout');
     if (error instanceof NativeContextSummaryError) throw error;
     throw new NativeContextSummaryError('failed');
   } finally {
