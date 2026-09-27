@@ -70,3 +70,31 @@ test('compaction result is local context bytes and does not fabricate provider t
   assert.match(claude, /\/context/);
   assert.doesNotMatch(claude, /压缩上下文（可能计费）|取消压缩/);
 });
+
+test('native automatic compaction explains opt-in billing, limits and cancellation of the pending send', () => {
+  const enabled: NativeContextMaintenance = { ...maintenance, autoCompact: { enabled: true, thresholdPercent: 90 } };
+  const ready = renderContext(enabled);
+  assert.match(ready, /自动压缩已开启：仅发送新指令前，达到本地预算 90% 时尝试，每次提交最多一次/);
+  assert.match(ready, /摘要请求可能计费，并计入本回合模型请求次数和运行时长/);
+  assert.match(ready, /摘要会省略细节，原始记录保留/);
+  assert.match(renderContext({ ...maintenance, autoCompact: { enabled: false, thresholdPercent: 90 } }), /自动压缩已关闭/);
+  const busy = renderContext({ ...enabled, compacting: true, compactionTrigger: 'automatic', canCompact: false });
+  assert.match(busy, /正在自动压缩上下文/);
+  assert.match(busy, /正在自动压缩，完成后继续本次发送；取消会停止本次发送/);
+  assert.match(busy, /原上下文在摘要成功前保持不变/);
+  assert.match(busy, />取消压缩</);
+  assert.doesNotMatch(busy, />压缩上下文（可能计费）</);
+  assert.doesNotMatch(busy, /已停止自动重试/);
+});
+
+test('blocked automatic compaction gives manual recovery guidance and retains the explicit manual action', () => {
+  const blocked = renderContext({ ...maintenance, autoCompact: { enabled: true, thresholdPercent: 90, blocked: true } });
+  assert.match(blocked, /role="status">当前上下文的自动压缩未完成，已停止自动重试/);
+  assert.match(blocked, /请先手动压缩，或在运行配置中关闭自动压缩后调整输入预算或新建会话/);
+  assert.match(blocked, />压缩上下文（可能计费）</);
+  assert.doesNotMatch(blocked, /disabled=""|>取消压缩</);
+  const result = { beforeBytes: 24000, afterBytes: 8000, createdAt: '2026-09-27T00:00:00Z' };
+  assert.match(renderContext({ ...maintenance, lastCompaction: { ...result, trigger: 'automatic' } }), /· 自动 · 上下文/);
+  assert.match(renderContext({ ...maintenance, lastCompaction: { ...result, trigger: 'manual' } }), /· 手动 · 上下文/);
+  assert.match(renderContext({ ...maintenance, lastCompaction: result }), /· 手动 · 上下文/);
+});

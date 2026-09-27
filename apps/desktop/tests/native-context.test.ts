@@ -40,6 +40,20 @@ test('integer budget controls preserve invalid drafts and enforce renderer/host 
   assert.match(preserved, /disabled=""/); assert.match(preserved, /原始配置已保留/);
 });
 
+test('native auto compaction stays off for existing configurations and requires an explicit supported opt-in', () => {
+  const existing = { schemaVersion: 1, options: { model: 'existing-model', maxInputTokens: 32000 } };
+  assert.equal(parseNativeConfig(existing).autoCompact, 'off');
+  assert.deepEqual(existing.options, { model: 'existing-model', maxInputTokens: 32000 });
+  const enabled = parseNativeConfig({ ...existing, options: { ...existing.options, autoCompact: 'before_send' } });
+  assert.equal(enabled.autoCompact, 'before_send');
+  assert.equal(enabled.model, 'existing-model');
+  assert.equal(enabled.maxInputTokens, 32000);
+  assert.equal(parseNativeConfig({ schemaVersion: 1, options: { autoCompact: 'off' } }).autoCompact, 'off');
+  for (const autoCompact of [true, false, 90, null, '', 'on', 'automatic', ' before_send ']) {
+    assert.throws(() => parseNativeConfig({ schemaVersion: 1, options: { autoCompact } }));
+  }
+});
+
 test('budget failure explanations remain distinct and keep unknown runtime reasons intact', () => {
   assert.match(nativeRunError('context_budget'), /下一次模型请求/);
   assert.match(nativeRunError('model_request_budget'), /模型请求次数上限/);

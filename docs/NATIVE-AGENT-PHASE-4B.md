@@ -4,6 +4,8 @@
 
 分支：`feat/native-agent-recovery-context`。延续 Claude 默认与双引擎并存，采用堆叠 Draft PR，不合并 main 或开发集成分支，不发布 Release。
 
+首批固定候选 `491e44ee` 已通过三平台完整检查、源码 E2E 和成品测试，见 [PR #35](https://github.com/lixia3987-netizen/cc-desk/pull/35)。下文保留首批范围；后续发送前自动压缩单独记录在 [P4b 第二批](NATIVE-AGENT-PHASE-4B-AUTO.md)。
+
 ## 本轮交付
 
 ### 中断后的显式恢复

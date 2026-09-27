@@ -44,7 +44,8 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
   const ratio = budget ? Math.max(budget.estimatedInputTokens / budget.maxInputTokens, budget.contextBytes / budget.maxContextBytes) : undefined;
   const percentage = ratio === undefined ? undefined : ratio * 100;
   const compacting = maintenance?.compacting;
-  const label = compacting ? '正在压缩上下文…' : budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} 估算 tokens` : '等待本回合预算数据';
+  const automatic = maintenance?.compactionTrigger === 'automatic';
+  const label = compacting ? automatic ? '正在自动压缩上下文…' : '正在压缩上下文…' : budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} 估算 tokens` : '等待本回合预算数据';
   return <details className={'context-meter' + (budget && budget.status !== 'within_budget' ? ' context-high' : '')}>
     <summary aria-label={'上下文运行预算：' + label}>
       <span>Context · 运行预算</span>
@@ -56,12 +57,16 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
       <span className="context-count">{label}</span>
     </summary>
     <div className="context-details">
+      {maintenance?.autoCompact && <span>{maintenance.autoCompact.enabled
+        ? `自动压缩已开启：仅发送新指令前，达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试，每次提交最多一次。摘要请求可能计费，并计入本回合模型请求次数和运行时长。`
+        : '自动压缩已关闭，可在会话运行配置中开启。'}</span>}
+      {maintenance?.autoCompact?.blocked && <span role="status">当前上下文的自动压缩未完成，已停止自动重试。请先手动压缩，或在运行配置中关闭自动压缩后调整输入预算或新建会话。</span>}
       {onCompact && <>
         <span>使用当前模型生成摘要，可能产生费用；不会执行工具。摘要会省略细节，原始记录保留，后续任务可重新读取项目文件。</span>
-        {compacting ? <div className="panel-actions"><span role="status">正在生成摘要，完成前原上下文保持不变。</span>{onCancelCompact && <button type="button" className="secondary compact" onClick={onCancelCompact}>取消压缩</button>}</div>
+        {compacting ? <div className="panel-actions"><span role="status">{automatic ? '正在自动压缩，完成后继续本次发送；取消会停止本次发送。原上下文在摘要成功前保持不变。' : '正在生成摘要，完成前原上下文保持不变。'}</span>{onCancelCompact && <button type="button" className="secondary compact" onClick={onCancelCompact}>取消压缩</button>}</div>
           : <button type="button" className="secondary compact" disabled={compactDisabled || !maintenance?.canCompact} onClick={onCompact}>压缩上下文（可能计费）</button>}
       </>}
-      {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
+      {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · {maintenance.lastCompaction.trigger === 'automatic' ? '自动' : '手动'} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
       <span>这是本地运行预算，不是模型的真实上下文窗口或计费用量。预算按输入估算与上下文字节两项中较高的占比显示。</span>
       <span>按已保存历史和项目指令的 UTF-8 字节保守估算，不含工具定义和协议封装。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}

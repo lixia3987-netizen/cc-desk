@@ -76,6 +76,8 @@ export interface ContextCompactionPlan {
   retainedTurns: Array<{ runId: string; start: number }>;
   /** Actual summary request usage, when returned by the service. */
   usage?: Usage | null;
+  /** Durable reservation for a single automatic summary request. */
+  automaticRequestId?: string;
 }
 export interface ContextCompactionReceipt {
   expectedHash: string;
@@ -84,6 +86,21 @@ export interface ContextCompactionReceipt {
   afterBytes: number;
   createdAt: string;
   usage?: Usage | null;
+  automaticRequestId?: string;
+}
+export interface AutoCompactionRequest {
+  requestId: string;
+  inputDigest: string;
+  configurationDigest: string;
+  /** Conversation head observed before reserving the summary request. */
+  expectedHash: string;
+}
+export interface AutoCompactionAttempt extends AutoCompactionRequest {
+  contextHash: string;
+  seq: number;
+  createdAt: string;
+  status: 'attempted' | 'committed';
+  compactionSeq?: number;
 }
 type RecoveryCompletion = Extract<RunJournalEvent, { type: 'tool_completed' }>;
 type StoreEvent =
@@ -92,6 +109,7 @@ type StoreEvent =
   | { type: 'run_recovered'; runId: string; reason: string }
   | { type: 'recovery_resolved'; runId: string; expectedHash: string; resourcesVerified: true; completions: RecoveryCompletion[]; result: RunResult }
   | { type: 'context_compacted'; plan: ContextCompactionPlan }
+  | { type: 'context_compaction_attempted'; requestId: string; inputDigest: string; configurationDigest: string; expectedHash: string; contextHash: string }
   | RunJournalEvent;
 export interface RunStoreRecord {
   schemaVersion: 1;
@@ -131,6 +149,16 @@ function fail(code: string, message: string): never { throw new RunStoreError(co
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function text(value: unknown, label: string, max = 4096): asserts value is string {
   if (typeof value !== 'string' || !value.length || value.length > max || value.includes('\0')) fail('invalid_record', `Invalid ${label}`);
+}
+function hash(value: unknown, label: string): asserts value is string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) fail('invalid_record', `Invalid ${label}`);
+}
+function validateAutoCompactionRequest(request: AutoCompactionRequest): void {
+  if (!object(request)) fail('invalid_record', 'Invalid automatic compaction request');
+  text(request.requestId, 'automatic request id', 256);
+  hash(request.inputDigest, 'automatic input digest');
+  hash(request.configurationDigest, 'automatic configuration digest');
+  hash(request.expectedHash, 'automatic expected head');
 }
 function canonical(value: unknown): string {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
@@ -194,6 +222,8 @@ export class NativeRunStore implements RunStore {
   private originalUserItems: JsonValue[] | undefined;
   private contextTurns: Array<{ runId: string; start: number }> = [];
   private lastCompaction: ContextCompactionReceipt | null = null;
+  private readonly autoCompactionAttempts = new Map<string, AutoCompactionAttempt>();
+  private readonly autoCompactionContexts = new Map<string, string>();
   private journalBytes = 0;
   private closed = false;
   private closing = false;
@@ -342,8 +372,17 @@ export class NativeRunStore implements RunStore {
     }
     if (event.type === 'context_compacted') {
       if (identity || !object(event.plan)) fail('invalid_record', 'Invalid context compaction event');
-      const expected = this.planContextCompaction({ summary: event.plan.summary, keepRecentTurns: event.plan.keepRecentTurns, expectedHash: event.plan.expectedHash, usage: event.plan.usage });
+      const expected = this.planContextCompaction({ summary: event.plan.summary, keepRecentTurns: event.plan.keepRecentTurns, expectedHash: event.plan.expectedHash, usage: event.plan.usage, automaticRequestId: event.plan.automaticRequestId });
       if (!equal(event.plan, expected)) fail('invalid_record', 'Compaction cannot introduce context absent from its verified plan');
+      return;
+    }
+    if (event.type === 'context_compaction_attempted') {
+      if (identity) fail('invalid_identity', 'Automatic compaction reservation cannot own a run');
+      validateAutoCompactionRequest(event);
+      hash(event.contextHash, 'automatic context digest');
+      const source = this.getCompactionSource();
+      if (event.expectedHash !== source.expectedHash || event.contextHash !== digest(this.context)) fail('stale_context', 'Conversation changed before reserving automatic compaction');
+      if (this.autoCompactionAttempts.has(event.requestId) || this.autoCompactionContexts.has(event.contextHash)) fail('payload_mismatch', 'Automatic compaction has already been attempted for this request or context');
       return;
     }
     if (!identity) fail('invalid_identity', 'Run event is missing identity');
@@ -437,7 +476,17 @@ export class NativeRunStore implements RunStore {
     if (event.type === 'context_compacted') {
       this.context = clone(event.plan.context);
       this.contextTurns = clone(event.plan.retainedTurns);
-      this.lastCompaction = { expectedHash: event.plan.expectedHash, seq: record.seq, beforeBytes: event.plan.beforeBytes, afterBytes: event.plan.afterBytes, createdAt: record.committedAt, ...(event.plan.usage === undefined ? {} : { usage: clone(event.plan.usage) }) };
+      this.lastCompaction = { expectedHash: event.plan.expectedHash, seq: record.seq, beforeBytes: event.plan.beforeBytes, afterBytes: event.plan.afterBytes, createdAt: record.committedAt, ...(event.plan.usage === undefined ? {} : { usage: clone(event.plan.usage) }), ...(event.plan.automaticRequestId === undefined ? {} : { automaticRequestId: event.plan.automaticRequestId }) };
+      if (event.plan.automaticRequestId !== undefined) {
+        const attempt = this.autoCompactionAttempts.get(event.plan.automaticRequestId)!;
+        attempt.status = 'committed'; attempt.compactionSeq = record.seq;
+      }
+      return;
+    }
+    if (event.type === 'context_compaction_attempted') {
+      const { type: _type, ...request } = event;
+      this.autoCompactionAttempts.set(event.requestId, { ...request, seq: record.seq, createdAt: record.committedAt, status: 'attempted' });
+      this.autoCompactionContexts.set(event.contextHash, event.requestId);
       return;
     }
     const run = this.runs.get(record.identity!.runId)!;
@@ -639,13 +688,50 @@ export class NativeRunStore implements RunStore {
     return { expectedHash: latest.hash, sourceSeq: latest.seq, context, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), scope: 'prefix' };
   }
 
-  planContextCompaction(options: { summary: string; keepRecentTurns?: number; expectedHash?: string; usage?: Usage | null }): ContextCompactionPlan {
+  /** Reserve before contacting a model. An uncertain append must be inspected after reopening. */
+  reserveAutoCompaction(request: AutoCompactionRequest): Promise<{ kind: 'reserved' | 'existing'; attempt: AutoCompactionAttempt }> {
+    return this.exclusive(async () => {
+      this.writable();
+      validateAutoCompactionRequest(request);
+      const existing = this.autoCompactionAttempts.get(request.requestId);
+      if (existing) {
+        if (existing.inputDigest !== request.inputDigest || existing.configurationDigest !== request.configurationDigest) fail('payload_mismatch', 'Automatic compaction request was reused with different input or configuration');
+        return { kind: 'existing', attempt: clone(existing) };
+      }
+      const source = this.getCompactionSource();
+      const contextHash = digest(this.context);
+      const contextRequestId = this.autoCompactionContexts.get(contextHash);
+      if (contextRequestId !== undefined) return { kind: 'existing', attempt: clone(this.autoCompactionAttempts.get(contextRequestId)!) };
+      if (request.expectedHash !== source.expectedHash) fail('stale_context', 'Conversation changed before reserving automatic compaction');
+      await this.commit(undefined, { type: 'context_compaction_attempted', requestId: request.requestId, inputDigest: request.inputDigest, configurationDigest: request.configurationDigest, expectedHash: request.expectedHash, contextHash });
+      return { kind: 'reserved', attempt: clone(this.autoCompactionAttempts.get(request.requestId)!) };
+    });
+  }
+
+  lookupAutoCompaction(requestId: string): AutoCompactionAttempt | undefined {
+    const attempt = this.autoCompactionAttempts.get(requestId);
+    return attempt === undefined ? undefined : clone(attempt);
+  }
+
+  getAutoCompactionForCurrentContext(): AutoCompactionAttempt | null {
+    if (this.autoCompactionContexts.size === 0) return null;
+    const requestId = this.autoCompactionContexts.get(digest(this.context));
+    return requestId === undefined ? null : clone(this.autoCompactionAttempts.get(requestId)!);
+  }
+
+  planContextCompaction(options: { summary: string; keepRecentTurns?: number; expectedHash?: string; usage?: Usage | null; automaticRequestId?: string }): ContextCompactionPlan {
     if (options.usage !== undefined && options.usage !== null) {
       if (!object(options.usage) || Object.entries(options.usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || (value as number) < 0)) fail('invalid_usage', 'Summary usage must contain only nonnegative integer token counts');
     }
     const keepRecentTurns = options.keepRecentTurns ?? 1;
     const source = this.getCompactionSource({ keepRecentTurns });
     if (options.expectedHash !== undefined && source.expectedHash !== options.expectedHash) fail('stale_context', 'Conversation changed while producing the summary');
+    if (options.automaticRequestId !== undefined) {
+      text(options.automaticRequestId, 'automatic request id', 256);
+      const attempt = this.autoCompactionAttempts.get(options.automaticRequestId);
+      if (!attempt || attempt.status !== 'attempted') fail('auto_compaction_unavailable', 'Automatic compaction requires an unused durable reservation');
+      if (options.expectedHash !== source.expectedHash || attempt.contextHash !== digest(this.context) || this.records[attempt.seq - 1]?.hash !== source.expectedHash) fail('stale_context', 'Automatic compaction reservation no longer owns the current conversation head');
+    }
     const summary = contextSummaryItem(options.summary);
     const boundary = this.compactionBoundary(keepRecentTurns);
     const prefix = [...clone(this.originalUserItems!), summary];
@@ -658,6 +744,7 @@ export class NativeRunStore implements RunStore {
     return { expectedHash: source.expectedHash, sourceSeq: source.sourceSeq, summary: options.summary, keepRecentTurns,
       beforeBytes: source.beforeBytes, afterBytes, context,
       ...(options.usage === undefined ? {} : { usage: clone(options.usage) }),
+      ...(options.automaticRequestId === undefined ? {} : { automaticRequestId: options.automaticRequestId }),
       retainedTurns: this.contextTurns.slice(-keepRecentTurns).map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length })) };
   }
 
@@ -665,10 +752,12 @@ export class NativeRunStore implements RunStore {
   commitContextCompaction(plan: ContextCompactionPlan): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
-      if (this.lastCompaction?.expectedHash === plan.expectedHash) {
-        const prior = this.records[this.lastCompaction.seq - 1].event;
+      const automaticReceipt = plan.automaticRequestId === undefined ? undefined : this.autoCompactionAttempts.get(plan.automaticRequestId)?.compactionSeq;
+      const priorSeq = automaticReceipt ?? (this.lastCompaction?.expectedHash === plan.expectedHash ? this.lastCompaction.seq : undefined);
+      if (priorSeq !== undefined) {
+        const prior = this.records[priorSeq - 1].event;
         if (prior.type !== 'context_compacted' || !equal(prior.plan, plan)) fail('payload_mismatch', 'Compaction identity was reused with a different plan');
-        return { seq: this.lastCompaction.seq };
+        return { seq: priorSeq };
       }
       return this.commit(undefined, { type: 'context_compacted', plan });
     });

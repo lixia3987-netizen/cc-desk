@@ -44,7 +44,9 @@ export interface NativeContextMaintenance {
   headHash: string;
   canCompact: boolean;
   compacting?: boolean;
-  lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string };
+  compactionTrigger?: 'manual' | 'automatic';
+  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean };
+  lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' };
 }
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
