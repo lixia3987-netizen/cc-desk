@@ -85,6 +85,77 @@ test('denied write is a persisted tool result with no filesystem mutation', asyn
   } finally { unsubscribe(); await f.dispose(); }
 });
 
+test('native config updates persist across store restart and change next-run budgets without replacing full context', async () => {
+  const f = await fixture(); const unsubscribe = f.approve();
+  const readLedger = async () => {
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try { return { context: ledger.loadContext(), records: ledger.replay(), runs: ledger.listRuns() }; } finally { await ledger.close(); }
+  };
+  try {
+    assert.equal((await f.executor.send(f.id, '修改并验证')).success, true);
+    const before = await readLedger();
+    const originalSession = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!);
+    const config = structuredClone(originalSession.engineConfig);
+    config.options.maxInputTokens = 64010; config.options.maxOutputTokens = 1024;
+    await f.executor.updateConfig(f.id, config);
+    config.options.maxInputTokens = 99999;
+    const updated = f.store.state.sessions.find(item => item.id === f.id)!;
+    assert.equal(updated.engineConfig.options.maxInputTokens, 64010, 'stored config cannot alias the caller');
+    assert.deepEqual(updated.execution, originalSession.execution);
+    assert.deepEqual(await readLedger(), before, 'saving budgets never modifies the model ledger');
+    const reloaded = new StateStore(f.data);
+    assert.deepEqual(reloaded.state.sessions.find(item => item.id === f.id)!.engineConfig, updated.engineConfig);
+    for (const options of [{ ...updated.engineConfig.options, model: 'another-model' }, { ...updated.engineConfig.options, connectionId: 'another-connection' }]) {
+      await assert.rejects(f.executor.updateConfig(f.id, { schemaVersion: 1, options }), /新建会话/);
+      assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig, updated.engineConfig);
+    }
+    assert.equal((await f.executor.send(f.id, '继续')).success, true);
+    assert.equal(f.server.requests.length, 5, 'the second run continues full context instead of repeating tools');
+    const after = await readLedger();
+    assert.deepEqual(after.records.slice(0, before.records.length), before.records);
+    assert.deepEqual(after.context!.items.slice(0, before.context!.items.length), before.context!.items);
+    assert.equal((after.runs.at(-1)!.configuration.sessionOptions as { maxInputTokens: number }).maxInputTokens, 64010);
+    assert.equal(f.executor.snapshot(f.id).context?.budget?.maxInputTokens, 64010);
+  } finally { unsubscribe(); await f.dispose(); }
+});
+
+test('invalid native config and failed persistence cannot overwrite the saved configuration', async () => {
+  const f = await fixture();
+  try {
+    const before = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!);
+    const disk = await fs.readFile(f.store.file, 'utf8');
+    for (const value of [1, NaN, Infinity, '64010']) await assert.rejects(f.executor.updateConfig(f.id, { schemaVersion: 1, options: { ...before.engineConfig.options, maxInputTokens: value } }));
+    await assert.rejects(f.executor.updateConfig(f.id, { schemaVersion: 2, options: before.engineConfig.options }));
+    assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id), before);
+    assert.equal(await fs.readFile(f.store.file, 'utf8'), disk);
+    await fs.mkdir(f.store.file + '.tmp');
+    try { await assert.rejects(f.executor.updateConfig(f.id, { schemaVersion: 1, options: { ...before.engineConfig.options, maxInputTokens: 64010 } })); }
+    finally { await fs.rmdir(f.store.file + '.tmp'); }
+    assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id), before, 'failed disk commit cannot publish new in-memory config');
+    assert.equal(await fs.readFile(f.store.file, 'utf8'), disk);
+    assert.equal(f.server.requests.length, 0);
+  } finally { await f.dispose(); }
+});
+
+test('native config updates remain blocked during active execution and stopping', async () => {
+  let release!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const f = await fixture(async options => { await blocked; return inlineWorker(options); });
+  try {
+    const before = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig);
+    const changed = { schemaVersion: 1, options: { ...before.options, maxInputTokens: 64010 } };
+    const result = f.executor.send(f.id, '等待停止');
+    await assert.rejects(f.executor.updateConfig(f.id, changed), /停止运行/);
+    f.executor.interrupt(f.id);
+    await assert.rejects(f.executor.updateConfig(f.id, changed), /停止运行/);
+    assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig, before);
+    release(); await result; await f.executor.whenReleased(f.id);
+    await f.executor.updateConfig(f.id, changed);
+    assert.equal(new StateStore(f.data).state.sessions.find(item => item.id === f.id)!.engineConfig.options.maxInputTokens, 64010);
+    assert.equal(f.server.requests.length, 0);
+  } finally { release(); await f.dispose(); }
+});
+
 test('stable duplicate in-flight returns one promise and changed payload is rejected', async () => {
   let starts = 0;
   const f = await fixture(async options => { starts++; return inlineWorker(options); });
