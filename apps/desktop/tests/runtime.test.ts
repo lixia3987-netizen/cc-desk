@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { inspect, stripVTControlCharacters } from 'node:util';
-import { Runtime } from '../src/main/runtime';
+import { Runtime as DesktopRuntime } from '../src/main/runtime';
 import { StateStore } from '../src/main/store';
 import type { Capabilities, Session } from '../src/shared/types';
 import { ClaudeTerminalLauncher } from '../src/main/engines/claude/terminal-launcher';
@@ -15,6 +15,49 @@ import { createWorktree, gitInfo } from '../src/main/git';
 import { environment, execFileAsync } from '../src/main/commands';
 import { fileURLToPath } from 'node:url';
 import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
+
+const diagnosticTokens = new Set(['windows.tree', 'pty.release', 'resource.close', 'posix.release_inspection',
+  'windows_snapshot', 'windows_terminate', 'windows_helper_release', 'running', 'timeout', 'spawn_error', 'helper_exit',
+  'invalid_snapshot', 'identity_changed', 'identity_unavailable', 'unreleased', 'os_error', 'bootstrap', 'modules',
+  'input', 'compile', 'snapshot', 'capture', 'terminate', 'ENOENT', 'EACCES', 'EPERM', 'ESRCH', 'UNKNOWN']);
+function cleanupDiagnostic(value: unknown, depth = 0): unknown {
+  if (!value || typeof value !== 'object' || depth > 6) return {};
+  const item = value as Record<string, unknown>, result: Record<string, unknown> = {};
+  for (const key of ['cleanupPhase', 'phase', 'code', 'helperStage', 'osCode']) {
+    if (typeof item[key] === 'string' && diagnosticTokens.has(item[key])) result[key] = item[key];
+  }
+  for (const key of ['snapshots', 'terminationAttempts', 'liveProcesses', 'nativeCode', 'helperExitCode', 'helperOutputBytes']) {
+    if (typeof item[key] === 'number' && Number.isSafeInteger(item[key])) result[key] = item[key];
+  }
+  if (typeof item.helperExited === 'boolean') result.helperExited = item.helperExited;
+  if (item.cause) result.cause = cleanupDiagnostic(item.cause, depth + 1);
+  if (value instanceof AggregateError) result.errors = value.errors.slice(0, 8).map(error => cleanupDiagnostic(error, depth + 1));
+  // The legacy wrapper carries its structured progress in this fixed message.
+  // Parse that payload but emit only the same whitelisted fields, never text.
+  const prefix = 'Windows process descendants have not released. ';
+  if (value instanceof Error && value.message.startsWith(prefix)) {
+    try { result.windows = cleanupDiagnostic(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* Unknown diagnostics stay opaque. */ }
+  }
+  return result;
+}
+class Runtime extends DesktopRuntime {
+  constructor(...args: ConstructorParameters<typeof DesktopRuntime>) {
+    const [store, onState, onData, launcher, options] = args;
+    super(store, onState, onData, launcher, { ...options, onError: error => {
+      if (process.platform === 'win32') console.error(JSON.stringify({ phase: 'runtime.test.cleanup-error', detail: cleanupDiagnostic(error) }));
+      options?.onError?.(error);
+    } });
+  }
+}
+async function finishFixture(root: string, runtimes: Runtime[], failures: unknown[], pending: Promise<unknown>[] = []) {
+  const results = await Promise.allSettled([...runtimes.map(runtime => runtime.shutdown()), ...pending]);
+  for (const result of results) if (result.status === 'rejected') failures.push(result.reason);
+  if (results.every(result => result.status === 'fulfilled')) fs.rmSync(root, { recursive: true, force: true });
+  if (failures.length) {
+    console.error(JSON.stringify({ phase: 'runtime.test.fixture-failures', errors: failures.map(error => cleanupDiagnostic(error)) }));
+    throw new AggregateError(failures, 'Runtime fixture failed; primary and cleanup errors are preserved.', { cause: failures[0] });
+  }
+}
 
 // Windows CI has completed every assertion in this file without the owning test
 // process exiting. Record only fixed resource types/counts. The native diagnostic
@@ -152,6 +195,7 @@ function lifecycleFixture(shellPath = '') {
 
 test('terminal runtime accepts another provider and isolates identity observations to the current launch', { timeout: 12000 }, async () => {
   const f = lifecycleFixture();
+  const failures: unknown[] = [];
   const callbacks: TerminalLaunchCallbacks[] = [];
   let resourcesClosed = 0;
   f.store.change(state => {
@@ -192,10 +236,8 @@ test('terminal runtime accepts another provider and isolates identity observatio
     f.store.flush();
     assert.deepEqual(new StateStore(f.store.directory).state.sessions[0].engineConfig, current().engineConfig);
     assert.equal(current().title, '新的会话标题');
-  } finally {
-    await runtime.shutdown(); await f.runtime.shutdown();
-    fs.rmSync(f.root, { recursive: true, force: true });
-  }
+  } catch (error) { failures.push(error); }
+  finally { await finishFixture(f.root, [runtime, f.runtime], failures); }
   assert.equal(resourcesClosed, 2);
 });
 
@@ -280,6 +322,8 @@ test('shutdown reports launch-resource failure even when the terminal process al
 test('terminal exit keeps stopping status and ownership until all launch resources close', { timeout: 20000 }, async () => {
   for (const ending of ['stop', 'success', 'failure'] as const) {
     const f = lifecycleFixture();
+    const failures: unknown[] = [];
+    let releaseBarrier: Promise<void> | undefined;
     const ready = path.join(f.root, 'ready'), exit = path.join(f.root, 'exit');
     let release!: () => void;
     const resourceGate = new Promise<void>(resolve => { release = resolve; });
@@ -294,7 +338,8 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
     try {
       await runtime.start(f.session.id);
       let released = false;
-      const releaseBarrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
+      releaseBarrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
+      void releaseBarrier.catch(() => {}); // Still awaited below; never a floating rejection while the resource gate is held.
       await until(() => fs.existsSync(ready), `${ending} fixture ready`);
       if (ending === 'stop') runtime.stop(f.session.id); else fs.writeFileSync(exit, 'exit');
       await until(() => closing, `${ending} resource close began`);
@@ -309,10 +354,8 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
       assert.equal(f.store.state.sessions[0].status, ending === 'failure' ? 'error' : 'stopped');
       assert.deepEqual(finalOwnership, [false], 'final status is published only after ownership is released');
       assert.equal(runtime.activeCount, 0);
-    } finally {
-      release(); await runtime.shutdown(); await f.runtime.shutdown();
-      fs.rmSync(f.root, { recursive: true, force: true });
-    }
+    } catch (error) { failures.push(error); }
+    finally { release(); await finishFixture(f.root, [runtime, f.runtime], failures, releaseBarrier ? [releaseBarrier] : []); }
   }
 });
 
@@ -464,6 +507,8 @@ test('session maintenance cancels deferred prepare and awaits its resource witho
 
 test('session disconnect awaits selected launcher cleanup and leaves unrelated stopping cleanup owned', { timeout: 16000 }, async () => {
   const f = lifecycleFixture();
+  const failures: unknown[] = [];
+  let disconnect: Promise<void> | undefined;
   const target: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
   f.store.change(state => { state.sessions.push(target); state.settings.maxSessions = 2; });
   const targetClosing = deferred<void>(), targetRelease = deferred<void>();
@@ -480,18 +525,21 @@ test('session disconnect awaits selected launcher cleanup and leaves unrelated s
     runtime.stop(f.session.id); await shellClosing.promise;
     runtime.setSessionMaintenance([target.id], true);
     let disconnected = false;
-    const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    let disconnectSettled = false;
+    disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    void disconnect.then(() => { disconnectSettled = true; }, () => { disconnectSettled = true; });
     await targetClosing.promise;
     assert.equal(disconnected, false); assert.equal(runtime.has(target.id), true);
     targetRelease.resolve();
-    await until(() => disconnected, 'target disconnect while Shell cleanup remains deferred');
+    await until(() => disconnectSettled, 'target disconnect while Shell cleanup remains deferred');
     await disconnect;
     assert.equal(runtime.has(target.id), false); assert.equal(runtime.has(f.session.id), true);
     assert.ok(runtime.pendingCleanupCount > 0, 'unrelated launch cleanup remains tracked');
     assert.equal(f.store.state.sessions[0].status, 'stopping');
-  } finally {
+  } catch (error) { failures.push(error); }
+  finally {
     targetRelease.resolve(); shellRelease.resolve();
-    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+    await finishFixture(f.root, [runtime, f.runtime], failures, disconnect ? [disconnect] : []);
   }
 });
 

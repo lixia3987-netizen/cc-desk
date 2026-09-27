@@ -344,7 +344,7 @@ export class Runtime {
   private stopWindowsTree(entry: ProcessEntry): Promise<void> {
     return stopWindowsProcessTree(entry.process.pid, undefined, {
       rootExited: entry.rootExited, spawnStartedAt: entry.spawnStartedAt, spawnCompletedAt: entry.spawnCompletedAt,
-    });
+    }).catch(error => { throw cleanupPhase(error, 'windows.tree'); });
   }
   private releasePty(id: string, entry: ProcessEntry): Promise<void> {
     if (entry.release) return entry.release;

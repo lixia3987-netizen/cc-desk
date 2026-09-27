@@ -62,15 +62,19 @@ Windows 保持固定 `node-pty 1.1.0`，以仓库补丁修复原生所有权、�
 
 第十候选 `64254cba` 的本地完整根检查通过：689 项通过、0 项失败、15 项平台测试跳过，包括类型检查与构建。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36285770713) 的 Windows 安装步骤完成真实 MSVC 编译及 Release 模块校验，编译约 144 秒，验证二进制 SHA-256 为 `1c5cb799724c48ac77198fb847be8b397af7f57a8020e9518bbff15a82969f00`。随后 Runtime 在首条诊断输出前以 `0xC0000409` 退出，没有执行测试；此时不能将成功编译扩展为 PTY 生命周期已通过。下一步用独立进程分别检查普通 Node、tsx、Runtime 加载、`process.report` 与首次 PTY，将诊断 API 与真实运行断言分开。
 
+第十一候选 `e9d389e9` 的独立 [workspace 检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36286167174) 通过（689 项通过、0 项失败、15 项平台测试跳过）。[三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36286167168) 中 Windows 五个隔离探针及独立 Runtime 检查通过（19 项通过、4 项平台跳过），没有重现进程级崩溃；四种环境的 `process.report` 探针均退出 0，不能据此归因先前崩溃。完整检查的 engine-claude 为 20 项通过、1 项平台跳过，agent-node 为 120 项通过、3 项平台跳过；新原生 PTY 并发、自然退出、启动失败回收用例也通过。桌面完整检查仍有 3 项 Runtime 释放失败（477 项通过、28 项平台跳过），继续定位具体清理阶段，Windows 源码和成品门槛尚未执行。诊断探针为独立可选步骤；正式 Runtime、完整检查、源码和成品门槛均保持必需。
+
+同一第十一候选的 macOS 已完整通过：根检查 684 项通过、0 项失败、20 项平台跳过，源码 E2E 67 项通过，ZIP 与复制安装的 DMG 成品共 5 项通过。Linux 也完整通过：根检查 689 项通过、0 项失败、15 项平台跳过，源码 E2E 67 项通过，tar.gz 与提取后的 AppImage 成品共 5 项通过。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第九候选 workspace/Linux 通过；macOS 存活断言及 Windows 原生 PTY 问题待修复 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第九候选 Linux、第七候选 macOS 各 67 项通过；Windows 待前置检查 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第九候选 Linux、第七候选 macOS 各 5 项通过；待同一候选三平台通过 |
+| 同一候选根 `npm run check` | 第十一候选 workspace/Linux/macOS 通过；Windows 3 项 Runtime 释放失败待修复 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第十一候选 Linux/macOS 各 67 项通过；Windows 待前置检查 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十一候选 macOS/Linux 各 5 项通过；待同一候选 Windows 通过 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
