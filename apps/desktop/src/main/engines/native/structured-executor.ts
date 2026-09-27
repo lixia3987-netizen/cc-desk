@@ -17,6 +17,7 @@ import { parseNativeConfig } from './config';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from './projection';
 import { runNativeWorker } from './worker-host';
 import { sameRun } from './worker-protocol';
+import { nativeRunError } from './run-errors';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录和进程；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -225,7 +226,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const messages = result.context.items.slice(lastUser + 1).filter(item => item && typeof item === 'object' && !Array.isArray(item) && item.type === 'message' && item.role === 'assistant');
     const last = messages.at(-1) as { content?: Array<{ type?: string; text?: string }> } | undefined;
     const summary = last?.content?.filter(item => item.type === 'output_text').map(item => item.text ?? '').join('\n') ?? '';
-    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: result.reason, interrupted: result.status === 'cancelled' } : {}) };
+    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
     this.assertActive(id, active);

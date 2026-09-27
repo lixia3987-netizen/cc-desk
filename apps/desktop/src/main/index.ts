@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { StateStore } from './store';
 import { createExecutors } from './execution/create-executors';
 import { ConnectionStore } from './engines/native/connections';
+import { NativeConnectionDiagnostics } from './engines/native/connection-diagnostics';
 import type { NativeStructuredExecutor } from './engines/native/structured-executor';
 import { registerNativeHandlers } from './ipc/native-handlers';
 import type { ExecutionRegistry } from './execution/registry';
@@ -37,6 +38,7 @@ let window: BrowserWindow | null = null;
 let executors: ExecutionRegistry;
 let nativeExecutor: NativeStructuredExecutor;
 let connections: ConnectionStore;
+let connectionDiagnostics: NativeConnectionDiagnostics;
 let sessionCreation: SessionCreation;
 let services: SessionService;
 const historySources = new HistorySources();
@@ -88,7 +90,7 @@ async function addProject(value: string): Promise<Project> {
   store.change(s => s.projects.push(project)); notify(); return project;
 }
 function registerIPC() {
-  registerNativeHandlers(handle, connections, notify);
+  registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
   handle('native:confirm-recovery', idSchema, async id => {
     if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
     const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请先核查工作目录的实际修改，并确认上次命令及其子进程已停止。', detail: '确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });
@@ -195,6 +197,11 @@ function createWindow() {
     return {action:'deny'};
   });
   window.webContents.on('will-navigate',event => event.preventDefault());
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) connectionDiagnostics.cancelAll();
+  });
+  window.webContents.on('render-process-gone', () => connectionDiagnostics.cancelAll());
+  window.webContents.on('destroyed', () => connectionDiagnostics.cancelAll());
   window.webContents.session.setPermissionCheckHandler((contents,permission,_origin,details) => allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl));
   window.webContents.session.setPermissionRequestHandler((contents,permission,callback,details) => callback(allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl)));
   window.on('close',event => { if (!allowQuit) { event.preventDefault(); if(store.state.settings.closeToTray && tray) window?.hide(); else void requestQuit(); } });
@@ -224,10 +231,12 @@ async function requestQuit() {
     if (result.response === 0) { closing=false; return; }
   }
   try {
+    await connectionDiagnostics?.shutdown();
     await services?.shutdown();
     store?.flush();
     allowQuit = true; app.quit();
   } catch {
+    connectionDiagnostics?.resumeAfterFailedShutdown();
     closing=false;showWindow();reportPersistenceError();
     // Keep the app open so the user can fix storage and retry; resources have
     // already been stopped independently of the failing persistence operation.
@@ -246,8 +255,10 @@ else {
       fonts = new FontLibrary(store.directory);
       connections = new ConnectionStore(store.directory, { safeStorage, platform: process.platform,
         isConnectionActive: id => nativeExecutor?.isConnectionActive(id) ?? false,
+        isConnectionTesting: id => connectionDiagnostics?.isConnectionTesting(id) ?? false,
         isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && session.engineConfig.options.connectionId === id),
       });
+      connectionDiagnostics = new NativeConnectionDiagnostics(connections, { onChanged: notify });
       executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
       await nativeExecutor.initialize();
       services = new SessionService(store,executors,notify,()=>window,{

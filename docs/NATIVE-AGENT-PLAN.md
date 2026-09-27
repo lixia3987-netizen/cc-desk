@@ -9,7 +9,7 @@
 
 阶段二的基线分析、具体任务与验收条件见 [ENGINE-BOUNDARIES-PHASE-2.md](ENGINE-BOUNDARIES-PHASE-2.md)。下文“当前代码”保留的是总体计划编写时的基线，不作为阶段二最新实现清单；其中 `src/` 和 `tests/` 路径在阶段一后已分别位于 `apps/desktop/src/` 和 `apps/desktop/tests/`。
 
-阶段三 native Alpha 的范围、实际缺口、任务依赖和验收条件已整理为 [NATIVE-AGENT-PHASE-3.md](NATIVE-AGENT-PHASE-3.md)，分析基线为 `dev/native-agent@2c67d6a`。当前仅完成计划分析，尚未开始阶段三实现；后续按执行基础、模型与工具、桌面 Alpha 三个里程碑推进，继续只进入开发分支。
+阶段三 native Alpha 已实现，固定候选 `9a8c4ba` 的三平台技术验收通过；真实远程模型任务仍待验收，详见 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 与 [阶段三记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。阶段四按用户要求继续在开发分支推进，首批范围为增量编辑、上下文预算/用量展示和显式连接诊断，见 [阶段四计划与验收](NATIVE-AGENT-PHASE-4.md)。这不改变阶段三真实模型验收尚未完成的状态。
 
 ## 1. 目标与实施原则
 

@@ -11,6 +11,7 @@ export const LOCAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'read_file', risk: 'read', description: 'Read bounded UTF-8 text. hash always covers the whole file, including bytes outside a requested range. Sensitive files require individual approval.', inputSchema: schema({ path: string, startLine: integer, endLine: integer, startByte: integer, maxBytes: integer }, ['path']) },
   { name: 'search', risk: 'read', description: 'Search literal text in ordinary project files, skipping sensitive files, links and generated directories. No regex or shell syntax. Results are bounded.', inputSchema: schema({ path: string, query: string, caseSensitive: { type: 'boolean' }, maxMatches: integer }, ['path', 'query']) },
   { name: 'apply_patch', risk: 'write', description: 'Create or replace exactly one UTF-8 text file. expectedHash is the SHA-256 from read_file, or null to create without overwriting. Read applicable AGENTS.md rules first. Always requires approval.', inputSchema: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) },
+  { name: 'edit_file', risk: 'write', description: 'Replace one unique exact oldText fragment in an existing UTF-8 file with newText (empty to delete). oldText must be nonempty and match exactly once, including whitespace and line endings; include surrounding text to disambiguate. No fuzzy matching or replace-all. expectedHash must be the complete SHA-256 from read_file; read again after each edit. Preserves all other text. Read applicable AGENTS.md rules first. Always requires approval.', inputSchema: schema({ path: string, oldText: string, newText: string, expectedHash: string }, ['path', 'oldText', 'newText', 'expectedHash']) },
   { name: 'run_command', risk: 'command', description: 'Run an executable with literal argv and project-relative cwd (shell:false). Always requires approval. Commands may affect files/network beyond cwd: this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: integer, maxOutputBytes: integer }, ['executable', 'argv', 'cwd']) },
 ];
 const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'release', '.next', 'coverage']);
@@ -110,6 +111,13 @@ export class LocalToolPort implements ToolPort {
         const content = textField(input, 'content', this.files.maxFileBytes, true);
         if (input.expectedHash !== null && typeof input.expectedHash !== 'string') throw new Error('expectedHash must be a full SHA-256 hash or null.');
         patch = await this.files.preparePatch({ path: targetPath, content, expectedHash: input.expectedHash }, context.signal);
+      } else if (call.name === 'edit_file') {
+        exactFields(input, ['path', 'oldText', 'newText', 'expectedHash']);
+        targetKind = 'file';
+        const oldText = textField(input, 'oldText', this.files.maxFileBytes);
+        const newText = textField(input, 'newText', this.files.maxFileBytes, true);
+        const expectedHash = textField(input, 'expectedHash', 64);
+        patch = await this.files.prepareEdit({ path: targetPath, oldText, newText, expectedHash }, context.signal);
       } else if (call.name === 'read_file') {
         exactFields(input, ['path'], ['startLine', 'endLine', 'startByte', 'maxBytes']);
         targetKind = 'file';
@@ -154,7 +162,7 @@ export class LocalToolPort implements ToolPort {
     if (state.result) return;
     if (state.executed) throw new Error('Tool has an unknown or active outcome; it cannot be replayed.');
     const targetPath = String(prepared.input[prepared.call.name === 'run_command' ? 'cwd' : 'path']);
-    const targetKind = prepared.call.name === 'read_file' || prepared.call.name === 'apply_patch' ? 'file' : 'directory';
+    const targetKind = prepared.call.name === 'read_file' || prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file' ? 'file' : 'directory';
     if ((await this.instructions(targetPath, targetKind, context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed; the approval is invalid. Read the scope again.');
     await this.files.verify(state.target, state.target.kind === 'file');
     if (state.patch) {
@@ -175,7 +183,7 @@ export class LocalToolPort implements ToolPort {
     state.executed = true;
     let result: ToolResult;
     try {
-      if (prepared.call.name === 'apply_patch') {
+      if (prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file') {
         const effect = await this.files.applyPatch(state.patch!, context.signal);
         result = { status: 'completed', output: asJson(effect), effects: asJson(effect) };
       } else if (prepared.call.name === 'run_command') {

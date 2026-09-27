@@ -6,6 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision } from '@cc-desk/agent-core';
+import { estimateContextInputTokens } from '@cc-desk/agent-core';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from '../src/main/engines/native/projection';
 import { ExecutionEvents } from '../src/main/execution/events';
 import type { Session } from '../src/shared/types';
@@ -169,5 +170,58 @@ test('an empty native conversation without display evidence remains a valid new 
     assert.equal(f.projection.snapshot(f.id).error, undefined);
     await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
     assert.equal(f.projection.snapshot(f.id).messages[0].text, f.req.input);
+  } finally { await f.dispose(); }
+});
+
+test('native context projection uses durable history, latest reported input, and per-run budget across restart', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration = { model: 'fixture-model', modelInstructions: '规则🙂', sessionOptions: { maxInputTokens: 2048 } };
+    await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
+    let snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.context?.budget?.maxInputTokens, 2048);
+    assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateContextInputTokens(f.store.loadContext()!, '规则🙂'));
+    assert.equal(snapshot.context?.budget?.contextBytes, Buffer.byteLength(JSON.stringify(f.store.loadContext())));
+    assert.equal(snapshot.context?.inputTokens, undefined); assert.equal(snapshot.context?.contextWindow, undefined);
+    for (const reported of [17, 4, undefined, 0]) {
+      await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('durable response')], toolCalls: [], finishReason: 'completed', usage: reported === undefined ? null : { inputTokens: reported, outputTokens: 2 } } });
+      await f.projection.hydrate(f.id, f.store);
+      snapshot = f.projection.snapshot(f.id);
+      assert.equal(snapshot.context?.inputTokens, reported, 'latest request is neither accumulated nor substituted when unknown');
+      assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateContextInputTokens(f.store.loadContext()!, '规则🙂'));
+      assert.equal(snapshot.context?.contextWindow, undefined);
+    }
+    await f.finish(); await f.projection.hydrate(f.id, f.store);
+    assert.equal(f.projection.snapshot(f.id).usage?.inputTokens, 10);
+    const priorContextLength = f.store.loadContext()!.items.length;
+    const next: BeginRunRequest = { ...f.req, identity: { ...f.req.identity, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 2 }, input: 'Continue', userItems: [{ role: 'user', content: 'Continue' }], configuration: { ...f.req.configuration, sessionOptions: { maxInputTokens: 4096 } } };
+    await f.store.beginRun(next); await f.projection.hydrate(f.id, f.store);
+    snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.usage, undefined, 'new run cannot inherit prior aggregate usage');
+    assert.equal(snapshot.context?.inputTokens, undefined); assert.equal(snapshot.context?.measuredAt, undefined);
+    assert.equal(snapshot.context?.budget?.maxInputTokens, 4096);
+    assert.equal(f.store.loadContext()!.items.length, priorContextLength + 1, 'budget edits preserve prior full context');
+    await f.reopen(); f.setActive(false);
+    const restored = f.create(); await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).context, snapshot.context);
+    assert.equal(restored.snapshot(f.id).usage, undefined, 'interrupted run does not revive prior usage after restart');
+    assert.equal(restored.snapshot(f.id).taskState, 'error'); restored.flush();
+  } finally { await f.dispose(); }
+});
+
+test('budget exhaustion projects an actionable explanation without changing durable runtime reason', async () => {
+  const f = await fixture();
+  try {
+    f.req.input = 'a'.repeat(2000); f.req.userItems = [{ role: 'user', content: f.req.input }];
+    f.req.configuration = { model: 'fixture-model', sessionOptions: { maxInputTokens: 1024 } };
+    await f.store.beginRun(f.req);
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'budget_exhausted', reason: 'context_budget', modelRequests: 0, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } });
+    await f.projection.hydrate(f.id, f.store);
+    const snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.context?.budget?.status, 'exceeded');
+    assert.equal(snapshot.context?.inputTokens, undefined);
+    assert.deepEqual(snapshot.usage, {});
+    assert.match(snapshot.error!, /上下文超过运行预算/);
+    assert.equal(f.store.getRun(f.req.identity.runId)?.result?.reason, 'context_budget');
   } finally { await f.dispose(); }
 });

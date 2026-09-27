@@ -7,7 +7,7 @@ export type ChatJournalEvent =
   | { type: 'message'; message: ChatMessage }
   | { type: 'text_delta'; id: string; text: string }
   | { type: 'context'; context: ContextUsage }
-  | { type: 'metadata'; model?: string; permissionMode?: string; mcpServers?: ChatSnapshot['mcpServers'] }
+  | { type: 'metadata'; model?: string; permissionMode?: string; mcpServers?: ChatSnapshot['mcpServers']; resetUsage?: boolean }
   | { type: 'result'; success: boolean; summary: string; error?: string; usage?: ChatUsage }
   | { type: 'conversation_recovered'; previousConversationId: string; conversationId: string }
   | { type: 'approval_requested'; approval: ChatApproval }
