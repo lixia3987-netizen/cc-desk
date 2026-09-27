@@ -20,6 +20,11 @@ export interface WindowsCleanupProgress {
   terminationAttempts: number;
   liveProcesses: number;
   helperStage?: 'bootstrap' | 'modules' | 'input' | 'compile' | 'snapshot' | 'capture' | 'terminate';
+  operation?: 'query_snapshot' | 'discover_descendants' | 'validate_snapshot' | 'open_process' | 'query_creation'
+    | 'validate_handle' | 'query_state' | 'terminate_process' | 'verify_termination';
+  identityFailure?: 'parent_birth_missing' | 'parent_creation_missing' | 'descendant_creation_missing' | 'anchor_creation_missing'
+    | 'snapshot_mismatch' | 'bound_snapshot_mismatch' | 'handle_snapshot_mismatch' | 'handle_before_owner'
+    | 'spawn_window_mismatch' | 'live_tombstone' | 'owned_handle_mismatch' | 'spawn_window_missing' | 'snapshot_spawn_window_mismatch';
   nativeCode?: number;
   helperExitCode?: number | null;
   helperExited?: boolean;
@@ -55,12 +60,12 @@ Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdle
 $specifications=@(ConvertFrom-Json -InputObject ${input === 'stdin' ? '([Console]::In.ReadToEnd())' : `'${serialized}'`})
 $anchors=New-Object 'System.Collections.Generic.HashSet[int]'
 $specs=@{}; $known=@{}; $handles=@{}; $bound=@{}; $minimum=@{}
-$phase='windows_snapshot'; $failure='running'; $nativeCode=0
+$phase='windows_snapshot'; $failure='running'; $nativeCode=0; $operation=$null; $identityFailure=$null
 $helperStage='compile'
 $snapshots=0; $attempts=0; $live=0; $quiet=0; $released=$false
 $deadline=[DateTime]::UtcNow.AddMilliseconds(${timeoutMs})
 function Report-Progress {
-  [Console]::Out.WriteLine((@{type='progress';phase=$phase;code=$failure;snapshots=$snapshots;terminationAttempts=$attempts;liveProcesses=$live;nativeCode=$nativeCode;helperStage=$helperStage} | ConvertTo-Json -Compress))
+  [Console]::Out.WriteLine((@{type='progress';phase=$phase;code=$failure;snapshots=$snapshots;terminationAttempts=$attempts;liveProcesses=$live;nativeCode=$nativeCode;helperStage=$helperStage;operation=$operation;identityFailure=$identityFailure} | ConvertTo-Json -Compress))
 }
 function Report-Anchor([int]$number,[string]$identity) {
   $lower=$null
@@ -94,7 +99,7 @@ public static class NativeOwnedProcess {
     elseif($null -ne $spec.spawnStartedAt) { $minimum[$key]=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$spec.spawnStartedAt).UtcDateTime }
   }
   do {
-    $phase='windows_snapshot'; $helperStage='snapshot'; Report-Progress
+    $phase='windows_snapshot'; $helperStage='snapshot'; $operation='query_snapshot'; Report-Progress
     $all=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process')
     # windows-tree:after-snapshot
     $snapshots++
@@ -103,18 +108,23 @@ public static class NativeOwnedProcess {
     foreach($item in $all) { $current[[string]$item.ProcessId]=$item }
     do {
       $before=$anchors.Count
+      $operation='discover_descendants'
       foreach($item in $all) {
         if($anchors.Contains([int]$item.ParentProcessId) -and !$anchors.Contains([int]$item.ProcessId)) {
           $parentKey=[string]$item.ParentProcessId
-          if(!$minimum.ContainsKey($parentKey)) { $failure='identity_unavailable'; throw 'Parent birth lower bound is unavailable.' }
+          if(!$minimum.ContainsKey($parentKey)) { $failure='identity_unavailable'; $identityFailure='parent_birth_missing'; throw 'Parent birth lower bound is unavailable.' }
           $lower=$minimum[$parentKey]
           if($current.ContainsKey($parentKey)) {
             $parentBorn=$current[$parentKey].CreationDate
-            if(!$parentBorn) { $failure='identity_unavailable'; throw 'Parent creation identity unavailable.' }
+            if(!$parentBorn) { $failure='identity_unavailable'; $identityFailure='parent_creation_missing'; throw 'Parent creation identity unavailable.' }
             if($parentBorn.ToUniversalTime() -gt $lower) { $lower=$parentBorn.ToUniversalTime() }
           }
-          if(!$item.CreationDate) { $failure='identity_unavailable'; throw 'Descendant creation identity unavailable.' }
-          if($item.CreationDate.ToUniversalTime() -lt $lower) { $failure='identity_changed'; throw 'Descendant predates its owned parent.' }
+          if(!$item.CreationDate) { $failure='identity_unavailable'; $identityFailure='descendant_creation_missing'; throw 'Descendant creation identity unavailable.' }
+          # A numeric PPID can survive its original parent and be reused by our
+          # newer root/ancestor. An older candidate proves this relationship is
+          # stale; exclude it before adopting ownership. Known anchors below
+          # still require exact snapshot/HANDLE identities and fail on changes.
+          if($item.CreationDate.ToUniversalTime() -lt $lower) { continue } # windows-tree:stale-parent-link
           [void]$anchors.Add([int]$item.ProcessId)
           $minimum[[string]$item.ProcessId]=$item.CreationDate.ToUniversalTime()
         }
@@ -122,19 +132,21 @@ public static class NativeOwnedProcess {
       if($anchors.Count -gt 4096) { $failure='invalid_snapshot'; throw 'Too many anchors.' }
     } while($anchors.Count -ne $before)
     foreach($number in $anchors) {
+      $operation='validate_snapshot'
       $key=[string]$number
       if(!$current.ContainsKey($key)) {
         if(!$known.ContainsKey($key)) { $known[$key]='tombstone'; Report-Anchor $number 'tombstone' }
         continue
       }
       $born=$current[$key].CreationDate
-      if(!$born) { $failure='identity_unavailable'; throw 'Creation identity unavailable.' }
+      if(!$born) { $failure='identity_unavailable'; $identityFailure='anchor_creation_missing'; throw 'Creation identity unavailable.' }
       $snapshotIdentity=$born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)
       if($known.ContainsKey($key) -and $known[$key] -ne 'tombstone' -and $known[$key] -ne $snapshotIdentity) {
-        $failure='identity_changed'; throw 'Snapshot identity changed.'
+        $failure='identity_changed'; $identityFailure='snapshot_mismatch'; throw 'Snapshot identity changed.'
       }
-      if($bound.ContainsKey($key) -and $bound[$key] -ne $snapshotIdentity) { $failure='identity_changed'; throw 'Bound identity changed.' }
+      if($bound.ContainsKey($key) -and $bound[$key] -ne $snapshotIdentity) { $failure='identity_changed'; $identityFailure='bound_snapshot_mismatch'; throw 'Bound identity changed.' }
       if($handles.ContainsKey($key)) { continue }
+      $operation='open_process'
       $handle=[NativeOwnedProcess]::OpenProcess(0x101001,$false,$number)
       if($handle -eq [IntPtr]::Zero) {
         $nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
@@ -146,36 +158,40 @@ public static class NativeOwnedProcess {
       }
       $retained=$false
       try {
+        $operation='query_creation'
         [long]$created=0; [long]$exited=0; [long]$kernel=0; [long]$user=0
         if(![NativeOwnedProcess]::GetProcessTimes($handle,[ref]$created,[ref]$exited,[ref]$kernel,[ref]$user)) {
           $nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error(); $failure='os_error'; throw 'Cannot query process times.'
         }
         $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)
-        if($identity -ne $snapshotIdentity) { $failure='identity_changed'; throw 'Handle identity changed.' }
-        if($minimum.ContainsKey($key) -and [DateTime]::FromFileTimeUtc($created) -lt $minimum[$key]) { $failure='identity_changed'; throw 'Handle predates its owner.' }
+        $operation='validate_handle'
+        if($identity -ne $snapshotIdentity) { $failure='identity_changed'; $identityFailure='handle_snapshot_mismatch'; throw 'Handle identity changed.' }
+        if($minimum.ContainsKey($key) -and [DateTime]::FromFileTimeUtc($created) -lt $minimum[$key]) { $failure='identity_changed'; $identityFailure='handle_before_owner'; throw 'Handle predates its owner.' }
         if($specs.ContainsKey($key) -and !$specs[$key].created -and $null -ne $specs[$key].spawnStartedAt -and $null -ne $specs[$key].spawnCompletedAt) {
           $earliest=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$specs[$key].spawnStartedAt).UtcDateTime
           $latest=[DateTimeOffset]::FromUnixTimeMilliseconds(([long]$specs[$key].spawnCompletedAt + 1)).UtcDateTime
-          if([DateTime]::FromFileTimeUtc($created) -lt $earliest -or [DateTime]::FromFileTimeUtc($created) -gt $latest) { $failure='identity_changed'; throw 'Observed root identity changed.' }
+          if([DateTime]::FromFileTimeUtc($created) -lt $earliest -or [DateTime]::FromFileTimeUtc($created) -gt $latest) { $failure='identity_changed'; $identityFailure='spawn_window_mismatch'; throw 'Observed root identity changed.' }
         }
+        $operation='query_state'
         $state=[NativeOwnedProcess]::WaitForSingleObject($handle,0)
         if($state -ne 0 -and $state -ne 258) { $failure='os_error'; throw 'Cannot query process state.' }
+        $operation='validate_handle'
         if($known.ContainsKey($key) -and $known[$key] -eq 'tombstone') {
           # CIM can still list an exited object. Only a signaled HANDLE proves
           # that it is harmless; a live process at this tombstone is never adopted.
-          if($state -ne 0) { $failure='identity_changed'; throw 'Live process replaced an exited anchor.' }
+          if($state -ne 0) { $failure='identity_changed'; $identityFailure='live_tombstone'; throw 'Live process replaced an exited anchor.' }
         } elseif($known.ContainsKey($key)) {
-          if($known[$key] -ne $identity) { $failure='identity_changed'; throw 'Owned identity changed.' }
+          if($known[$key] -ne $identity) { $failure='identity_changed'; $identityFailure='owned_handle_mismatch'; throw 'Owned identity changed.' }
         } else {
           if($specs.ContainsKey($key)) {
             $spec=$specs[$key]
             if($null -eq $spec.spawnStartedAt -or $null -eq $spec.spawnCompletedAt) {
-              $failure='identity_unavailable'; throw 'Initial live identity is unbounded.'
+              $failure='identity_unavailable'; $identityFailure='spawn_window_missing'; throw 'Initial live identity is unbounded.'
             }
             $earliest=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$spec.spawnStartedAt).UtcDateTime
             $latest=[DateTimeOffset]::FromUnixTimeMilliseconds(([long]$spec.spawnCompletedAt + 1)).UtcDateTime
             if($born.ToUniversalTime() -lt $earliest -or $born.ToUniversalTime() -gt $latest) {
-              $failure='identity_changed'; throw 'Initial identity is outside the owned spawn window.'
+              $failure='identity_changed'; $identityFailure='snapshot_spawn_window_mismatch'; throw 'Initial identity is outside the owned spawn window.'
             }
           }
           $known[$key]=$identity
@@ -189,14 +205,17 @@ public static class NativeOwnedProcess {
     $live=0; $phase='windows_terminate'; $helperStage='terminate'
     foreach($key in @($handles.Keys)) {
       $handle=$handles[$key]
+      $operation='query_state'
       $state=[NativeOwnedProcess]::WaitForSingleObject($handle,0)
       if($state -eq 0) { continue }
       if($state -ne 258) { $failure='os_error'; throw 'Cannot verify process release.' }
-      if($known[$key] -eq 'tombstone') { $failure='identity_changed'; throw 'An exited anchor became live.' }
+      if($known[$key] -eq 'tombstone') { $failure='identity_changed'; $identityFailure='live_tombstone'; throw 'An exited anchor became live.' }
       $live++; $attempts++
+      $operation='terminate_process'
       if(![NativeOwnedProcess]::TerminateProcess($handle,1)) {
         $nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         $wait=[uint32][Math]::Max(0,[Math]::Min(250,[Math]::Floor(($deadline-[DateTime]::UtcNow).TotalMilliseconds)))
+        $operation='verify_termination'
         if([NativeOwnedProcess]::WaitForSingleObject($handle,$wait) -ne 0) { $failure='os_error'; throw 'Cannot terminate owned handle.' }
       }
     }
@@ -208,13 +227,18 @@ public static class NativeOwnedProcess {
   if(!$released) { $failure='timeout' }
 } catch { if($failure -eq 'running') { $failure='helper_exit' } }
 finally { foreach($handle in @($handles.Values)) { [void][NativeOwnedProcess]::CloseHandle($handle) } }
-[Console]::Out.WriteLine((@{type='result';released=$released;phase=$phase;code=$failure;snapshots=$snapshots;terminationAttempts=$attempts;liveProcesses=$live;nativeCode=$nativeCode;helperStage=$helperStage} | ConvertTo-Json -Compress))
+[Console]::Out.WriteLine((@{type='result';released=$released;phase=$phase;code=$failure;snapshots=$snapshots;terminationAttempts=$attempts;liveProcesses=$live;nativeCode=$nativeCode;helperStage=$helperStage;operation=$operation;identityFailure=$identityFailure} | ConvertTo-Json -Compress))
 if($released) { exit 0 } else { exit 1 }
 `;
 }
 
 const phases = new Set(['windows_snapshot', 'windows_terminate']);
 const codes = new Set(['running', 'timeout', 'spawn_error', 'helper_exit', 'invalid_snapshot', 'identity_changed', 'identity_unavailable', 'unreleased', 'os_error']);
+const operations = new Set(['query_snapshot', 'discover_descendants', 'validate_snapshot', 'open_process', 'query_creation',
+  'validate_handle', 'query_state', 'terminate_process', 'verify_termination']);
+const identityFailures = new Set(['parent_birth_missing', 'parent_creation_missing', 'descendant_creation_missing', 'anchor_creation_missing',
+  'snapshot_mismatch', 'bound_snapshot_mismatch', 'handle_snapshot_mismatch', 'handle_before_owner', 'spawn_window_mismatch',
+  'live_tombstone', 'owned_handle_mismatch', 'spawn_window_missing', 'snapshot_spawn_window_mismatch']);
 
 /** One helper owns discovery, identity checks and termination, without PID re-lookups at kill time. */
 export function runWindowsTreeCleanup(options: {
@@ -298,6 +322,12 @@ export function runWindowsTreeCleanup(options: {
           snapshots: Number(item.snapshots), terminationAttempts: Number(item.terminationAttempts), liveProcesses: Number(item.liveProcesses), nativeCode: Number(item.nativeCode) };
         if (typeof item.helperStage === 'string' && ['bootstrap', 'modules', 'input', 'compile', 'snapshot', 'capture', 'terminate'].includes(item.helperStage)) {
           diagnostic.helperStage = item.helperStage as WindowsCleanupProgress['helperStage'];
+        }
+        if (typeof item.operation === 'string' && operations.has(item.operation)) {
+          diagnostic.operation = item.operation as WindowsCleanupProgress['operation'];
+        }
+        if (typeof item.identityFailure === 'string' && identityFailures.has(item.identityFailure)) {
+          diagnostic.identityFailure = item.identityFailure as WindowsCleanupProgress['identityFailure'];
         }
         options.onProgress?.(diagnostic);
         if (item.type === 'result') {

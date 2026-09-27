@@ -8,8 +8,10 @@ test('inspector stop diagnostics preserve the real handler and retain only bound
   const secret = 'private-command-path-credential';
   const native = Object.assign(new Error('Windows process descendants have not released. ' + JSON.stringify({
     phase: 'windows_snapshot', code: 'identity_changed', snapshots: 2, terminationAttempts: 0, liveProcesses: 1,
-    helperStage: 'capture', nativeCode: 5, command: secret, stack: secret,
-  })), { cleanupPhase: 'windows.tree', code: secret, path: secret });
+    helperStage: 'capture', operation: 'validate_handle', identityFailure: 'handle_snapshot_mismatch',
+    nativeCode: 5, command: secret, stack: secret,
+  })), { cleanupPhase: 'windows.tree', code: secret, path: secret,
+    operation: 'snapshot_mismatch', identityFailure: 'validate_handle' });
   const failure = new AggregateError([new Error(secret, { cause: native })], secret);
   const calls: unknown[][] = [];
   const original = async (...args: unknown[]) => { calls.push(args); if (args[1] !== 'success') throw failure; return 'unchanged'; };
@@ -33,6 +35,7 @@ test('inspector stop diagnostics preserve the real handler and retain only bound
     assert.equal(calls[2][0], event);
     assert.deepEqual(readInspectorStopDiagnostics(), [{ errors: [{ cause: { cleanupPhase: 'windows.tree', windows: {
       phase: 'windows_snapshot', code: 'identity_changed', helperStage: 'capture', snapshots: 2,
+      operation: 'validate_handle', identityFailure: 'handle_snapshot_mismatch',
       terminationAttempts: 0, liveProcesses: 1, nativeCode: 5,
     } } }] }]);
     assert.equal(JSON.stringify(readInspectorStopDiagnostics()).includes(secret), false);

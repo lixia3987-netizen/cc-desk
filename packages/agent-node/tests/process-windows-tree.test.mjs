@@ -135,27 +135,131 @@ if(!([IO.File]::Exists(${quote(captured)}))) {
   }
 });
 
+for (const [parentKind, missingBirth] of [['root', false], ['intermediate', false], ['root', true]]) {
+  test(missingBirth ? 'Windows cleanup refuses a parent relationship when the candidate birth is unavailable'
+    : `Windows cleanup excludes a stale parent link to its ${parentKind} while stopping actual descendants`,
+    { skip: process.platform !== 'win32', timeout: 60000 }, async () => {
+      const directory = await fs.mkdtemp(path.join(os.tmpdir(), `native-win-stale-${parentKind}-`));
+      const olderReady = path.join(directory, 'older.pid');
+      const rootReady = path.join(directory, 'root.pid');
+      const childReady = path.join(directory, 'child.pid');
+      const grandchildReady = path.join(directory, 'grandchild.pid');
+      const forkGate = path.join(directory, 'fork');
+      const record = file => `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(file)}+'.tmp',String(process.pid));fs.renameSync(${JSON.stringify(file)}+'.tmp',${JSON.stringify(file)});`;
+      const grandchild = `${record(grandchildReady)}setInterval(()=>{},1000);`;
+      const child = `${record(childReady)}require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',windowsHide:true}).unref();setInterval(()=>{},1000);`;
+      const startRoot = () => spawn(process.execPath, ['-e', `${record(rootReady)}const fork=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(fork);require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore',windowsHide:true}).unref();},10);setInterval(()=>{},1000);`],
+        { cwd: directory, stdio: 'ignore', windowsHide: true });
+      let root, older;
+      try {
+        if (parentKind === 'intermediate') {
+          root = startRoot();
+          await until(() => exists(rootReady), 'root must precede the unrelated process');
+        }
+        // This is a real older process. Only its reported PPID is changed below;
+        // the kernel creation times and all opened HANDLEs remain genuine.
+        older = spawn(process.execPath, ['-e', `${record(olderReady)}setInterval(()=>{},1000);`],
+          { cwd: directory, stdio: 'ignore', windowsHide: true });
+        await until(() => exists(olderReady), 'the unrelated older process must start');
+        root ??= startRoot();
+        await until(() => exists(rootReady), 'root must start before releasing its child');
+        await fs.writeFile(forkGate, 'fork');
+        await until(() => exists(grandchildReady), 'the actual descendant tree must start');
+        const childPid = Number(await fs.readFile(childReady, 'utf8'));
+        const grandchildPid = Number(await fs.readFile(grandchildReady, 'utf8'));
+        assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
+        assert.ok(Number.isSafeInteger(grandchildPid) && grandchildPid > 1 && live(grandchildPid));
+        const parentPid = parentKind === 'root' ? root.pid : childPid;
+        const observed = await run(`$ErrorActionPreference='Stop'; (Get-CimInstance -Query 'SELECT CreationDate FROM Win32_Process WHERE ProcessId=${root.pid}').CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)`);
+        const created = observed.stdout.trim();
+        assert.match(created, /^\d{20}$/);
+        const mutation = `# windows-tree:after-snapshot
+if($snapshots -eq 0) {
+  $olderRow=@($all | Where-Object { [int]$_.ProcessId -eq ${older.pid} })
+  $parentRow=@($all | Where-Object { [int]$_.ProcessId -eq ${parentPid} })
+  if($olderRow.Count -ne 1 -or $parentRow.Count -ne 1 -or !$olderRow[0].CreationDate -or !$parentRow[0].CreationDate -or
+    $olderRow[0].CreationDate.ToUniversalTime() -ge $parentRow[0].CreationDate.ToUniversalTime()) { throw 'Fixture must retain genuine ordered process births.' }
+  ${parentKind === 'intermediate' ? `$rootRow=@($all | Where-Object { [int]$_.ProcessId -eq ${root.pid} })
+  if($rootRow.Count -ne 1 -or !$rootRow[0].CreationDate -or $rootRow[0].CreationDate.ToUniversalTime() -ge $olderRow[0].CreationDate.ToUniversalTime()) { throw 'Fixture requires root then unrelated process then intermediate parent.' }` : ''}
+}
+$all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${older.pid}) {
+  [pscustomobject]@{ ProcessId=$_.ProcessId; ParentProcessId=${parentPid}; CreationDate=$_.CreationDate }
+} else { $_ } })`;
+        let script = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)
+          .replace('# windows-tree:after-snapshot', mutation);
+        if (missingBirth) {
+          // An absent time does not prove staleness and must still fail closed.
+          script = script.replace('CreationDate=$_.CreationDate }', 'CreationDate=$null }');
+          await assert.rejects(run(script), error => {
+            const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
+            assert.equal(result?.released, false);
+            assert.equal(result?.code, 'identity_unavailable');
+            assert.equal(result?.identityFailure, 'descendant_creation_missing');
+            assert.equal(result?.operation, 'discover_descendants');
+            return true;
+          });
+          for (const pid of [older.pid, root.pid, childPid, grandchildPid]) assert.equal(live(pid), true);
+          return;
+        }
+
+        let result;
+        try { result = await run(script); }
+        catch (error) {
+          let reported;
+          try { reported = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result'); }
+          catch { /* A launch/protocol error is not evidence for the old identity rejection. */ }
+          if (reported?.released === false && reported.code === 'identity_changed') {
+            throw new Error('WINDOWS_STALE_PARENT_REJECTED:identity_changed', { cause: error });
+          }
+          throw error;
+        }
+        const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
+        assert.equal(events.findLast(item => item.type === 'result')?.released, true);
+        assert.equal(events.some(item => item.type === 'anchor' && item.pid === older.pid), false,
+          'a proven stale relation must never enter retained ownership');
+        for (const pid of [root.pid, childPid, grandchildPid]) assert.equal(live(pid), false, 'every true descendant must stop');
+        assert.equal(live(older.pid), true, 'the unrelated older process must remain alive');
+      } finally {
+        older?.kill('SIGKILL');
+        if (root ?? older) await cleanupFixture(root ?? older, directory);
+        else await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+}
+
 test('Windows exited-unbound anchors cannot adopt a live process and unknown creation cannot authorize termination', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-tombstone-'));
   const ready = path.join(directory, 'ready');
-  const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
-  const spawnCompletedAt = Date.now();
   try {
     await until(() => exists(ready), 'fixture process must start');
-    await assert.rejects(run(buildWindowsTreeCleanupScript([{ pid: root.pid, exited: true, spawnStartedAt, spawnCompletedAt }], 8000)), error => {
+    const observed = await run(`$ErrorActionPreference='Stop'; (Get-CimInstance -Query 'SELECT CreationDate FROM Win32_Process WHERE ProcessId=${root.pid}').CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture)`);
+    const created = observed.stdout.trim();
+    assert.match(created, /^\d{20}$/);
+    await assert.rejects(run(buildWindowsTreeCleanupScript([{ pid: root.pid, exited: true, minimumCreated: created }], 8000)), error => {
       const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
-      assert.equal(result?.code, 'identity_changed'); return true;
+      assert.equal(result?.code, 'identity_changed');
+      assert.equal(result?.identityFailure, 'live_tombstone');
+      assert.equal(result?.operation, 'validate_handle'); return true;
     });
     assert.equal(live(root.pid), true, 'a current live PID cannot be adopted by an unbound exited identity');
-    const unknown = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000).replace(
+    const unknown = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot
 $all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${root.pid}) { [pscustomobject]@{ ProcessId=$_.ProcessId; ParentProcessId=$_.ParentProcessId; CreationDate=$null } } else { $_ } })`);
     await assert.rejects(run(unknown), error => {
       const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
-      assert.equal(result?.code, 'identity_unavailable'); return true;
+      assert.equal(result?.code, 'identity_unavailable');
+      assert.equal(result?.identityFailure, 'anchor_creation_missing');
+      assert.equal(result?.operation, 'validate_snapshot'); return true;
     });
     assert.equal(live(root.pid), true, 'a missing creation identity must fail before termination');
+    await assert.rejects(run(buildWindowsTreeCleanupScript([{ pid: root.pid, created: '20000101000000000000' }], 8000)), error => {
+      const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
+      assert.equal(result?.code, 'identity_changed');
+      assert.equal(result?.identityFailure, 'snapshot_mismatch');
+      assert.equal(result?.operation, 'validate_snapshot'); return true;
+    });
+    assert.equal(live(root.pid), true, 'a known creation identity mismatch must never be ignored as a stale parent link');
   } finally { await cleanupFixture(root, directory); }
 });

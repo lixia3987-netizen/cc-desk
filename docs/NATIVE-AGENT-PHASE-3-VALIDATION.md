@@ -2,7 +2,7 @@
 
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
-当前状态：**固定代码候选的三平台技术验收已通过，真实远程模型验收待完成**。代码候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 的 Windows、macOS、Linux 完整检查、源码 Electron E2E 及实际成品测试全部通过；Windows 三次独立终端布局/停止回归也通过。本文后续纯文档更新不改变该已验收代码候选，不能把它的 CI 结果计作后续文档提交的新运行结果。第十四候选 Windows 终端停止失败的底层原因仍未取得，该症状本轮未重现，不能与 Claude shutdown 竞态视为同一根因。源码和成品中的受控本地 HTTP 协议服务不代表真实模型任务已通过。真实服务、模型、凭据来源及预算尚未指定。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft，变更保留在 `feat/native-agent-alpha`；main 与 dev/native-agent 基线均未移动，不发布 Release。
+当前状态：**Windows 陈旧父进程关系修复待本候选完整验收，真实远程模型验收待完成**。第十六代码候选 `68259e0` 曾通过三平台技术检查，但随后的纯文档提交 `4fb62e7` 在相同产品代码下再次发生 Windows 清理失败（`creation_before_spawn`）；macOS、Linux 及 workspace 通过。本轮同时修复 Claude 与终端树清理的陈旧 `ParentProcessId` 关系，增加真实 Windows 基线失败/修复通过对照和具体身份诊断；新结果不沿用旧候选绿灯。第十四候选终端故障缺少原始 cause，仍不能确认它与本轮问题同源。真实服务、模型、凭据来源及预算尚未指定，本地协议服务不代表真实模型任务验收。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft；变更仅在 `feat/native-agent-alpha`，main 与 dev/native-agent 基线不移动，不发布 Release。
 
 ## 已实现
 
@@ -96,16 +96,24 @@ Windows 独立 Runtime 为 19 项通过、0 项失败、4 项平台跳过；完�
 
 同一候选的源码 Electron E2E：macOS、Linux 各 67 项通过；Windows 65 项通过、2 项既有 POSIX fixture 跳过，另加的三次独立 inspector 终端布局/停止回归全部通过。三平台成品各 5 项通过，覆盖 Windows ZIP/NSIS、macOS ZIP/复制安装的 DMG、Linux tar.gz/提取的 AppImage；实际 ASAR worker、审批、工具、重启与终端释放闭环均通过。Windows inspector 症状本轮未重现，不能据此补写第十四候选尚未取得的底层原因，或宣称该故障与 Claude 竞态同源。真实远程服务任务仍未执行，完整 P3 Alpha 的真实模型验收保持待完成。
 
+2026-09-27 后续复核：纯文档提交 `4fb62e7299e394e591b74764f263c32f6bba54f7` 的 [三平台检查](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36302747663) 再次失败。Windows desktop 为 483 项通过、1 项失败、28 项平台跳过，失败用例为 background completion deadline 的 shutdown 清理，标记 `creation_before_spawn`。macOS、Linux 及 [workspace](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36302747667) 通过；本轮 Windows 后续源码和成品步骤未执行。
+
+本轮源码缺陷：发现后代时只比较父 PID，随后才核查创建时间。Windows 的父 PID 可能残留并指向已经复用该编号的新进程，详见 [Microsoft Win32_Process 文档](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process)。Claude 仅使用根出生下界还可能误纳入“晚于根、早于中间父进程”的无关进程。本轮在扩展每一条父子关系前检查对应父进程的出生下界，排除已经证明不属于该代父进程的旧关系；保留已退出父锚点、原始 HANDLE 握手、CIM/持有 HANDLE 身份匹配、未知时间拒绝及真实释放屏障。没有扩宽身份时间窗口或把根退出等同整棵树释放。
+
+新增真实 Windows 回归仅改写实际无关哨兵的 CIM 父 PID，保留它的真实创建时间和 OS HANDLE，验证真实后代被清理而哨兵仍活着；分别覆盖根与中间父关系。`scripts/verify-windows-parentage-regressions.mjs` 对同一 fixture 使用固定旧提交与当前实现，保存两套 TAP，要求旧版暴露缺陷、修复版通过，并在任何失败后还原生成代码。终端助手及 inspector 跨 IPC 诊断增加白名单 operation/identityFailure，不携带命令、路径或凭据。本候选的 Windows 对照、原失败用例、源码及三次独立 inspector、三平台实际成品均待 CI；不能将 Linux 平台跳过计为 Windows 验证。
+
+历史第十四候选 trace 中 stopSession 拒绝后，终端已离开 running/stopping，结合当时源码更支持树清理拒绝而 PTY 资源释放完成。这只是范围缩小的推断，原始 cause 未保存，不能补写具体底层错误或宣称历史根因已确认。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十六代码候选通过：Windows 687/0/32，macOS 695/0/22，Linux/workspace 700/0/17（通过/失败/平台跳过） |
-| Windows/macOS/Linux 全部源码 Electron E2E | 同一第十六代码候选通过：Windows 65 项通过、2 项既有 POSIX fixture 跳过，macOS/Linux 各 67 项通过；三次独立 Windows inspector 用例全部通过 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 同一第十六代码候选三平台各 5 项成品测试通过，分发边界见下文 |
-| 未知副作用、审批、目录占用与 ACK 故障回归 | 同一第十六代码候选三平台必需检查、源码与成品门槛均通过；历史 PTY 偶发失败的底层原因仍未知，本轮未重现 |
+| 同一候选根 `npm run check` | 本轮修复待 CI；旧候选结果仅作为历史记录 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 本轮修复及三次独立 Windows inspector 待 CI |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 本轮修复待 CI，保留三平台各 5 项原有门槛 |
+| 未知副作用、审批、目录占用与 ACK 故障回归 | 本轮完整检查及 Windows 旧版/修复版对照待 CI；历史终端故障具体原因仍未知 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
 | 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；main 与 dev/native-agent 基线均未移动，未发布 Release |

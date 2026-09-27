@@ -52,6 +52,16 @@ jobs:
         run: |
           node --import tsx --test --test-concurrency=1 apps/desktop/tests/runtime.test.ts
           exit $LASTEXITCODE
+      - name: Verify Windows stale parent regressions against the failing baseline
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        run: |
+          git fetch --no-tags --depth=1 origin 4fb62e7299e394e591b74764f263c32f6bba54f7
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:packages
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-windows-parentage-regressions.mjs 4fb62e7299e394e591b74764f263c32f6bba54f7
+          exit $LASTEXITCODE
       - id: check
         # Keep a stuck test process from consuming the entire job budget and
         # hiding its failure logs and platform diagnostics.

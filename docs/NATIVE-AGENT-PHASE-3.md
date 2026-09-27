@@ -4,7 +4,7 @@
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**固定代码候选的三平台技术验收已通过，真实模型验收待完成**。第十六代码候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 的 Windows、macOS、Linux 完整检查、源码 E2E 和成品测试全部通过，三次独立 Windows 终端布局/停止回归通过；证据仅绑定该代码 SHA，后续纯文档提交不计作新的已通过运行。第十四候选 Windows 终端停止失败的底层原因仍未确定，该症状本轮未重现。本文保留设计与完成定义，实际实现、证据和待确认项见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)，操作说明见 [自研 Agent Alpha](NATIVE-AGENT-ALPHA.md)。真实服务、模型、凭据来源及预算尚未指定，不能将本地 fixture 结果记为真实模型验收通过。所有变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft；main 与 dev/native-agent 基线均未移动，不发布 Release。
+状态：**Windows 陈旧父进程关系修复待本候选验收，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
 
 关联：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段二边界设计](ENGINE-BOUNDARIES-PHASE-2.md)、[架构说明](ARCHITECTURE.md)。下文路径相对于仓库根目录。
 
@@ -265,7 +265,7 @@ native 模型和连接配置只在停止且没有 queue/workflow 所有权时修
 
 00 的契约和平台验证是基础任务门槛；实际服务、凭据与预算可单独标为待确认，不阻塞 01/02。它们必须在 05 的远程 smoke 和最终真实模型验收前落实，不能把待确认项记成已验证。
 
-实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。当前实现保留在 `feat/native-agent-alpha`，PR #33 的目标为 `dev/native-agent`。固定代码候选的技术门槛已通过；真实模型验收未完成前保持 Draft。本轮不合入 main 或 dev/native-agent，不发布 Release。候选统一按上述门槛验收。
+实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。当前实现保留在 `feat/native-agent-alpha`，PR #33 的目标为 `dev/native-agent`。本轮技术修复与真实模型验收未完成前保持 Draft。本轮不合入 main 或 dev/native-agent，不发布 Release。候选统一按上述门槛验收。
 
 ## 10. 验收矩阵与完成定义
 

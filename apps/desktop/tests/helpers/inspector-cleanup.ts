@@ -7,12 +7,20 @@ export function installInspectorStopDiagnostics({ ipcMain }: Pick<typeof import(
     'windows_snapshot', 'windows_terminate', 'windows_helper_release', 'running', 'timeout', 'spawn_error', 'helper_exit',
     'invalid_snapshot', 'identity_changed', 'identity_unavailable', 'unreleased', 'os_error', 'bootstrap', 'modules',
     'input', 'compile', 'snapshot', 'capture', 'terminate', 'ENOENT', 'EACCES', 'EPERM', 'ESRCH', 'UNKNOWN']);
+  const operations = new Set(['query_snapshot', 'discover_descendants', 'validate_snapshot', 'open_process',
+    'query_creation', 'validate_handle', 'query_state', 'terminate_process', 'verify_termination']);
+  const identityFailures = new Set(['parent_birth_missing', 'parent_creation_missing', 'descendant_creation_missing',
+    'anchor_creation_missing', 'snapshot_mismatch', 'bound_snapshot_mismatch', 'handle_snapshot_mismatch',
+    'handle_before_owner', 'spawn_window_mismatch', 'live_tombstone', 'owned_handle_mismatch',
+    'spawn_window_missing', 'snapshot_spawn_window_mismatch']);
   const serializer = { read(value: unknown, depth = 0): unknown {
     if (!value || typeof value !== 'object' || depth > 6) return {};
     const item = value as Record<string, unknown>, result: Record<string, unknown> = {};
     for (const key of ['cleanupPhase', 'phase', 'code', 'helperStage', 'osCode']) {
       if (typeof item[key] === 'string' && tokens.has(item[key])) result[key] = item[key];
     }
+    if (typeof item.operation === 'string' && operations.has(item.operation)) result.operation = item.operation;
+    if (typeof item.identityFailure === 'string' && identityFailures.has(item.identityFailure)) result.identityFailure = item.identityFailure;
     for (const key of ['snapshots', 'terminationAttempts', 'liveProcesses', 'nativeCode', 'helperExitCode', 'helperOutputBytes']) {
       if (typeof item[key] === 'number' && Number.isSafeInteger(item[key])) result[key] = item[key];
     }

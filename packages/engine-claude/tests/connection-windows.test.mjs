@@ -205,6 +205,68 @@ foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId 
   }
 });
 
+test('Windows cleanup excludes stale parent PID links before following the process tree', { skip: process.platform !== 'win32', timeout: 40000 }, async t => {
+  for (const staleParent of ['root', 'descendant']) await t.test(staleParent, async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-win-stale-parent-'));
+    const rootReady = path.join(directory, 'root.pid'), childReady = path.join(directory, 'child.pid');
+    const unrelatedReady = path.join(directory, 'unrelated.pid'), forkGate = path.join(directory, 'fork');
+    const injected = path.join(directory, 'injected');
+    const record = file => `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(file)}+'.tmp',String(process.pid));fs.renameSync(${JSON.stringify(file)}+'.tmp',${JSON.stringify(file)});`;
+    const childScript = `${record(childReady)}setInterval(()=>{},1000);`;
+    const rootScript = `${record(rootReady)}const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(poll);require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childScript)}],{stdio:'ignore',detached:true,windowsHide:true}).unref()},10);setInterval(()=>{},1000);`;
+    const unrelatedScript = `${record(unrelatedReady)}setInterval(()=>{},1000);`;
+    const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    let root, unrelated, startedAt, spawnedAt, cleaning;
+    const startRoot = async () => {
+      startedAt = Date.now();
+      root = spawn(process.execPath, ['-e', rootScript], { cwd: directory, stdio: 'ignore', windowsHide: true });
+      spawnedAt = Date.now();
+      await until(() => exists(rootReady), 'the owned root must start');
+    };
+    const startUnrelated = async () => {
+      unrelated = spawn(process.execPath, ['-e', unrelatedScript], { cwd: directory, stdio: 'ignore', windowsHide: true });
+      await until(() => exists(unrelatedReady), 'the unrelated sentinel must start');
+    };
+    try {
+      if (staleParent === 'root') { await startUnrelated(); await startRoot(); }
+      else { await startRoot(); await startUnrelated(); }
+      // The middle-parent case is newer than the root but older than its parent;
+      // a single global root lower bound would wrongly adopt this sentinel.
+      await fs.writeFile(forkGate, 'fork');
+      await until(() => exists(childReady), 'the actual descendant must start');
+      const childPid = Number(await fs.readFile(childReady, 'utf8'));
+      assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
+      const staleParentPid = staleParent === 'root' ? root.pid : childPid;
+      cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
+        '$all=@(Get-CimInstance Win32_Process)',
+        `$all=@(Get-CimInstance Win32_Process)
+  $all=@($all | ForEach-Object {
+    if($_.ProcessId -eq ${unrelated.pid}) {
+      [IO.File]::WriteAllText(${psQuote(injected)},'stale-parent-link')
+      [pscustomobject]@{ProcessId=$_.ProcessId;ParentProcessId=${staleParentPid};CreationDate=$_.CreationDate}
+    } else { $_ }
+  })`));
+      await cleaning;
+      assert.equal(await exists(injected), true, 'the real sentinel must appear in the cleanup snapshot');
+      assert.equal(live(root.pid), false);
+      assert.equal(live(childPid), false, 'the actual descendant must be released');
+      assert.equal(live(unrelated.pid), true, 'a stale PPID must not authorize signaling an unrelated live handle');
+    } finally {
+      await cleaning?.catch(() => {});
+      root?.kill('SIGKILL'); unrelated?.kill('SIGKILL');
+      // Restrict recovery to this fixture's command-line marker and retain the
+      // normal creation-time/held-handle checks for any detached descendant.
+      const cleanup = windowsTreeCleanupScript(2147483647, true, startedAt ?? Date.now(), Date.now()).replace('$known=@{}', `$known=@{}
+foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${psQuote(path.basename(directory))}) })) {
+  [void]$anchors.Add([int]$owned.ProcessId)
+  $known[[string]$owned.ProcessId]=$owned.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')
+}`);
+      await execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', cleanup], { windowsHide: true, timeout: 8000, maxBuffer: 8192 });
+      await fs.rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 test('Windows cleanup follows an original root exit during helper startup with a fresh descendant scan', { skip: process.platform !== 'win32', timeout: 45000 }, async t => {
   for (const phase of ['open_root_handle', 'confirm_original_root']) await t.test(phase, async () => {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-win-startup-exit-'));

@@ -1,6 +1,6 @@
 # 自研 Agent Alpha 操作与实现说明
 
-阶段三开发候选，2026-09-27。固定代码候选 `68259e0dc0797712ac49aea57fee1ceb36077263` 的三平台技术验收已通过，包括完整检查、源码 E2E、实际成品及三次独立 Windows 终端布局/停止回归；后续纯文档更新不改变该已验收代码候选。第十四候选 Windows 终端停止失败的底层原因仍未知，该症状本轮未重现。真实远程模型验收尚未执行；服务、模型、凭据来源及预算待用户指定，本地 HTTP 协议测试不替代真实模型验收。实现与验收状态见 [阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。此功能尚未包含在 v0.5.0 稳定版；默认引擎仍为 Claude Code。变更保留在 `feat/native-agent-alpha`，PR #33 保持 Draft，main 与 dev/native-agent 基线均未移动，不发布 Release。
+阶段三开发候选，2026-09-27。**Windows 陈旧父进程关系修复待本候选验收，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
 
 ## 配置并开始
 

@@ -78,6 +78,7 @@ $earliest=[DateTimeOffset]::FromUnixTimeMilliseconds(${spawnStartedAt}).UtcDateT
 $latest=[DateTimeOffset]::FromUnixTimeMilliseconds(${spawnCompletedAt + 1}).UtcDateTime
 $anchors=New-Object 'System.Collections.Generic.HashSet[int]'
 [void]$anchors.Add([int]${pid})
+$anchorBirths=@{}
 $known=@{}
 if($rootExited) { $known[[string]$rootPid]='exited-before-inspection' }
 ${rootChallenge && !rootExited ? `
@@ -92,8 +93,11 @@ $cleanupPhase='capture_root_identity'
 [long]$rootCreated=0; [long]$rootEnded=0; [long]$rootKernel=0; [long]$rootUser=0
 if(![OwnedProcessHandle]::GetProcessTimes($rootHandle,[ref]$rootCreated,[ref]$rootEnded,[ref]$rootKernel,[ref]$rootUser)) { throw 'Cannot capture the confirmed root identity.' }
 $earliest=[DateTime]::FromFileTimeUtc($rootCreated)
+# CIM CreationDate has microsecond precision; compare like representations.
+$earliest=$earliest.AddTicks(-($earliest.Ticks % 10))
 $known[[string]$rootPid]=$earliest.ToString('yyyyMMddHHmmssffffff')
 ` : ''}
+$anchorBirths[[string]$rootPid]=$earliest
 $deadline=[DateTime]::UtcNow.AddSeconds(5)
 do {
   $cleanupPhase='snapshot'
@@ -105,12 +109,24 @@ do {
       $cleanupPhase='verify_known_identity'
       $born=$current[$key].CreationDate
       if(!$born -or $known[$key] -ne $born.ToUniversalTime().ToString('yyyyMMddHHmmssffffff')) { throw 'Process identity changed during cleanup.' }
+      $anchorBirths[$key]=$born.ToUniversalTime()
     }
   }
   do {
     $before=$anchors.Count
     foreach($processItem in $all) {
-      if($anchors.Contains([int]$processItem.ParentProcessId)) { [void]$anchors.Add([int]$processItem.ProcessId) }
+      if($anchors.Contains([int]$processItem.ProcessId) -or !$anchors.Contains([int]$processItem.ParentProcessId)) { continue }
+      $cleanupPhase='read_creation_time'
+      $born=$processItem.CreationDate
+      if(!$born) { throw 'Process identity is unavailable.' }
+      $parentKey=[string]$processItem.ParentProcessId
+      if(!$anchorBirths.ContainsKey($parentKey)) { throw 'Parent process identity is unavailable.' }
+      # ParentProcessId survives parent exit and can point at a reused PID.
+      # An older process cannot descend from this owned parent incarnation.
+      # Keep each parent's birth after exit so later scans use the same bound.
+      if($born.ToUniversalTime() -lt $anchorBirths[$parentKey]) { continue }
+      [void]$anchors.Add([int]$processItem.ProcessId)
+      $anchorBirths[[string]$processItem.ProcessId]=$born.ToUniversalTime()
     }
   } while($anchors.Count -ne $before)
   $targets=@($all | Where-Object { $anchors.Contains([int]$_.ProcessId) })

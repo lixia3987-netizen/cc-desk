@@ -73,3 +73,46 @@ test('failed Windows helper retains late and trailing ancestors before its physi
     helper.stdin.destroy(); helper.stdout.destroy(); helper.stderr.destroy();
   }
 });
+
+test('Windows cleanup preserves only fixed operation and identity failure diagnostics', async () => {
+  const originalSpawn = childProcess.spawn;
+  const secret = 'private-command-path-credential';
+  const helpers = [];
+  try {
+    for (const [operation, identityFailure] of [
+      ['validate_snapshot', 'snapshot_mismatch'],
+      ['discover_descendants', 'descendant_creation_missing'],
+      ['open_process', undefined],
+      [secret, secret],
+    ]) {
+      const helper = new EventEmitter();
+      helper.stdin = new PassThrough(); helper.stdout = new PassThrough(); helper.stderr = new PassThrough();
+      helper.kill = () => true;
+      helpers.push(helper);
+      childProcess.spawn = () => helper;
+      syncBuiltinESMExports();
+      const progress = [];
+      const pending = runWindowsTreeCleanup({
+        anchors: [{ pid: 321, created: '20260926123456123456' }],
+        environment: { SystemRoot: 'C:\\Windows' }, timeoutMs: 1000,
+        onProgress: value => progress.push(value),
+      });
+      helper.stdout.write(JSON.stringify({ type: 'result', released: false, phase: 'windows_snapshot',
+        code: 'identity_changed', snapshots: 1, terminationAttempts: 0, liveProcesses: 0, nativeCode: 0,
+        helperStage: 'capture', operation, identityFailure, command: secret, path: secret, environment: secret }) + '\n');
+      helper.emit('exit', 1, null);
+      helper.emit('close', 1, null);
+      const result = await pending;
+      assert.equal(result.released, false);
+      assert.equal(result.diagnostic.operation, operation === secret ? undefined : operation);
+      assert.equal(result.diagnostic.identityFailure, identityFailure === secret ? undefined : identityFailure);
+      assert.equal(result.diagnostic.helperExited, true);
+      assert.equal(result.diagnostic.helperExitCode, 1);
+      assert.equal(JSON.stringify([result, progress]).includes(secret), false);
+      assert.equal(progress.length, 1);
+    }
+  } finally {
+    childProcess.spawn = originalSpawn; syncBuiltinESMExports();
+    for (const helper of helpers) { helper.stdin.destroy(); helper.stdout.destroy(); helper.stderr.destroy(); }
+  }
+});
