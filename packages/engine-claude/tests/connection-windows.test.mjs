@@ -19,6 +19,42 @@ async function until(condition, phase, timeout = 3000) {
   while (!await condition()) { assert.ok(Date.now() < deadline, phase); await pause(); }
 }
 
+// Use the production ownership handshake even when injecting a race checkpoint.
+// The bridge is restored immediately after synchronous helper creation; all
+// process handles, challenge transport and exit barriers remain production code.
+function runOwnedCleanup(root, startedAt, spawnedAt, transform) {
+  const originalExecFile = childProcess.execFile;
+  let failurePhase, failed = false;
+  childProcess.execFile = (executable, argv, options, callback) => originalExecFile(
+    executable, [...argv.slice(0, -1), transform(argv.at(-1))], options,
+    (error, stdout, stderr) => {
+      failed = Boolean(error);
+      failurePhase = stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1]
+        ?? (error?.killed ? 'helper_timeout' : 'helper_failed');
+      callback(error, stdout, stderr);
+    });
+  syncBuiltinESMExports();
+  let cleaning;
+  try { cleaning = stopWindowsTree(root, false, startedAt, spawnedAt); }
+  finally { childProcess.execFile = originalExecFile; syncBuiltinESMExports(); }
+  return cleaning.then(released => {
+    if (!released || failed) {
+      const marker = `CLAUDE_TREE_CLEANUP_FAILED:${failurePhase ?? 'helper_failed'}`;
+      throw Object.assign(new Error(marker), { stderr: marker });
+    }
+  });
+}
+
+async function untilCleanupCheckpoint(condition, phase, cleaning) {
+  let settled = false, failure;
+  void cleaning.then(() => { settled = true; }, error => { settled = true; failure = error; });
+  await until(async () => {
+    if (await condition()) return true;
+    if (settled) throw failure ?? new Error(`${phase}: cleanup ended before the checkpoint`);
+    return false;
+  }, phase, 8000);
+}
+
 test('root confirmation uses the original process handle only after the helper reports its held handle', async t => {
   for (const confirm of [true, false]) await t.test(confirm ? 'confirm' : 'reject', async () => {
     const originalExecFile = childProcess.execFile;
@@ -78,7 +114,7 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
     const childPid = Number(await fs.readFile(childReady, 'utf8'));
     assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
     assert.equal(await exists(grandchildReady), false);
-    const script = windowsTreeCleanupScript(root.pid, false, startedAt, spawnedAt).replace(
+    cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
       '$all=@(Get-CimInstance Win32_Process)',
       `$all=@(Get-CimInstance Win32_Process)
   if(!(Test-Path -LiteralPath ${psQuote(captured)})) {
@@ -88,11 +124,10 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
       if([DateTime]::UtcNow -ge $handshakeDeadline) { throw 'Fixture snapshot handshake timed out.' }
       Start-Sleep -Milliseconds 10
     }
-  }`);
-    cleaning = run(script);
+  }`));
     // Attach rejection immediately, then still require the original promise below.
     void cleaning.catch(() => {});
-    await until(() => exists(captured), 'cleanup must capture the original tree', 8000);
+    await untilCleanupCheckpoint(() => exists(captured), 'cleanup must capture the original tree', cleaning);
     await fs.writeFile(forkGate, 'fork');
     await until(() => exists(grandchildReady), 'a new grandchild must be born after the snapshot');
     const grandchildPid = Number(await fs.readFile(grandchildReady, 'utf8'));
@@ -128,10 +163,9 @@ test('Windows cleanup proves exit on its held handle when the process exits betw
   const startedAt = Date.now();
   const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { cwd: directory, stdio: 'ignore', windowsHide: true });
   const spawnedAt = Date.now();
-  const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   let cleaning;
   try {
-    const script = windowsTreeCleanupScript(root.pid, false, startedAt, spawnedAt)
+    cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script
       .replace("$cleanupPhase='terminate_owned_handle'", `$cleanupPhase='terminate_owned_handle'
       [IO.File]::WriteAllText(${psQuote(captured)},'held-live-handle')
       $handshakeDeadline=[DateTime]::UtcNow.AddSeconds(3)
@@ -140,10 +174,9 @@ test('Windows cleanup proves exit on its held handle when the process exits betw
         Start-Sleep -Milliseconds 10
       }`)
       .replace("$cleanupPhase='wait_failed_termination'", `$cleanupPhase='wait_failed_termination'
-        [IO.File]::WriteAllText(${psQuote(checked)},'termination-failed-exit-must-be-proven')`);
-    cleaning = execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 8000, maxBuffer: 8192 });
+        [IO.File]::WriteAllText(${psQuote(checked)},'termination-failed-exit-must-be-proven')`));
     void cleaning.catch(() => {});
-    await until(() => exists(captured), 'cleanup must hold a handle that was observed live', 8000);
+    await untilCleanupCheckpoint(() => exists(captured), 'cleanup must hold a handle that was observed live', cleaning);
     root.kill('SIGKILL');
     await until(() => root.exitCode !== null || root.signalCode !== null, 'the original process must exit before termination resumes');
     await fs.writeFile(resume, 'continue');
@@ -162,15 +195,12 @@ test('Windows cleanup refuses a failed termination while the held process is sti
   const startedAt = Date.now();
   const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
   const spawnedAt = Date.now();
-  const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
   try {
     // Inject only the unsuccessful termination result. The process, opened
     // handle, creation check and bounded wait all remain real Windows operations.
-    const script = windowsTreeCleanupScript(root.pid, false, startedAt, spawnedAt)
-      .replace('![OwnedProcessHandle]::TerminateProcess($handle,1)', '$true');
-    await assert.rejects(execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
-      windowsHide: true, timeout: 8000, maxBuffer: 8192,
-    }), error => {
+    const cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script
+      .replace('![OwnedProcessHandle]::TerminateProcess($handle,1)', '$true'));
+    await assert.rejects(cleaning, error => {
       assert.match(error.stderr, /CLAUDE_TREE_CLEANUP_FAILED:wait_failed_termination/);
       return true;
     });

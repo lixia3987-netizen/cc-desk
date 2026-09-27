@@ -74,15 +74,17 @@ Windows 第十二候选的成品构建与实际 Electron 原生模块校验通�
 
 该补丁的本地完整根检查通过：690 项通过、0 项失败、16 项按平台跳过，包括所有类型检查与桌面构建；Windows 专属创建身份、错误身份保护和非公历区域设置回归由 CI 实际执行。
 
+第十三候选 `63c74881` 的 [三平台 CI](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36288439432) 中，macOS 通过 685 项根检查（21 项平台跳过）、67 项源码 E2E 和 5 项成品测试；Linux 通过 690 项根检查（16 项平台跳过）、67 项源码 E2E 和 5 项成品测试。Windows 完成 marker2 原生编译和独立 Runtime 检查（19 项通过、4 项跳过），随后 engine-claude 有 2 项旧清理 fixture 失败（18 项通过、1 项平台跳过）：退出竞争 fixture 未进入预期阶段，活进程拒绝 fixture 提前收到 `creation_after_spawn`。核对发现这三个旧 Windows race fixture 直接调用脚本构造器，仍走时间窗口身份；生产 `stopWindowsTree` 的原始 HANDLE 握手正/反向回归均通过。后续将旧 fixture 改为实际调用生产握手，仅注入原有受控竞争节点，保留真实进程、退出证明及拒绝误杀断言。新创建身份拒绝、非公历区域设置专用回归和 Windows 成品在本候选尚未执行，不能记作通过。
+
 本地 Electron 图形测试暂不可执行：没有 DISPLAY/Xvfb，安装操作被环境 setgroups/setuid 权限限制阻止。已添加真实 utilityProcess、队列/workflow、ASAR 成品用例，不能把测试收集成功视为执行通过。三平台工作流新增针对 dev/native-agent 的 PR 触发；发布步骤仍仅接受 main 上显式 `publish_release` 的 workflow_dispatch。
 
 ## 必需验收门槛
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 第十二候选三平台通过；新增原始身份补丁待同一候选复验 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 第十二候选 Linux/macOS 各 67 项通过；Windows 65 项通过、2 项既有平台跳过 |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十二候选 macOS/Linux 各 5 项通过；Windows 3 项通过、2 项 ASAR 测试路径失败待复验 |
+| 同一候选根 `npm run check` | 第十三候选 macOS/Linux 通过；Windows 两项旧 fixture 待修复复验 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 第十三候选 Linux/macOS 各 67 项通过；第十二候选 Windows 65 项通过、2 项既有平台跳过，待同候选通过 |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 第十三候选 macOS/Linux 各 5 项通过；Windows ASAR 路径已修正，待成品复验 |
 | 未知副作用、审批、目录占用与 ACK 故障回归 | 已有定向证据，待固定候选复验 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
