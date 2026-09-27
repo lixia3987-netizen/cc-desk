@@ -2,7 +2,7 @@
 
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
-当前状态：**Windows 陈旧父进程关系修复待本候选完整验收，真实远程模型验收待完成**。第十六代码候选 `68259e0` 曾通过三平台技术检查，但随后的纯文档提交 `4fb62e7` 在相同产品代码下再次发生 Windows 清理失败（`creation_before_spawn`）；macOS、Linux 及 workspace 通过。本轮同时修复 Claude 与终端树清理的陈旧 `ParentProcessId` 关系，增加真实 Windows 基线失败/修复通过对照和具体身份诊断；新结果不沿用旧候选绿灯。第十四候选终端故障缺少原始 cause，仍不能确认它与本轮问题同源。真实服务、模型、凭据来源及预算尚未指定，本地协议服务不代表真实模型任务验收。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft；变更仅在 `feat/native-agent-alpha`，main 与 dev/native-agent 基线不移动，不发布 Release。
+当前状态：**Windows 陈旧父进程关系修复已实现，真实远程模型验收待完成；各提交技术状态以 PR 最新关联 CI 为准**。第十六代码候选 `68259e0` 曾通过三平台技术检查，但随后的纯文档提交 `4fb62e7` 在相同产品代码下再次发生 Windows 清理失败（`creation_before_spawn`）；macOS、Linux 及 workspace 通过。本轮同时修复 Claude 与终端树清理的陈旧 `ParentProcessId` 关系，增加真实 Windows 基线失败/修复通过对照和具体身份诊断；新结果不沿用旧候选绿灯。每次提交的最终运行和计数同步记录在 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 的当前验证部分。第十四候选终端故障缺少原始 cause，仍不能确认它与本轮问题同源。真实服务、模型、凭据来源及预算尚未指定，本地协议服务不代表真实模型任务验收。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft；变更仅在 `feat/native-agent-alpha`，main 与 dev/native-agent 基线不移动，不发布 Release。
 
 ## 已实现
 
@@ -100,7 +100,11 @@ Windows 独立 Runtime 为 19 项通过、0 项失败、4 项平台跳过；完�
 
 本轮源码缺陷：发现后代时只比较父 PID，随后才核查创建时间。Windows 的父 PID 可能残留并指向已经复用该编号的新进程，详见 [Microsoft Win32_Process 文档](https://learn.microsoft.com/en-us/windows/win32/cimwin32prov/win32-process)。Claude 仅使用根出生下界还可能误纳入“晚于根、早于中间父进程”的无关进程。本轮在扩展每一条父子关系前检查对应父进程的出生下界，排除已经证明不属于该代父进程的旧关系；保留已退出父锚点、原始 HANDLE 握手、CIM/持有 HANDLE 身份匹配、未知时间拒绝及真实释放屏障。没有扩宽身份时间窗口或把根退出等同整棵树释放。
 
-新增真实 Windows 回归仅改写实际无关哨兵的 CIM 父 PID，保留它的真实创建时间和 OS HANDLE，验证真实后代被清理而哨兵仍活着；分别覆盖根与中间父关系。`scripts/verify-windows-parentage-regressions.mjs` 对同一 fixture 使用固定旧提交与当前实现，保存两套 TAP，要求旧版暴露缺陷、修复版通过，并在任何失败后还原生成代码。终端助手及 inspector 跨 IPC 诊断增加白名单 operation/identityFailure，不携带命令、路径或凭据。本候选的 Windows 对照、原失败用例、源码及三次独立 inspector、三平台实际成品均待 CI；不能将 Linux 平台跳过计为 Windows 验证。
+新增真实 Windows 回归仅改写实际无关哨兵的 CIM 父 PID，保留它的真实创建时间和 OS HANDLE，验证真实后代被清理而哨兵仍活着；分别覆盖根与中间父关系。`scripts/verify-windows-parentage-regressions.mjs` 对同一 fixture 使用固定旧提交与当前实现，保存两套 TAP，要求旧版暴露缺陷、修复版通过，并在任何失败后还原生成代码。终端助手及 inspector 跨 IPC 诊断增加白名单 operation/identityFailure，不携带命令、路径或凭据。Windows 对照、原失败用例、源码及三次独立 inspector、三平台实际成品均为必需 CI 门槛；不能将 Linux 平台跳过计为 Windows 验证。
+
+修复候选 `3442be9ff8dd855c419d655f40af80413eaa44ef` 的 [Windows CI #55](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36306108652/job/108582986642) 已实际完成旧版/修复版对照：Claude 与终端两条路径的旧版均暴露指定缺陷，修复版通过相同进程 fixture。Windows 独立 Runtime 19/0/4、engine-claude 33/0/1、agent-core 49/0/0；agent-node 124/1/3，唯一失败是新增缺失创建时间负控的诊断阶段断言：全机存在陈旧 PPID 关系时先检测为 `parent_creation_missing`，而测试期望 `anchor_creation_missing`。两者均正确拒绝清理，本轮将该负控固定为仅含目标根的快照，保留未知时间拒绝及目标存活断言；不修改生产代码、不放宽诊断断言。该候选 desktop 与后续 Windows 源码、成品未执行，不能记为完整通过。修正后的候选由 PR 关联 CI 重新验证。
+
+同一源码的本地 Node 24 完整 `npm run check` 通过：701 项通过、0 项失败、21 项平台跳过，含类型检查和生产构建；[workspace CI #29](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36306108633) 的 Node 22 也为 701/0/21。它们不能替代 Windows 专属验证。
 
 历史第十四候选 trace 中 stopSession 拒绝后，终端已离开 running/stopping，结合当时源码更支持树清理拒绝而 PTY 资源释放完成。这只是范围缩小的推断，原始 cause 未保存，不能补写具体底层错误或宣称历史根因已确认。
 
@@ -110,10 +114,10 @@ Windows 独立 Runtime 为 19 项通过、0 项失败、4 项平台跳过；完�
 
 | 门槛 | 状态 |
 | --- | --- |
-| 同一候选根 `npm run check` | 本轮修复待 CI；旧候选结果仅作为历史记录 |
-| Windows/macOS/Linux 全部源码 Electron E2E | 本轮修复及三次独立 Windows inspector 待 CI |
-| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 本轮修复待 CI，保留三平台各 5 项原有门槛 |
-| 未知副作用、审批、目录占用与 ACK 故障回归 | 本轮完整检查及 Windows 旧版/修复版对照待 CI；历史终端故障具体原因仍未知 |
+| 同一候选根 `npm run check` | 每个提交必须通过，当前最终结果见 PR 关联 CI；旧候选仅作为历史记录 |
+| Windows/macOS/Linux 全部源码 Electron E2E | 每个提交必须通过，含三次独立 Windows inspector；当前结果见 PR 关联 CI |
+| 三平台安装/便携实际 payload、ASAR native worker 与本地 HTTP/工具闭环 | 保留三平台各 5 项原有门槛，当前结果见 PR 关联 CI |
+| 未知副作用、审批、目录占用与 ACK 故障回归 | Windows 旧版/修复版对照已在 #55 通过，完整候选结果见 PR 关联 CI；历史终端故障具体原因仍未知 |
 | 用户选定真实 Responses 服务、模型、凭据来源及预算 | 待用户指定 |
 | 三类真实小仓库任务、后续回合和重启续聊 | 未执行，依赖上一项 |
 | 开发分支及发布边界 | 变更保留在 feat/native-agent-alpha；PR #33 目标为 dev/native-agent，保持 Draft；main 与 dev/native-agent 基线均未移动，未发布 Release |

@@ -4,7 +4,7 @@
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**Windows 陈旧父进程关系修复待本候选验收，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
+状态：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 当前关联 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
 
 关联：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段二边界设计](ENGINE-BOUNDARIES-PHASE-2.md)、[架构说明](ARCHITECTURE.md)。下文路径相对于仓库根目录。
 

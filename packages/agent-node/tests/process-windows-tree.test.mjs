@@ -243,10 +243,15 @@ test('Windows exited-unbound anchors cannot adopt a live process and unknown cre
       assert.equal(result?.operation, 'validate_handle'); return true;
     });
     assert.equal(live(root.pid), true, 'a current live PID cannot be adopted by an unbound exited identity');
+    // Isolate the anchor validation branch. Unrelated processes can retain this
+    // PID as an old PPID; including them correctly fails earlier while reading
+    // the same missing birth as a parent, which is a different diagnostic.
     const unknown = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot
-$all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${root.pid}) { [pscustomobject]@{ ProcessId=$_.ProcessId; ParentProcessId=$_.ParentProcessId; CreationDate=$null } } else { $_ } })`);
+$all=@($all | Where-Object { [int]$_.ProcessId -eq ${root.pid} })
+if($all.Count -ne 1) { throw 'Fixture requires the live target root in the actual snapshot.' }
+$all=@($all | ForEach-Object { [pscustomobject]@{ ProcessId=$_.ProcessId; ParentProcessId=$_.ParentProcessId; CreationDate=$null } })`);
     await assert.rejects(run(unknown), error => {
       const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
       assert.equal(result?.code, 'identity_unavailable');
