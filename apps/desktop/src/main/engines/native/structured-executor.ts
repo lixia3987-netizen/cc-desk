@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson, type ApprovalDecision, type ApprovalRequest, type RunIdentity, type RunResult, type RunStore, type ToolPort } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
+import { isNativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import type { NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
 import { toNativeTaskView, type NativeTaskReviewInput } from '../../../shared/native-task';
 import { NativeTaskSession } from './task-session';
@@ -404,6 +405,15 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         const local = composeToolPorts([questions, taskTools, createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {
           if (!sameRun(run, identity)) throw new Error('工具运行归属已失效。');
           await assertOwnership();
+        }, recordChangeSetEvent: async (run, call, progress) => {
+          if (!sameRun(run, identity)) throw new Error('变更集回执的运行归属已失效。');
+          // Before effects, require a current owner. After effects, preserve the
+          // receipt even if cancellation or lease loss arrived during the write.
+          if (progress.status === 'prepared') await assertOwnership();
+          await ledger.recordChangeSetEvent(run, call, progress);
+          // Projection repair must not turn a committed effect receipt into an
+          // apparent persistence failure. The ledger remains authoritative.
+          try { await this.refreshProjection(id, ledger); } catch { /* hydrate reported the projection error */ }
         } })]);
         if (!mcpTools) return local;
         const remote = mcpTools, instructionDigest = instructions.digest;
@@ -565,7 +575,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const approvalInput = request.tool.name.startsWith('mcp_')
         ? { arguments: request.input, preconditions: request.preconditions }
         : { ...request.input, preconditions: request.preconditions };
-      this.projection.approval(id, { requestId: publicId, toolName: request.tool.name, toolUseId: request.binding.toolCallId, input: approvalInput, kind, ...(questions ? { questions } : {}), createdAt: new Date().toISOString() });
+      this.projection.approval(id, { requestId: publicId, toolName: request.tool.name, toolUseId: request.binding.toolCallId, input: approvalInput, kind, ...(request.tool.name === 'apply_change_set' && request.preconditions && typeof request.preconditions === 'object' && !Array.isArray(request.preconditions) && isNativeChangeSetPreview(request.preconditions.changeSet) ? { nativeChangeSet: request.preconditions.changeSet } : {}), ...(questions ? { questions } : {}), createdAt: new Date().toISOString() });
       signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel();
     });
   }

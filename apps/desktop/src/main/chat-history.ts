@@ -1,3 +1,4 @@
+import { isNativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -20,7 +21,9 @@ interface CachedHistory {
 const object = (value: unknown): Record<string, unknown> | undefined => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 export const isMessage = (value: unknown): value is ChatMessage => {
   const message = object(value);
-  return !!message && typeof message.id === 'string' && typeof message.turnId === 'string' && typeof message.text === 'string' && typeof message.createdAt === 'string' && ['user', 'assistant', 'tool', 'system'].includes(String(message.role));
+  return !!message && typeof message.id === 'string' && typeof message.turnId === 'string' && typeof message.text === 'string' && typeof message.createdAt === 'string' && ['user', 'assistant', 'tool', 'system'].includes(String(message.role))
+    && (message.nativeChangeSetResult === undefined || isNativeChangeSetResult(message.nativeChangeSetResult))
+    && (message.nativeChangeSetState === undefined || ['pending', 'running', 'not_executed', 'result'].includes(String(message.nativeChangeSetState)));
 };
 interface TextFingerprint { length: number; digest: string }
 const fingerprint = (text: string): TextFingerprint => ({ length: text.length, digest: createHash('sha256').update(text, 'utf16le').digest('hex') });

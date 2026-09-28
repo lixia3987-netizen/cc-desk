@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type JsonObject, type JsonValue, type RunResult, type ToolDefinition } from '@cc-desk/agent-core';
 import { estimateNativeInputTokens, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
 import { estimateNativeCost } from '../../../shared/native-cost';
+import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetPreview, type NativeChangeSetFileEvent, type NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, TaskState } from '../../../shared/chat';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
@@ -34,6 +35,16 @@ function displayInput(input: unknown): Record<string, unknown> {
   if (!object(input)) return {};
   const serialized = JSON.stringify(input);
   return serialized.length > MAX_INPUT ? { preview: serialized.slice(0, MAX_INPUT), truncated: true } : clone(input);
+}
+function changeSetProgress(preview: NativeChangeSetPreview, receipts: NativeChangeSetFileEvent[]): NativeChangeSetResult {
+  const latest = new Map(receipts.map(receipt => [receipt.index, receipt]));
+  return { digest: preview.digest, atomic: false, status: 'unknown', receiptCommitted: false,
+    files: preview.files.map(file => {
+      const receipt = latest.get(file.index);
+      return { index: file.index, path: file.path, beforeHash: file.beforeHash, afterHash: file.afterHash,
+        status: !receipt ? 'not_applied' : receipt.status === 'prepared' ? 'unknown' : receipt.status,
+        ...(receipt?.errorCode ? { errorCode: receipt.errorCode } : {}) };
+    }) };
 }
 interface ProjectionEntry {
   history: ChatHistory;
@@ -114,6 +125,7 @@ export class NativeProjection {
     const modelCounts = new Map<string, number>();
     const tools = new Map<string, ChatMessage>();
     const preparedTools = new Set<string>();
+    const changeSets = new Map<string, { preview: NativeChangeSetPreview; receipts: NativeChangeSetFileEvent[] }>();
     const projected: Array<{ seq: number; event: ChatJournalEvent }> = [];
     let finalState: TaskState = 'idle';
     let currentIdentity: AgentEvent['identity'] | undefined;
@@ -150,17 +162,38 @@ export class NativeProjection {
           let input: unknown;
           try { input = JSON.parse(call.arguments); } catch { input = { invalidArguments: true }; }
           const message: ChatMessage = { id: `${runId}:tool:${call.id}`, turnId: runId, role: 'tool', text: '等待执行', toolName: call.name, toolUseId: call.id, input: displayInput(input), createdAt };
+          if (call.name === 'apply_change_set') message.nativeChangeSetState = 'pending';
           tools.set(message.id, message); add({ type: 'message', message });
         }
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'tool_prepared') {
         const call = event.prepared.call;
         const message: ChatMessage = { id: `${runId}:tool:${call.id}`, turnId: runId, role: 'tool', text: '执行中', toolName: call.name, toolUseId: call.id, input: displayInput(event.prepared.input), createdAt: tools.get(`${runId}:tool:${call.id}`)?.createdAt ?? createdAt };
+        if (call.name === 'apply_change_set' && object(event.prepared.preconditions) && isNativeChangeSetPreview(event.prepared.preconditions.changeSet)) {
+          const preview = event.prepared.preconditions.changeSet;
+          changeSets.set(message.id, { preview, receipts: [] });
+          message.nativeChangeSetResult = changeSetProgress(preview, []);
+          message.nativeChangeSetState = 'running';
+        }
         tools.set(message.id, message); preparedTools.add(message.id); add({ type: 'message', message }); add({ type: 'state', taskState: 'tool_running' });
+      } else if (event.type === 'change_set_file') {
+        const messageId = `${runId}:tool:${event.toolCallId}`;
+        const message = tools.get(messageId), changeSet = changeSets.get(messageId);
+        if (message && changeSet) {
+          changeSet.receipts.push(event.progress);
+          const updated = { ...message, nativeChangeSetResult: changeSetProgress(changeSet.preview, changeSet.receipts) };
+          tools.set(messageId, updated); add({ type: 'message', message: updated });
+        }
       } else if (event.type === 'tool_completed') {
         const messageId = `${runId}:tool:${event.call.id}`;
         preparedTools.delete(messageId);
         const message: ChatMessage = { ...tools.get(messageId), id: messageId, turnId: runId, role: 'tool', ...bounded(event.result.output), toolName: event.call.name, toolUseId: event.call.id, createdAt: tools.get(messageId)?.createdAt ?? createdAt, isError: event.result.status !== 'completed', ...(event.result.truncated ? { truncated: true } : {}) };
+        if (event.call.name === 'apply_change_set') {
+          message.nativeChangeSetState = !changeSets.has(messageId) && ['denied', 'not_executed', 'cancelled', 'failed'].includes(event.result.status) ? 'not_executed' : 'result';
+          const progress = changeSets.get(messageId);
+          if (isNativeChangeSetResult(event.result.output) && event.result.output.status !== 'unknown') message.nativeChangeSetResult = clone(event.result.output);
+          else if (progress) message.nativeChangeSetResult = changeSetProgress(progress.preview, progress.receipts);
+        }
         tools.set(message.id, message); add({ type: 'message', message }); add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'run_finished') {
         currentTerminal = true;
@@ -173,7 +206,7 @@ export class NativeProjection {
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
           const message = tools.get(messageId);
-          if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true } });
+          if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true, ...(message.toolName === 'apply_change_set' ? { nativeChangeSetState: 'result' as const } : {}) } });
         }
       } else if (event.type === 'recovery_resolved') {
         currentTerminal = true;
@@ -181,7 +214,7 @@ export class NativeProjection {
         for (const completion of event.completions) {
           const messageId = `${runId}:tool:${completion.call.id}`;
           const message = tools.get(messageId);
-          if (message) add({ type: 'message', message: { ...message, text: '未执行：原回合已收束，不会重放旧工具或审批。', isError: true } });
+          if (message) add({ type: 'message', message: { ...message, text: '未执行：原回合已收束，不会重放旧工具或审批。', isError: true, ...(message.toolName === 'apply_change_set' ? { nativeChangeSetState: 'not_executed' as const } : {}) } });
         }
         add({ type: 'message', message: { id: `recovery:${record.seq}`, turnId: runId, role: 'system', text: '已恢复为可继续状态。请发送新指令继续；已完成的操作保留原结果，未执行的操作不会自动重放。', createdAt } });
         add({ type: 'state', taskState: 'interrupted' });
@@ -202,12 +235,12 @@ export class NativeProjection {
       } else if (event.type === 'run_recovered') {
         currentTerminal = true;
         for (const message of tools.values()) {
-          if (message.turnId === runId && message.text === '等待执行') add({ type: 'message', message: { ...message, text: '未执行：回合已中断。', isError: true } });
+          if (message.turnId === runId && message.text === '等待执行') add({ type: 'message', message: { ...message, text: '未执行：回合已中断。', isError: true, ...(message.toolName === 'apply_change_set' ? { nativeChangeSetState: 'not_executed' as const } : {}) } });
         }
         add({ type: 'state', taskState: 'error', error: event.reason });
         for (const messageId of preparedTools) {
           const message = tools.get(messageId);
-          if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true } });
+          if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true, ...(message.toolName === 'apply_change_set' ? { nativeChangeSetState: 'result' as const } : {}) } });
         }
       }
     }

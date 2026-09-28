@@ -6,6 +6,7 @@ import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
+import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems } from './context-maintenance.js';
 
@@ -37,6 +38,8 @@ export interface StoredToolState {
   completed?: Extract<RunJournalEvent, { type: 'tool_completed' }>;
   preparedSeq?: number;
   completedSeq?: number;
+  /** Host-attested receipts only; never supplied by the model worker. */
+  changeSetProgress?: Array<NativeChangeSetFileEvent & { seq: number }>;
 }
 export interface StoredRun {
   identity: RunIdentity;
@@ -125,6 +128,7 @@ type StoreEvent =
   | { type: 'conversation_created' }
   | { type: 'startup_prepared'; request: NativeStartupRequest }
   | { type: 'startup_closed'; startupId: string }
+  | { type: 'change_set_file'; toolCallId: string; progress: NativeChangeSetFileEvent }
   | { type: 'run_started'; request: BeginRunRequest; payloadDigest: string }
   | { type: 'run_recovered'; runId: string; reason: string }
   | { type: 'recovery_resolved'; runId: string; expectedHash: string; resourcesVerified: true; completions: RecoveryCompletion[]; result: RunResult }
@@ -467,6 +471,24 @@ export class NativeRunStore implements RunStore {
     }
     if (!identity) fail('invalid_identity', 'Run event is missing identity');
     const run = this.activeOwner(identity);
+    if (event.type === 'change_set_file') {
+      text(event.toolCallId, 'change-set tool call id', 512);
+      const tool = run.tools.get(event.toolCallId);
+      const preview = this.changeSetPreview(tool);
+      const progress = event.progress;
+      if (!object(progress) || !Number.isSafeInteger(progress.index) || !['prepared', 'applied', 'not_applied', 'unknown'].includes(progress.status)) fail('invalid_record', 'Invalid change-set file receipt');
+      const file = preview.files[progress.index];
+      if (!file || progress.changeSetDigest !== preview.digest || progress.path !== file.path || progress.beforeHash !== file.beforeHash || progress.afterHash !== file.afterHash) fail('payload_mismatch', 'File receipt differs from the exact approved change set');
+      if (progress.errorCode !== undefined && (typeof progress.errorCode !== 'string' || !/^[a-z0-9_]{1,64}$/.test(progress.errorCode))) fail('invalid_record', 'Invalid change-set error code');
+      if (Object.keys(progress).some(key => !['changeSetDigest', 'index', 'path', 'status', 'beforeHash', 'afterHash', 'errorCode'].includes(key))) fail('invalid_record', 'Unexpected change-set receipt field');
+      const previous = tool!.changeSetProgress ?? [];
+      const current = previous.at(-1);
+      const nextIndex = current ? current.index + (current.status === 'prepared' ? 0 : 1) : 0;
+      if (progress.index !== nextIndex) fail('invalid_record', 'Change-set file receipts must follow the approved order');
+      if (current?.status === 'prepared' && progress.status === 'prepared' || current?.status !== 'prepared' && ['applied', 'unknown'].includes(progress.status)) fail('invalid_record', 'File effects require exactly one prior prepared receipt');
+      if (progress.status === 'prepared' && previous.some(item => item.status === 'not_applied' || item.status === 'unknown')) fail('recovery_required', 'A stopped change set cannot resume or replay');
+      return;
+    }
     if (event.type === 'model_response') {
       if ([...run.tools.values()].some(tool => !tool.completed)) fail('pending_tools', 'Previous model tool calls have no durable result');
       const response = event.response;
@@ -488,6 +510,7 @@ export class NativeRunStore implements RunStore {
       if (tool.prepared || tool.completed) fail('tool_already_prepared', 'Tool has already been prepared or completed; automatic replay is forbidden');
       if (prepared.policyRevision !== run.policyRevision || prepared.definition.name !== prepared.call.name) fail('invalid_record', 'Prepared tool policy/name mismatch');
       text(prepared.inputDigest, 'tool input digest', 256);
+      if (prepared.call.name === 'apply_change_set' && (!prepared.requiresApproval || (!object(prepared.preconditions) || !isNativeChangeSetPreview(prepared.preconditions.changeSet)))) fail('invalid_record', 'Change sets require a complete approved preview');
       if (prepared.requiresApproval) {
         const approval = event.approval;
         if (!approval || approval.decision !== 'approved' || !object(approval.binding)) fail('approval_required', 'Side effects require a bound approval');
@@ -503,6 +526,23 @@ export class NativeRunStore implements RunStore {
       if (tool.completed) fail('payload_mismatch', 'Duplicate tool result in journal');
       if (!object(event.result) || !TOOL_STATUSES.has(event.result.status) || !Array.isArray(event.resultItems)) fail('invalid_record', 'Invalid tool result');
       if (event.result.status === 'completed' && !tool.prepared) fail('not_prepared', 'Executed tool has no durable prepared record');
+      if (tool.call.name === 'apply_change_set' && tool.prepared && (event.result.status === 'completed' || isNativeChangeSetResult(event.result.output) || (tool.changeSetProgress?.length && event.result.status !== 'unknown'))) {
+        const preview = this.changeSetPreview(tool);
+        const result = event.result.output;
+        if (!isNativeChangeSetResult(result) || result.digest !== preview.digest || result.files.length !== preview.files.length || result.files.some((file, index) => {
+          const approved = preview.files[index];
+          return file.path !== approved.path || file.beforeHash !== approved.beforeHash || file.afterHash !== approved.afterHash;
+        })) fail('invalid_record', 'Change-set result differs from the approved file manifest');
+        const receipts = new Map((tool.changeSetProgress ?? []).map(receipt => [receipt.index, receipt]));
+        if (result.status !== 'unknown' && (receipts.size !== preview.files.length || result.files.some(file => receipts.get(file.index)?.status !== file.status))) fail('recovery_required', 'Known change-set results require every exact durable file receipt');
+        if (result.status === 'unknown' && result.files.some(file => {
+          const receipt = receipts.get(file.index);
+          const status = !receipt ? 'not_applied' : receipt.status === 'prepared' ? 'unknown' : receipt.status;
+          return file.status !== status;
+        })) fail('payload_mismatch', 'Unknown change-set result cannot invent or replace durable file facts');
+        if (result.status === 'unknown' && event.result.status !== 'unknown' || result.status === 'completed' && event.result.status !== 'completed' || result.status === 'partial' && event.result.status !== 'failed' || result.status === 'not_applied' && event.result.status !== 'not_executed') fail('invalid_record', 'Change-set result status cannot downgrade unknown effects');
+      }
+
       return;
     }
     if (event.type === 'run_finished') {
@@ -587,6 +627,9 @@ export class NativeRunStore implements RunStore {
     } else if (event.type === 'tool_prepared') {
       const tool = run.tools.get(event.prepared.call.id)!;
       tool.prepared = event; tool.preparedSeq = record.seq; tool.state = 'prepared';
+    } else if (event.type === 'change_set_file') {
+      const tool = run.tools.get(event.toolCallId)!;
+      (tool.changeSetProgress ??= []).push({ ...event.progress, seq: record.seq });
     } else if (event.type === 'tool_completed') {
       const tool = run.tools.get(event.call.id)!;
       tool.completed = event; tool.completedSeq = record.seq; tool.state = event.result.status === 'unknown' ? 'unknown' : 'completed';
@@ -608,6 +651,13 @@ export class NativeRunStore implements RunStore {
     const line = `${canonical(record)}\n`;
     const bytes = Buffer.byteLength(line);
     if (bytes > this.limits.maxRecordBytes || this.journalBytes + bytes > this.limits.maxJournalBytes || this.records.length >= this.limits.maxRecords) fail('limit_exceeded', 'Conversation disk budget exhausted; history is never silently pruned');
+    if (event.type === 'tool_prepared' && event.prepared.call.name === 'apply_change_set') {
+      const preview = (event.prepared.preconditions as JsonObject).changeSet as unknown as NativeChangeSetPreview;
+      // Reserve every before/after file receipt now. A later file must not consume
+      // the room needed to attest its own effects, tool result and terminal run.
+      const receiptBytes = preview.files.reduce((sum, file) => sum + 2 * (Buffer.byteLength(canonical({ type: 'change_set_file', toolCallId: event.prepared.call.id, progress: { changeSetDigest: preview.digest, index: file.index, path: file.path, status: 'not_applied', beforeHash: file.beforeHash, afterHash: file.afterHash, errorCode: 'x'.repeat(64) } })) + Buffer.byteLength(canonical(ownedIdentity)) + 1024), 0);
+      if (this.journalBytes + bytes + receiptBytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 1 + 2 * preview.files.length + 2 > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable headroom for every change-set file receipt');
+    }
     if ((event.type === 'tool_prepared' || event.type === 'startup_prepared') && (this.journalBytes + bytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 3 > this.limits.maxRecords)) fail('limit_exceeded', 'Insufficient cleanup and terminal record headroom before preparing a side effect');
     try {
       await this.checkPath();
@@ -688,7 +738,7 @@ export class NativeRunStore implements RunStore {
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
-      if ((event as { type: string }).type.startsWith('startup_')) fail('invalid_record', 'Startup records are owned by the host lifecycle API');
+      if (!['model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
       const run = this.owner(identity);
       if (event.type === 'tool_completed') {
         const tool = run.tools.get(event.call.id);
@@ -702,6 +752,23 @@ export class NativeRunStore implements RunStore {
         return { seq: run.finishedSeq! };
       }
       return this.commit(identity, event);
+    });
+  }
+
+  private changeSetPreview(tool: StoredToolState | undefined): NativeChangeSetPreview {
+    const prepared = tool?.prepared;
+    if (!prepared || tool!.completed || prepared.prepared.call.name !== 'apply_change_set' || !prepared.prepared.requiresApproval || prepared.approval?.decision !== 'approved' || !object(prepared.prepared.preconditions) || !isNativeChangeSetPreview(prepared.prepared.preconditions.changeSet)) fail('not_prepared', 'File receipts require an unfinished durable approved change-set call');
+    return prepared.prepared.preconditions.changeSet;
+  }
+
+  /** Host-only write-ahead/effect receipts. No worker RPC exposes this method. */
+  recordChangeSetEvent(identity: RunIdentity, call: ToolCall, progress: NativeChangeSetFileEvent): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable();
+      const run = this.activeOwner(identity), tool = run.tools.get(call.id);
+      if (!tool || !equal(tool.call, call)) fail('payload_mismatch', 'File receipt does not belong to the committed tool call');
+      this.changeSetPreview(tool);
+      return this.commit(identity, { type: 'change_set_file', toolCallId: call.id, progress });
     });
   }
 
