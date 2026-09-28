@@ -1,15 +1,22 @@
 /** MCP connection metadata is safe to expose; bearer tokens stay in the main process. */
+export type NativeMcpProtocolVersion = '2026-07-28' | '2025-11-25';
 export type NativeMcpConnectionAuth = { mode: 'none' } | { mode: 'env'; variable: string } | { mode: 'memory' } | { mode: 'encrypted' };
 export interface NativeMcpConnection {
   id: string;
   revision: number;
   name: string;
   endpoint: string;
+  protocolVersion: NativeMcpProtocolVersion;
   allowLoopbackHttp: boolean;
   enabled: boolean;
   auth: NativeMcpConnectionAuth;
 }
-export interface NativeMcpConnectionInput extends Omit<NativeMcpConnection, 'id' | 'revision'> { id?: string; revision?: number }
+export interface NativeMcpConnectionInput extends Omit<NativeMcpConnection, 'id' | 'revision' | 'protocolVersion'> {
+  id?: string;
+  revision?: number;
+  /** Omitted by older metadata writers; keeps their existing 2026 behavior. */
+  protocolVersion?: NativeMcpProtocolVersion;
+}
 export interface NativeMcpConnectionView extends NativeMcpConnection {
   /** Also true for an explicitly unauthenticated connection. */
   credentialConfigured: boolean;

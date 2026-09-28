@@ -40,6 +40,7 @@ test('MCP connections: explicit no-auth works without credentials and preserves 
   try {
     const created = f.store.upsert(baseline), resolved = f.store.resolve(created.id);
     assert.equal(created.ready, true); assert.equal(created.credentialConfigured, true);
+    assert.equal(created.protocolVersion, '2026-07-28'); assert.equal(resolved.protocolVersion, '2026-07-28');
     assert.equal(resolved.endpoint, baseline.endpoint); assert.equal('bearerToken' in resolved, false);
     assert.ok(Object.isFrozen(resolved));
     f.store.assertCurrent({ id: created.id, revision: created.revision });
@@ -47,6 +48,73 @@ test('MCP connections: explicit no-auth works without credentials and preserves 
     assert.deepEqual(restarted.resolve(created.id), resolved);
     assert.equal(fs.existsSync(path.join(f.directory, 'native', 'connections.json')), false);
     if (process.platform !== 'win32') assert.equal(fs.statSync(f.file).mode & 0o777, 0o600);
+  } finally { f.dispose(); }
+});
+
+test('MCP connections: legacy metadata defaults to 2026 without writing or networking during reads', () => {
+  const f = fixture({ environment: { MCP_TOKEN: sentinel } });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Connection metadata must never access the network'); };
+  try {
+    const legacy = { ...baseline, id: 'legacy', revision: 7, auth: { mode: 'env', variable: 'MCP_TOKEN' } };
+    const source = JSON.stringify({ schemaVersion: 1, connections: [legacy] });
+    fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, source);
+    const restarted = new NativeMcpConnectionStore(f.directory, f.credentials, { environment: { MCP_TOKEN: sentinel } });
+    const view = restarted.list().connections[0];
+    assert.equal(view.protocolVersion, '2026-07-28'); assert.equal(view.revision, 7); assert.equal(view.ready, true);
+    assert.equal(restarted.resolve(view.id).protocolVersion, '2026-07-28');
+    assert.equal(restarted.resolve(view.id).bearerToken, sentinel);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), source);
+    assert.ok(!JSON.stringify(restarted.list()).includes(sentinel));
+    const updated = restarted.upsert({ ...edit(view), name: 'Migrated metadata' });
+    assert.equal(updated.revision, 8);
+    assert.equal(JSON.parse(fs.readFileSync(f.file, 'utf8')).connections[0].protocolVersion, '2026-07-28');
+    assert.equal(new NativeMcpConnectionStore(f.directory, f.credentials).list().connections[0].protocolVersion, '2026-07-28');
+  } finally { globalThis.fetch = previousFetch; f.dispose(); }
+});
+
+test('MCP connections: explicit protocol choices persist, require current revisions and remain locked throughout a run', () => {
+  let active = false;
+  const f = fixture({ isConnectionActive: () => active });
+  const previousFetch = globalThis.fetch;
+  globalThis.fetch = () => { throw new Error('Changing a protocol must never access the network'); };
+  try {
+    const created = f.store.upsert({ ...baseline, protocolVersion: '2025-11-25' });
+    assert.equal(created.protocolVersion, '2025-11-25'); assert.equal(created.ready, true);
+    const snapshot = f.store.resolve(created.id);
+    assert.equal(snapshot.protocolVersion, '2025-11-25');
+    assert.equal(new NativeMcpConnectionStore(f.directory, f.credentials).resolve(created.id).protocolVersion, '2025-11-25');
+    const before = fs.readFileSync(f.file, 'utf8');
+    active = true;
+    assert.throws(() => f.store.upsert({ ...edit(created), protocolVersion: '2026-07-28' }), /运行/);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), before);
+    assert.equal(f.store.resolve(created.id).protocolVersion, '2025-11-25');
+    active = false;
+    const changed = f.store.upsert({ ...edit(created), protocolVersion: '2026-07-28' });
+    assert.equal(changed.revision, created.revision + 1);
+    assert.equal(f.store.resolve(created.id).protocolVersion, '2026-07-28');
+    assert.equal(snapshot.protocolVersion, '2025-11-25');
+    assert.throws(() => f.store.upsert({ ...edit(created), protocolVersion: '2025-11-25' }), /已更新/);
+    assert.throws(() => f.store.assertCurrent({ id: created.id, revision: created.revision }), /已更新/);
+    assert.equal(new NativeMcpConnectionStore(f.directory, f.credentials).resolve(created.id).protocolVersion, '2026-07-28');
+  } finally { globalThis.fetch = previousFetch; f.dispose(); }
+});
+
+test('MCP connections: unsupported protocol metadata is rejected without changing the stored selection', () => {
+  const f = fixture();
+  try {
+    const created = f.store.upsert({ ...baseline, protocolVersion: '2025-11-25' }), before = fs.readFileSync(f.file, 'utf8');
+    for (const protocolVersion of ['2024-11-05', '2025-03-26', 'future', null, 2025]) {
+      assert.throws(() => f.store.upsert({ ...edit(created), protocolVersion } as NativeMcpConnectionInput), /配置无效/);
+      assert.equal(fs.readFileSync(f.file, 'utf8'), before);
+      assert.equal(f.store.resolve(created.id).protocolVersion, '2025-11-25');
+    }
+    const unsupported = JSON.stringify({ schemaVersion: 1, connections: [{ ...edit(created), protocolVersion: 'future' }] });
+    fs.writeFileSync(f.file, unsupported);
+    const restarted = new NativeMcpConnectionStore(f.directory, f.credentials);
+    assert.match(restarted.list().error!, /版本不受支持/);
+    assert.throws(() => restarted.resolve(created.id), /版本不受支持/);
+    assert.equal(fs.readFileSync(f.file, 'utf8'), unsupported);
   } finally { f.dispose(); }
 });
 
@@ -59,8 +127,10 @@ test('MCP connections: memory tokens remain main-only and use a separate key nam
     const saved = f.store.setCredential({ id: created.id, revision: created.revision, mode: 'memory', secret: sentinel });
     const snapshot = f.store.resolve(saved.id);
     assert.equal(snapshot.bearerToken, sentinel);
-    const changed = f.store.upsert({ ...edit(saved), name: 'Changed MCP', endpoint: 'https://other.test/mcp' });
+    const changed = f.store.upsert({ ...edit(saved), name: 'Changed MCP', endpoint: 'https://other.test/mcp', protocolVersion: '2025-11-25' });
     assert.equal(changed.revision, 3); assert.equal(changed.ready, true);
+    assert.equal(f.store.resolve(saved.id).protocolVersion, '2025-11-25');
+    assert.equal(f.store.resolve(saved.id).bearerToken, sentinel);
     assert.equal(snapshot.endpoint, baseline.endpoint); assert.equal(snapshot.revision, 2);
     assert.equal(f.credentials.get(created.id), 'MODEL-CREDENTIAL-WITH-SAME-ID');
     for (const value of [saved, changed, f.store.list()]) assert.ok(!JSON.stringify(value).includes(sentinel));
@@ -103,8 +173,12 @@ test('MCP connections: OS-protected tokens survive restart without returning cip
     const view = JSON.stringify(restarted.list()), disk = fs.readFileSync(f.file, 'utf8');
     assert.ok(!view.includes(sentinel)); assert.ok(!view.includes('ciphertext'));
     assert.ok(!disk.includes(sentinel)); assert.ok(disk.includes('ciphertext'));
-    const changed = restarted.upsert({ ...edit(saved), name: 'New name' });
+    const changed = restarted.upsert({ ...edit(saved), name: 'New name', protocolVersion: '2025-11-25' });
     assert.equal(restarted.resolve(changed.id).bearerToken, sentinel);
+    const changedRestart = new NativeMcpConnectionStore(f.directory, new NativeCredentialStore(safeStorage, 'linux'));
+    assert.equal(changedRestart.resolve(saved.id).bearerToken, sentinel);
+    assert.equal(changedRestart.resolve(saved.id).protocolVersion, '2025-11-25');
+    assert.ok(!JSON.stringify(changedRestart.list()).includes(sentinel));
     const locked = new NativeMcpConnectionStore(f.directory, new NativeCredentialStore({ ...safeStorage, getSelectedStorageBackend: () => 'basic_text' }, 'linux'));
     assert.equal(locked.list().connections[0].ready, false);
     assert.throws(() => locked.resolve(saved.id), /保护/);

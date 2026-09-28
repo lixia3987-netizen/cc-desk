@@ -11,7 +11,7 @@ import type { BeginRunRequest } from '@cc-desk/agent-core';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 
-test('native MCP settings keep metadata operations local and clear write-only credentials on save, auth change, close and restart', async () => {
+test('native MCP settings persist explicit protocol choices locally and clear write-only credentials on metadata changes, close and restart', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-mcp-ui-'));
   const data = path.join(directory, 'data');
   await fs.mkdir(data);
@@ -32,17 +32,32 @@ test('native MCP settings keep metadata operations local and clear write-only cr
     };
     let region = await open();
     await region.getByRole('button', { name: '新增 MCP 连接', exact: true }).click();
+    await expect(page.getByLabel('MCP 协议版本', { exact: true })).toHaveValue('2026-07-28');
+    await page.getByLabel('MCP 协议版本', { exact: true }).selectOption('2025-11-25');
     await page.getByLabel('MCP 连接名称', { exact: true }).fill('MCP 本机配置');
     await page.getByLabel('MCP 服务端点', { exact: true }).fill(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`);
     await page.getByLabel('MCP 允许本地回环 HTTP', { exact: true }).check();
     await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('memory');
     await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
     await expect(region.locator('.connection-box')).toContainText('未就绪');
+    await expect(region.locator('.connection-box')).toContainText('协议 2025-11-25');
     const secret = 'mcp-ui-secret-DO-NOT-PERSIST';
     await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill(secret);
     await region.getByRole('button', { name: '设置 MCP 凭据并清空输入', exact: true }).click();
     await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
     await expect(region.locator('.connection-box')).toContainText('本机配置就绪');
+    const previousRevision = await page.evaluate(async () => (await window.desktop.nativeMcp.list()).connections[0].revision);
+    await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill('version-change-secret');
+    await page.getByLabel('MCP 协议版本', { exact: true }).selectOption('2026-07-28');
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
+    await expect(region.getByRole('button', { name: '设置 MCP 凭据并清空输入', exact: true })).toBeDisabled();
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.locator('.connection-box')).toContainText('协议 2026-07-28');
+    await expect(region.locator('.connection-box')).toContainText('本机配置就绪');
+    expect((await page.evaluate(async () => (await window.desktop.nativeMcp.list()).connections[0])).revision).toBe(previousRevision + 1);
+    await page.getByLabel('MCP 协议版本', { exact: true }).selectOption('2025-11-25');
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.locator('.connection-box')).toContainText('协议 2025-11-25');
     await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill('cancelled-secret');
     await region.getByRole('button', { name: '关闭 MCP 编辑', exact: true }).click();
     await region.getByRole('button', { name: '编辑', exact: true }).click();
@@ -57,10 +72,15 @@ test('native MCP settings keep metadata operations local and clear write-only cr
     const metadata = await page.evaluate(async () => ({ mcp: await window.desktop.nativeMcp.list(), workspace: await window.desktop.snapshot() }));
     expect(JSON.stringify(metadata)).not.toContain(secret);
     expect(metadata.mcp.connections[0].ready).toBe(true);
+    expect(metadata.mcp.connections[0].protocolVersion).toBe('2025-11-25');
     expect(await fs.readFile(path.join(data, 'native/mcp-connections.json'), 'utf8')).not.toContain(secret);
     await app.close(); app = await launch(); page = await app.firstWindow(); region = await open();
     await expect(region.locator('.connection-box')).toContainText('MCP 本机配置');
     await expect(region.locator('.connection-box')).toContainText('未就绪');
+    await expect(region.locator('.connection-box')).toContainText('协议 2025-11-25');
+    await region.getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(page.getByLabel('MCP 协议版本', { exact: true })).toHaveValue('2025-11-25');
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
     await region.getByRole('button', { name: '删除', exact: true }).click();
     await expect(region.locator('.connection-box')).toHaveCount(0);
     expect(requests).toBe(0);
@@ -93,13 +113,15 @@ test('native MCP choices save per session, retain removable unavailable entries,
         const session = (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!;
         await window.desktop.updateSession({ id, engineConfig: { ...session.engineConfig, options: { ...session.engineConfig.options, connectionId: model.id } } });
       }
-      const ready = await window.desktop.nativeMcp.upsert({ name: '可选服务', endpoint: 'https://mcp-unused.example.test/mcp', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: true });
+      const ready = await window.desktop.nativeMcp.upsert({ name: '可选服务', endpoint: 'https://mcp-unused.example.test/mcp', protocolVersion: '2025-11-25', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: true });
       const disabled = await window.desktop.nativeMcp.upsert({ name: '禁用服务', endpoint: 'https://mcp-unused.example.test/disabled', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: false });
       return { ready, disabled };
     }, sessionIds);
     const choices = page.getByRole('region', { name: '会话 MCP 工具', exact: true });
     await expect(choices).toContainText('已选 1 / 4');
     await choices.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
+    await expect(choices).toContainText('协议 2025-11-25');
+    await expect(choices).toContainText('协议 2026-07-28');
     await expect(choices.getByLabel(`MCP 禁用服务 (${connections.disabled.id})`, { exact: true })).toBeDisabled();
     await choices.getByLabel('MCP missing-service (missing-service)', { exact: true }).uncheck();
     await choices.getByLabel(`MCP 可选服务 (${connections.ready.id})`, { exact: true }).check();
@@ -120,7 +142,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await page.locator('.session-row').filter({ hasText: 'MCP 会话 1' }).click();
     await app.evaluate(() => {
       const state = globalThis as typeof globalThis & { finishMcpList?: (value: unknown) => void };
-      state.finishMcpList?.({ connections: [{ id: 'late', name: '迟到的服务', endpoint: 'https://late.example.test/mcp', revision: 1, enabled: true, ready: true, credentialConfigured: true, auth: { mode: 'none' }, allowLoopbackHttp: false }], storage: { persistentAvailable: false } });
+      state.finishMcpList?.({ connections: [{ id: 'late', name: '迟到的服务', endpoint: 'https://late.example.test/mcp', protocolVersion: '2025-11-25', revision: 1, enabled: true, ready: true, credentialConfigured: true, auth: { mode: 'none' }, allowLoopbackHttp: false }], storage: { persistentAvailable: false } });
       delete state.finishMcpList;
     });
     await expect(choices).toContainText('已选 1 / 4');

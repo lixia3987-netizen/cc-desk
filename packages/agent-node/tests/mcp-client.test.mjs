@@ -388,3 +388,41 @@ test('endpoint validation allows explicit loopback HTTP and HTTPS only without a
   assert.throws(() => new McpHttpClient({ endpoint: 'https://example.com/mcp', bearerToken: 'token\r\nForged: yes' }));
   assert.throws(() => new McpHttpClient({ endpoint: 'https://example.com/mcp', timeoutMs: 120001 }));
 });
+
+
+test('2026 output schemas preserve array, scalar and null structured results and reject mismatches', async t => {
+  const cases = [
+    [{ type: 'array', items: { type: 'integer' }, minItems: 1 }, [1, 2], [1, 'wrong']],
+    [{ type: 'string', minLength: 2 }, 'ok', 'x'],
+    [{ type: 'number', minimum: 1 }, 1.5, 0],
+    [{ type: 'boolean' }, false, 'false'],
+    [{ type: 'null' }, null, {}],
+  ];
+  let output;
+  const tools = cases.map(([outputSchema], index) => ({ ...tool, name: `output-${index}`, outputSchema }));
+  const { client } = await fixture(t, ({ body, send }) => send(body.method === 'tools/list'
+    ? { resultType: 'complete', tools }
+    : { resultType: 'complete', content: [], structuredContent: output }));
+  assert.deepEqual(await client.discoverTools(active()), tools);
+  for (const [index, [, valid, invalid]] of cases.entries()) {
+    output = valid;
+    assert.deepEqual(await client.callTool(tools[index], {}, active()), { resultType: 'complete', content: [], structuredContent: valid });
+    output = invalid;
+    await rejects(client.callTool(tools[index], {}, active()), 'output_schema', 'unknown');
+  }
+});
+
+test('2026 never responds to server ping requests but accepts empty SSE data primers', async t => {
+  let ping = false;
+  const { client, requests } = await fixture(t, ({ body, response }) => {
+    response.writeHead(200, { 'content-type': 'text/event-stream' });
+    response.write('id: primer\ndata:\n\n');
+    response.end(`data: ${JSON.stringify(ping
+      ? { jsonrpc: '2.0', id: 'server-ping', method: 'ping' }
+      : { jsonrpc: '2.0', id: body.id, result: complete })}\n\n`);
+  });
+  assert.deepEqual(await client.callTool(tool, {}, active()), complete);
+  ping = true;
+  await rejects(client.callTool(tool, {}, active()), 'response_schema', 'unknown');
+  assert.equal(requests.length, 2);
+});

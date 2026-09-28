@@ -3,7 +3,7 @@
 日期：2026-09-24（北京时间）  
 历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发集成分支：`dev/native-agent`，从上述提交创建。
-当前集成基线（2026-09-28，北京时间）：PR #33–#39 已合入 `dev/native-agent@5f89aea`，涵盖 P3、P4a、P4b、双项目指令文件支持、仅手动触发 CI 和项目 Skills；未改动 main，未发布 Release。本批继续实现 [MCP HTTP 工具](NATIVE-AGENT-PHASE-4C-MCP.md)，验收独立登记。以下候选提交和开发分支均作为历史实现及验收记录保留，不表示相关 PR 仍未合并。
+当前集成基线（2026-09-28，北京时间）：PR #33–#40 已合入 `dev/native-agent@e4fa906`，涵盖 P3、P4a、P4b、双项目指令文件支持、仅手动触发 CI、项目 Skills 与首批 MCP HTTP 工具；未改动 main，未发布 Release。本批继续实现 [MCP 2025 Streamable HTTP 兼容](NATIVE-AGENT-PHASE-4C-MCP-2025.md)，验收独立登记。以下候选提交和开发分支均作为历史实现及验收记录保留，不表示相关 PR 仍未合并。
 
 历史验收：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二**已完成，三平台验收通过**；固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，当时工作位于 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
 
@@ -17,7 +17,7 @@ P4a 与 P4b 已完成并集成。显式安全恢复与手动压缩见 [P4b 记�
 
 2026-09-28 规划调整：项目指令同时支持 `CLAUDE.md` 与 `AGENTS.md`，具体规则见下文；P5 只推进功能替换及评估。Claude 持续保持默认引擎，未来任何默认引擎切换都须由用户另行明确决定。本次调整不新增或改写历史候选的 CI 验收结论。
 
-P4c MCP 首批提供固定 `2026-07-28` Streamable HTTP 工具闭环：连接设置、会话显式选择、逐次审批、预算与恢复。stdio、旧协议兼容、OAuth、resources/prompts 和更多模型协议仍未实现，不能把本批交付视为完整 P4c 完成，详见 [MCP 范围与验证](NATIVE-AGENT-PHASE-4C-MCP.md)。
+P4c MCP 首批提供 `2026-07-28` Streamable HTTP 工具闭环：连接设置、会话显式选择、逐次审批、预算与恢复。本批增加显式选择的 `2025-11-25` 同步工具兼容，旧配置仍默认 2026，不自动降级；逐回合初始化、私有 session 和有界清理见 [2025 兼容范围与验证](NATIVE-AGENT-PHASE-4C-MCP-2025.md)。stdio、旧 HTTP+SSE、其他历史协议版本、OAuth、resources/prompts 和更多模型协议仍未实现，P4c 整体未完成；共用能力及首批历史结果见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)。
 
 ## 1. 目标与实施原则
 

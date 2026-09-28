@@ -32,7 +32,7 @@ export function NativeMcpChoices({ selected, disabled = false, onChange, result 
   return <>
     {(entries.length > 0 || missing.length > 0) && <div className="native-project-skill-list">
       {entries.map(item => choice(item.id, item.name, item.ready && !result?.error,
-        `${item.enabled ? item.ready ? '本机配置就绪' : '未就绪' : '已禁用'} · ${item.endpoint}${item.error ? ` · ${item.error}` : ''}`))}
+        `${item.enabled ? item.ready ? '本机配置就绪' : '未就绪' : '已禁用'} · 协议 ${item.protocolVersion} · ${item.endpoint}${item.error ? ` · ${item.error}` : ''}`))}
       {missing.map(id => choice(id, id, false, result ? '连接当前不可用，已保留选择；可取消勾选。' : '已保存的选择，尚未读取连接列表。'))}
     </div>}
     {result && entries.length === 0 && !result.error && <p className="panel-note" role="status">尚无 MCP 连接，请先在“设置与连接”中新增。</p>}

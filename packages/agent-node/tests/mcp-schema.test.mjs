@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { assertMcpInputSchema, assertMcpToolInput } from '../dist/mcp-schema.js';
+import { assertMcpInputSchema, assertMcpOutputSchema, assertMcpToolInput, assertMcpToolOutput } from '../dist/mcp-schema.js';
 
 const schema = (property, extra = {}) => ({ type: 'object', properties: { value: property }, required: ['value'], additionalProperties: false, ...extra });
 const accepted = (rule, value) => assert.doesNotThrow(() => assertMcpToolInput(schema(rule), { value }));
@@ -102,4 +102,31 @@ test('schema/input byte, depth and validation work budgets stop oversized or com
 test('declared dialect is restricted to the supported JSON Schema 2020-12 semantics', () => {
   for (const dialect of ['https://json-schema.org/draft/2020-12/schema', 'https://json-schema.org/draft/2020-12/schema#']) assertMcpInputSchema({ type: 'object', $schema: dialect });
   for (const dialect of ['https://example.test/custom', 'http://json-schema.org/draft-07/schema#', 'https://json-schema.org/draft/2019-09/schema', '']) assert.throws(() => assertMcpInputSchema({ type: 'object', $schema: dialect }), /Schema/);
+});
+
+
+test('output schemas support arbitrary JSON roots while input roots remain objects', () => {
+  const cases = [
+    [{ type: 'array', items: { type: 'integer' }, minItems: 1 }, [1, 2], [1, '2']],
+    [{ type: 'string', minLength: 2 }, 'ok', 'x'],
+    [{ type: 'integer', minimum: 1 }, 1, 1.5],
+    [{ type: 'boolean' }, false, 'false'],
+    [{ type: 'null' }, null, {}],
+    [{ anyOf: [{ type: 'string' }, { type: 'null' }] }, null, false],
+  ];
+  for (const [rule, valid, invalid] of cases) {
+    assertMcpOutputSchema(rule);
+    assertMcpToolOutput(rule, valid);
+    assert.throws(() => assertMcpToolOutput(rule, invalid), /structured output/);
+    assert.throws(() => assertMcpInputSchema(rule), /Schema/);
+  }
+  for (const value of [null, true, 1, 'x', [], {}]) assertMcpToolOutput({}, value);
+});
+
+test('output validation preserves unsupported-keyword, finite JSON and byte/work limits', () => {
+  for (const rule of [{ type: 'string', pattern: '.*' }, { $ref: 'https://never-fetch.invalid' }, true, []]) assert.throws(() => assertMcpOutputSchema(rule), /Schema/);
+  for (const value of [undefined, NaN, Infinity, 'x'.repeat(65536)]) assert.throws(() => assertMcpToolOutput({}, value), /structured output/);
+  assert.throws(() => assertMcpToolOutput({ type: 'array', uniqueItems: true }, Array.from({ length: 300 }, (_, index) => index)), /structured output/);
+  const cyclic = []; cyclic.push(cyclic);
+  assert.throws(() => assertMcpToolOutput({ type: 'array' }, cyclic), /structured output/);
 });
