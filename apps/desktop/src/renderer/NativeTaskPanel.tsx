@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useId, useState, type MouseEvent } from 'react';
 import { getNativeTaskCriterionVerification, type NativeTaskEvidence, type NativeTaskView, type NativeTaskStepStatus, type NativeTaskVerification } from '@cc-desk/contracts/native-task';
 import type { NativeTaskReviewInput } from '../shared/native-task';
 
@@ -32,6 +32,7 @@ export function nativeTaskEvidenceState(task: NativeTaskView, evidence: NativeTa
   if (!evidence.workspaceComplete || (task.workspace && !task.workspace.current.complete)) return 'unverified';
   // A successful command is a receipt, not an acceptance decision. Only explicit human review can pass a criterion.
   if (evidence.source === 'command') return evidence.status === 'failed' || (typeof evidence.exitCode === 'number' && evidence.exitCode !== 0) ? 'failed' : 'unverified';
+  if (evidence.source === 'location') return 'unverified';
   if (!evidence.reason?.trim()) return 'unverified';
   return evidence.status;
 }
@@ -46,18 +47,65 @@ export function nativeTaskCanApprove(task: NativeTaskView): boolean {
     && task.criteria.every(criterion => ['passed', 'not_applicable'].includes(criterionState(task, criterion.id)));
 }
 
+function evidenceAnchor(taskId: string, evidenceId: string): string {
+  // Encode every UTF-16 unit, including separators, so arbitrary identifiers cannot collide or become executable URLs.
+  const encode = (value: string) => Array.from({ length: value.length }, (_, index) => value.charCodeAt(index).toString(16).padStart(4, '0')).join('');
+  return `native-task-evidence-${encode(taskId)}-${encode(evidenceId)}`;
+}
+
+function revealEvidence(event: MouseEvent<HTMLAnchorElement>, anchor: string) {
+  const target = event.currentTarget.ownerDocument.getElementById(anchor);
+  if (!target) return;
+  event.preventDefault();
+  // The fragment points only into this task panel. Open the collapsed evidence group before focusing its saved receipt.
+  for (let element: HTMLElement | null = target; element && !element.classList.contains('native-task-panel'); element = element.parentElement) {
+    if (element.tagName === 'DETAILS') (element as HTMLDetailsElement).open = true;
+  }
+  target.focus({ preventScroll: true });
+  target.scrollIntoView({ block: 'nearest' });
+}
+
+function LocationLinks({ task, stepId, criterionId }: { task: NativeTaskView; stepId?: string; criterionId?: string }) {
+  const locations = task.evidence.filter(evidence => evidence.source === 'location' && evidence.location
+    && (stepId ? evidence.stepIds.includes(stepId) : !!criterionId && evidence.criterionIds.includes(criterionId)));
+  return locations.length > 0 && <p className="native-task-location-links">关联位置（模型声明）：{locations.map(evidence => {
+    const anchor = evidenceAnchor(task.taskId, evidence.id), location = evidence.location!;
+    return <a key={evidence.id} href={'#' + anchor} onClick={event => revealEvidence(event, anchor)}>
+      {location.path}:{location.startLine}–{location.endLine}
+    </a>;
+  })}</p>;
+}
+
+function CodeLocation({ evidence }: { evidence: NativeTaskEvidence }) {
+  const location = evidence.location;
+  if (!location) return <p className="native-task-warning">此记录缺少代码位置内容，无法展示片段。</p>;
+  // Keep original line endings in the text nodes; line numbers do not rewrite the saved excerpt.
+  const lines = location.excerpt.match(/[^\n]*\n|[^\n]+$/g) || [''];
+  return <>
+    <p className="native-task-note">下方为记录时版本的只读片段，并非当前文件内容。步骤和条件关联由模型声明，供人工核查，不自动验收。</p>
+    <pre className="native-task-location-excerpt" aria-label="记录时的代码片段"><code>{lines.map((line, index) => <span className="native-task-code-line" key={index}>
+      <span className="native-task-line-number" aria-hidden="true">{location.startLine + index}</span><span className="native-task-line-text">{line}</span>
+    </span>)}</code></pre>
+    <p>文件 SHA-256：<code>{location.fileHash}</code> · 文件字节数：{location.fileBytes}</p>
+    <p>片段 SHA-256：<code>{location.excerptHash}</code></p>
+  </>;
+}
+
 function Evidence({ task, evidence, unknown }: { task: NativeTaskView; evidence: NativeTaskEvidence; unknown: boolean }) {
   const status = unknown ? 'unverified' : nativeTaskEvidenceState(task, evidence);
-  return <details className="native-task-evidence" data-evidence-status={status}>
-    <summary><span>{evidence.source === 'command' ? '宿主命令回执' : '人工核验'}</span><span className={'native-task-state ' + status}>{unknown ? '当前状态未知' : verificationLabels[status]}</span></summary>
+  const sourceLabel = { command: '宿主命令回执', manual: '人工核验', location: '代码位置记录' }[evidence.source];
+  return <details id={evidenceAnchor(task.taskId, evidence.id)} tabIndex={-1} className="native-task-evidence" data-evidence-status={status}>
+    <summary><span>{sourceLabel}</span>{evidence.source === 'location' && evidence.location && <code className="native-task-location-path">{evidence.location.path}:{evidence.location.startLine}–{evidence.location.endLine}</code>}<span className={'native-task-state ' + status}>{unknown ? '当前状态未知' : verificationLabels[status]}</span></summary>
     <div className="native-task-evidence-body">
       <p>关联条件：{evidence.criterionIds.length ? evidence.criterionIds.join('、') : '尚未关联'} · 步骤：{evidence.stepIds.length ? evidence.stepIds.join('、') : '尚未关联'}</p>
+      {evidence.source === 'location' && <CodeLocation evidence={evidence} />}
       {evidence.command && <><p>程序：<code>{evidence.command.executable}</code></p><p>参数：<code>{JSON.stringify(evidence.command.argv)}</code></p><p>工作目录：<code>{evidence.command.cwd}</code></p></>}
       {evidence.source === 'command' && <p>退出码：{evidence.exitCode === undefined || evidence.exitCode === null ? '未知' : evidence.exitCode} · 工具调用：<code>{evidence.toolCallId || '未记录'}</code></p>}
       {evidence.reason && <p>核验说明：{evidence.reason}</p>}
       <p>来源回合：<code>{evidence.identity.runId}</code> · 计划版本 {evidence.planRevision} · 条件版本 {evidence.acceptanceRevision}</p>
       <p>现场指纹：<code>{evidence.workspaceFingerprint || '未记录'}</code> · {evidence.workspaceComplete ? '声明范围内已完整记录' : '现场记录不完整'}</p>
       {status === 'stale' && <p className="native-task-warning">计划、验收条件或文件版本已变化，此证据不计入当前验收。</p>}
+      {evidence.source === 'location' && (status === 'stale' || unknown) && <p className="native-task-warning">{unknown ? '当前状态未知' : '历史位置记录'}：保留的片段仅反映记录时版本，不能确认当前文件仍有相同内容。</p>}
       {evidence.source === 'command' && <p>命令执行结果仅供核验，退出码为 0 不代表任务验收通过。</p>}
       {evidence.truncated && <p className="native-task-warning">命令输出已截断，当前日志不完整。</p>}
       {evidence.output !== undefined && <pre aria-label="证据日志">{evidence.output || '（无输出）'}</pre>}
@@ -127,11 +175,12 @@ export function NativeTaskPanel({ task, loading = false, historical = false, loa
         <ol className="native-task-steps">{task.steps.map(step => <li key={step.id} data-step-status={step.status}>
           <div><strong>{step.title}</strong><span className={'native-task-state ' + step.status}>{stepLabels[step.status]}</span></div>
           <small>步骤 {step.id}{step.dependsOn.length > 0 && <> · 依赖：{step.dependsOn.map(id => task.steps.find(item => item.id === id)?.title || id).join('、')}</>}</small>
+          <LocationLinks task={task} stepId={step.id} />
           {step.blockedReason && <p className="native-task-warning">阻塞原因：{step.blockedReason}</p>}
         </li>)}</ol>
         <ul className="native-task-criteria">{task.criteria.map(criterion => {
           const status = unknown ? 'unverified' : criterionState(task, criterion.id);
-          return <li key={criterion.id}><div><strong>{criterion.description}</strong><span className={'native-task-state ' + status}>{unknown ? '当前状态未知' : verificationLabels[status]}</span></div><small>条件 {criterion.id} · {criterion.kind === 'manual' ? '人工检查' : '命令检查'} · 关联步骤：{criterion.stepIds.join('、') || '无'}</small></li>;
+          return <li key={criterion.id}><div><strong>{criterion.description}</strong><span className={'native-task-state ' + status}>{unknown ? '当前状态未知' : verificationLabels[status]}</span></div><small>条件 {criterion.id} · {criterion.kind === 'manual' ? '人工检查' : '命令检查'} · 关联步骤：{criterion.stepIds.join('、') || '无'}</small><LocationLinks task={task} criterionId={criterion.id} /></li>;
         })}</ul>
         {!task.criteria.length && <p className="native-task-note">未记录验收条件，不能确认整体验收通过。</p>}
       </details>

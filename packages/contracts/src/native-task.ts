@@ -28,14 +28,21 @@ export interface NativeTaskChangeSummary {
   complete: boolean; added: string[]; modified: string[]; removed: string[];
   attribution: 'observed_since_task_start'; truncated: boolean;
 }
-/** Constructed only by the host from a committed tool receipt or explicit human review. */
+/** Host-read source context, retaining its original line separators and complete-file identity. */
+export interface NativeTaskCodeLocation {
+  path: string; startLine: number; endLine: number;
+  fileHash: string; fileBytes: number; excerpt: string; excerptHash: string;
+}
+/** Host evidence from a committed tool receipt, explicit human review, or host-read observation durably recorded in the task store. */
 export interface NativeTaskEvidence {
   id: string; identity: NativeTaskIdentity; stepIds: string[]; criterionIds: string[];
-  source: 'command' | 'manual'; status: 'unverified' | 'passed' | 'failed' | 'not_applicable';
+  source: 'command' | 'manual' | 'location'; status: 'unverified' | 'passed' | 'failed' | 'not_applicable';
   planRevision: number; acceptanceRevision: number;
   workspaceFingerprint: string; workspaceComplete: boolean;
   toolCallId?: string; command?: NativeTaskCommand; exitCode?: number | null;
   output?: string; outputDigest?: string; truncated?: boolean;
+  /** Location receipts are context only and must remain unverified. */
+  location?: NativeTaskCodeLocation;
   reason?: string; createdAt: string; stale?: boolean;
 }
 export interface NativeTaskHistoryEntry {

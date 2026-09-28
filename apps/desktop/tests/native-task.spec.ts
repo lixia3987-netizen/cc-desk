@@ -13,6 +13,7 @@ import { assistantMessage, functionCall, startResponsesFixture } from '../../../
 const secret = 'sk-native-task-electron-dummy-never-persist';
 const before = 'preserve existing user content\n';
 const after = before + 'native task implementation\n';
+const locationSource = '// saved source\r\nconst html = "<img src=x onerror=alert(1)>";\r\nexport { html };\r\n';
 const goal = '检查任务计划、审批与验收的真实界面';
 const plan = (implemented = false): NativeTaskPlan => ({ goal,
   steps: [{ id: 'implement', title: '修改文件并检查实际内容', dependsOn: [], status: implemented ? 'implemented' : 'in_progress' }],
@@ -25,11 +26,11 @@ interface Fixture { baseURL: string; requests: Array<{ input: ProtocolItem[] }>;
 function receipts(input: ProtocolItem[]) {
   return new Map(input.filter(item => item.type === 'function_call_output').map(item => [String(item.call_id), JSON.parse(String(item.output)) as Receipt]));
 }
-async function workspace(planOnly = false) {
+async function workspace(planOnly = false, locationOnly = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-task-电子 空格-'));
   const data = path.join(directory, '应用 数据'), cwd = path.join(directory, '项目 空格'), projectId = randomUUID();
   await fs.mkdir(data); await fs.mkdir(cwd);
-  await fs.writeFile(path.join(cwd, 'feature.txt'), before);
+  await fs.writeFile(path.join(cwd, 'feature.txt'), locationOnly ? locationSource : before);
   await fs.writeFile(path.join(cwd, 'unrelated.txt'), 'user-owned unrelated content\n');
   await fs.writeFile(path.join(cwd, 'AGENTS.md'), 'Read feature.txt before editing it. Preserve existing user content. Ask permission for each write and command.\n');
   await fs.writeFile(path.join(cwd, 'CLAUDE.md'), 'Report execution separately from verification.\n');
@@ -41,9 +42,18 @@ async function workspace(planOnly = false) {
     const call = (id: string, name: string, input: unknown) => ({ output: [functionCall(`${prefix}-${id}`, name, input)] });
     if (turn > 1) return !done.has(`${prefix}-continue-read`) ? call('continue-read', 'read_task', {})
       : { output: [assistantMessage(`${prefix}-final`, '已读取明确关联的任务，没有重做旧工具。')] };
-    if (!done.has(`${prefix}-plan`)) return call('plan', 'update_plan', { expectedRevision: 0, plan: plan(planOnly), explanation: '先保存计划，再分别执行获得批准的操作。' });
+    if (!done.has(`${prefix}-plan`)) return call('plan', 'update_plan', { expectedRevision: 0, plan: plan(planOnly || locationOnly), explanation: '先保存计划，再分别执行获得批准的操作。' });
     if (planOnly) return { output: [assistantMessage(`${prefix}-final`, '任务实现声明已记录，验收尚未执行。')] };
     if (!done.has(`${prefix}-read`)) return call('read', 'read_file', { path: 'feature.txt' });
+    if (locationOnly) {
+      if (!done.has(`${prefix}-before-location`)) return call('before-location', 'read_task', {});
+      if (!done.has(`${prefix}-location`)) return call('location', 'record_code_location', {
+        expectedRevision: done.get(`${prefix}-before-location`)!.output.task!.revision,
+        path: 'feature.txt', expectedHash: done.get(`${prefix}-read`)!.output.hash, startLine: 2, endLine: 3,
+        stepIds: ['implement'], criterionIds: ['content'],
+      });
+      return { output: [assistantMessage(`${prefix}-final`, '模型声称位置记录已证明验收通过。')] };
+    }
     if (!done.has(`${prefix}-patch`)) return call('patch', 'apply_patch', { path: 'feature.txt', expectedHash: done.get(`${prefix}-read`)!.output.hash, content: after });
     if (!done.has(`${prefix}-check`)) return call('check', 'run_command', { executable: process.execPath,
       argv: ['-e', `const fs=require('node:fs');if(fs.readFileSync('feature.txt','utf8')!==${JSON.stringify(after)})process.exitCode=9;else process.stdout.write('native-task-content-check-passed')`], cwd: '.',
@@ -182,5 +192,51 @@ test('native task UI restores a durable plan after restart and Continue only bin
     expect(await fs.readFile(path.join(f.cwd, 'feature.txt'), 'utf8')).toBe(before);
     expect(f.fixture.errors).toEqual([]);
     await page.screenshot({ path: test.info().outputPath('native-task-explicit-continuation.png') });
+  } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
+});
+
+test('native code location links reveal saved line excerpts and retain historical context after external edits and restart', async () => {
+  const f = await workspace(false, true); let app: ElectronApplication | undefined;
+  try {
+    app = await f.launch(); let page = await ready(app);
+    const session = await configure(page, f.projectId, f.fixture.baseURL);
+    await submit(page, '记录文件第 2–3 行并关联任务步骤和条件，不进行文件修改。');
+    const original = await finished(page, session.id), requests = f.fixture.requests.length;
+    expect(original.verification).toBe('unverified'); expect(original.evidence).toHaveLength(1);
+    expect(original.evidence[0].source).toBe('location'); expect(original.evidence[0].status).toBe('unverified');
+    expect(original.evidence[0].location?.excerpt).toBe(locationSource.slice(locationSource.indexOf('\n') + 1));
+    expect((await snapshot(page, session.id)).pending).toEqual([]);
+    const stepLink = panel(page).locator('.native-task-steps .native-task-location-links a');
+    const criterionLink = panel(page).locator('.native-task-criteria .native-task-location-links a');
+    expect(await stepLink.getAttribute('href')).toMatch(/^#native-task-evidence-[0-9a-f]+-[0-9a-f]+$/);
+    expect(await criterionLink.getAttribute('href')).toBe(await stepLink.getAttribute('href'));
+    await expect(panel(page).locator('.native-task-evidence')).toBeHidden();
+    await stepLink.click();
+    const evidence = panel(page).locator('.native-task-evidence');
+    await expect(evidence).toBeVisible(); await expect(evidence).toHaveAttribute('open', ''); await expect(evidence).toBeFocused();
+    await expect(evidence).toContainText('代码位置记录'); await expect(evidence).toContainText('并非当前文件内容');
+    await expect(evidence).toContainText('步骤和条件关联由模型声明');
+    expect(await evidence.locator('.native-task-line-number').allTextContents()).toEqual(['2', '3']);
+    expect(await evidence.locator('.native-task-line-text').allTextContents()).toEqual(['const html = "<img src=x onerror=alert(1)>";\r\n', 'export { html };\r\n']);
+    await expect(evidence.locator('img, script')).toHaveCount(0); await expect(evidence).toHaveAttribute('data-evidence-status', 'unverified');
+    expect(await fs.readFile(path.join(f.cwd, 'feature.txt'), 'utf8')).toBe(locationSource);
+    expect(f.fixture.requests).toHaveLength(requests);
+
+    await fs.appendFile(path.join(f.cwd, 'feature.txt'), '// external change\r\n');
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(evidence).toHaveAttribute('data-evidence-status', 'stale');
+    await expect(evidence).toContainText('历史位置记录'); await expect(evidence).toContainText('不能确认当前文件仍有相同内容');
+    expect((await snapshot(page, session.id)).nativeTask!.evidence[0].location).toEqual(original.evidence[0].location);
+    await closeNativeApp(app); app = await f.launch(); page = await ready(app);
+    await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await expect(panel(page)).toContainText(goal);
+    await panel(page).locator('.native-task-criteria .native-task-location-links a').click();
+    const restored = panel(page).locator('.native-task-evidence');
+    await expect(restored).toBeVisible(); await expect(restored).toHaveAttribute('data-evidence-status', 'stale');
+    await expect(restored).toContainText('const html = "<img src=x onerror=alert(1)>";');
+    await expect(restored.locator('.native-task-state.passed')).toHaveCount(0);
+    expect((await snapshot(page, session.id)).nativeTask!.taskId).toBe(original.taskId);
+    expect(f.fixture.requests).toHaveLength(requests); expect(f.fixture.errors).toEqual([]);
+    await page.screenshot({ path: test.info().outputPath('native-task-historical-code-location.png') });
   } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });

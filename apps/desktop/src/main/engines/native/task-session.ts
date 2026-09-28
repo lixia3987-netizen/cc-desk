@@ -1,11 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import type { NativeTaskMutation, NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
+import type { NativeTaskEvidence, NativeTaskMutation, NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
 import type { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { PreparedTool, RunIdentity, RunJournalEvent, ToolPort, ToolResult } from '@cc-desk/agent-core';
+import { NATIVE_TASK_LIMITS, NativeTaskError } from '@cc-desk/agent-core';
 import type { NativeTaskReviewInput } from '../../../shared/native-task';
 import { captureTaskWorkspace, commandEvidenceReceipt, describeTaskChanges, type TaskWorkspace } from './task-evidence';
 import { sameRun } from './worker-protocol';
+
+/** A failed metadata write may already be durable: core must stop rather than retry. */
+export class TaskLocationCommitError extends Error {}
+export class TaskLocationCapacityError extends Error {}
+function rethrowKnownCapacity(error: unknown): void {
+  // NativeTaskStore emits this typed error before opening its temporary file.
+  // Generic I/O and post-publication errors still have an uncertain outcome.
+  if (error instanceof NativeTaskError && error.code === 'limit_exceeded') throw new TaskLocationCapacityError('任务记录容量已满。');
+}
+const sameWorkspaceObservation = (left: TaskWorkspace | undefined, right: TaskWorkspace) => Boolean(left &&
+  left.rootFingerprint === right.rootFingerprint && left.fingerprint === right.fingerprint && left.complete === right.complete &&
+  JSON.stringify(left.issues) === JSON.stringify(right.issues));
 
 /** Host-only task metadata. Run receipts and queue ACKs remain authoritative for execution. */
 export class NativeTaskSession {
@@ -47,6 +60,56 @@ export class NativeTaskSession {
         const evidence = commandEvidenceReceipt(receipt.prepared, receipt.result, { task: current, before: receipt.before, after: receipt.after });
         if (evidence) await this.mutate(current, { type: 'evidence', evidence }, `receipt:${current.identity.runId}:${callId}`);
         this.receipts.delete(callId);
+      }
+    });
+  }
+  /** Records a host file observation directly in the task store, independently of run-journal completion. */
+  recordCodeLocation(options: {
+    taskId: string; identity: RunIdentity; expectedRevision: number; mutationId: string; signal: AbortSignal;
+    assertCurrent(): Promise<void>;
+    createEvidence(task: NativeTaskSnapshot): Promise<NativeTaskEvidence>;
+    assertEvidenceCurrent(evidence: NativeTaskEvidence): Promise<void>;
+  }): Promise<{ status: 'recorded'; task: NativeTaskSnapshot; evidence: NativeTaskEvidence } | { status: 'revision_changed'; revision: number }> {
+    return this.enqueue(async () => {
+      await options.assertCurrent();
+      const task = this.store.read(options.taskId);
+      if (!task || !sameRun(task.identity, options.identity) || task.execution !== 'active') throw new Error('任务运行归属已改变。');
+      if (task.revision !== options.expectedRevision) return { status: 'revision_changed', revision: task.revision };
+      if (task.history.length >= NATIVE_TASK_LIMITS.history || task.evidence.length >= NATIVE_TASK_LIMITS.evidence) throw new TaskLocationCapacityError('任务记录容量已满。');
+      const publishWorkspace = async (current: TaskWorkspace) => {
+        const baseline = task.workspace?.baseline ?? this.baseline ?? current;
+        try {
+          const next = await this.mutate(task, { type: 'workspace', ...(!task.workspace ? { baseline } : {}), current,
+            changes: describeTaskChanges(baseline, current) }, undefined, options.assertCurrent);
+          this.baseline ??= baseline;
+          return { status: 'revision_changed' as const, revision: next.revision };
+        } catch (error) { rethrowKnownCapacity(error); throw new TaskLocationCommitError('工作区观察保存结果未知。'); }
+      };
+      const current = await this.capture(options.signal);
+      await options.assertCurrent();
+      // Refresh in its own CAS mutation. Never consume an unseen new revision to
+      // append evidence in the same call: the model must read_task and try again.
+      if (!sameWorkspaceObservation(task.workspace?.current, current)) return publishWorkspace(current);
+      const evidence = await options.createEvidence(task);
+      this.options.assertSafe(evidence);
+      let changedWorkspace: TaskWorkspace | undefined;
+      const guardedWrite = async () => {
+        await options.assertCurrent();
+        const fresh = await this.capture(options.signal);
+        await options.assertCurrent();
+        if (!sameWorkspaceObservation(task.workspace?.current, fresh)) {
+          changedWorkspace = fresh; throw new Error('记录保存前工作区已改变。');
+        }
+        // Keep the actual file re-read last, after scope/ownership/scan awaits.
+        await options.assertEvidenceCurrent(evidence);
+      };
+      try {
+        const next = await this.mutate(task, { type: 'evidence', evidence }, options.mutationId, guardedWrite);
+        return { status: 'recorded', task: next, evidence };
+      } catch (error) {
+        rethrowKnownCapacity(error);
+        if (changedWorkspace) return publishWorkspace(changedWorkspace);
+        throw new TaskLocationCommitError('位置记录保存结果未知。');
       }
     });
   }

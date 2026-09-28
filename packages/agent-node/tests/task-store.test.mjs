@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { NativeTaskStore } from '../dist/task-store.js';
 const identity = { sessionId: 's1', conversationId: 'c0f117a2-cc31-465e-8f31-97c4fffaee91', runId: 'fdc4ef4e-5e1c-494d-860d-c47708dc477c', requestId: 'r1', workerGeneration: 1 };
 const taskId = '74b5ba80-fc6c-4e0d-9454-f203f3ad7981';
@@ -116,4 +116,48 @@ test('close drains admitted writes while refusing newly submitted writes', async
   await assert.rejects(store.apply(request({ mutationId: 'late' })), { code: 'store_closed' });
   assert.equal((await pending).revision, 1); await closing;
   assert.equal((await NativeTaskStore.readSnapshot(f.options)).revision, 1);
+});
+
+async function locationRequest(store, excerpt = '\uFEFFconst 状态 = "ready";\r\nreturn 状态;\n') {
+  const hash = createHash('sha256').update(excerpt).digest('hex');
+  const workspace = { fingerprint: 'a'.repeat(64), complete: false, rootFingerprint: 'b'.repeat(64),
+    files: [{ path: 'src/状态.ts', hash, bytes: Buffer.byteLength(excerpt), mode: 0o644 }], scope: ['ordinary files'], issues: ['Other files exceeded scan limit'], capturedAt: '2026-09-28T11:00:00.000Z' };
+  const changes = { complete: false, added: [], modified: [], removed: [], attribution: 'observed_since_task_start', truncated: false };
+  await store.apply(request());
+  const task = await store.apply(request({ expectedRevision: 1, mutationId: 'scan', mutation: { type: 'workspace', baseline: workspace, current: workspace, changes } }));
+  return request({ expectedRevision: task.revision, mutationId: 'location', mutation: { type: 'evidence', evidence: {
+    id: 'location-1', identity, source: 'location', status: 'unverified', stepIds: ['step1'], criterionIds: [], planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision,
+    workspaceFingerprint: workspace.fingerprint, workspaceComplete: workspace.complete, toolCallId: 'host-location-call', createdAt: workspace.capturedAt,
+    location: { path: 'src/状态.ts', startLine: 1, endLine: 2, fileHash: hash, fileBytes: Buffer.byteLength(excerpt), excerpt, excerptHash: hash },
+  } } });
+}
+test('location receipts roundtrip with original bytes and digest, retain idempotency and stay unverified', async t => {
+  const f = await fixture(t); const store = await f.open(); const update = await locationRequest(store);
+  const result = await store.apply(update); assert.equal(result.verification, 'unverified'); assert.equal(result.schemaVersion, 1);
+  assert.deepEqual(await NativeTaskStore.readSnapshot(f.options), result);
+  result.evidence[0].location.excerpt = 'Caller mutation'; assert.equal(store.latest().evidence[0].location.excerpt, update.mutation.evidence.location.excerpt);
+  await store.close(); const reopened = await f.open(); const persisted = reopened.latest();
+  assert.deepEqual(persisted.evidence[0], update.mutation.evidence); assert.deepEqual(await reopened.apply(update), persisted);
+  assert.equal(createHash('sha256').update(persisted.evidence[0].location.excerpt).digest('hex'), persisted.evidence[0].location.excerptHash);
+});
+test('invalid location claims never advance durable task revision', async t => {
+  const f = await fixture(t); const store = await f.open(); const input = await locationRequest(store); const original = await readFile(f.file, 'utf8');
+  for (const mutate of [
+    value => { value.mutation.evidence.status = 'passed'; },
+    value => { value.mutation.evidence.location.path = '../outside.ts'; },
+    value => { value.mutation.evidence.location.fileHash = 'c'.repeat(64); },
+    value => { value.mutation.evidence.location.excerpt = '中'.repeat(2731); },
+  ]) {
+    const value = structuredClone(input); mutate(value);
+    await assert.rejects(store.apply(value), { code: 'invalid_task' });
+    assert.equal(store.latest().revision, 2); assert.equal(await readFile(f.file, 'utf8'), original);
+  }
+  assert.equal((await store.apply(input)).revision, 3);
+});
+test('protected credential text in a code excerpt is rejected before publication', async t => {
+  const f = await fixture(t, { forbiddenValues: ['protected-location-credential'] }); const store = await f.open();
+  const input = await locationRequest(store, 'const value = "protected-location-credential";\nreturn value;\n');
+  await assert.rejects(store.apply(input), { code: 'secret_rejected' });
+  assert.equal(store.latest().revision, 2); assert.equal(store.latest().evidence.length, 0);
+  assert.equal((await readFile(f.file, 'utf8')).includes('protected-location-credential'), false);
 });
