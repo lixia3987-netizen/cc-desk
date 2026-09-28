@@ -191,3 +191,16 @@ test('search output budgets retain completeness and continuation metadata instea
   assert.equal(result.output.truncated, true); assert.ok(result.output.nextCursor);
   assert.ok(result.output.truncationReasons.length > 0);
 });
+
+test('a cached search cannot cross a run change while its asynchronous ownership check settles', async t => {
+  let replaceIdentity = false;
+  const ctx = context();
+  const { root, port } = await fixture(t, { assertOwnership: async () => {
+    if (replaceIdentity) ctx.identity = { ...ctx.identity, runId: 'replacement-run' };
+  } });
+  await files(root, { 'a.txt': 'needle' });
+  const prepared = await port.prepare(call('cached', 'search', { path: '.', query: 'needle' }), ctx);
+  assert.equal((await port.execute(prepared, ctx)).status, 'completed');
+  replaceIdentity = true;
+  await assert.rejects(port.execute(prepared, ctx), /changed/);
+});

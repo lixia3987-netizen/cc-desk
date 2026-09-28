@@ -219,6 +219,7 @@ export class LocalToolPort implements ToolPort {
     throwIfAborted(context.signal);
     await this.options.assertOwnership?.(context.identity);
     throwIfAborted(context.signal);
+    this.state(prepared, context);
     // Share the in-flight read/cache receipt, and recheck ownership even when
     // serving its cached value. Repeating a call cannot create a fresh scan.
     state.searchExecution ??= this.executePrepared(prepared, context, approval);
@@ -281,6 +282,7 @@ export class LocalToolPort implements ToolPort {
       await this.files.verify(state.target);
       await this.options.assertOwnership?.(context.identity);
       throwIfAborted(context.signal);
+      this.state(prepared, context);
       truncated = found.truncated;
       output = { ...asJson(found) as JsonObject, path: String(input.path), scannedBytes: found.scanned.bytes, instructions };
       this.credentials(output);
