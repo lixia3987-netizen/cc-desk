@@ -1,5 +1,7 @@
 # P4 / P5 剩余交付与验收清单
 
+正式运行验收统一见[独立清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)：真实服务、图形与当前候选三平台结果按稳定 ID 登记；本页保留实现说明与历史证据，不以旧候选通过替代当前验收。
+
 本轮开发起始基线：`dev/native-agent@0bec633`（PR #42 已合入）。2026-09-28 用户要求自动拆分并完成已规划剩余内容，关键修改分批提交。本清单将总计划中尚未细化的条目落实为可验证交付，不扩大为所有 Claude CLI 或所有 MCP 可选能力的兼容承诺。
 
 当前实现已随 [PR #43](https://github.com/lixia3987-netizen/cc-desk/pull/43) 合入 `dev/native-agent@59172f8`。下文保留本轮实际验证的固定代码候选；后续增量能力见[工程任务闭环与持续执行规划](NATIVE-AGENT-NEXT-PLAN.md)，N1 已实现并另行登记[交付与验收范围](NATIVE-AGENT-N1.md)，不改变本清单的待验收状态。

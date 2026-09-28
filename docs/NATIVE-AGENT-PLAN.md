@@ -1,5 +1,7 @@
 # cc-desk：monorepo 与自研 Agent 开发计划
 
+正式运行验收统一见[独立清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)：真实服务、图形与当前候选三平台结果按稳定 ID 登记；本页保留实现说明与历史证据，不以旧候选通过替代当前验收。
+
 日期：2026-09-24（北京时间）  
 历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发集成分支：`dev/native-agent`，从上述提交创建。

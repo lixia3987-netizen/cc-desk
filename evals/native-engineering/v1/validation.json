@@ -1,0 +1,329 @@
+{
+  "suiteId": "cc-desk-engineering-v1",
+  "taskBaseline": "b45bd0623d2a44a2878c46d4701fa4b388c7d9be",
+  "suiteDigest": "7ac65759b84e3946f632a931ff7bece2e50051fc25b2ee9a5e0c23bd2cbfba8a",
+  "executedAt": "2026-09-28T12:21:38.013Z",
+  "node": "v24.19.0",
+  "platform": "linux/x64",
+  "tooling": {
+    "esbuild": "0.25.12",
+    "typescript": "5.9.3",
+    "react": "19.2.0"
+  },
+  "evidenceKind": "local-fixture",
+  "realQualityStatus": "pending",
+  "graphicalAcceptance": "pending",
+  "tasks": [
+    {
+      "id": "01-snapshot-refresh",
+      "originalBaselineOracle": "pass",
+      "initial": {
+        "status": "expected_fail",
+        "reason": "A later revision from an older worker must never appear as completed\n+ actual - expected\n\n  [\n    3,\n+   2\n-   3\n  ]\n"
+      },
+      "reference": {
+        "task": "01-snapshot-refresh",
+        "functionalStatus": "pass",
+        "integrity": {
+          "protectedFiles": 169,
+          "changed": [
+            "TASK.md",
+            "apps/desktop/tests/e0-snapshot-regression.test.ts"
+          ]
+        },
+        "scope": "renderer state synchronizer: worker regression, legitimate host restart, retired-host/duplicate events, cross-session rejection; no Electron window or real-model assertion",
+        "testResults": [
+          {
+            "label": "compile contracts",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/contracts/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 478,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile engine-claude",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/engine-claude/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1602,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-core",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-core/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 836,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-node",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-node/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1951,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "selected original and new regression tests",
+            "executable": "node",
+            "argv": [
+              "--import",
+              "<evaluator>/node_modules/tsx/dist/loader.mjs",
+              "--test",
+              "--test-concurrency=1",
+              "apps/desktop/tests/chat-snapshot-sync.test.ts",
+              "apps/desktop/tests/e0-snapshot-regression.test.ts"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 622,
+            "output": "✔ one host clock orders reads and notifications separately from durable task revisions (2.348518ms)\n✔ an event during an in-flight snapshot rejects the old state and coalesces concurrent reads (0.439422ms)\n✔ duplicate/old notifications do not fetch, while a sequence gap recovers the full state (0.182291ms)\n✔ worker generation regression never overwrites a newer run, even with a newer transport revision (0.372844ms)\n✔ host restart notification retires old replies and old notifications before the new snapshot arrives (0.270912ms)\n✔ visibility/manual refresh discovers a new host epoch even when all its notifications were lost (0.328327ms)\n✔ a fresh request discovers another restart after an earlier host notice without waiting for another event (0.184664ms)\n✔ a lost final event is repaired by an explicit/watchdog refresh without a later event (0.214078ms)\n✔ unmount/session switch suppresses old replies and allows an independent new reader (0.404551ms)\n✔ read failures preserve old records with unknown status, pause automatic retries, and clear after explicit recovery (0.648724ms)\n✔ wrong-session snapshots cannot reconcile pending approvals or clear an existing failure (0.234869ms)\n✔ legacy Claude snapshots remain supported until the host provides a version (0.234017ms)\n✔ late previous-worker completion cannot overwrite current worker state (2.411051ms)\nℹ tests 13\nℹ suites 0\nℹ pass 13\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 584.120888\n",
+            "truncated": false
+          }
+        ],
+        "realQualityStatus": "pending",
+        "graphicalAcceptance": "pending",
+        "independentHumanReview": "required"
+      },
+      "tamperingRejected": true
+    },
+    {
+      "id": "02-session-info",
+      "originalBaselineOracle": "not_applicable",
+      "initial": {
+        "status": "expected_fail",
+        "reason": "register readonly session:info"
+      },
+      "reference": {
+        "task": "02-session-info",
+        "functionalStatus": "pass",
+        "integrity": {
+          "protectedFiles": 169,
+          "changed": [
+            "apps/desktop/src/main/ipc/session-handlers.ts",
+            "apps/desktop/src/preload/index.ts",
+            "apps/desktop/src/renderer/ChatPane.tsx",
+            "apps/desktop/src/shared/types.ts",
+            "TASK.md",
+            "apps/desktop/src/renderer/SessionInfoCard.tsx",
+            "apps/desktop/tests/e0-session-info.test.ts"
+          ]
+        },
+        "scope": "actual IPC registration and preload bridge; server-rendered card; async UI race/visual behavior remains manual acceptance",
+        "testResults": [
+          {
+            "label": "compile contracts",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/contracts/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 423,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile engine-claude",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/engine-claude/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1283,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-core",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-core/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 690,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-node",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-node/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1656,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "selected original and new regression tests",
+            "executable": "node",
+            "argv": [
+              "--import",
+              "<evaluator>/node_modules/tsx/dist/loader.mjs",
+              "--test",
+              "--test-concurrency=1",
+              "apps/desktop/tests/session-service.test.ts",
+              "apps/desktop/tests/e0-session-info.test.ts"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 5994,
+            "output": "✔ session info is read-only, validates its id and omits private fields (3.349344ms)\n✔ context recovery holds the lifecycle lock and preserves a paused queue while rejecting racing sends and workflows (69.889596ms)\n✔ context recovery refuses active queue work, workflow ownership and an admitted send (43.541172ms)\n✔ CLI update waits for disconnection, blocks new work and keeps every workspace available afterward (53.444915ms)\n✔ disconnection and persistence failures abort the update but still stop independent runners (35.772565ms)\n✔ engine maintenance stops only Claude while shared Shell and a non-Claude executor remain usable (84.178867ms)\n✔ engine maintenance drains an admitted attachment read before installing and never dispatches it (70.984473ms)\n✔ engine admission generations reject pre-maintenance attachment requests after maintenance has ended (33.869369ms)\n✔ engine maintenance waits for queue completion ownership after the model turn has released admission (71.584479ms)\n✔ engine maintenance attempts every selected cleanup after a save failure and preserves Shell (52.011256ms)\n✔ global shutdown wins over a pending engine drain and maintenance finally cannot reopen admission (53.858965ms)\n✔ engine maintenance releases the original driver fence when an earlier deletion removes its session (70.178016ms)\n✔ worktree creation releases completed structured CLIs under directory locks before invoking Git (36.020244ms)\n✔ worktree operations refuse real structured tasks, workflows, and terminal ownership (43.79436ms)\n✔ idle-release failures keep Git unmodified and release management locks for a retry (41.566236ms)\n✔ idle structured sessions can archive and delete while active tasks retain their records (38.66742ms)\n✔ concurrency limits reclaim idle structured processes and never evict live tasks (49.138833ms)\n✔ slot reclamation rechecks native conversation ownership after asynchronous release (40.268328ms)\n✔ archiving a queued session during idle eviction prevents its pending prompt from starting (53.062019ms)\n✔ workflow turns explicitly pass their user goal for naming without modifying stage instructions (39.450202ms)\n✔ panel drafts merge independent sections, survive restart and disappear with the owning session (33.631045ms)\n✔ invalid panel drafts are rejected without replacing the last valid user input (37.084604ms)\n✔ cleanup preserves a worktree referenced as another worktree source (223.38896ms)\n✔ a resume error alone does not prevent safe cleanup of an unchanged worktree (142.143196ms)\n✔ explicit record-only deletion preserves every worktree file, branch and dependent session after a resume error (178.296266ms)\n✔ record-only deletion still requires the current task and worker to stop (74.328761ms)\n✔ force deletion requires the confirmed worktree path, removes dirty files and preserves unmerged commits on the branch (156.068549ms)\n✔ force deletion refuses directory dependents and Git locks without removing the session or files (185.894817ms)\n✔ force deletion waits for worker release under directory locks and rejects active source sessions (141.710934ms)\n✔ a record-removal failure after force cleanup leaves an archived record that can be deleted without its missing directory (128.237083ms)\n✔ damaged worktree deletion still blocks source and target activity and dependent sessions when the gitfile is missing (92.071728ms)\n✔ damaged worktree deletion releases idle workers under directory locks before repairing or removing files (158.077062ms)\n✔ damaged worktree deletion finishes an already absent directory even when its source path is gone, preserving outside files and commits (111.53133ms)\n✔ damaged worktree deletion gives actionable guidance and preserves an existing directory when its source cannot be verified (82.093563ms)\n✔ damaged worktree deletion rejects a stale confirmed path before attempting Git discovery (72.620263ms)\n✔ busy checks cover source and target subdirectories but permit independent linked worktrees (179.949292ms)\n✔ canonical containment locks prevent new admissions and dependency registration during management (43.994632ms)\n✔ fork creation reserves source and destination project roots until the dependent session is saved (146.521309ms)\n✔ fork creation refuses a busy destination project before running the creation action (83.979214ms)\n✔ failed fork registration releases both source and destination project reservations (84.712227ms)\n✔ session diagnostics inspect the actual worktree and session deletion purges its inactive workflows (68.482387ms)\n✔ failed turns keep attachment drafts and successful turns clear them without deleting referenced bytes (49.517996ms)\n✔ dropped files only stage durable session attachments until an explicit send (41.885896ms)\n✔ drop IPC rejects invalid paths, sessions and unsupported batches without leaving partial drafts (48.141296ms)\n✔ session deletion waits for an in-flight drop and rejects new drops without recreating orphan attachments (34.953013ms)\n✔ attachment bookkeeping failure reports completed execution without repeating the turn (37.838835ms)\n✔ shutdown attempts both runtimes after persistence failures and permits a successful retry (27.871485ms)\n✔ notification navigation emits intent even for the selected session and ignores destroyed windows (27.826368ms)\n✔ conversation history IPC validates message cursors and restricts reads to structured sessions (31.86662ms)\n✔ submission IPC acknowledges durable ownership and detaches attachment drafts before a turn finishes (45.847515ms)\n✔ stop cancels a queue admission awaiting attachment IO without dispatching the accepted prompt later (46.797115ms)\n✔ a queue persistence error does not prevent explicit runtime stop or interruption (30.986496ms)\n✔ workflow cancellation invalidates a stage admission before it can become a model request (54.996804ms)\n✔ native context maintenance holds lifecycle and directory ownership and never resumes its paused queue (57.296869ms)\n▶ native context admission is cancelled by stop, completed global maintenance, or shutdown while resolving roots\n  ✔ stop (36.86271ms)\n  ✔ maintenance (39.116487ms)\n  ✔ shutdown (33.55046ms)\n✔ native context admission is cancelled by stop, completed global maintenance, or shutdown while resolving roots (110.264579ms)\n✔ native context maintenance rejects sibling execution, sibling recovery, and concurrent directory management (48.292726ms)\n✔ native recovery can clear its own barrier while uncertain maintenance cleanup retains the directory lease (54.02949ms)\n✔ registered terminal lifetime blocks native and Claude across sibling directories while linked worktrees remain independent (96.164818ms)\n✔ a final model result does not release its directory before the explicit physical barrier (54.080436ms)\n✔ queue retains the directory after native release until its delayed durable ACK and keeps its stable message identity (69.638423ms)\n✔ workflow holds one directory owner across stages and passes distinct stable stage-attempt submissions (56.078222ms)\n✔ persisted recovery quarantine blocks every provider and Git management until explicit confirmation (52.19747ms)\n✔ retained history for an uninstalled provider does not block registered executors in other projects (50.913978ms)\n✔ native tool ownership requires an admitted live generation and the current canonical working directory (42.58753ms)\n✔ queue preemption renews native tool ownership while preserving the outer directory reservation (97.006307ms)\n✔ idle Claude retains its reusable CLI and lease until a competing provider finishes draining it (50.146098ms)\n✔ chat IPC and both conversation/queue notifications share one host version authority (30.915968ms)\n✔ snapshot metadata is captured after async hydration and includes intervening notifications (28.543615ms)\n✔ task continuation cannot silently attach a native task to a Claude submission (29.149455ms)\nℹ tests 72\nℹ suites 0\nℹ pass 72\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 5952.377516\n",
+            "truncated": false
+          }
+        ],
+        "realQualityStatus": "pending",
+        "graphicalAcceptance": "pending",
+        "independentHumanReview": "required"
+      },
+      "tamperingRejected": true
+    },
+    {
+      "id": "03-canonical-json",
+      "originalBaselineOracle": "not_applicable",
+      "initial": {
+        "status": "expected_fail",
+        "reason": "Build failed with 1 error:\nerror: Could not resolve \"/tmp/cc-desk-e0-uI1PdO/03-canonical-json/packages/agent-core/src/canonical-json.ts\""
+      },
+      "reference": {
+        "task": "03-canonical-json",
+        "functionalStatus": "pass",
+        "integrity": {
+          "protectedFiles": 169,
+          "changed": [
+            "packages/agent-core/src/run.ts",
+            "packages/agent-node/src/mcp-tools.ts",
+            "packages/agent-node/src/tools/local-tools.ts",
+            "TASK.md",
+            "packages/agent-core/src/canonical-json.ts",
+            "packages/agent-core/tests/e0-canonical-json.test.mjs",
+            "packages/agent-node/tests/e0-tool-digests.test.mjs"
+          ]
+        },
+        "scope": "canonical JSON corpus, public exports, adapter dependency and live local-tool approval digest",
+        "testResults": [
+          {
+            "label": "compile contracts",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/contracts/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 412,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile engine-claude",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/engine-claude/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1282,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-core",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-core/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 679,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "compile agent-node",
+            "executable": "node",
+            "argv": [
+              "<evaluator>/node_modules/typescript/bin/tsc",
+              "-p",
+              "packages/agent-node/tsconfig.json"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 1643,
+            "output": "",
+            "truncated": false
+          },
+          {
+            "label": "selected original and new regression tests",
+            "executable": "node",
+            "argv": [
+              "--import",
+              "<evaluator>/node_modules/tsx/dist/loader.mjs",
+              "--test",
+              "--test-concurrency=1",
+              "packages/agent-core/tests/core.test.mjs",
+              "packages/agent-core/tests/public-exports.test.mjs",
+              "packages/agent-core/tests/e0-canonical-json.test.mjs",
+              "packages/agent-node/tests/tools-port.test.mjs",
+              "packages/agent-node/tests/mcp-tools.test.mjs",
+              "packages/agent-node/tests/e0-tool-digests.test.mjs"
+            ],
+            "exitCode": 0,
+            "signal": null,
+            "durationMs": 3491,
+            "output": "✔ whole response is committed before ordered tools, and full opaque context survives normal continuation (6.848412ms)\n✔ partial streaming arguments never execute and late streaming events are ignored (0.592009ms)\n✔ invalid JSON, non-object arguments and unknown tools get truthful failed results without execution (0.900227ms)\n✔ approval rejects mismatched sessionId (0.896181ms)\n✔ approval rejects mismatched conversationId (0.63271ms)\n✔ approval rejects mismatched runId (0.891795ms)\n✔ approval rejects mismatched requestId (0.684606ms)\n✔ approval rejects mismatched workerGeneration (0.90172ms)\n✔ approval rejects mismatched toolCallId (0.75413ms)\n✔ approval rejects mismatched inputDigest (0.523167ms)\n✔ approval rejects mismatched policyRevision (0.691067ms)\n▶ expired approval, changed preconditions, and refusal cannot grant execution\n  ✔ expired (0.687521ms)\n  ✔ preconditions changed after approval (0.628062ms)\n  ✔ refusal with calls (0.520162ms)\n✔ expired approval, changed preconditions, and refusal cannot grant execution (2.738006ms)\n✔ denial is not repeatedly prompted for the same input in one run (0.739658ms)\n✔ cancellation after a completed tool preserves it and produces valid results for unexecuted calls (0.655644ms)\n▶ cancellation during approval never executes, and approval waiting does not consume active budget\n  ✔ cancel (0.799407ms)\n  ✔ pause (0.724777ms)\n✔ cancellation during approval never executes, and approval waiting does not consume active budget (2.113309ms)\n✔ cancellation after preparation resolves prepared call as unexecuted (0.549636ms)\n✔ durability failure at model_response stops before any subsequent operation (0.37041ms)\n✔ durability failure at tool_prepared stops before any subsequent operation (0.378201ms)\n✔ durability failure at tool_completed stops before any subsequent operation (0.385072ms)\n✔ checkpoint failure after completed effect retains result journal but blocks more tools/model requests (0.507794ms)\n✔ unknown write outcome leaves unmatched prepared marker and no fabricated tool result (0.586301ms)\n✔ known tool failure is stored and sent to next model without replay (0.551989ms)\n▶ tool, model, active-time and input-context budgets stop explicitly\n  ✔ tools (0.622725ms)\n  ✔ model (0.533802ms)\n  ✔ active time (0.654532ms)\n  ✔ context tokens (0.252335ms)\n  ✔ context bytes (0.226767ms)\n✔ tool, model, active-time and input-context budgets stop explicitly (2.771386ms)\n✔ storage capacity is checked before a tool can have effects (0.46423ms)\n▶ model failure has no automatic retry, incomplete response never executes, missing usage stays unknown\n  ✔ network failure (0.395657ms)\n  ✔ incomplete (0.480874ms)\n  ✔ usage missing (1.95244ms)\n✔ model failure has no automatic retry, incomplete response never executes, missing usage stays unknown (3.181576ms)\n▶ duplicate submission returns known durable result or busy, without accepting new work\n  ✔ finished (0.377341ms)\n  ✔ active (0.517038ms)\n  ✔ admission error (0.341787ms)\n✔ duplicate submission returns known durable result or busy, without accepting new work (1.515741ms)\n✔ reused call identity across model responses is blocked rather than executing again (0.687231ms)\n✔ terminal projection failure reports separately from committed result and does not replay (0.398102ms)\n✔ canonical input digest sorts nested keys and rejects non-JSON numbers (0.151154ms)\n✔ public paths retain exact canonical JSON behavior (0.974127ms)\n✔ all public entries load compiled ESM in a plain Node process (11.212113ms)\n✔ consumers cannot import source files or private build paths (3.609426ms)\n✔ source and build imports stay inside the engine or its declared platform dependencies (16.786922ms)\n✔ public declarations consume host ports without desktop or Electron types (951.91469ms)\n✔ local approval inputDigest remains compatible after serializer extraction (11.027249ms)\n✔ MCP names are stable, isolated by connection, bounded, and always command-risk (6.326715ms)\n✔ MCP only executes with an exact current approval and privately retained prepared input (2.994307ms)\n✔ MCP input bounds cover UTF-8 bytes, object shape, nested complexity and known credentials (2.358352ms)\n✔ MCP prepare rejects invalid required, integer, extra and nested arguments before approval or call (2.132457ms)\n✔ unsupported MCP validation schemas are omitted from exposed tools (0.883182ms)\n✔ MCP schema change invalidates approval and the post-journal recheck prevents calls (1.429603ms)\n✔ MCP description change invalidates approval and the post-journal recheck prevents calls (0.706149ms)\n✔ MCP remove change invalidates approval and the post-journal recheck prevents calls (0.634833ms)\n✔ MCP duplicate change invalidates approval and the post-journal recheck prevents calls (0.813638ms)\n✔ connection revisions, ownership and cancellation are rechecked after discovery (1.623686ms)\n✔ mutating a prepared object during discovery cannot change what gets executed (0.765777ms)\n✔ MCP remote failure, uncertain outcome, and oversized or unsupported output do not replay or expose secrets (6.348518ms)\n✔ valid text and structured output survives while isError remains a failed tool result (3.960806ms)\n✔ concurrent attempts for one prepared call execute at most once (1.01025ms)\n✔ catalog limits and secret-bearing metadata stop before any tool exposure (2.520063ms)\n✔ composed ports preserve local routing, reject namespace collision and isolate definition mutation (1.895595ms)\n✔ ranged read keeps full-content hash and rejects approval-time changes outside the range (24.304938ms)\n✔ write and sensitive read require exact unexpired approvals; changed inputs and owners are refused (20.702449ms)\n✔ AGENTS.md must reach the model before a write and changes invalidate approval (33.33971ms)\n✔ CLAUDE.md must reach the model before a write and changes invalidate approval (33.293581ms)\n✔ literal search/list skip sensitive and protected paths, enforce output/count limits and never run query syntax (27.122062ms)\n✔ command uses approved literal argv/cwd and ownership is rechecked immediately before execution (180.103077ms)\n✔ schema rejects unknown fields and pre-aborted tools never run (1.445016ms)\n✔ CLAUDE add invalidates approved commands with unchanged AGENTS rules (18.090836ms)\n✔ CLAUDE change invalidates approved commands with unchanged AGENTS rules (20.986035ms)\n✔ CLAUDE remove invalidates approved commands with unchanged AGENTS rules (18.6396ms)\n✔ selected project skills must reach the model before tools write and initial context marks them seen (32.749033ms)\n✔ selected skill change invalidates approved commands without changing AGENTS or CLAUDE (20.408618ms)\n✔ selected skill remove invalidates approved commands without changing AGENTS or CLAUDE (14.415447ms)\n✔ selected skill linked-directory invalidates approved commands without changing AGENTS or CLAUDE (19.083048ms)\n✔ selected skill .agents/skills/review/SKILL.md mutation invalidates edit_file approval and preserves the target (18.855841ms)\n✔ selected skill tools/custom/review/SKILL.md mutation invalidates edit_file approval and preserves the target (13.491375ms)\n✔ a full 32KiB selected skill already supplied to the model does not exhaust read, list or search output (37.69656ms)\n✔ large known skills retain new AGENTS.md text once, and rejected reads never mark it seen (68.852286ms)\n✔ large known skills retain new CLAUDE.md text once, and rejected reads never mark it seen (62.26186ms)\n✔ edit_file approval binds the exact displayed fragment replacement and cannot be reused for another edit (21.679655ms)\n✔ edit_file rejects approval-time changes outside the matched fragment and cancellation before execute (10.411831ms)\n✔ AGENTS.md must reach the model before edit_file and changes invalidate approval (22.431321ms)\n✔ CLAUDE.md must reach the model before edit_file and changes invalidate approval (21.512697ms)\n✔ edit_file refuses unsupported options, ambiguous matches and invalid text before requesting approval (6.328988ms)\nℹ tests 91\nℹ suites 0\nℹ pass 91\nℹ fail 0\nℹ cancelled 0\nℹ skipped 0\nℹ todo 0\nℹ duration_ms 3454.159274\n",
+            "truncated": false
+          }
+        ],
+        "realQualityStatus": "pending",
+        "graphicalAcceptance": "pending",
+        "independentHumanReview": "required"
+      },
+      "tamperingRejected": true
+    }
+  ]
+}

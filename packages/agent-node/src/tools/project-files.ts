@@ -115,13 +115,14 @@ export class ProjectFiles {
     if (process.platform === 'linux' && await fs.realpath(`/proc/self/fd/${handle.fd}`) !== snapshot.absolute) throw changed();
     await this.verify(snapshot);
   }
-  async read(relative: string, signal?: AbortSignal): Promise<TextFile> {
+  async read(relative: string, signal?: AbortSignal, maximumBytes = this.maxFileBytes): Promise<TextFile> {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 0 || maximumBytes > this.maxFileBytes) throw new Error('Invalid per-read byte limit.');
     throwIfAborted(signal);
     const snapshot = await this.snapshot(relative);
     const { handle, handles } = await this.openSnapshot(snapshot);
     try {
       const before = await handle.stat({ bigint: true });
-      if (before.size > BigInt(this.maxFileBytes)) throw new Error(`File exceeds the ${this.maxFileBytes} byte limit.`);
+      if (before.size > BigInt(maximumBytes)) throw new Error(`File exceeds the ${maximumBytes} byte limit.`);
       // Read the entire object even when callers later select a range: its version is never a fragment hash.
       const buffer = Buffer.alloc(Number(before.size));
       let offset = 0;

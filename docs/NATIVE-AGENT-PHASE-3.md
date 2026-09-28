@@ -1,5 +1,7 @@
 # 阶段三：自研 Agent Alpha 开发计划
 
+本页保留阶段三的历史计划与候选状态，文中的 Draft/分支/CI 描述只属于当时阶段。当前正式运行与待验收项统一见[独立清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)；历史证据不替代当前候选验收。
+
 日期：2026-09-25（北京时间）。
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。

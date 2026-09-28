@@ -1,0 +1,11 @@
+--- a/apps/desktop/src/renderer/chat-snapshot-sync.ts
++++ b/apps/desktop/src/renderer/chat-snapshot-sync.ts
+@@ -46,8 +46,6 @@
+       // A fresh read may discover another restart even if all its events were lost.
+       if (expected && expected.hostEpoch !== version.hostEpoch && requestGeneration !== this.notificationGeneration) return false;
+       if (old?.hostEpoch === version.hostEpoch && (version.revision < old.revision || version.eventSequence < old.eventSequence)) return false;
+-      if (old?.hostEpoch === version.hostEpoch && old.conversationId === version.conversationId
+-        && old.workerGeneration !== undefined && version.workerGeneration !== undefined && version.workerGeneration < old.workerGeneration) return false;
+       if (old && old.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(old.hostEpoch);
+       if (expected && expected.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(expected.hostEpoch);
+       this.expected = version;

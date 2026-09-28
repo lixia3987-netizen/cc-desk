@@ -1,5 +1,7 @@
 # 阶段三实现与验收记录
 
+本页是阶段三固定候选的**历史验收档案**，包括当时的分支、PR 和 CI 状态；不代表 PR #33 仍未合并或当前仍自动运行 CI。后续候选的真实服务、图形及三平台正式状态统一登记在[独立运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)，历史通过/失败均保留，不迁移为当前通过。
+
 更新日期：2026-09-27。开发基线 `dev/native-agent@bcef474f9381b37cbd5184726ae05b210355699f`，实现分支 `feat/native-agent-alpha`。main 基线 `a3f94b6c74f2abfad7a38306803319226dd5d436` 未修改。本阶段不发布 Release。
 
 当前状态：**Windows 陈旧父进程关系修复已实现，真实远程模型验收待完成；各提交技术状态以 PR 最新关联 CI 为准**。第十六代码候选 `68259e0` 曾通过三平台技术检查，但随后的纯文档提交 `4fb62e7` 在相同产品代码下再次发生 Windows 清理失败（`creation_before_spawn`）；macOS、Linux 及 workspace 通过。本轮同时修复 Claude 与终端树清理的陈旧 `ParentProcessId` 关系，增加真实 Windows 基线失败/修复通过对照和具体身份诊断；新结果不沿用旧候选绿灯。每次提交的最终运行和计数同步记录在 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 的当前验证部分。第十四候选终端故障缺少原始 cause，仍不能确认它与本轮问题同源。真实服务、模型、凭据来源及预算尚未指定，本地协议服务不代表真实模型任务验收。[PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 保持 Draft；变更仅在 `feat/native-agent-alpha`，main 与 dev/native-agent 基线不移动，不发布 Release。
