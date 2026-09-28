@@ -4,7 +4,7 @@ import type { JsonObject, JsonValue } from '@cc-desk/agent-core';
 // accidental permission to send arguments the host has not validated.
 type Schema = JsonObject | boolean;
 const MAX_SCHEMA_BYTES = 16 * 1024;
-const MAX_INPUT_BYTES = 64 * 1024;
+const MAX_VALUE_BYTES = 64 * 1024;
 const MAX_DEPTH = 32;
 const MAX_NODES = 8192;
 const MAX_WORK = 32768;
@@ -20,8 +20,7 @@ const COUNTS = ['minItems', 'maxItems', 'minLength', 'maxLength', 'minProperties
 const NUMBERS = ['minimum', 'maximum', 'exclusiveMinimum', 'exclusiveMaximum'];
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value);
 const own = (value: JsonObject, key: string): boolean => Object.hasOwn(value, key);
-function invalidSchema(): never { throw new Error('Unsupported or invalid MCP input JSON Schema.'); }
-function invalidInput(): never { throw new Error('MCP tool arguments do not match the supported input JSON Schema.'); }
+function invalidSchema(): never { throw new Error('Unsupported or invalid MCP JSON Schema.'); }
 
 function checkJson(value: unknown, maxBytes: number): asserts value is JsonValue {
   let nodes = 0;
@@ -40,9 +39,14 @@ function checkJson(value: unknown, maxBytes: number): asserts value is JsonValue
 }
 
 /** Check the full schema before exposing its tool; unsupported definitions are omitted. */
-export function assertMcpInputSchema(schema: JsonObject): void {
+export function assertMcpInputSchema(schema: JsonObject): void { assertMcpSchema(schema, true); }
+
+/** Output schemas retain the same bounded assertions and may describe any JSON root. */
+export function assertMcpOutputSchema(schema: JsonObject): void { assertMcpSchema(schema, false); }
+
+function assertMcpSchema(schema: JsonObject, objectRoot: boolean): void {
   checkJson(schema, MAX_SCHEMA_BYTES);
-  if (!object(schema) || schema.type !== 'object') invalidSchema();
+  if (!object(schema) || objectRoot && schema.type !== 'object') invalidSchema();
   let schemas = 0;
   const visit = (candidate: JsonValue, depth: number): void => {
     if (++schemas > 1024 || depth > MAX_DEPTH) invalidSchema();
@@ -74,10 +78,17 @@ export function assertMcpInputSchema(schema: JsonObject): void {
 }
 
 /** Validate every supported assertion locally, without coercion, defaults, network refs or regex. */
-export function assertMcpToolInput(schema: JsonObject, input: JsonObject): void {
-  assertMcpInputSchema(schema);
-  try { checkJson(input, MAX_INPUT_BYTES); } catch { invalidInput(); }
-  if (!object(input)) invalidInput();
+export function assertMcpToolInput(schema: JsonObject, input: JsonObject): void { assertMcpValue(schema, input, true); }
+
+export function assertMcpToolOutput(schema: JsonObject, output: JsonValue): void { assertMcpValue(schema, output, false); }
+
+function assertMcpValue(schema: JsonObject, input: JsonValue, objectRoot: boolean): void {
+  assertMcpSchema(schema, objectRoot);
+  const invalidInput = (): never => { throw new Error(objectRoot
+    ? 'MCP tool arguments do not match the supported input JSON Schema.'
+    : 'MCP tool structured output does not match the supported output JSON Schema.'); };
+  try { checkJson(input, MAX_VALUE_BYTES); } catch { invalidInput(); }
+  if (objectRoot && !object(input)) invalidInput();
   let work = 0;
   const step = (): void => { if (++work > MAX_WORK) invalidInput(); };
   const equal = (left: JsonValue, right: JsonValue): boolean => {

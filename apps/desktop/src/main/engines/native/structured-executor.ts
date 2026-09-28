@@ -6,7 +6,7 @@ import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createLocalToolPort } from '@cc-desk/agent-node/tools';
 import { ProcessSupervisor } from '@cc-desk/agent-node/process-supervisor';
 import { loadProjectInstructions } from '@cc-desk/agent-node/project-instructions';
-import { composeToolPorts, createMcpToolPort } from '@cc-desk/agent-node/mcp-tools';
+import { composeToolPorts, createMcpToolPort, type ManagedMcpToolPort } from '@cc-desk/agent-node/mcp-tools';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import type { ExecutionSubmission } from '@cc-desk/contracts/execution-ports';
 import type { ChatDecision, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '../../../shared/chat';
@@ -185,6 +185,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async execute(id: string, active: ActiveRun): Promise<ChatTurnResult> {
     let result: ChatTurnResult | undefined, failure: unknown;
+    let mcpTools: ManagedMcpToolPort | undefined;
     const startedAt = performance.now();
     try {
       await this.hydration.get(id);
@@ -226,7 +227,6 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const assertOwnership = async () => { this.assertActive(id, active); await this.options.assertOwnership?.(id, identity); this.assertActive(id, active); };
       // Catalog reads are explicit consequences of this session's selected services.
       // They precede the model request and share its elapsed-time/input budget.
-      let mcpTools: ToolPort | undefined;
       if (mcpConnections.length) {
         const remaining = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
         if (remaining < 1) throw new Error('本次执行时长预算已耗尽，未读取 MCP 工具目录。');
@@ -281,7 +281,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await assertOwnership();
       const maxActiveMs = automatic.compacted || mcpConnections.length ? Math.floor(config.maxActiveMs - (performance.now() - startedAt)) : config.maxActiveMs;
       if (maxActiveMs < 1 || automatic.remainingRequests < 1) throw new Error('自动压缩尝试已占用本次请求或时长预算，剩余额度不足；请检查已保存记录并调整预算后重新发送。');
-      const mcpMetadata = mcpConnections.map(({ connectionId, revision, name, endpoint }) => ({ connectionId, revision, name, endpoint }));
+      const mcpMetadata = mcpConnections.map(({ connectionId, revision, name, endpoint, protocolVersion }) => ({ connectionId, revision, name, endpoint, protocolVersion }));
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest,
         ...(mcpMetadata.length ? { mcpConnections: mcpMetadata, mcpTools: mcpTools!.definitions } : {}) })));
       const durable: RunStore = {
@@ -310,6 +310,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     } finally {
       active.phase = undefined;
       active.approval?.settle('denied');
+      try { await mcpTools?.close(); }
+      catch { active.cleanupUnconfirmed = true; }
       try { if (active.identity) await this.supervisor.stopOwner(active.identity.runId); }
       catch { active.cleanupUnconfirmed = true; }
       try {

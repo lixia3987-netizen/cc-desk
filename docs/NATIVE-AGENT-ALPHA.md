@@ -1,6 +1,6 @@
 # 自研 Agent Alpha 操作与实现说明
 
-当前集成基线（2026-09-28，北京时间）：PR #33–#39 已合入 `dev/native-agent@5f89aea`，涵盖 P3、P4a、P4b、双项目指令文件、仅手动触发 CI 和项目 Skills；未改动 main，未发布 Release。P4c 项目 Skills 的范围与结果见[项目 Skills 记录](NATIVE-AGENT-PHASE-4C-SKILLS.md)；本批继续实现 [MCP HTTP 工具](NATIVE-AGENT-PHASE-4C-MCP.md)，图形、三平台及远程验收仍待执行。Claude 持续保持默认引擎，P5 只推进功能替换和评估；未来任何默认引擎切换须用户自行评估后另行明确决定。
+当前集成基线（2026-09-28，北京时间）：PR #33–#40 已合入 `dev/native-agent@e4fa906`，涵盖 P3、P4a、P4b、双项目指令文件、仅手动触发 CI、项目 Skills 与首批 MCP HTTP 工具；未改动 main，未发布 Release。P4c 项目 Skills 的范围与结果见[项目 Skills 记录](NATIVE-AGENT-PHASE-4C-SKILLS.md)；本批继续实现 [MCP 2025 Streamable HTTP 兼容](NATIVE-AGENT-PHASE-4C-MCP-2025.md)，图形、三平台及远程验收仍待执行。Claude 持续保持默认引擎，P5 只推进功能替换和评估；未来任何默认引擎切换须用户自行评估后另行明确决定。
 
 历史阶段三候选记录（2026-09-27）：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此当时同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 对应候选的 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。当时工作分支为 `feat/native-agent-alpha`，以下开发分支及候选均为历史记录，不表示相关 PR 仍未合并。
 
@@ -38,9 +38,9 @@ P4c 首批提供项目 Skills 的显式选择入口：在 native 会话的「运
 
 写入含 `projectSkills` 的新配置后，旧版严格配置校验会拒绝继续该 native 会话；这不表示数据损坏，应保留原数据并使用支持该字段的版本。
 
-MCP 工具支持固定 `2026-07-28` Streamable HTTP 协议：在设置中配置独立连接与凭据，再在 native 会话运行配置中显式选择（默认空、最多 4 项）。发送任务读取工具目录，每次调用单独审批；目录和工具定义计入预算，定义或项目指令变化使旧审批失效，未知调用结果不自动重试。只接受文本/JSON 结果，详细边界与本地验证见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)。含 `mcpConnections` 的新配置同样需要支持该字段的版本读取。
+MCP 工具支持默认 `2026-07-28` 与显式选择的 `2025-11-25` Streamable HTTP 同步工具：在设置中配置独立连接、协议版本与凭据，再在 native 会话运行配置中显式选择（默认空、最多 4 项）。旧连接缺省保持 2026，无自动版本回退；2025 服务逐回合初始化并清理其私有 session。发送任务读取工具目录，每次调用单独审批；目录和工具定义计入预算，定义、连接版本或项目指令变化使旧审批失效，未知调用结果不自动重试。只接受文本/JSON 结果，详细共用边界见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)，2025 范围与本批验证见 [2025 兼容说明](NATIVE-AGENT-PHASE-4C-MCP-2025.md)。含新增配置字段的文件需要支持相应字段的版本读取。
 
-本阶段不提供 native 终端、外部历史导入、分叉、Claude 命令目录、附件、运行中配置、全局或自动启用的 Skills，也未提供 MCP stdio、旧协议、OAuth 或 resources/prompts。普通下一回合和干净重启续聊使用本地完整协议上下文。已有对话切换服务地址或模型需新建会话。用量使用服务返回值；缺失时不伪造 token、窗口或费用。
+本阶段不提供 native 终端、外部历史导入、分叉、Claude 命令目录、附件、运行中配置、全局或自动启用的 Skills，也未提供 MCP stdio、旧 HTTP+SSE、其他历史版本、GET 长连重连、OAuth、tasks、roots、sampling、elicitation 或 resources/prompts。普通下一回合和干净重启续聊使用本地完整协议上下文。已有对话切换服务地址或模型需新建会话。用量使用服务返回值；缺失时不伪造 token、窗口或费用。P4c 整体仍未完成。
 
 默认每回合 30 次模型请求、60 次工具调用、10 分钟主动执行时长、5 分钟审批等待、单工具输出 64 KiB；单命令最长 120 秒。完整上下文限制 8 MiB，IPC 消息限制 16 MiB，账本总量默认 256 MiB。token 估计与请求输出上限不能保证远程费用绝对封顶。达到预算即明确停止，不静默截掉历史。
 

@@ -11,10 +11,10 @@ import type { ExecutionDescriptor } from '../src/shared/execution';
 
 const fail = () => { throw new Error('Initial rendering must not read or change connections'); };
 function connection(id: string, options: Partial<NativeMcpConnectionView> = {}): NativeMcpConnectionView {
-  return { id, name: 'same-name', revision: 1, endpoint: `https://${id}.example.test/mcp`, allowLoopbackHttp: false,
+  return { id, name: 'same-name', revision: 1, endpoint: `https://${id}.example.test/mcp`, protocolVersion: '2026-07-28', allowLoopbackHttp: false,
     enabled: true, auth: { mode: 'none' }, credentialConfigured: true, ready: true, ...options };
 }
-const result: NativeMcpConnectionList = { connections: [connection('one'), connection('two'), connection('disabled', { enabled: false, ready: false }), connection('unready', { ready: false, error: '<script>missing token</script>' })], storage: { persistentAvailable: false } };
+const result: NativeMcpConnectionList = { connections: [connection('one'), connection('two', { protocolVersion: '2025-11-25' }), connection('disabled', { enabled: false, ready: false }), connection('unready', { ready: false, error: '<script>missing token</script>' })], storage: { persistentAvailable: false } };
 const renderChoices = (selected: string[], data: NativeMcpConnectionList | undefined = result, disabled = false) => renderToStaticMarkup(createElement(NativeMcpChoices, { selected, result: data, disabled, onChange: fail }));
 function inputs(node: ReactNode): Array<{ checked: boolean; disabled: boolean; onChange(): void }> {
   if (Array.isArray(node)) return node.flatMap(inputs);
@@ -43,6 +43,8 @@ test('MCP choices disambiguate IDs, preserve missing entries, and escape metadat
   assert.match(markup, /连接当前不可用，已保留选择；可取消勾选/);
   assert.match(markup, /已禁用/);
   assert.match(markup, /未就绪/);
+  assert.match(markup, /协议 2026-07-28/);
+  assert.match(markup, /协议 2025-11-25/);
   assert.match(markup, /&lt;script&gt;missing token&lt;\/script&gt;/);
   assert.doesNotMatch(markup, /<script>/);
 });
@@ -106,7 +108,9 @@ test('MCP settings explain local-only operations, supported transport, and expli
   const markup = renderToStaticMarkup(createElement(NativeMcpConnections));
   assert.match(markup, /Native MCP 连接/);
   assert.match(markup, /MCP HTTP 2026-07-28/);
-  assert.match(markup, /旧协议与 stdio 暂不支持/);
+  assert.match(markup, /2025-11-25 Streamable HTTP 同步工具/);
+  assert.match(markup, /旧 HTTP\+SSE 与 stdio 暂不支持/);
+  assert.match(markup, /协议版本不会自动回退/);
   assert.match(markup, /默认引擎仍为 Claude/);
   assert.doesNotMatch(markup, /测试连接|type="password"/);
 });

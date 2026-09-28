@@ -1,18 +1,22 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonObject, JsonValue } from '@cc-desk/agent-core'
-import { assertMcpInputSchema, assertMcpToolInput } from './mcp-schema.js'
+import { assertMcpInputSchema, assertMcpOutputSchema, assertMcpToolInput, assertMcpToolOutput } from './mcp-schema.js'
 
 /** This client intentionally does not negotiate or fall back to older MCP revisions. */
 export const MCP_PROTOCOL_VERSION = '2026-07-28'
+export type McpProtocolVersion = typeof MCP_PROTOCOL_VERSION | '2025-11-25'
 
 export interface McpTool {
   name: string
   description?: string
   inputSchema: JsonObject
+  outputSchema?: JsonObject
 }
 
 export interface McpHttpClientOptions {
   endpoint: string
+  /** Explicit revision selection; no protocol downgrade or automatic retry. */
+  protocolVersion?: McpProtocolVersion
   allowLoopbackHttp?: boolean
   bearerToken?: string
   forbiddenValues?: readonly (string | undefined)[]
@@ -40,6 +44,8 @@ const LIMIT = {
   descriptionBytes: 8192,
   headers: 64,
   headerBytes: 8192,
+  serverPings: 8,
+  cleanupMs: 2000,
   depth: 32,
   nodes: 16384,
 } as const
@@ -106,16 +112,25 @@ function headerParameters(schema: JsonObject): HeaderParameter[] {
   return result
 }
 
-function validateTool(value: unknown): McpTool {
+function validateTool(value: unknown, legacy = false): McpTool {
   validateJson(value, 'tool_schema')
   if (!object(value) || typeof value.name !== 'string' || !value.name.length || value.name.length > 128 ||
       !object(value.inputSchema) || value.inputSchema.type !== 'object' ||
       (value.description !== undefined && (typeof value.description !== 'string' || Buffer.byteLength(value.description) > LIMIT.descriptionBytes)) ||
       Buffer.byteLength(JSON.stringify(value.inputSchema)) > LIMIT.schemaBytes) fail('tool_schema')
-  headerParameters(value.inputSchema)
-  try { assertMcpInputSchema(value.inputSchema) } catch { fail('tool_schema') }
+  if (!legacy) headerParameters(value.inputSchema)
+  try {
+    assertMcpInputSchema(value.inputSchema)
+    if (own(value, 'outputSchema')) {
+      if (!object(value.outputSchema) || legacy && value.outputSchema.type !== 'object') fail('tool_schema')
+      assertMcpOutputSchema(value.outputSchema)
+    }
+  } catch { fail('tool_schema') }
+  if (own(value, 'execution') && (!object(value.execution) ||
+      (value.execution.taskSupport !== undefined && !['optional', 'forbidden'].includes(String(value.execution.taskSupport))))) fail('tool_schema')
   // Server annotations, instructions, icons and extension metadata grant no local privileges.
-  return { name: value.name, ...(typeof value.description === 'string' ? { description: value.description } : {}), inputSchema: value.inputSchema }
+  return { name: value.name, ...(typeof value.description === 'string' ? { description: value.description } : {}), inputSchema: value.inputSchema,
+    ...(object(value.outputSchema) ? { outputSchema: value.outputSchema } : {}) }
 }
 
 function encodeHeader(value: string): string {
@@ -170,16 +185,27 @@ class SseParser {
   }
 }
 
-interface Operation { signal: AbortSignal; sentCall: boolean; bytes: number }
+interface Operation { signal: AbortSignal; sentCall: boolean; bytes: number; serverPings: number }
 
 export class McpHttpClient {
   readonly #endpoint: string
   readonly #bearerToken: string | undefined
   readonly #forbiddenValues: string[]
   readonly #timeoutMs: number
+  readonly #protocolVersion: McpProtocolVersion
+  readonly #controllers = new Set<AbortController>()
+  readonly #pending = new Set<Promise<void>>()
+  #sessionId: string | undefined
+  #initialization: Promise<void> | undefined
+  #hasTools = false
+  #invalid = false
+  #closed = false
+  #closePromise: Promise<void> | undefined
 
   constructor(options: McpHttpClientOptions) {
     this.#endpoint = endpoint(options.endpoint, options.allowLoopbackHttp === true)
+    this.#protocolVersion = options.protocolVersion ?? MCP_PROTOCOL_VERSION
+    if (this.#protocolVersion !== MCP_PROTOCOL_VERSION && this.#protocolVersion !== '2025-11-25') fail('configuration')
     if (options.bearerToken !== undefined && (!options.bearerToken.length || options.bearerToken.length > 8192 || !/^[\x21-\x7e]+$/.test(options.bearerToken))) fail('configuration')
     this.#bearerToken = options.bearerToken
     this.#forbiddenValues = [...new Set([options.bearerToken, ...(options.forbiddenValues ?? [])].filter((item): item is string => typeof item === 'string' && item.length > 0))]
@@ -190,12 +216,17 @@ export class McpHttpClient {
 
   async discoverTools(signal: AbortSignal): Promise<McpTool[]> {
     return this.operation(signal, async operation => {
-      const discovery = await this.request('server/discover', {}, {}, operation)
-      if (discovery.resultType !== 'complete' || !Array.isArray(discovery.supportedVersions) ||
-          discovery.supportedVersions.some(version => typeof version !== 'string') ||
-          !discovery.supportedVersions.includes(MCP_PROTOCOL_VERSION) || !object(discovery.capabilities)) fail('unsupported_server')
-      if (!own(discovery.capabilities, 'tools')) return []
-      if (!object(discovery.capabilities.tools)) fail('response_schema')
+      if (this.legacy) {
+        await this.initialize(operation)
+        if (!this.#hasTools) return []
+      } else {
+        const discovery = await this.request('server/discover', {}, {}, operation)
+        if (discovery.resultType !== 'complete' || !Array.isArray(discovery.supportedVersions) ||
+            discovery.supportedVersions.some(version => typeof version !== 'string') ||
+            !discovery.supportedVersions.includes(MCP_PROTOCOL_VERSION) || !object(discovery.capabilities)) fail('unsupported_server')
+        if (!own(discovery.capabilities, 'tools')) return []
+        if (!object(discovery.capabilities.tools)) fail('response_schema')
+      }
       const tools: McpTool[] = []
       const names = new Set<string>()
       const cursors = new Set<string>()
@@ -203,12 +234,12 @@ export class McpHttpClient {
       let count = 0
       for (let page = 0; page < LIMIT.pages; page++) {
         const result = await this.request('tools/list', cursor === undefined ? {} : { cursor }, {}, operation)
-        if (result.resultType !== 'complete' || !Array.isArray(result.tools)) fail('response_schema')
+        if (!this.completeResult(result) || !Array.isArray(result.tools)) fail('response_schema')
         count += result.tools.length
         if (count > LIMIT.tools) fail('catalog_limit')
         for (const candidate of result.tools) {
           let tool: McpTool
-          try { tool = validateTool(candidate) } catch (error) {
+          try { tool = validateTool(candidate, this.legacy) } catch (error) {
             // MCP requires excluding invalid header annotations without hiding other tools.
             if (error instanceof McpClientError && error.code === 'tool_schema') continue
             throw error
@@ -228,42 +259,123 @@ export class McpHttpClient {
 
   async callTool(tool: McpTool, input: JsonObject, signal: AbortSignal): Promise<JsonObject> {
     return this.operation(signal, async operation => {
-      const checkedTool = validateTool(tool)
+      const checkedTool = validateTool(tool, this.legacy)
       validateJson(input, 'tool_arguments')
       if (!object(input)) fail('tool_arguments')
       try { assertMcpToolInput(checkedTool.inputSchema, input) } catch { fail('tool_arguments') }
       this.assertNoSecrets(input)
-      const headers = toolHeaders(checkedTool, input)
+      if (this.legacy) {
+        await this.initialize(operation)
+        if (!this.#hasTools) fail('unsupported_server')
+      }
+      const headers = this.legacy ? {} : toolHeaders(checkedTool, input)
       const result = await this.request('tools/call', { name: checkedTool.name, arguments: input }, headers, operation)
-      if (result.resultType !== 'complete' || !Array.isArray(result.content) ||
-          (result.isError !== undefined && typeof result.isError !== 'boolean') || own(result, 'inputRequests') || own(result, 'requestState')) fail('unsupported_result', 'unknown')
+      if (!this.completeResult(result) || !Array.isArray(result.content) ||
+          (result.isError !== undefined && typeof result.isError !== 'boolean') || own(result, 'inputRequests') || own(result, 'requestState') || own(result, 'task') ||
+          (this.legacy && own(result, 'structuredContent') && !object(result.structuredContent))) fail('unsupported_result', 'unknown')
       // This release accepts text and structured JSON only. It never follows resource links,
       // runs server requests, opens elicitation URLs, or feeds unvalidated binary content onward.
       if (result.content.some(item => !object(item) || item.type !== 'text' || typeof item.text !== 'string')) fail('unsupported_content', 'unknown')
+      if (checkedTool.outputSchema && (own(result, 'structuredContent') || result.isError !== true)) {
+        if (!own(result, 'structuredContent')) fail('output_schema', 'unknown')
+        try { assertMcpToolOutput(checkedTool.outputSchema, result.structuredContent) } catch { fail('output_schema', 'unknown') }
+      }
       return { resultType: 'complete', content: result.content.map(item => ({ type: 'text', text: (item as JsonObject).text })),
         ...(own(result, 'structuredContent') ? { structuredContent: result.structuredContent } : {}),
         ...(typeof result.isError === 'boolean' ? { isError: result.isError } : {}) }
     })
   }
 
+  private get legacy(): boolean { return this.#protocolVersion === '2025-11-25' }
+
+  private completeResult(result: JsonObject): boolean {
+    return this.legacy ? !own(result, 'resultType') : result.resultType === 'complete'
+  }
+
+  private assertAvailable(signal?: AbortSignal): void {
+    if (this.#closed) fail('closed')
+    if (this.#invalid) fail('session_expired')
+    if (signal?.aborted) fail('cancelled')
+  }
+
+  private async initialize(operation: Operation): Promise<void> {
+    this.assertAvailable(operation.signal)
+    if (!this.#initialization) this.#initialization = (async () => {
+      const result = await this.request('initialize', {
+        protocolVersion: this.#protocolVersion,
+        capabilities: {}, clientInfo: { name: 'cc-desk-native', version: '0.0.0' },
+      }, {}, operation)
+      if (result.protocolVersion !== this.#protocolVersion) fail('unsupported_server')
+      if (own(result, 'resultType') || !object(result.serverInfo) ||
+          typeof result.serverInfo.name !== 'string' || !result.serverInfo.name.length || result.serverInfo.name.length > 200 ||
+          typeof result.serverInfo.version !== 'string' || !result.serverInfo.version.length || result.serverInfo.version.length > 200 ||
+          !object(result.capabilities) || (own(result.capabilities, 'tools') && !object(result.capabilities.tools))) fail('response_schema')
+      await this.postAcknowledged({ jsonrpc: '2.0', method: 'notifications/initialized' }, operation.signal)
+      this.#hasTools = own(result.capabilities, 'tools')
+    })()
+    // Concurrent discovery shares the handshake, but an aborted waiter does not cancel it.
+    await new Promise<void>((resolve, reject) => {
+      const abort = (): void => { reject(new McpClientError('cancelled', 'not_executed')) }
+      if (operation.signal.aborted) { abort(); return }
+      operation.signal.addEventListener('abort', abort, { once: true })
+      this.#initialization!.then(resolve, reject).finally(() => operation.signal.removeEventListener('abort', abort))
+    })
+    this.assertAvailable(operation.signal)
+  }
+
+  /** Abort and join every local request before best-effort remote session disposal. */
+  close(): Promise<void> {
+    if (this.#closePromise) return this.#closePromise
+    this.#closed = true
+    for (const controller of this.#controllers) controller.abort()
+    this.#closePromise = (async () => {
+      await Promise.all([...this.#pending])
+      // A handshake can be settling after its caller was aborted; it may never
+      // continue into tools/list or tools/call after this point.
+      await this.#initialization?.catch(() => undefined)
+      if (this.legacy && this.#sessionId) {
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), LIMIT.cleanupMs)
+        try {
+          const response = await fetch(this.#endpoint, { method: 'DELETE', headers: this.headers(), signal: controller.signal,
+            redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+          // DELETE is advisory: 404/405 and all other failures cannot establish
+          // that a remote task stopped, and do not retain local session ownership.
+          await response.body?.cancel().catch(() => undefined)
+        } catch { /* No remote body, headers or diagnostic escape cleanup. */ }
+        finally { clearTimeout(timer); controller.abort() }
+      }
+    })()
+    return this.#closePromise
+  }
+
   private async operation<T>(signal: AbortSignal, action: (operation: Operation) => Promise<T>): Promise<T> {
-    if (signal.aborted) fail('cancelled')
+    this.assertAvailable(signal)
     const controller = new AbortController()
+    let finish!: () => void
+    const pending = new Promise<void>(resolve => { finish = resolve })
+    this.#pending.add(pending)
+    this.#controllers.add(controller)
     let timedOut = false
     const abort = (): void => { controller.abort() }
     signal.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => { timedOut = true; controller.abort() }, this.#timeoutMs)
-    const operation: Operation = { signal: controller.signal, sentCall: false, bytes: 0 }
+    const timer = setTimeout(() => { if (!controller.signal.aborted) { timedOut = true; controller.abort() } }, this.#timeoutMs)
+    const operation: Operation = { signal: controller.signal, sentCall: false, bytes: 0, serverPings: 0 }
     try { return await action(operation) } catch (error) {
       const outcome = operation.sentCall ? 'unknown' : 'not_executed'
       if (timedOut) throw new McpClientError('timeout', outcome)
       if (signal.aborted) throw new McpClientError('cancelled', outcome)
+      if (this.#closed) throw new McpClientError('closed', outcome)
+      if (this.#invalid) throw new McpClientError('session_expired', outcome)
       if (error instanceof McpClientError) throw new McpClientError(error.code, operation.sentCall && error.outcome === 'not_executed' ? 'unknown' : error.outcome)
       throw new McpClientError('transport', outcome)
     } finally {
       clearTimeout(timer)
       signal.removeEventListener('abort', abort)
       controller.abort()
+      this.#controllers.delete(controller)
+      this.#pending.delete(pending)
+      finish()
     }
   }
 
@@ -323,35 +435,104 @@ export class McpHttpClient {
     return message.result
   }
 
+  private headers(method?: string, extra: Record<string, string> = {}): Record<string, string> {
+    return { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json',
+      ...(this.legacy && method === 'initialize' ? {} : { 'MCP-Protocol-Version': this.#protocolVersion }),
+      ...(!this.legacy && method ? { 'Mcp-Method': method } : {}), ...extra,
+      ...(this.#sessionId ? { 'Mcp-Session-Id': this.#sessionId } : {}),
+      ...(this.#bearerToken ? { Authorization: `Bearer ${this.#bearerToken}` } : {}) }
+  }
+
+  private checkSession(response: Response, initialize = false): void {
+    if (!this.legacy) return
+    if (response.status === 404 && !initialize) {
+      this.#invalid = true
+      for (const controller of this.#controllers) controller.abort()
+      fail('session_expired')
+    }
+    const session = response.headers.get('mcp-session-id')
+    if (session === null) return
+    if (!session.length || session.length > 1024 || !/^[\x21-\x7e]+$/.test(session) ||
+        (!initialize && session !== this.#sessionId) || (initialize && this.#sessionId !== undefined && session !== this.#sessionId)) {
+      this.#invalid = true
+      for (const controller of this.#controllers) controller.abort()
+      fail('session_expired')
+    }
+    if (initialize) {
+      this.#sessionId = session
+      if (!this.#forbiddenValues.includes(session)) this.#forbiddenValues.push(session)
+    }
+  }
+
+  private async postAcknowledged(message: JsonObject, signal: AbortSignal, cleanup = false): Promise<void> {
+    if (!cleanup) this.assertAvailable(signal)
+    const body = JSON.stringify(message)
+    this.assertNoSecrets(body)
+    if (Buffer.byteLength(body) > LIMIT.requestBytes) fail('request_limit')
+    const response = await fetch(this.#endpoint, { method: 'POST', headers: this.headers(typeof message.method === 'string' ? message.method : undefined),
+      body, signal, redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+    const reader = response.body?.getReader()
+    try {
+      this.checkSession(response)
+      if (response.status !== 202) fail('http_error')
+      if (reader) {
+        const first = await reader.read()
+        if (!first.done) fail('response_schema')
+      }
+    } finally {
+      await reader?.cancel().catch(() => undefined)
+      reader?.releaseLock()
+    }
+  }
+
+  private async cancelRequest(id: string): Promise<void> {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), LIMIT.cleanupMs)
+    try {
+      await this.postAcknowledged({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } }, controller.signal, true)
+    } catch { /* Cancellation acknowledgement never proves whether the tool ran. */ }
+    finally { clearTimeout(timer); controller.abort() }
+  }
+
   private async request(method: string, params: JsonObject, extraHeaders: Record<string, string>, operation: Operation): Promise<JsonObject> {
-    if (operation.signal.aborted) fail('cancelled')
+    this.assertAvailable(operation.signal)
     const id = randomUUID()
-    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params: { ...params, _meta: {
+    const body = JSON.stringify({ jsonrpc: '2.0', id, method, params: this.legacy ? params : { ...params, _meta: {
       'io.modelcontextprotocol/protocolVersion': MCP_PROTOCOL_VERSION,
       'io.modelcontextprotocol/clientInfo': { name: 'cc-desk-native', version: '0.0.0' },
       'io.modelcontextprotocol/clientCapabilities': {},
     } } })
     this.assertNoSecrets(body)
     if (Buffer.byteLength(body) > LIMIT.requestBytes) fail('request_limit')
-    const headers = { Accept: 'application/json, text/event-stream', 'Content-Type': 'application/json',
-      'MCP-Protocol-Version': MCP_PROTOCOL_VERSION, 'Mcp-Method': method, ...extraHeaders,
-      ...(this.#bearerToken ? { Authorization: `Bearer ${this.#bearerToken}` } : {}) }
     // Once fetch receives a call, transport failures cannot prove whether it executed.
     if (method === 'tools/call') operation.sentCall = true
-    const response = await fetch(this.#endpoint, { method: 'POST', headers, body, signal: operation.signal,
-      redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
-    const reader = response.body?.getReader()
-    if (!reader) fail('response_empty')
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let received = false
     try {
+      const response = await fetch(this.#endpoint, { method: 'POST', headers: this.headers(method, extraHeaders), body, signal: operation.signal,
+        redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
+      reader = response.body?.getReader()
+      this.checkSession(response, method === 'initialize')
+      if (!reader) fail('response_empty')
       const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
       if (contentType !== 'application/json' && contentType !== 'text/event-stream') fail('response_type')
       const decoder = new TextDecoder('utf-8', { fatal: true })
       let bytes = 0
       let text = ''
       let result: JsonObject | undefined
+      const pings: JsonValue[] = []
       const sse = contentType === 'text/event-stream' ? new SseParser(data => {
+        if (data === '') return // Empty SSE primers carry no JSON-RPC message.
         if (result !== undefined) fail('response_schema')
-        result = this.envelope(this.parse(data), id, true)
+        const message = this.parse(data)
+        if (this.legacy && message.jsonrpc === '2.0' && message.method === 'ping' && own(message, 'id') &&
+            !own(message, 'result') && !own(message, 'error') && (!own(message, 'params') || object(message.params)) &&
+            (typeof message.id === 'string' && message.id.length > 0 && message.id.length <= 128 || typeof message.id === 'number' && Number.isSafeInteger(message.id))) {
+          if (++operation.serverPings > LIMIT.serverPings) fail('server_request_limit')
+          pings.push(message.id)
+          return
+        }
+        result = this.envelope(message, id, true)
       }) : undefined
       while (true) {
         const chunk = await reader.read()
@@ -362,6 +543,7 @@ export class McpHttpClient {
         const decoded = decoder.decode(chunk.value, { stream: true })
         if (sse) {
           sse.push(decoded)
+          for (const pingId of pings.splice(0)) await this.postAcknowledged({ jsonrpc: '2.0', id: pingId, result: {} }, operation.signal)
           if (result !== undefined) break
         } else text += decoded
       }
@@ -370,10 +552,12 @@ export class McpHttpClient {
       else result = this.envelope(this.parse(text + remainder), id, false)
       if (!response.ok) fail('http_error')
       if (result === undefined) fail('response_incomplete')
+      received = true
       return result
     } finally {
-      await reader.cancel().catch(() => undefined)
-      reader.releaseLock()
+      await reader?.cancel().catch(() => undefined)
+      reader?.releaseLock()
+      if (this.legacy && method !== 'initialize' && !received && operation.signal.aborted && !this.#invalid) await this.cancelRequest(id)
     }
   }
 }

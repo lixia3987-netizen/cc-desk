@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import type { NativeMcpConnectionInput, NativeMcpConnectionList, NativeMcpConnectionView, NativeMcpCredentialMutation } from '../../../shared/native-mcp';
+import type { NativeMcpConnectionInput, NativeMcpConnectionList, NativeMcpConnectionView, NativeMcpCredentialMutation, NativeMcpProtocolVersion } from '../../../shared/native-mcp';
 import { NativeCredentialStore } from './credentials';
 
 const id = z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
@@ -16,6 +16,7 @@ const auth = z.discriminatedUnion('mode', [
 ]);
 const fields = {
   name, endpoint: z.string().trim().min(1).max(2048), allowLoopbackHttp: z.boolean(), enabled: z.boolean(), auth,
+  protocolVersion: z.enum(['2026-07-28', '2025-11-25']).default('2026-07-28'),
 };
 export const nativeMcpConnectionInputSchema = z.object({ id: id.optional(), revision: revision.optional(), ...fields }).strict();
 export const nativeMcpConnectionReferenceSchema = z.object({ id, revision }).strict();
@@ -45,6 +46,7 @@ export interface ResolvedNativeMcpConnection {
   readonly revision: number;
   readonly name: string;
   readonly endpoint: string;
+  readonly protocolVersion: NativeMcpProtocolVersion;
   readonly allowLoopbackHttp: boolean;
   readonly bearerToken?: string;
 }
@@ -141,7 +143,7 @@ export class NativeMcpConnectionStore {
       if (!bearerToken) throw new Error(item.auth.mode === 'env' ? '主进程未找到此 MCP 连接指定的环境变量，请设置后重启应用。' : '此 MCP 连接尚无可用凭据，请重新设置（本次内存凭据不会跨重启保留）。');
       if (!nativeMcpCredentialMutationSchema.shape.secret.safeParse(bearerToken).success) throw new Error('此 MCP 连接的凭据格式无效，请重新设置。');
     }
-    return Object.freeze({ connectionId: item.id, revision: item.revision, name: item.name, endpoint, allowLoopbackHttp: item.allowLoopbackHttp, ...(bearerToken ? { bearerToken } : {}) });
+    return Object.freeze({ connectionId: item.id, revision: item.revision, name: item.name, endpoint, protocolVersion: item.protocolVersion, allowLoopbackHttp: item.allowLoopbackHttp, ...(bearerToken ? { bearerToken } : {}) });
   }
 
   /** Check a run's metadata snapshot without exposing or resolving its credential again. */
