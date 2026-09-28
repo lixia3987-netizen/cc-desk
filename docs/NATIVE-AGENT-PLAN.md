@@ -127,7 +127,7 @@ P2 包提取可按真实依赖成熟度推进，不阻止 agent-core 的独立�
 3. 内部普通 TS 包继续纳入 esbuild/Vite bundle，外置依赖显式声明并核验；不能因为 workspace 链接存在就假设安装包内也可解析。
 4. node-pty 继续作为桌面运行依赖；验证提升后的依赖收集、ASAR 解包、架构和 macOS spawn-helper 执行权限。保留 postinstall 修复语义。
 5. 调整测试中的 `electron ['.']` 和相对导入；`verify-packaged.mjs`、`publish-release.mjs` 明确读取桌面版本，根元数据不成为第二个版本来源。
-6. 现有 `.github/workflows/build.yml` 仅手动触发。添加开发分支/PR 的快速检查；打包相关改动与阶段验收运行三平台打包，复用现有 packaged smoke tests。正式发布仍限制在 main。
+6. `.github/workflows/build.yml` 与 `verify.yml` 均仅手动触发，日常开发分支/PR 不自动运行 CI。打包相关改动与阶段验收仍需三平台打包及现有 packaged smoke tests 的证据，但仅在用户明确要求构建或运行 CI 时执行；正式发布仍限制在 main。
 7. 协议/身份、取消/审批、历史/恢复、队列/workflow、worktree 删除和打包启动是重点回归；使用现有测试，新增测试只覆盖新的边界或真实风险。
 
 ## 8. 验收不能遗漏的行为
@@ -146,6 +146,8 @@ P2 包提取可按真实依赖成熟度推进，不阻止 agent-core 的独立�
 `dev/native-agent` 用作此次工作的集成分支；后续分阶段分支以它为基础，例如 `refactor/monorepo-foundation`、`refactor/engine-boundaries`、`feat/native-agent-loop`。每个 PR 只包含一个可独立验收的阶段。
 
 沿用“完成并验证后自动合并”的偏好：阶段代码 PR 验证后仅合入开发集成分支 `dev/native-agent`。本次 P2 固定候选的验收状态见本文开头，验收状态与证据通过独立 docs PR 更新，目标同样仅为 `dev/native-agent`。在用户另行明确授权前，不推进 main，也不发布 Release；创建分支或更新计划本身不代表验收完成。P2 的测试引擎不作为可启用的正式产品入口，真实 native 产品入口属于 P3。
+
+2026-09-28 起，CI 仅保留手动触发：只有用户明确要求构建或运行 CI 时才启动工作流，日常推送、PR 和合并不自动触发，也不由开发代理自行发起。日常改动按需完成本地验证；需要三平台验收的项目在用户主动要求执行前保留待验收状态，不能用历史 CI 结果代替当前候选证据。
 
 第一批建议依次处理：
 
