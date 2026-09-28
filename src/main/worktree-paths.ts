@@ -7,7 +7,7 @@ export interface WorktreePlacement {
   customRoot?: string;
   projectPath: string;
   projectName: string;
-  name: string;
+  name?: string;
 }
 
 /** A display title is not a path. Keep readable Unicode while producing a portable component. */
@@ -44,10 +44,11 @@ export async function worktreeDestination(
   sourceRoot: string, projectRoot: string, metadata: string[]
 ): Promise<string> {
   if (!placement) return path.join(await canonicalFuturePath(path.resolve(legacyRoot)), 'worktrees', id.slice(0, 8));
-  if (!placement.name.trim() || /[/\\\u0000-\u001f\u007f]/.test(placement.name) || placement.name.includes('..')) {
+  const name = placement.name?.trim() ?? '';
+  if (/[/\\\u0000-\u001f\u007f]/.test(name) || name.includes('..')) {
     throw new Error('工作区名称不能包含路径分隔符、控制字符或 ..。');
   }
-  const treeName = `${sanitizeWorktreeName(placement.name)}-${id.slice(0, 8)}`;
+  const treeName = name ? `${sanitizeWorktreeName(name)}-${id.slice(0, 8)}` : id.slice(0, 8);
   if (placement.location === 'project') return path.join(projectRoot, '.claude', 'worktrees', treeName);
   if (placement.location !== 'custom') throw new Error('无效的工作区存放位置。');
   if (!placement.customRoot?.trim() || !path.isAbsolute(placement.customRoot)) throw new Error('统一工作区目录必须是绝对路径。');

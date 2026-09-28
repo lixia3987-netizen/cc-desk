@@ -13,7 +13,7 @@ import { detectCLI } from './commands';
 import { CLIUpdater } from './cli-updater';
 import { CLIUpdateService } from './cli-update-service';
 import { openIde } from './ide';
-import { gitInfo } from './git';
+import { gitInfo, listWorktreeBranches } from './git';
 import { diagnoseEnvironment } from './diagnostics';
 import { readHistory, queryHistory } from './history';
 import { idSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
@@ -90,6 +90,12 @@ function registerIPC() {
     store.change(s => { s.projects = s.projects.filter(p => p.id !== id); }); notify();
   });
   handle('session:create',sessionInputSchema,input => sessionCreation.create(input));
+  handle('worktree:branches',z.object({projectId:idSchema,refresh:z.boolean().optional()}).strict(),({projectId,refresh}) => {
+    const project = store.state.projects.find(item => item.id === projectId);
+    if (!project) throw new Error('项目不存在。');
+    if (closing) throw new Error('工作台正在退出。');
+    return listWorktreeBranches(project.path,refresh);
+  });
   services.register(handle);
   handle('session:start',idSchema,id => services.start(id));
   handle('session:stop',idSchema,id => services.stop(id));

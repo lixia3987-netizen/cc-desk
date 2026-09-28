@@ -6,7 +6,7 @@ import { ClaudeEvents } from './engines/claude/events';
 import type { Entry } from './engines/claude/entry';
 import type { ChatJournalEvent } from '../shared/execution-events';
 import type { Capabilities, Effort, PermissionMode, Session } from '../shared/types';
-import { automaticSessionTitlePatch } from '../shared/session-title';
+import { SessionTitles, type SessionTitleGenerator } from './session-titles';
 import type { ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '../shared/chat';
 import { cliInvocation, environment } from './commands';
 import { transcriptExists } from './history';
@@ -26,6 +26,7 @@ export interface ChatRuntimeOptions {
   controlTimeoutMs?: number; initializationTimeoutMs?: number;
   backgroundResultTimeoutMs?: number;
   onEvent?: (id: string, event: ChatJournalEvent) => void;
+  titleGenerator?: SessionTitleGenerator;
 }
 const MAX_TEXT = 256 * 1024;
 const now = () => new Date().toISOString();
@@ -38,6 +39,7 @@ const messageOf = (error: unknown) => error instanceof Error ? error.message : S
  * No SDK credentials or permissive CLI switches are injected.
  */
 export class ChatRuntime {
+  private titles: SessionTitles;
   private entries = new Map<string, Entry>();
   private releasing = new Map<string, Entry>();
   private starting = new Set<string>();
@@ -54,6 +56,7 @@ export class ChatRuntime {
   private hydrator: TranscriptHydrator;
   private events: ClaudeEvents;
   constructor(private store: StateStore, private onState: () => void, private onEvents: (sessionId: string) => void, private options: ChatRuntimeOptions = {}) {
+    this.titles = new SessionTitles(store, onState, options.titleGenerator);
     this.subtasks = new SubtaskTracker(store, onState);
     this.history = new ChatHistory(store.directory, id => this.has(id), (id, error) => {
       const snapshot = this.history.get(id);
@@ -82,7 +85,7 @@ export class ChatRuntime {
     });
   }
   get activeCount() { return new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting]).size; }
-  has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id); }
+  has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id) || this.titles.has(id); }
   isBusy(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     return this.busy.has(id) || this.starting.has(id) || Boolean(entry &&
@@ -97,6 +100,8 @@ export class ChatRuntime {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     if (entry) this.releasing.set(id, entry);
     this.stop(id);
+    await this.titles.cancel(id);
+    this.titles.assertReleased(id);
     if (!entry) return;
     // A root process may exit before its MCP/tool descendants. Wait for the
     // process-group escalation as well, rather than treating root exit as a
@@ -260,6 +265,7 @@ export class ChatRuntime {
   delete(id: string) { this.forget(id); }
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');
+    void this.titles.cancel(id);
     const timer = this.notifications.get(id); if (timer) clearTimeout(timer);
     this.notifications.delete(id); this.hydrator.forget(id); this.history.delete(id); this.archive.forget(id);
   }
@@ -300,8 +306,7 @@ export class ChatRuntime {
         // Built-in command parsing expects a prompt string; ordinary multimodal
         // messages continue to use content blocks.
         entry.connection.write({ type: 'user', uuid: userId, message: { role: 'user', content: command ? text.trimStart() : content }, parent_tool_use_id: null, session_id: this.session(id).execution.conversationId });
-        const title = command ? undefined : automaticSessionTitlePatch(this.session(id), titlePrompt);
-        if (title) this.update(id, title);
+        if (!command) this.titles.request(id, titlePrompt, capabilities);
       } catch (error) { this.fail(id, entry, messageOf(error)); }
       return await result;
     } catch (error) {
@@ -313,7 +318,10 @@ export class ChatRuntime {
 
   private async start(id: string, capabilities: Capabilities): Promise<Entry> {
     if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
-    if (this.has(id)) throw new Error('会话正在启动。');
+    this.titles.assertReleased(id);
+    if (this.entries.has(id) || this.releasing.has(id) || this.starting.has(id)) throw new Error('会话正在启动。');
+    // Title cleanup owns resources, but it is not another foreground conversation.
+    void this.titles.cancel(id);
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error('已达到并发会话上限。');
     this.starting.add(id);
     let entry: Entry | undefined;
@@ -343,6 +351,7 @@ export class ChatRuntime {
           try { this.closed(id, current, code, signal); }
           catch (error) {
             this.entries.delete(id); this.starting.delete(id);
+            void this.titles.cancel(id);
             const message = '记录进程退出状态失败：' + messageOf(error);
             current.turn?.resolve({ success: false, summary: '', error: message }); current.turn = undefined;
             const snapshot = this.history.get(id); snapshot.taskState = 'error'; snapshot.error = message; snapshot.pending = [];
@@ -477,6 +486,7 @@ export class ChatRuntime {
     } finally { this.terminate(entry); }
   }
   stop(id: string) {
+    void this.titles.cancel(id);
     if (this.busy.has(id)) this.cancelled.add(id);
     this.starting.delete(id);
     const entry = this.entries.get(id); if (!entry || entry.connection.ending) return;
@@ -500,6 +510,7 @@ export class ChatRuntime {
     if (this.entries.get(id) !== entry) return;
     entry.connection.finish();
     this.entries.delete(id); this.starting.delete(id);
+    void this.titles.cancel(id);
     const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。' + (entry.connection.stderr ? '\n' + entry.connection.stderr.trim() : '');
     entry.connection.closeControls(error);
     if (entry.interruptTimer) clearTimeout(entry.interruptTimer);
@@ -511,6 +522,7 @@ export class ChatRuntime {
   }
   async shutdown() {
     this.shuttingDown = true;
+    const titlesStopped = this.titles.cancelAll();
     for (const id of this.starting) this.starting.delete(id);
     const errors: unknown[] = [];
     for (const id of this.entries.keys()) { try { this.stop(id); } catch (error) { errors.push(error); } }
@@ -529,6 +541,8 @@ export class ChatRuntime {
         errors.push(new Error('无法确认全部聊天子进程已停止，请关闭残留进程后重试退出。'));
       }
     } finally { if (terminationDeadline) clearTimeout(terminationDeadline); }
+    await titlesStopped;
+    try { this.titles.assertReleased(); } catch (error) { errors.push(error); }
     for (const timer of this.notifications.values()) clearTimeout(timer);
     this.notifications.clear();
     try { this.history.flush(); } catch (error) { errors.push(error); }
@@ -537,7 +551,7 @@ export class ChatRuntime {
   setMaintenance(value: boolean) { this.maintenance = value; }
   async disconnectAll() {
     if (!this.maintenance) throw new Error('断开聊天前必须暂停新会话。');
-    const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy]);
+    const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy, ...this.titles.ids]);
     const results = await Promise.allSettled([...ids].map(id => this.stopAndWait(id)));
     // Pending hydration / attachment reads must settle while starts remain blocked.
     const deadline = Date.now() + 10_000;

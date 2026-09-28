@@ -3,7 +3,6 @@ import { initialSessionTitle } from '../shared/session-title';
 import { sessionSchema } from '../shared/schema';
 import type { NewSession, Session } from '../shared/types';
 import { cleanupWorktree, createWorktree } from './git';
-import { sanitizeWorktreeName } from './worktree-paths';
 import type { StateStore } from './store';
 import type { SessionService } from './session-service';
 
@@ -48,8 +47,8 @@ export class SessionCreation {
       return await this.services.withSessionCreation(sourcePath, input.isolated, async () => {
         const worktree = input.isolated ? await createWorktree(sourcePath, this.store.directory, id, {
           location, customRoot, projectPath: project.path, projectName: project.name,
-          name: input.worktreeName?.trim() || sanitizeWorktreeName(title.title),
-        }) : undefined;
+          name: input.worktreeName?.trim(),
+        }, input.worktreeBaseRef) : undefined;
         Object.assign(session, { cwd: worktree || sourcePath, worktree, worktreeBase: worktree ? sourcePath : undefined });
         try { this.store.change(state => state.sessions.unshift(session)); }
         catch (error) {

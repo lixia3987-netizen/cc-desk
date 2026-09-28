@@ -115,9 +115,35 @@ function lifecycleFixture(shellPath = '') {
   const claude = new ClaudeTerminalLauncher(store, () => capabilities);
   const shell = new ShellTerminalLauncher(store);
   const launcher: TerminalLauncher = { prepare: (session, callbacks) => (session.execution.providerId === 'claude' ? claude : shell).prepare(session, callbacks) };
-  const runtime = new Runtime(store, () => {}, () => {}, launcher, { onError: error => errors.push(error) });
+  const runtime = new Runtime(store, () => {}, () => {}, launcher, { onError: error => errors.push(error), titleGenerator: async () => '界面与接口审查' });
   return { root, store, session, runtime, errors, setCapabilities: (next: Capabilities) => { capabilities = next; } };
 }
+
+test('a naturally exited terminal restarts while cancelled title cleanup is still pending', { timeout: 10000 }, async () => {
+  const f = lifecycleFixture();
+  const callbacks: TerminalLaunchCallbacks[] = [];
+  let launches = 0; let aborted = false;
+  let release!: () => void;
+  f.store.change(state => { state.settings.maxSessions = 1; state.sessions[0].kind = 'agent'; state.sessions[0].titleSource = 'default';
+    state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; });
+  const runtime = new Runtime(f.store, () => {}, () => {}, {
+    async prepare(_session, callback) {
+      callbacks.push(callback); launches++;
+      return { file: process.execPath, args: ['-e', launches === 1 ? 'setTimeout(() => process.exit(0), 100)' : 'setInterval(() => {}, 1000)'], env: environment() };
+    },
+  }, { titleGenerator: request => new Promise(done => {
+    release = () => done(undefined);
+    request.signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+  }) });
+  try {
+    await runtime.start(f.session.id); callbacks[0].prompt('检查自动命名');
+    await until(() => aborted && f.store.state.sessions[0].status === 'stopped', 'natural title cancellation');
+    assert.equal(runtime.has(f.session.id), true);
+    await runtime.start(f.session.id);
+    release();
+    assert.equal(launches, 2); assert.equal(f.store.state.sessions[0].status, 'running');
+  } finally { release?.(); await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
+});
 
 test('terminal runtime accepts another provider and isolates identity observations to the current launch', { timeout: 12000 }, async () => {
   const f = lifecycleFixture();
@@ -136,7 +162,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
         resource: { async close() { resourcesClosed++; } }, terminalSync: 'waiting' };
     }
   };
-  const runtime = new Runtime(f.store, () => {}, () => {}, launcher);
+  const runtime = new Runtime(f.store, () => {}, () => {}, launcher, { titleGenerator: async () => '原生会话接入验证' });
   const current = () => f.store.state.sessions[0];
   try {
     await runtime.start(f.session.id);
@@ -157,7 +183,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
     callbacks[1].update({ conversationId: 'third-conversation' });
     callbacks[1].prompt('新的会话标题');
     assert.equal(current().execution.conversationId, 'third-conversation');
-    assert.equal(current().title, '新的会话标题');
+    await until(() => current().title === '原生会话接入验证', 'generated title');
   } finally {
     await runtime.shutdown(); await f.runtime.shutdown();
     fs.rmSync(f.root, { recursive: true, force: true });
@@ -426,7 +452,7 @@ const send = async (hook_event_name, fields = {}) => {
       await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
         `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));
       assert.equal(session().permissionMode, 'default', 'child modes never overwrite main launch settings');
-      assert.equal(session().title, ending === 'stop' ? '检查界面与接口' : 'cleanup fixture');
+      assert.equal(session().title, ending === 'stop' ? '界面与接口审查' : 'cleanup fixture');
       assert.equal(session().titleSource, ending === 'stop' ? 'auto' : 'manual');
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
       if (ending === 'crash') {

@@ -171,7 +171,7 @@ test('project placement refuses tracked reserved content and file parents withou
 
 test('traversal names, relative roots, project-contained roots and Git metadata roots are rejected', async () => {
   const f = await fixture(); try {
-    for (const name of ['../escape', 'foo/bar', 'foo\\bar', '..', 'part..name', '']) {
+    for (const name of ['../escape', 'foo/bar', 'foo\\bar', '..', 'part..name']) {
       await assert.rejects(createWorktree(f.repo, f.dir, randomUUID(), f.placement({ name })), /名称/);
     }
     for (const customRoot of ['', 'relative', f.repo, path.join(f.repo, 'child', 'missing'), path.join(f.repo, '.git', 'worktrees'), path.join(f.dir, '.git', 'new')]) {
@@ -179,6 +179,20 @@ test('traversal names, relative roots, project-contained roots and Git metadata 
     }
     const tree = await createWorktree(f.repo, f.dir, randomUUID(), f.placement({ name: 'NUL' }));
     assert.match(path.basename(tree), /^_NUL-/);
+  } finally { await f.dispose(); }
+});
+
+test('blank and omitted worktree names produce random ID directories without a title prefix', async () => {
+  const f = await fixture(); try {
+    for (const name of [undefined, '', '   ']) {
+      const id = randomUUID();
+      const tree = await createWorktree(f.repo, f.dir, id, f.placement({ name }));
+      assert.equal(path.basename(tree), id.slice(0, 8));
+      assert.equal((await cleanupWorktree(f.repo, tree, id)).status, 'removed');
+    }
+    const id = randomUUID();
+    const tree = await createWorktree(f.repo, f.dir, id, f.placement({ name: '', location: 'custom', customRoot: path.join(f.dir, 'custom') }));
+    assert.equal(path.basename(tree), id.slice(0, 8));
   } finally { await f.dispose(); }
 });
 
@@ -226,6 +240,10 @@ test('project worktree cleanup retains the existing ignored-file guard and legac
     const legacyId = randomUUID();
     const legacy = await createWorktree(f.repo, f.dir, legacyId);
     assert.equal(legacy, path.join(f.dir, 'worktrees', legacyId.slice(0, 8)));
+    const marker = path.join(await git(legacy, 'rev-parse', '--absolute-git-dir'), 'workbench-owner.json');
+    const owner = JSON.parse(await fs.readFile(marker, 'utf8'));
+    owner.version = 1; delete owner.sourceRef; delete owner.sourceCommit;
+    await fs.writeFile(marker, JSON.stringify(owner));
     assert.equal((await worktreeInfo(f.repo, legacy, legacyId)).owned, true);
     assert.equal((await cleanupWorktree(f.repo, legacy, legacyId)).status, 'removed');
   } finally { await f.dispose(); }

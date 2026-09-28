@@ -40,6 +40,8 @@ export interface WorktreeInfo {
   basePath: string;
   branch?: string;
   baseBranch?: string;
+  sourceRef?: string;
+  sourceCommit?: string;
   clean: boolean;
   baseClean: boolean;
   merged: boolean;
@@ -47,6 +49,13 @@ export interface WorktreeInfo {
   canCleanup: boolean;
   reasons: string[];
   cleanupReasons: string[];
+}
+
+export interface WorktreeBranch {
+  name: string;
+  ref: string;
+  remote?: string;
+  current: boolean;
 }
 
 export interface WorktreeActionResult {

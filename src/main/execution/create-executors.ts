@@ -41,7 +41,7 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
     const launcher = launchers.get(session.execution.providerId);
     if (!launcher) throw new Error('未安装此终端会话的启动器。');
     return launcher.prepare(session, callbacks);
-  } }, { onError });
+  } }, { onError, capabilities });
   const pty = new PtyExecutor(runtime, async id => {
     const session = registry.getSession(id);
     const sources = session.execution.providerId === 'claude' ? await claudeExports(session) : [];
