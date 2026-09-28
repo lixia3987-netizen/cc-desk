@@ -70,7 +70,9 @@ for (const filename of ['AGENTS.md', 'CLAUDE.md']) test(`${filename} must reach 
   const ctx = context();
   await assert.rejects(port.prepare(call('unseen', 'apply_patch', { path: 'src/file', content: 'new', expectedHash: contentHash('old') }), ctx), /not been shown/);
   const read = await executeRead(port, ctx, 'read', 'read_file', { path: 'src/file' });
-  assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
+  assert.match(read.output.instructions.text, /Nested rule\./);
+  assert.doesNotMatch(read.output.instructions.text, /Root rule\./);
+  assert.ok(read.output.instructions.sources.every(source => !Object.hasOwn(source, 'content')));
   const prepared = await port.prepare(call('write', 'apply_patch', { path: 'src/file', content: 'new', expectedHash: read.output.hash }), ctx);
   await fs.writeFile(path.join(root, 'src', filename), 'Changed rule.');
   await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
@@ -141,6 +143,113 @@ for (const mutation of ['add', 'change', 'remove']) test(`CLAUDE ${mutation} inv
   await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
   await assert.rejects(fs.stat(path.join(root, 'src', 'command-ran')), /ENOENT/);
 });
+
+test('selected project skills must reach the model before tools write and initial context marks them seen', async t => {
+  const { root, supervisor } = await fixture(t);
+  const skill = '.agents/skills/review/SKILL.md';
+  await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
+  await fs.writeFile(path.join(root, skill), 'Review changes before writing.');
+  const ctx = context();
+  const input = { path: 'created', content: 'approved', expectedHash: null };
+  const unseen = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'unseen-skill', projectSkills: [skill] });
+  await assert.rejects(unseen.prepare(call('unseen-write', 'apply_patch', input), ctx), /not been shown/);
+  const read = await executeRead(unseen, ctx, 'read-skill', 'list_directory', { path: '.' });
+  assert.deepEqual(read.output.instructions.sources.map(source => source.path), [skill]);
+  assert.equal((await unseen.prepare(call('seen-write', 'apply_patch', input), ctx)).requiresApproval, true);
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root, projectSkills: [skill] });
+  const initialized = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'initial-skill', projectSkills: [skill], initialInstructions });
+  const prepared = await initialized.prepare(call('initial-write', 'apply_patch', input), ctx);
+  assert.equal((await initialized.execute(prepared, ctx, approve(prepared, ctx))).status, 'completed');
+  assert.equal(await fs.readFile(path.join(root, 'created'), 'utf8'), 'approved');
+});
+
+for (const mutation of ['change', 'remove', 'linked-directory']) test(`selected skill ${mutation} invalidates approved commands without changing AGENTS or CLAUDE`, async t => {
+  const { root, supervisor } = await fixture(t);
+  const skill = '.claude/skills/review/SKILL.md';
+  await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
+  await fs.writeFile(path.join(root, skill), 'Original skill.');
+  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Unchanged agents.');
+  await fs.writeFile(path.join(root, 'CLAUDE.md'), 'Unchanged Claude.');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root, projectSkills: [skill] });
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: `skill-${mutation}`, projectSkills: [skill], initialInstructions });
+  const ctx = context();
+  const prepared = await port.prepare(call('command', 'run_command', { executable: process.execPath, argv: ['-e', 'require("node:fs").writeFileSync("command-ran", "unexpected")'], cwd: '.' }), ctx);
+  if (mutation === 'change') await fs.writeFile(path.join(root, skill), 'Changed skill.');
+  else if (mutation === 'remove') await fs.rm(path.join(root, skill));
+  else {
+    const moved = path.join(root, 'moved-skill');
+    await fs.rename(path.dirname(path.join(root, skill)), moved);
+    await fs.symlink(moved, path.dirname(path.join(root, skill)), process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed|missing|links are refused/);
+  await assert.rejects(fs.stat(path.join(root, 'command-ran')), /ENOENT/);
+});
+
+test('selected skill mutation invalidates edit_file approval and preserves the target', async t => {
+  const { root, supervisor } = await fixture(t);
+  const skill = '.agents/skills/review/SKILL.md';
+  await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
+  await fs.writeFile(path.join(root, skill), 'Original edit guide.');
+  await fs.writeFile(path.join(root, 'file'), 'before');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root, projectSkills: [skill] });
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'skill-edit', projectSkills: [skill], initialInstructions });
+  const ctx = context();
+  const prepared = await port.prepare(call('edit', 'edit_file', { path: 'file', oldText: 'before', newText: 'after', expectedHash: contentHash('before') }), ctx);
+  await fs.writeFile(path.join(root, skill), 'Changed edit guide.');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'before');
+});
+
+test('a full 32KiB selected skill already supplied to the model does not exhaust read, list or search output', async t => {
+  const { root, supervisor } = await fixture(t);
+  const skill = '.agents/skills/review/SKILL.md';
+  await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
+  await fs.writeFile(path.join(root, skill), 'Skill sentinel.\n' + 'x'.repeat(32 * 1024 - 16));
+  await fs.writeFile(path.join(root, 'file'), 'needle expected file.');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root, projectSkills: [skill] });
+  assert.equal(Buffer.byteLength(initialInstructions.sources[0].content), 32 * 1024);
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'large-known-skill', projectSkills: [skill], initialInstructions });
+  const ctx = { ...context(), maxOutputBytes: 64 * 1024 };
+  for (const [name, input] of [['read_file', { path: 'file' }], ['list_directory', { path: '.', depth: 0 }], ['search', { path: '.', query: 'needle' }]]) {
+    const result = await executeRead(port, ctx, name, name, input);
+    assert.equal(result.status, 'completed');
+    assert.ok(Buffer.byteLength(JSON.stringify(result.output)) < ctx.maxOutputBytes);
+    assert.equal(result.output.instructions.text, '');
+    assert.deepEqual(result.output.instructions.sources, initialInstructions.sources.map(({ path, scope, hash }) => ({ path, scope, hash })));
+    assert.doesNotMatch(JSON.stringify(result.output), /Skill sentinel/);
+  }
+});
+
+for (const filename of ['AGENTS.md', 'CLAUDE.md']) test(`large known skills retain new ${filename} text once, and rejected reads never mark it seen`, async t => {
+  const { root, supervisor } = await fixture(t);
+  const skill = '.claude/skills/review/SKILL.md';
+  await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
+  await fs.writeFile(path.join(root, skill), 's'.repeat(32 * 1024));
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(root, 'src', 'file'), 'original');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root, projectSkills: [skill] });
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: `new-${filename}`, projectSkills: [skill], initialInstructions });
+  const nestedRule = 'Nested convention sentinel.\n' + 'n'.repeat(32 * 1024 - 28);
+  await fs.writeFile(path.join(root, 'src', filename), nestedRule);
+  const ctx = { ...context(), maxOutputBytes: 64 * 1024 };
+  const write = { path: 'src/file', oldText: 'original', newText: 'updated', expectedHash: contentHash('original') };
+  await assert.rejects(port.prepare(call('unseen-edit', 'edit_file', write), ctx), /not been shown/);
+  await assert.rejects(port.prepare(call('too-small-read', 'read_file', { path: 'src/file' }), { ...ctx, maxOutputBytes: 2048 }), /budget/);
+  await assert.rejects(port.prepare(call('still-unseen-edit', 'edit_file', write), ctx), /not been shown/);
+  const result = await executeRead(port, ctx, 'scope-read', 'read_file', { path: 'src/file' });
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output.content, 'original');
+  assert.equal(result.output.instructions.text.split('Nested convention sentinel.').length - 1, 1);
+  assert.match(result.output.instructions.text, /deeper.*override/);
+  assert.doesNotMatch(result.output.instructions.text, /s{100}/);
+  const prepared = await port.prepare(call('seen-edit', 'edit_file', write), ctx);
+  assert.equal(prepared.requiresApproval, true);
+  const repeated = await executeRead(port, ctx, 'repeat-read', 'read_file', { path: 'src/file' });
+  assert.equal(repeated.output.instructions.text, '');
+  await fs.writeFile(path.join(root, skill), 'Changed selected skill.');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
+  assert.equal(await fs.readFile(path.join(root, 'src', 'file'), 'utf8'), 'original');
+});
 test('edit_file approval binds the exact displayed fragment replacement and cannot be reused for another edit', async t => {
   const { root, port } = await fixture(t);
   const ctx = context();
@@ -195,7 +304,9 @@ for (const filename of ['AGENTS.md', 'CLAUDE.md']) test(`${filename} must reach 
   const input = { path: 'src/file', oldText: 'before', newText: 'after', expectedHash: contentHash('before') };
   await assert.rejects(port.prepare(call('unseen-edit', 'edit_file', input), ctx), /not been shown/);
   const read = await executeRead(port, ctx, 'read', 'read_file', { path: input.path });
-  assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
+  assert.match(read.output.instructions.text, /Root rule\./);
+  assert.match(read.output.instructions.text, /Nested rule\./);
+  assert.ok(read.output.instructions.sources.every(source => !Object.hasOwn(source, 'content')));
   const prepared = await port.prepare(call('edit', 'edit_file', input), ctx);
   await fs.writeFile(path.join(root, 'src', filename), 'Changed rule.');
   await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);

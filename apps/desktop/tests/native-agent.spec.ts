@@ -67,11 +67,21 @@ function gate() {
   return { promise, release };
 }
 
-test('native utilityProcess completes approved patch/command, isolates credentials, survives restart and deduplicates submission', async () => {
+test('native utilityProcess completes approved patch/command, persists selected project Skills, survives restart and deduplicates submission', async () => {
   const f = await workspace();
   const claudeRule = 'CLAUDE_NATIVE_RULE_V1: preserve the existing fixture workflow.';
   const updatedClaudeRule = 'CLAUDE_NATIVE_RULE_V2: continue only from the recorded tool results.';
   const agentsRule = 'AGENTS_NATIVE_RULE: require approval before modifying fixture.txt.';
+  const agentSkillPath = '.agents/skills/native-review/SKILL.md';
+  const claudeSkillPath = '.claude/skills/native-review/SKILL.md';
+  const agentSkill = 'AGENTS_SKILL_SELECTED: preserve unrelated file contents during the approved fixture workflow.';
+  const claudeSkill = 'CLAUDE_SKILL_SELECTED: report the recorded command outcome after completing the fixture workflow.';
+  const unselectedSkill = 'UNSELECTED_SKILL_MUST_NOT_REACH_MODEL';
+  for (const [relative, content] of [[agentSkillPath, agentSkill], [claudeSkillPath, claudeSkill], ['.agents/skills/unselected/SKILL.md', unselectedSkill]]) {
+    const file = path.join(f.cwd, relative);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, `${content}\n`);
+  }
   await fs.writeFile(path.join(f.cwd, 'CLAUDE.md'), `${claudeRule}\n`);
   await fs.appendFile(path.join(f.cwd, 'AGENTS.md'), `${agentsRule}\n`);
   const expectProjectInstructions = (request: Record<string, unknown>, expectedClaudeRule: string) => {
@@ -80,6 +90,9 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     expect(instructions).toContain(expectedClaudeRule);
     expect(instructions).toContain(agentsRule);
     expect(instructions.indexOf(expectedClaudeRule)).toBeLessThan(instructions.indexOf(agentsRule));
+    expect(instructions).toContain(agentSkill);
+    expect(instructions).toContain(claudeSkill);
+    expect(instructions).not.toContain(unselectedSkill);
   };
   // process.execPath here is the Playwright Node host, never Electron's GUI binary.
   const fixture: Fixture = await startResponsesFixture({ task: { path: 'fixture.txt', content: 'native Electron fixture complete\n', command: {
@@ -90,6 +103,18 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     let page = await readyWindow(app);
     const configured = await connection(page, fixture.baseURL);
     const session = await nativeSession(page, f.projectId, configured.id);
+    const skills = page.getByRole('region', { name: '项目 Skills', exact: true });
+    await expect(skills).toBeVisible();
+    await expect(skills.getByRole('checkbox')).toHaveCount(0);
+    await skills.getByRole('button', { name: '读取项目 Skills', exact: true }).click();
+    await expect(skills.getByRole('checkbox', { name: agentSkillPath, exact: true })).not.toBeChecked();
+    await expect(skills.getByRole('checkbox', { name: claudeSkillPath, exact: true })).not.toBeChecked();
+    // Same directory names under the two roots are distinct UI choices. Only clicks select them.
+    await skills.getByRole('checkbox', { name: agentSkillPath, exact: true }).check();
+    await skills.getByRole('checkbox', { name: claudeSkillPath, exact: true }).check();
+    await page.getByRole('button', { name: '保存配置', exact: true }).click();
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath, claudeSkillPath]);
+    expect(fixture.requests).toHaveLength(0);
     const requestId = randomUUID(), text = 'Read the file, apply the approved update, then run the approved command.';
     const result = page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     await pendingTool(page, session.id, 'apply_patch');
@@ -97,6 +122,8 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('before native\n');
     expect(await app.evaluate(({ app }) => app.getAppMetrics().some(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent'))).toBe(true);
     await expect(page.getByLabel('会话模型连接', { exact: true })).toBeDisabled();
+    await expect(skills.getByRole('checkbox', { name: agentSkillPath, exact: true })).toBeDisabled();
+    await expect(skills.getByRole('button', { name: '刷新项目 Skills', exact: true })).toBeDisabled();
     const competing = await page.evaluate(projectId => window.desktop.createSession({ projectId, title: '同目录 Shell', kind: 'shell', providerId: 'shell', mode: 'terminal', isolated: false }), f.projectId);
     await expect(page.evaluate(id => window.desktop.startSession(id), competing.id)).rejects.toThrow(/目录|占用/);
     await expect(page.evaluate(item => window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret: 'cannot-change-active' }), configured)).rejects.toThrow(/运行|停止/);
@@ -117,6 +144,11 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     await cleanupApp(app); app = await f.launch(); page = await readyWindow(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
     await expect(page.locator('.chat-message.assistant').last()).toContainText('本地任务完成');
+    const restoredSkills = page.getByRole('region', { name: '项目 Skills', exact: true });
+    await expect(restoredSkills.getByRole('checkbox', { name: agentSkillPath, exact: true })).toBeChecked();
+    await expect(restoredSkills.getByRole('checkbox', { name: claudeSkillPath, exact: true })).toBeChecked();
+    await expect(restoredSkills.getByRole('button', { name: '读取项目 Skills', exact: true })).toBeVisible();
+    expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath, claudeSkillPath]);
     const restarted = await page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0]);
     expect(restarted.credentialConfigured).toBe(false);
     // A durable receipt may be queried without restoring a credential or starting a worker.
@@ -135,6 +167,10 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     expect(fixture.requests.length).toBe(count + 1); expect(fixture.errors).toEqual([]);
     expectProjectInstructions(fixture.requests[count], updatedClaudeRule);
     expect(fixture.requests[count].instructions).not.toContain(claudeRule);
+    await restoredSkills.getByRole('checkbox', { name: claudeSkillPath, exact: true }).uncheck();
+    await page.getByRole('button', { name: '保存配置', exact: true }).click();
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath]);
+    expect(fixture.requests).toHaveLength(count + 1);
     await noSavedSecret(f.data);
   } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });

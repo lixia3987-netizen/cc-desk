@@ -206,6 +206,20 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .session-config input,.session-config select,.workflow-create select{font-size:calc(11px * var(--ui-font-scale));padding:8px}
 .session-config .form-grid{gap:8px}
 .session-config h4{margin-top:0}
+.native-project-skills{margin:16px 0;padding:12px 0;border-top:1px solid var(--line)}
+.native-project-skills-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.native-project-skills-heading h4{margin:0}
+.native-project-skills-heading>span{font-size:calc(10px * var(--ui-font-scale));color:var(--text-muted)}
+.native-project-skill-list{max-height:260px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:6px;padding:0 8px}
+.session-config .native-project-skill{flex-direction:row;align-items:flex-start;gap:8px;color:var(--text-secondary)}
+.session-config .native-project-skill input{flex:none;width:auto;margin:2px 0 0;padding:0;accent-color:var(--accent)}
+.native-project-skill>span{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;overflow-wrap:anywhere}
+.native-project-skill strong{font-weight:500}
+.native-project-skill small{font-size:calc(10px * var(--ui-font-scale));line-height:1.6;color:var(--text-muted)}
+.native-project-skill small.native-skill-warning{color:var(--warning)}
+.native-skill-issues{margin:9px 0;font-size:calc(10px * var(--ui-font-scale));color:var(--text-muted);line-height:1.8;overflow-wrap:anywhere}
+.native-skill-issues summary{cursor:pointer}
+.native-skill-issues ul{padding-left:18px}
 .action-confirm{border:1px solid var(--warning-border);background:var(--warning-bg);border-radius:7px;margin:12px 0;padding:12px;font-size:calc(11px * var(--ui-font-scale));line-height:1.8}
 .action-confirm button{margin:4px 5px 0 0}
 .action-confirm p{margin-top:0}

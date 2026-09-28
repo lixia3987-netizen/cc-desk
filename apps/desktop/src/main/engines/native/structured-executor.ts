@@ -209,7 +209,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.assertActive(id, active);
       const identity: RunIdentity = { sessionId: id, conversationId: session.execution.conversationId!, runId: randomUUID(), requestId: active.requestId, workerGeneration: generation };
       active.identity = identity;
-      let instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory] }, active.abort.signal);
+      let instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
       this.assertActive(id, active);
       let modelInstructions = modelInstructionsFor(instructions.text);
       const model = { baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
@@ -220,7 +220,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         onCommitted: () => this.refreshProjection(id, ledger) });
       if (automatic.compacted) {
         // Project instructions may change while the summary request is in flight.
-        instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory] }, active.abort.signal);
+        instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
         modelInstructions = modelInstructionsFor(instructions.text);
         assertNativeInputBudget(ledger.loadContext()!, active.input, modelInstructions, config, model);
       }
@@ -228,7 +228,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const maxActiveMs = automatic.compacted ? Math.floor(config.maxActiveMs - (performance.now() - startedAt)) : config.maxActiveMs;
       if (maxActiveMs < 1 || automatic.remainingRequests < 1) throw new Error('自动压缩尝试已占用本次请求或时长预算，剩余额度不足；请检查已保存记录并调整预算后重新发送。');
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest })));
-      const tools = createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues: [connection.apiKey], initialInstructions: instructions, assertOwnership: async run => {
+      const tools = createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues: [connection.apiKey], initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {
         this.assertActive(id, active);
         if (!sameRun(run, identity)) throw new Error('工具运行归属已失效。');
         await this.options.assertOwnership?.(id, run);

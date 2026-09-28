@@ -11,7 +11,8 @@
     "./run-store": { "types": "./dist/run-store.d.ts", "default": "./dist/run-store.js" },
     "./tools": { "types": "./dist/tools/index.d.ts", "default": "./dist/tools/index.js" },
     "./process-supervisor": { "types": "./dist/process-supervisor.d.ts", "default": "./dist/process-supervisor.js" },
-    "./project-instructions": { "types": "./dist/project-instructions.d.ts", "default": "./dist/project-instructions.js" }
+    "./project-instructions": { "types": "./dist/project-instructions.d.ts", "default": "./dist/project-instructions.js" },
+    "./project-skills": { "types": "./dist/project-skills.d.ts", "default": "./dist/project-skills.js" }
   },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --test tests/*.test.mjs" },
   "dependencies": { "@cc-desk/agent-core": "0.0.0", "zod": "4.1.12" },

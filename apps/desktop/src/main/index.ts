@@ -11,6 +11,7 @@ import { ConnectionStore } from './engines/native/connections';
 import { NativeConnectionDiagnostics } from './engines/native/connection-diagnostics';
 import type { NativeStructuredExecutor } from './engines/native/structured-executor';
 import { registerNativeHandlers } from './ipc/native-handlers';
+import { registerNativeSkillHandlers } from './ipc/native-skill-handlers';
 import type { ExecutionRegistry } from './execution/registry';
 import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
@@ -91,6 +92,7 @@ async function addProject(value: string): Promise<Project> {
 }
 function registerIPC() {
   registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
+  registerNativeSkillHandlers(handle, store);
   handle('native:confirm-recovery', idSchema, async id => {
     if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
     const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请先核查工作目录的实际修改，并确认上次命令及其子进程已停止。', detail: '确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });

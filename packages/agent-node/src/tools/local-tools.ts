@@ -1,6 +1,6 @@
 import type { ApprovalDecision, JsonObject, JsonValue, PreparedTool, RunIdentity, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
 import { ProcessSupervisor } from '../process-supervisor.js';
-import { loadProjectInstructions, type ProjectInstructions } from '../project-instructions.js';
+import { loadProjectInstructions, projectInstructionText, type ProjectInstructions } from '../project-instructions.js';
 import { contentHash, isSensitivePath, normalizeProjectPath, ProjectFiles, throwIfAborted, type FilePolicyOptions, type PathSnapshot, type PreparedPatch } from './project-files.js';
 
 const string = { type: 'string' };
@@ -41,6 +41,7 @@ export interface LocalToolOptions extends FilePolicyOptions {
   assertOwnership?: (identity: RunIdentity) => void | Promise<void>;
   /** Instructions actually supplied to the model before its first tool request. */
   initialInstructions?: ProjectInstructions;
+  projectSkills?: readonly string[];
   /** Resolved model credentials for this run, never serialized in tool input. */
   forbiddenValues?: readonly string[];
   maxScanEntries?: number;
@@ -71,9 +72,17 @@ export class LocalToolPort implements ToolPort {
     this.markSeen(options.initialInstructions);
   }
   private markSeen(instructions?: ProjectInstructions) { for (const source of instructions?.sources ?? []) this.seenInstructions.add(`${source.path}:${source.hash}`); }
+  private instructionOutput(instructions: ProjectInstructions): JsonValue {
+    const unseen = instructions.sources.filter(source => !this.seenInstructions.has(`${source.path}:${source.hash}`));
+    return asJson({
+      sources: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })),
+      digest: instructions.digest,
+      text: projectInstructionText(unseen),
+    });
+  }
   private key(call: ToolCall, context: ToolExecutionContext) { return `${context.identity.runId}\0${context.identity.workerGeneration}\0${call.id}`; }
   private async instructions(targetPath: string, targetKind: 'file' | 'directory', signal: AbortSignal) {
-    return loadProjectInstructions({ projectRoot: this.options.projectRoot, excludedRoots: this.options.excludedRoots, targetPath, targetKind }, signal);
+    return loadProjectInstructions({ projectRoot: this.options.projectRoot, excludedRoots: this.options.excludedRoots, projectSkills: this.options.projectSkills, targetPath, targetKind }, signal);
   }
   async prepare(call: ToolCall, context: ToolExecutionContext): Promise<PreparedTool> {
     throwIfAborted(context.signal);
@@ -140,7 +149,7 @@ export class LocalToolPort implements ToolPort {
     }
     const instructions = await this.instructions(targetPath, targetKind, context.signal);
     if (definition.risk !== 'read' && instructions.sources.some(source => !this.seenInstructions.has(`${source.path}:${source.hash}`))) throw new Error('Applicable project instructions have not been shown to the model. First use read_file or list_directory for this target scope, then retry.');
-    if (definition.risk === 'read' && size(instructions) > Math.max(0, context.maxOutputBytes - 2048)) throw new Error('Applicable project instructions exceed the tool output budget; increase the host budget before reading this scope.');
+    if (definition.risk === 'read' && size(this.instructionOutput(instructions)) > Math.max(0, context.maxOutputBytes - 2048)) throw new Error('Applicable project instructions exceed the tool output budget; increase the host budget before reading this scope.');
     const target = patch?.parent ?? await this.files.snapshot(targetPath, targetKind);
     const prepared: PreparedTool = {
       call: { ...call }, definition: structuredClone(definition), input, inputDigest, policyRevision: context.policyRevision,
@@ -201,7 +210,7 @@ export class LocalToolPort implements ToolPort {
   }
   private async readTool(prepared: PreparedTool, state: PreparedState, context: ToolExecutionContext): Promise<ToolResult> {
     const input = prepared.input;
-    const instructions = asJson(state.instructions);
+    const instructions = this.instructionOutput(state.instructions);
     const remaining = context.maxOutputBytes - size(instructions) - 1024;
     if (remaining < 256) throw new Error('Tool output budget is too small.');
     let output: JsonObject;
