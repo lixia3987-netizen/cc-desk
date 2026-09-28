@@ -1,6 +1,6 @@
 # 自研 Agent Alpha 操作与实现说明
 
-当前集成基线（2026-09-28，北京时间）：PR #33–#42 已合入 `dev/native-agent@0bec633`，包括 MCP HTTP 2026、Streamable HTTP 2025 和 stdio 2025。当前剩余开发集中在第二模型协议、显式项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估，实施与验收状态统一见[剩余交付清单](NATIVE-AGENT-COMPLETION.md)。Claude 保持默认，未修改 main、发布 Release 或触发新 CI；历史候选证据不代表本候选验收。
+当前实现基线（2026-09-28，北京时间）：PR #33–#43 已合入 `dev/native-agent@59172f8`。本期协议扩展、项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估工具已实现并完成本地验证，见[交付与验收清单](NATIVE-AGENT-COMPLETION.md)；真实模型质量、当前候选图形及三平台成品仍待验收。后续新增能力按[工程任务闭环与持续执行规划](NATIVE-AGENT-NEXT-PLAN.md)推进，首批为任务计划、状态刷新与验证证据。Claude 保持默认，仅集成到 `dev/native-agent`，不自动触发 CI；历史候选证据不代表本候选验收。
 
 历史阶段三候选记录（2026-09-27）：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此当时同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 对应候选的 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。当时工作分支为 `feat/native-agent-alpha`，以下开发分支及候选均为历史记录，不表示相关 PR 仍未合并。
 
