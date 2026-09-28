@@ -4,9 +4,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { estimateContextInputTokens, runAgent, type ModelContext } from '@cc-desk/agent-core';
+import { runAgent, type ModelContext, type ToolDefinition } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
+import { ResponsesModel, estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
 import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
@@ -75,10 +75,10 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
       started: false, status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
   const events = new ExecutionEvents();
-  const calls: Array<{ summary: boolean; input: string; budget: WorkerOptions['request']['budget']; instructions: string | undefined }> = [];
+  const calls: Array<{ summary: boolean; input: string; budget: WorkerOptions['request']['budget']; instructions: string | undefined; definitions: readonly ToolDefinition[] }> = [];
   const worker: Worker = async request => {
     calls.push({ summary: request.request.configuration.purpose === 'context_summary', input: request.request.input,
-      budget: structuredClone(request.request.budget), instructions: request.model.instructions });
+      budget: structuredClone(request.request.budget), instructions: request.model.instructions, definitions: structuredClone(request.model.toolDefinitions ?? []) });
     return (options.worker ?? inlineWorker)(request);
   };
   executor = new NativeStructuredExecutor(store, connections, events, { worker });
@@ -104,7 +104,8 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
     async estimate(input: string) {
       const context = (await readLedger()).context!;
       const pending: ModelContext = { ...context, items: [...context.items, { role: 'user', content: input }] };
-      return estimateContextInputTokens(pending, calls.filter(call => !call.summary).at(-1)!.instructions);
+      const previous = calls.filter(call => !call.summary).at(-1)!;
+      return estimateResponsesInputTokens(pending, previous.instructions, previous.definitions);
     },
     async enableAtThreshold(input: string, changes: Record<string, unknown> = {}) {
       const maxInputTokens = Math.floor(await this.estimate(input) / 0.95);

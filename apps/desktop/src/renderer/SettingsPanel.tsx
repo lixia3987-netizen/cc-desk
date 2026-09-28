@@ -9,11 +9,12 @@ import type { ExecutionDescriptor } from '../shared/execution';
 import { EngineConfigFields, configurationSupported, engineDefaults, sameEngineDefaults } from './EngineConfiguration';
 import { ThemePicker } from './ThemePicker';
 import { NativeConnections } from './components/NativeConnections';
+import { NativeMcpConnections } from './components/NativeMcpConnections';
 import type { ReactNode } from 'react';
 
 const pages = [
   { id: 'appearance', title: '外观与字体', icon: Palette, description: '选择主题，分别调整聊天内容与菜单界面的阅读体验。' },
-  { id: 'connection', title: '连接与终端', icon: Plug, description: '管理 Claude Code 与 Native 模型连接，设置 Shell 与终端显示。' },
+  { id: 'connection', title: '连接与终端', icon: Plug, description: '管理 Claude Code、Native 模型与 MCP 连接，设置 Shell 与终端显示。' },
   { id: 'sessions', title: '会话与权限', icon: Layers, description: '管理并发数量和各引擎的新会话默认配置。' },
   { id: 'workspace', title: '工作区与 IDE', icon: FolderCog, description: '选择 Worktree 位置，以及打开项目的编辑器。' },
   { id: 'system', title: '通知与后台', icon: Bell, description: '设置任务通知、窗口关闭行为，并查看数据位置。' },
@@ -118,6 +119,7 @@ export function SettingsPanel(props: Props) {
         </>}
         {page === 'connection' && <>
           <NativeConnections disabled={busy}/>
+          <NativeMcpConnections disabled={busy}/>
           {props.cliUpdate}
           <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy || props.cliBusy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
             <p className="hint">{value.claudePath !== saved.claudePath ? '路径尚未保存；点击“保存并检测”以检查当前输入。' : '检测路径：' + (saved.claudePath || '自动查找')}</p>

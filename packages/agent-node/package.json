@@ -12,7 +12,9 @@
     "./tools": { "types": "./dist/tools/index.d.ts", "default": "./dist/tools/index.js" },
     "./process-supervisor": { "types": "./dist/process-supervisor.d.ts", "default": "./dist/process-supervisor.js" },
     "./project-instructions": { "types": "./dist/project-instructions.d.ts", "default": "./dist/project-instructions.js" },
-    "./project-skills": { "types": "./dist/project-skills.d.ts", "default": "./dist/project-skills.js" }
+    "./project-skills": { "types": "./dist/project-skills.d.ts", "default": "./dist/project-skills.js" },
+    "./mcp-client": { "types": "./dist/mcp-client.d.ts", "default": "./dist/mcp-client.js" },
+    "./mcp-tools": { "types": "./dist/mcp-tools.d.ts", "default": "./dist/mcp-tools.js" }
   },
   "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --test tests/*.test.mjs" },
   "dependencies": { "@cc-desk/agent-core": "0.0.0", "zod": "4.1.12" },

@@ -28,6 +28,8 @@ export type NativeWorkerFork = (modulePath: string, args: string[], options: Nat
 export interface NativeWorkerOptions {
   request: Omit<AgentRunRequest, 'signal'>;
   model: ResponsesModelOptions;
+  /** Main-process guards, never included in worker startup data. */
+  forbiddenValues?: readonly (string | undefined)[];
   tools: ToolPort;
   store: RunStore;
   approvals: ApprovalPort;
@@ -92,13 +94,13 @@ function result(value: unknown, expected: RunIdentity): asserts value is RunResu
   context(item.context);
 }
 
-function workerEnvironment(secret: string | undefined): NodeJS.ProcessEnv {
+function workerEnvironment(secrets: readonly (string | undefined)[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   // No inherited authentication, Node options, preload hooks, proxy credentials,
   // or diagnostic settings. Tools receive a separate environment in ToolPort.
   for (const name of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'TZ']) {
     const value = process.env[name];
-    if (value !== undefined && (!secret || !value.includes(secret))) env[name] = value;
+    if (value !== undefined && !secrets.some(secret => secret && value.includes(secret))) env[name] = value;
   }
   return env;
 }
@@ -122,12 +124,18 @@ interface ToolState {
 export async function runNativeWorker(options: NativeWorkerOptions): Promise<RunResult> {
   if (options.signal.aborted) throw new NativeWorkerError('cancelled', 'Native worker start cancelled.');
   const run = clone(options.request);
+  const forbiddenValues = [options.model.apiKey, ...(options.forbiddenValues ?? [])];
+  const definitions = clone(options.tools.definitions);
+  const model = { ...clone(options.model), toolDefinitions: definitions };
+  const { apiKey: _credential, ...modelMetadata } = model;
+  try { assertNoModelCredential({ run, definitions, model: modelMetadata }, forbiddenValues); }
+  catch { throw new NativeWorkerError('credential', 'Native worker input contained a protected credential.'); }
   const runIdentity = run.identity;
   const budget = { ...DEFAULT_RUN_BUDGET, ...run.budget };
   let child: NativeWorkerChild;
   try {
     child = await (options.fork ?? defaultFork)(options.workerPath ?? path.join(__dirname, '../native/worker.cjs'), [], {
-      env: workerEnvironment(options.model.apiKey), stdio: 'pipe', serviceName: 'cc-desk native agent', execArgv: [],
+      env: workerEnvironment(forbiddenValues), stdio: 'pipe', serviceName: 'cc-desk native agent', execArgv: [],
     });
   } catch { throw new NativeWorkerError('spawn', 'Native worker could not start.'); }
 
@@ -140,7 +148,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     const pendingCalls: string[] = [];
     const streams = new Set<NativeWorkerStream>();
     const projectionQueue: AgentEvent[] = [];
-    const safeDeltas = new SafeModelDeltas(options.model.apiKey, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
+    const safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
     let projectionChain: Promise<void> = Promise.resolve();
     let requestSequence = 0, replySequence = 0, started = false, exited = false, exitCode: number | undefined;
     let done: RunResult | undefined, committedResult: RunResult | undefined, savedContext: ModelContext | undefined;
@@ -372,11 +380,11 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       if (method === 'tools.prepare') {
         const item = fields(args, ['call', 'context']);
         const requested = requireCall(item.call);
-        if (!options.tools.definitions.some(definition => definition.name === requested.name)) invalid();
+        if (!definitions.some(definition => definition.name === requested.name)) invalid();
         const bound = execution(item.context, signal);
         if (signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
         const prepared = await options.tools.prepare(clone(requested), bound);
-        if (!equal(prepared.call, requested) || prepared.policyRevision !== run.policyRevision || !equal(prepared.definition, options.tools.definitions.find(definition => definition.name === requested.name))) invalid();
+        if (!equal(prepared.call, requested) || prepared.policyRevision !== run.policyRevision || !equal(prepared.definition, definitions.find(definition => definition.name === requested.name))) invalid();
         toolStates.set(requested.id, { prepared: clone(prepared), validated: false, recorded: false, executing: false, executed: false });
         return prepared;
       }
@@ -459,14 +467,14 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       if (settled) return;
       try {
         const message = checkedMessage(value);
-        assertNoModelCredential(message, options.model.apiKey);
+        assertNoModelCredential(message, forbiddenValues);
         if (message.version !== WORKER_PROTOCOL) invalid();
         if (message.type === 'ready') {
           fields(message, ['type', 'version', 'pid']);
           if (started || !integer(message.pid) || message.pid <= 0 || (child.pid !== undefined && child.pid !== message.pid)) invalid();
           started = true;
           clearTimeout(startupTimer);
-          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model: options.model, definitions: clone(options.tools.definitions) });
+          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
         }
@@ -516,7 +524,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         inFlight.set(requestId, entry);
         entry.work = Promise.resolve().then(async () => {
           const value = await dispatch(message.method as string, message.args, controller.signal);
-          assertNoModelCredential(value, options.model.apiKey);
+          assertNoModelCredential(value, forbiddenValues);
           return value;
         }).then(value => {
           if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, ...(value === undefined ? {} : { value }) });

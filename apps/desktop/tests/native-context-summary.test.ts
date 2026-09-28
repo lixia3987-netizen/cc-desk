@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { estimateContextInputTokens, runAgent, type ModelContext } from '@cc-desk/agent-core';
+import { runAgent, type ModelContext } from '@cc-desk/agent-core';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
 import { summarizeNativeContext, type SummarizeNativeContextOptions } from '../src/main/engines/native/context-summary';
 import { NativeWorkerCleanupError, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
@@ -35,6 +35,7 @@ test('summary uses one tool-free isolated request and treats complete source his
   } });
   try {
     const request = options(server.baseURL), original = structuredClone(request.context);
+    request.model.toolDefinitions = [{ name: 'mcp_fixture', description: 'irrelevant tool '.repeat(10_000), inputSchema: { type: 'object' }, risk: 'command' }];
     let workerOptions: NativeWorkerOptions | undefined;
     request.worker = async captured => { workerOptions = captured; return inlineWorker(captured); };
     const result = await summarizeNativeContext(request);
@@ -49,6 +50,7 @@ test('summary uses one tool-free isolated request and treats complete source his
     assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel));
     assert.equal(workerOptions!.request.budget!.maxModelRequests, 1); assert.equal(workerOptions!.request.budget!.maxActiveMs, 60_000);
     assert.equal(workerOptions!.model.timeoutMs, 60_000);
+    assert.deepEqual(workerOptions!.model.toolDefinitions, [], 'summary estimates and sends an empty tool catalog even when the task catalog is large');
   } finally { await server.close(); }
 });
 
@@ -57,7 +59,7 @@ test('actual wrapped UTF-8 input budget is checked before spawning; exact bounda
   try {
     let captured: NativeWorkerOptions | undefined;
     await summarizeNativeContext(options(server.baseURL, { worker: async worker => { captured = worker; return inlineWorker(worker); } }));
-    const limit = estimateContextInputTokens({ protocol: { id: 'openai-responses', version: 1 }, items: [{ role: 'user', content: captured!.request.input }] }, captured!.model.instructions);
+    const limit = new ResponsesModel(captured!.model).estimateInputTokens({ protocol: { id: 'openai-responses', version: 1 }, items: [{ role: 'user', content: captured!.request.input }] });
     let starts = 0;
     await assert.rejects(summarizeNativeContext(options(server.baseURL, { maxInputTokens: limit - 1, worker: async worker => { starts++; return inlineWorker(worker); } })), { code: 'context_budget' });
     assert.equal(starts, 0); assert.equal(server.requests.length, 1);
@@ -95,6 +97,27 @@ test('protected credentials in history are rejected before worker creation and r
     assert.equal(starts, 0); assert.equal(server.requests.length, 0);
     await assert.rejects(summarizeNativeContext(options(server.baseURL)), error => { assert.doesNotMatch(String(error), new RegExp(sentinel)); return true; });
     assert.equal(server.requests.length, 1);
+  } finally { await server.close(); }
+});
+
+test('MCP credential protection is retained by isolated summaries without adding secrets to model options', async () => {
+  const secret = 'mcp-summary-secret-sentinel';
+  const server = await startResponsesFixture({ handler: () => ({ output: [assistantMessage('leak', secret)] }) });
+  try {
+    let starts = 0;
+    const worker: NonNullable<SummarizeNativeContextOptions['worker']> = async request => {
+      starts++;
+      assert.equal(JSON.stringify(request.model).includes(secret), false);
+      assert.ok(request.forbiddenValues?.includes(secret));
+      return inlineWorker(request);
+    };
+    const context = source(); context.items.push({ role: 'assistant', content: secret });
+    await assert.rejects(summarizeNativeContext(options(server.baseURL, { context, forbiddenValues: [secret], worker })), { code: 'invalid_summary' });
+    assert.equal(starts, 0); assert.equal(server.requests.length, 0);
+    await assert.rejects(summarizeNativeContext(options(server.baseURL, { forbiddenValues: [secret], worker })), error => {
+      assert.doesNotMatch(String(error), new RegExp(secret)); return true;
+    });
+    assert.equal(starts, 1); assert.equal(server.requests.length, 1);
   } finally { await server.close(); }
 });
 

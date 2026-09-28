@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, estimateContextInputTokens, type JsonValue, type ModelContext, type RunIdentity } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type JsonValue, type ModelContext, type RunIdentity } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { ResponsesModel, type ResponsesModelOptions } from '@cc-desk/agent-node/responses-model';
 import type { parseNativeConfig } from './config';
@@ -16,7 +16,7 @@ export function pendingNativeContext(context: ModelContext, input: string, model
 
 export function assertNativeInputBudget(context: ModelContext, input: string, instructions: string, config: Config, model: ResponsesModelOptions): void {
   const pending = pendingNativeContext(context, input, model);
-  const usage = contextBudgetUsage(pending, estimateContextInputTokens(pending, instructions), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
+  const usage = contextBudgetUsage(pending, new ResponsesModel({ ...model, instructions }).estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'exceeded') throw new Error('压缩后本次输入仍超过运行预算，已暂停发送；请减少输入、调整预算或新建会话，不会连续请求摘要。');
 }
 
@@ -24,6 +24,7 @@ export function assertNativeInputBudget(context: ModelContext, input: string, in
 export async function autoCompactBeforeSend(options: {
   ledger: NativeRunStore; identity: RunIdentity; input: string; config: Config;
   model: ResponsesModelOptions; instructions: string; signal: AbortSignal;
+  forbiddenValues?: readonly (string | undefined)[];
   startedAt: number; assertOwnership(): Promise<void>; onCompacting(): void; onCommitted(): Promise<void>;
   worker?: typeof runNativeWorker;
 }): Promise<{ compacted: boolean; remainingRequests: number }> {
@@ -42,12 +43,13 @@ export async function autoCompactBeforeSend(options: {
   const context = ledger.loadContext();
   if (config.autoCompact !== 'before_send' || !context) return { compacted: false, remainingRequests };
   const pending = pendingNativeContext(context, input, model);
-  const usage = contextBudgetUsage(pending, estimateContextInputTokens(pending, options.instructions), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
+  const estimator = new ResponsesModel({ ...model, instructions: options.instructions });
+  const usage = contextBudgetUsage(pending, estimator.estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'within_budget') return { compacted: false, remainingRequests };
   // A large new message/instruction set cannot be fixed by summarizing old history.
   const minimum = pendingNativeContext({ protocol: context.protocol, items: [] }, input, model);
-  if (contextBudgetUsage(minimum, estimateContextInputTokens(minimum, options.instructions), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
-    throw new Error('本次新输入与项目指令已超过运行预算，未调用自动摘要；请减少输入或调整预算。');
+  if (contextBudgetUsage(minimum, estimator.estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
+    throw new Error('本次新输入、项目指令与工具定义已超过运行预算，未调用自动摘要；请减少输入、所选工具或调整预算。');
   }
   let source;
   try { source = ledger.getCompactionSource(); }
@@ -70,7 +72,7 @@ export async function autoCompactBeforeSend(options: {
   if (summaryMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');
   const result = await summarizeNativeContext({ identity: { ...identity, runId: randomUUID(), requestId: `auto-compact:${identity.requestId}` },
     context: source.context, model, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens,
-    maxActiveMs: summaryMs, signal: options.signal, worker: options.worker });
+    maxActiveMs: summaryMs, signal: options.signal, worker: options.worker, forbiddenValues: options.forbiddenValues });
   await options.assertOwnership();
   const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: source.expectedHash, usage: result.usage, automaticRequestId: identity.requestId });
   await ledger.commitContextCompaction(plan);

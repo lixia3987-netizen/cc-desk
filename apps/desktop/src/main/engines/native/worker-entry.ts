@@ -50,7 +50,7 @@ async function start(message: WorkerStart) {
   identity = message.request.identity;
   const context = <T extends { signal: AbortSignal }>(value: T) => { const { signal: _signal, ...rest } = value; return rest; };
   const ports: AgentPorts = {
-    model: new ResponsesModel(message.model),
+    model: new ResponsesModel({ ...message.model, toolDefinitions: message.definitions }),
     tools: {
       definitions: message.definitions,
       prepare: (call, execution) => rpc('tools.prepare', { call, context: context(execution) }, execution.signal),

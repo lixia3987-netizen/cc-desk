@@ -11,6 +11,126 @@ import type { BeginRunRequest } from '@cc-desk/agent-core';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 
+test('native MCP settings keep metadata operations local and clear write-only credentials on save, auth change, close and restart', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-mcp-ui-'));
+  const data = path.join(directory, 'data');
+  await fs.mkdir(data);
+  await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [], sessions: [], settings: {
+    claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {},
+  } }));
+  let requests = 0;
+  const server = createServer((_request, response) => { requests++; response.writeHead(503); response.end(); });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const launch = () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    const open = async () => {
+      await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+      return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
+    };
+    let region = await open();
+    await region.getByRole('button', { name: '新增 MCP 连接', exact: true }).click();
+    await page.getByLabel('MCP 连接名称', { exact: true }).fill('MCP 本机配置');
+    await page.getByLabel('MCP 服务端点', { exact: true }).fill(`http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`);
+    await page.getByLabel('MCP 允许本地回环 HTTP', { exact: true }).check();
+    await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('memory');
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.locator('.connection-box')).toContainText('未就绪');
+    const secret = 'mcp-ui-secret-DO-NOT-PERSIST';
+    await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill(secret);
+    await region.getByRole('button', { name: '设置 MCP 凭据并清空输入', exact: true }).click();
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
+    await expect(region.locator('.connection-box')).toContainText('本机配置就绪');
+    await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill('cancelled-secret');
+    await region.getByRole('button', { name: '关闭 MCP 编辑', exact: true }).click();
+    await region.getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
+    await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill('auth-change-secret');
+    await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('none');
+    await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('memory');
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
+    await region.getByRole('button', { name: '刷新', exact: true }).click();
+    await expect(region.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
+    expect(requests).toBe(0);
+    const metadata = await page.evaluate(async () => ({ mcp: await window.desktop.nativeMcp.list(), workspace: await window.desktop.snapshot() }));
+    expect(JSON.stringify(metadata)).not.toContain(secret);
+    expect(metadata.mcp.connections[0].ready).toBe(true);
+    expect(await fs.readFile(path.join(data, 'native/mcp-connections.json'), 'utf8')).not.toContain(secret);
+    await app.close(); app = await launch(); page = await app.firstWindow(); region = await open();
+    await expect(region.locator('.connection-box')).toContainText('MCP 本机配置');
+    await expect(region.locator('.connection-box')).toContainText('未就绪');
+    await region.getByRole('button', { name: '删除', exact: true }).click();
+    await expect(region.locator('.connection-box')).toHaveCount(0);
+    expect(requests).toBe(0);
+  } finally {
+    await app.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve()));
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('native MCP choices save per session, retain removable unavailable entries, and discard late metadata after session switching', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-mcp-selection-'));
+  const data = path.join(directory, 'data'), cwd = path.join(directory, 'project');
+  await fs.mkdir(data); await fs.mkdir(cwd);
+  const sessionIds = [randomUUID(), randomUUID()], projectId = randomUUID(), now = new Date().toISOString();
+  await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3,
+    projects: [{ id: projectId, name: 'MCP 测试项目', path: cwd, createdAt: now }],
+    sessions: sessionIds.map((id, index) => ({ id, projectId, title: `MCP 会话 ${index + 1}`, kind: 'agent', cwd,
+      execution: { providerId: 'native', mode: 'structured', conversationId: randomUUID() },
+      engineConfig: { schemaVersion: 1, options: { mcpConnections: index === 0 ? ['missing-service'] : [] } },
+      started: false, status: 'stopped', archived: false, createdAt: now, updatedAt: now })),
+    selectedSessionId: sessionIds[0], settings: { claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {} },
+  }));
+  const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
+  try {
+    const page = await app.firstWindow();
+    const connections = await page.evaluate(async ids => {
+      const model = await window.desktop.nativeConnections.upsert({ name: 'MCP UI 模型引用', protocol: 'responses', baseURL: 'https://unused.example.test/v1', model: 'fixture-model', auth: { mode: 'memory' }, allowLoopbackHttp: false, enabled: true });
+      await window.desktop.nativeConnections.setCredential({ id: model.id, revision: model.revision, mode: 'memory', secret: 'fixture-no-network' });
+      for (const id of ids) {
+        const session = (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!;
+        await window.desktop.updateSession({ id, engineConfig: { ...session.engineConfig, options: { ...session.engineConfig.options, connectionId: model.id } } });
+      }
+      const ready = await window.desktop.nativeMcp.upsert({ name: '可选服务', endpoint: 'https://mcp-unused.example.test/mcp', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: true });
+      const disabled = await window.desktop.nativeMcp.upsert({ name: '禁用服务', endpoint: 'https://mcp-unused.example.test/disabled', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: false });
+      return { ready, disabled };
+    }, sessionIds);
+    const choices = page.getByRole('region', { name: '会话 MCP 工具', exact: true });
+    await expect(choices).toContainText('已选 1 / 4');
+    await choices.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
+    await expect(choices.getByLabel(`MCP 禁用服务 (${connections.disabled.id})`, { exact: true })).toBeDisabled();
+    await choices.getByLabel('MCP missing-service (missing-service)', { exact: true }).uncheck();
+    await choices.getByLabel(`MCP 可选服务 (${connections.ready.id})`, { exact: true }).check();
+    await page.locator('form.session-config').getByRole('button', { name: '保存配置', exact: true }).click();
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.mcpConnections, sessionIds[0])).toEqual([connections.ready.id]);
+    await page.locator('.session-row').filter({ hasText: 'MCP 会话 2' }).click();
+    await expect(choices).toContainText('已选 0 / 4');
+    await expect(choices.getByRole('checkbox')).toHaveCount(0);
+
+    // Replace only the local metadata handler with a delayed fixture. No MCP endpoint is contacted.
+    await app.evaluate(({ ipcMain }) => {
+      const state = globalThis as typeof globalThis & { finishMcpList?: (value: unknown) => void };
+      ipcMain.removeHandler('native:mcp-connections-list');
+      ipcMain.handle('native:mcp-connections-list', () => new Promise(resolve => { state.finishMcpList = resolve; }));
+    });
+    await choices.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
+    await expect(choices.getByRole('button', { name: '正在读取 MCP 连接…', exact: true })).toBeDisabled();
+    await page.locator('.session-row').filter({ hasText: 'MCP 会话 1' }).click();
+    await app.evaluate(() => {
+      const state = globalThis as typeof globalThis & { finishMcpList?: (value: unknown) => void };
+      state.finishMcpList?.({ connections: [{ id: 'late', name: '迟到的服务', endpoint: 'https://late.example.test/mcp', revision: 1, enabled: true, ready: true, credentialConfigured: true, auth: { mode: 'none' }, allowLoopbackHttp: false }], storage: { persistentAvailable: false } });
+      delete state.finishMcpList;
+    });
+    await expect(choices).toContainText('已选 1 / 4');
+    await expect(choices).not.toContainText('迟到的服务');
+    await expect(choices.getByRole('button', { name: '读取 MCP 连接', exact: true })).toBeEnabled();
+    const saved = await page.evaluate(async () => (await window.desktop.snapshot()).state.sessions);
+    expect(saved.find(item => item.id === sessionIds[1])?.engineConfig.options.mcpConnections).toEqual([]);
+  } finally { await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
 test('native connections UI saves metadata separately, clears secret input, disables and deletes, and loses memory keys at restart', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-connections-ui-'));
   const data = path.join(directory, 'data');
