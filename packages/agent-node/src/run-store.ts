@@ -7,7 +7,7 @@ import type {
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
-import { contextSummaryItem, requireCompleteResponsesContext, responsesPendingCalls } from './context-maintenance.js';
+import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems } from './context-maintenance.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
@@ -763,7 +763,7 @@ export class NativeRunStore implements RunStore {
     if (classification === 'safe_to_continue') {
       try {
         if (!this.context) throw new Error();
-        const pending = responsesPendingCalls(this.context);
+        const pending = contextPendingCalls(this.context);
         const expected = [...run.tools.values()].filter(tool => !tool.completed).map(tool => tool.call);
         if (!equal(pending, expected)) throw new Error();
       } catch { classification = 'unsupported_protocol'; }
@@ -779,10 +779,10 @@ export class NativeRunStore implements RunStore {
     const run = this.runs.get(runId)!;
     const completions: RecoveryCompletion[] = [...run.tools.values()].filter(tool => !tool.completed).map(tool => {
       const result = { status: 'not_executed' as const, output: { error: 'host_interrupted_before_execution', executed: false } };
-      return { type: 'tool_completed', call: clone(tool.call), result, resultItems: [{ type: 'function_call_output', call_id: tool.call.id, output: JSON.stringify(result) }] };
+      return { type: 'tool_completed', call: clone(tool.call), result, resultItems: nativeToolResultItems(this.context!.protocol, tool.call, result) };
     });
     const context: ModelContext = { ...clone(this.context!), items: [...clone(this.context!.items), ...completions.flatMap(item => item.resultItems)] };
-    requireCompleteResponsesContext(context);
+    requireCompleteContext(context);
     const responses = this.records.filter(record => record.identity?.runId === runId).flatMap(record => record.event.type === 'model_response' ? [record.event.response] : []);
     let usage: RunResult['usage'] = null;
     if (run.result) usage = clone(run.result.usage);
@@ -819,7 +819,7 @@ export class NativeRunStore implements RunStore {
     if (!Number.isSafeInteger(keepRecentTurns) || keepRecentTurns < 1 || keepRecentTurns > 10_000) fail('invalid_limits', 'At least one complete recent turn must be retained');
     if (this.recoveryRequired || [...this.runs.values()].some(run => run.status === 'active')) fail('conversation_busy', 'Context maintenance requires an idle conversation without recovery barriers');
     if (!this.context || this.contextTurns.length <= keepRecentTurns) fail('nothing_to_compact', 'At least one older and one retained complete turn are required');
-    requireCompleteResponsesContext(this.context);
+    requireCompleteContext(this.context);
     return this.contextTurns[this.contextTurns.length - keepRecentTurns].start;
   }
 
@@ -828,7 +828,7 @@ export class NativeRunStore implements RunStore {
     const boundary = this.compactionBoundary(options.keepRecentTurns ?? 1);
     const latest = this.records.at(-1)!;
     const context = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
-    requireCompleteResponsesContext(context);
+    requireCompleteContext(context);
     return { expectedHash: latest.hash, sourceSeq: latest.seq, context, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), scope: 'prefix' };
   }
 
@@ -876,11 +876,11 @@ export class NativeRunStore implements RunStore {
       if (!attempt || attempt.status !== 'attempted') fail('auto_compaction_unavailable', 'Automatic compaction requires an unused durable reservation');
       if (options.expectedHash !== source.expectedHash || attempt.contextHash !== digest(this.context) || this.records[attempt.seq - 1]?.hash !== source.expectedHash) fail('stale_context', 'Automatic compaction reservation no longer owns the current conversation head');
     }
-    const summary = contextSummaryItem(options.summary);
+    const summary = contextSummaryItem(options.summary, this.context!.protocol);
     const boundary = this.compactionBoundary(keepRecentTurns);
     const prefix = [...clone(this.originalUserItems!), summary];
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
-    requireCompleteResponsesContext(context);
+    requireCompleteContext(context);
     const afterBytes = Buffer.byteLength(JSON.stringify(context));
     if (afterBytes >= source.beforeBytes) fail('compaction_not_smaller', 'Summary would not reduce the complete model context');
     const checkpointBytes = Buffer.byteLength(canonical({ schemaVersion: 1, conversationId: this.conversationId, seq: source.sourceSeq + 1, journalHash: ZERO_HASH, context, hash: ZERO_HASH }));

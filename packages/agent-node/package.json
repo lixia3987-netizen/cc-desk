@@ -8,6 +8,9 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./responses-model": { "types": "./dist/responses-model.d.ts", "default": "./dist/responses-model.js" },
+    "./native-model": { "types": "./dist/native-model.d.ts", "default": "./dist/native-model.js" },
+    "./chat-completions-model": { "types": "./dist/chat-completions-model.d.ts", "default": "./dist/chat-completions-model.js" },
+    "./context-maintenance": { "types": "./dist/context-maintenance.d.ts", "default": "./dist/context-maintenance.js" },
     "./run-store": { "types": "./dist/run-store.d.ts", "default": "./dist/run-store.js" },
     "./tools": { "types": "./dist/tools/index.d.ts", "default": "./dist/tools/index.js" },
     "./process-supervisor": { "types": "./dist/process-supervisor.d.ts", "default": "./dist/process-supervisor.js" },

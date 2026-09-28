@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { runAgent, type AgentEvent, type AgentPorts, type RunIdentity } from '@cc-desk/agent-core';
-import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
+import { createNativeModel } from '@cc-desk/agent-node/native-model';
 import { checkedMessage, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL, type WorkerReply, type WorkerStart } from './worker-protocol';
 
 const port = process.parentPort;
@@ -50,7 +50,7 @@ async function start(message: WorkerStart) {
   identity = message.request.identity;
   const context = <T extends { signal: AbortSignal }>(value: T) => { const { signal: _signal, ...rest } = value; return rest; };
   const ports: AgentPorts = {
-    model: new ResponsesModel({ ...message.model, toolDefinitions: message.definitions }),
+    model: createNativeModel({ ...message.model, toolDefinitions: message.definitions }),
     tools: {
       definitions: message.definitions,
       prepare: (call, execution) => rpc('tools.prepare', { call, context: context(execution) }, execution.signal),

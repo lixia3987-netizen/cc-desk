@@ -3,7 +3,8 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type JsonObject, type JsonValue, type RunResult, type ToolDefinition } from '@cc-desk/agent-core';
-import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
+import { estimateNativeInputTokens, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
+import { estimateNativeCost } from '../../../shared/native-cost';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, TaskState } from '../../../shared/chat';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
@@ -28,18 +29,7 @@ const bounded = (value: unknown, maximum = MAX_TEXT): { text: string; truncated?
   return text.length > maximum ? { text: text.slice(0, maximum), truncated: true } : { text };
 };
 const taskState = (result: Pick<RunResult, 'status'>): TaskState => result.status === 'completed' ? 'completed' : result.status === 'cancelled' ? 'interrupted' : 'error';
-function outputText(item: JsonValue): string {
-  if (!object(item)) return '';
-  // Opaque continuation/reasoning is never projected or exported. Only the
-  // protocol's explicit assistant text/refusal content is a display message.
-  if (item.type === 'message' && item.role === 'assistant' && Array.isArray(item.content)) return item.content.flatMap(part => {
-    if (!object(part)) return [];
-    return part.type === 'output_text' && typeof part.text === 'string' ? [part.text] : part.type === 'refusal' && typeof part.refusal === 'string' ? [part.refusal] : [];
-  }).join('\n');
-  if ((item.type === undefined || item.type === 'message') && item.role === 'assistant' && typeof item.content === 'string') return item.content;
-  if (item.type === 'output_text' && typeof item.text === 'string') return item.text;
-  return '';
-}
+function outputText(item: JsonValue): string { return extractNativeAssistantText([item]); }
 function displayInput(input: unknown): Record<string, unknown> {
   if (!object(input)) return {};
   const serialized = JSON.stringify(input);
@@ -175,7 +165,8 @@ export class NativeProjection {
       } else if (event.type === 'run_finished') {
         currentTerminal = true;
         const result = event.result;
-        add({ type: 'result', success: result.status === 'completed', summary: '', usage: result.usage ?? {}, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
+        const costUSD = estimateNativeCost(result.usage, configuration?.pricing, configuration?.model);
+        add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
           const message = tools.get(messageId);
@@ -223,11 +214,14 @@ export class NativeProjection {
       const instructions = typeof configuration.modelInstructions === 'string' ? configuration.modelInstructions : '';
       const definitions = Array.isArray(configuration.toolDefinitions) ? configuration.toolDefinitions as unknown as ToolDefinition[] : [];
       const model = typeof configuration.model === 'string' ? configuration.model : undefined;
+      let budget;
+      try { budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }); }
+      catch { /* Unknown protocol records remain readable, with no invented budget. */ }
       projected.push({ seq: latest.seq, event: { type: 'context', context: {
         ...(model ? { model, requestModel: model } : {}),
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(measuredAt ? { measuredAt } : {}), source: 'request', status: inputTokens === undefined ? 'unknown' : 'ready',
-        budget: contextBudgetUsage(modelContext, estimateResponsesInputTokens(modelContext, instructions, definitions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }),
+        ...(budget ? { budget } : {}),
       } } });
     }
     const temporary = path.join(this.directory, `${id}.native-${randomUUID()}.tmp`);
@@ -291,7 +285,7 @@ export class NativeProjection {
     const snapshot = clone(entry.history.get(id));
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
-    else if (entry.pending.length) snapshot.taskState = 'waiting_approval';
+    else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';
     if (entry.stream?.text) snapshot.messages.push({ id: `${entry.stream.identity.runId}:stream:${entry.stream.responseNumber}`, turnId: entry.stream.identity.runId, role: 'assistant', text: entry.stream.text, createdAt: entry.stream.createdAt });
     return snapshot;
   }
@@ -308,7 +302,7 @@ export class NativeProjection {
   approval(id: string, approval: ChatApproval | undefined): void {
     const entry = this.entry(id);
     entry.pending = approval ? [clone(approval)] : [];
-    if (!approval && entry.override?.taskState === 'waiting_approval') entry.override = undefined;
+    if (!approval && (entry.override?.taskState === 'waiting_approval' || entry.override?.taskState === 'waiting_input')) entry.override = undefined;
     if (approval) this.journal(id, { type: 'approval_requested', approval: clone(approval) });
     this.changed(id);
   }

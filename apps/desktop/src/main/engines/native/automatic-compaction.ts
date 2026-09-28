@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type JsonValue, type ModelContext, type RunIdentity } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import { ResponsesModel, type ResponsesModelOptions } from '@cc-desk/agent-node/responses-model';
+import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import type { parseNativeConfig } from './config';
 import { summarizeNativeContext } from './context-summary';
 import type { runNativeWorker } from './worker-host';
@@ -10,20 +10,22 @@ type Config = ReturnType<typeof parseNativeConfig>;
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 const blocked = () => new Error('这份上下文已有未完成的自动压缩尝试，已暂停本次发送。请先手动压缩，或关闭自动压缩后重新发送；不会自动重复请求摘要。');
 
-export function pendingNativeContext(context: ModelContext, input: string, model: ResponsesModelOptions): ModelContext {
-  return { ...context, items: [...context.items, ...new ResponsesModel(model).userItems(input)] };
+export function pendingNativeContext(context: ModelContext, input: string, model: NativeModelOptions): ModelContext {
+  const adapter = createNativeModel(model);
+  if (context.protocol.id !== adapter.protocol.id || context.protocol.version !== adapter.protocol.version) throw new Error('已有会话不能更换模型协议，请新建会话。');
+  return { ...context, items: [...context.items, ...adapter.userItems(input)] };
 }
 
-export function assertNativeInputBudget(context: ModelContext, input: string, instructions: string, config: Config, model: ResponsesModelOptions): void {
+export function assertNativeInputBudget(context: ModelContext, input: string, instructions: string, config: Config, model: NativeModelOptions): void {
   const pending = pendingNativeContext(context, input, model);
-  const usage = contextBudgetUsage(pending, new ResponsesModel({ ...model, instructions }).estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
+  const usage = contextBudgetUsage(pending, createNativeModel({ ...model, instructions }).estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'exceeded') throw new Error('压缩后本次输入仍超过运行预算，已暂停发送；请减少输入、调整预算或新建会话，不会连续请求摘要。');
 }
 
 /** A send owns the entire operation. Reserve before any model request; never retry an uncertain attempt. */
 export async function autoCompactBeforeSend(options: {
   ledger: NativeRunStore; identity: RunIdentity; input: string; config: Config;
-  model: ResponsesModelOptions; instructions: string; signal: AbortSignal;
+  model: NativeModelOptions; instructions: string; signal: AbortSignal;
   forbiddenValues?: readonly (string | undefined)[];
   startedAt: number; assertOwnership(): Promise<void>; onCompacting(): void; onCommitted(): Promise<void>;
   worker?: typeof runNativeWorker;
@@ -43,7 +45,7 @@ export async function autoCompactBeforeSend(options: {
   const context = ledger.loadContext();
   if (config.autoCompact !== 'before_send' || !context) return { compacted: false, remainingRequests };
   const pending = pendingNativeContext(context, input, model);
-  const estimator = new ResponsesModel({ ...model, instructions: options.instructions });
+  const estimator = createNativeModel({ ...model, instructions: options.instructions });
   const usage = contextBudgetUsage(pending, estimator.estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'within_budget') return { compacted: false, remainingRequests };
   // A large new message/instruction set cannot be fixed by summarizing old history.
