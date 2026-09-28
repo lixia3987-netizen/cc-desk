@@ -2,7 +2,7 @@ import { dialog, type BrowserWindow } from 'electron';
 import path from 'node:path';
 import { z } from 'zod';
 import type { Session } from '../../shared/types';
-import type { ChatTurnResult } from '../../shared/chat';
+import type { ChatSnapshot, ChatTurnResult } from '../../shared/chat';
 import { idSchema } from '../../shared/schema';
 import type { StructuredExecutions, TerminalExecutions } from '../execution/routers';
 import type { Attachments } from '../attachments';
@@ -24,7 +24,8 @@ interface ChatPorts {
   reserve(id: string): Promise<void>;
   releaseAdmission(id: string): void | Promise<void>;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
-  runChat(id: string, text: string, attachments: string[], requestId?: string): Promise<ChatTurnResult>;
+  runChat(id: string, text: string, attachments: string[], requestId?: string, nativeTaskId?: string): Promise<ChatTurnResult>;
+  versionSnapshot(snapshot: ChatSnapshot): ChatSnapshot;
   getWindow(): BrowserWindow | null;
 }
 
@@ -40,6 +41,7 @@ const searchSchema = z.object({
 const sendSchema = z.object({
   id: idSchema, text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8).optional(),
   requestId: shortId.optional(),
+  nativeTaskId: shortId.optional(),
 });
 const droppedFilesSchema = z.object({
   id: idSchema,
@@ -64,7 +66,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     ports.structured(id);
     await ports.chat.hydrate(id);
     const snapshot = ports.chat.snapshot(id);
-    return { ...snapshot, queue: snapshot.queue ?? ports.queue.snapshot(id) };
+    return ports.versionSnapshot({ ...snapshot, queue: snapshot.queue ?? ports.queue.snapshot(id) });
   });
   handle('chat:commands', idSchema, async id => {
     const checkAdmission = ports.captureAdmission(id);
@@ -72,14 +74,14 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     if (session.archived) throw new Error('请先取消会话归档。');
     ports.assertUnlocked(session);
     ports.requireCommands(id);
-    if (ports.chat.has(id)) return { ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) };
+    if (ports.chat.has(id)) return ports.versionSnapshot({ ...ports.chat.snapshot(id), queue: ports.queue.snapshot(id) });
     if (ports.runtime.has(id) || ports.workflows.isSessionBusy(id)) throw new Error('请先结束当前会话任务。');
     await ports.reserve(id);
     try {
       checkAdmission();
       const snapshot = await ports.chat.prepareCommands(id);
       checkAdmission();
-      return { ...snapshot, queue: ports.queue.snapshot(id) };
+      return ports.versionSnapshot({ ...snapshot, queue: ports.queue.snapshot(id) });
     }
     finally { await ports.releaseAdmission(id); }
   });
@@ -98,7 +100,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.chat.search(id, query, before);
   });
   handle('chat:attention', z.undefined(), () => ports.chat.attention());
-  handle('chat:send', sendSchema, async ({ id, text, attachments, requestId }) => {
+  handle('chat:send', sendSchema, async ({ id, text, attachments, requestId, nativeTaskId }) => {
     ports.structured(id);
     const checkAdmission = ports.captureAdmission(id);
     if (!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');
@@ -106,12 +108,12 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     const approved = await ports.attachments.validate(id, attachments);
     checkAdmission();
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流已开始，请先取消后再发送。');
-    return ports.runChat(id, text, approved, requestId);
+    return ports.runChat(id, text, approved, requestId, nativeTaskId);
   });
-  handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId }) => {
+  handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId, nativeTaskId }) => {
     ports.structured(id);
     if (invokedCommand(text) && attachments?.length) throw new Error('执行斜杠命令时请先移除附件，再单独发送命令。');
-    return ports.queue.submit(id, text, attachments, requestId);
+    return ports.queue.submit(id, text, attachments, requestId, { nativeTaskId });
   });
   const queueMessage = z.object({ id: idSchema, messageId: z.string().uuid() });
   handle('chat:queue-now', queueMessage, ({ id, messageId }) => { ports.structured(id); return ports.queue.sendNow(id, messageId); });

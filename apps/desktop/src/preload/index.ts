@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
-import type { TaskState } from '../shared/chat';
+import type { ChatSnapshotVersion, TaskState } from '../shared/chat';
 const api: DesktopAPI = {
   nativeMcp: {
     list: () => ipcRenderer.invoke('native:mcp-connections-list'),
@@ -25,6 +25,7 @@ const api: DesktopAPI = {
   confirmNativeRecovery: id => ipcRenderer.invoke('native:confirm-recovery', id),
   resumeNativeRecovery: (id, expectedHead) => ipcRenderer.invoke('native:resume-recovery', { id, expectedHead }),
   compactNativeContext: (id, expectedHead) => ipcRenderer.invoke('native:compact-context', { id, expectedHead }),
+  nativeTaskReview: (id, input) => ipcRenderer.invoke('native:task-review', { ...input, id }),
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
   copyText:text => ipcRenderer.invoke('clipboard:write-text',text),
   chooseProject:() => ipcRenderer.invoke('project:choose'),
@@ -43,8 +44,8 @@ const api: DesktopAPI = {
   chatPage:(id,options) => ipcRenderer.invoke('chat:page',{id,...options}),
   searchChat:(id,query,before) => ipcRenderer.invoke('chat:search',{id,query,before}),
   chatAttention:() => ipcRenderer.invoke('chat:attention'),
-  sendChat:(id,text,attachments,requestId) => ipcRenderer.invoke('chat:send',{id,text,attachments,requestId}),
-  submitChat:(id,text,attachments,requestId) => ipcRenderer.invoke('chat:submit',{id,text,attachments,requestId}),
+  sendChat:(id,text,attachments,requestId,options) => ipcRenderer.invoke('chat:send',{id,text,attachments,requestId,nativeTaskId:options?.nativeTaskId}),
+  submitChat:(id,text,attachments,requestId,options) => ipcRenderer.invoke('chat:submit',{id,text,attachments,requestId,nativeTaskId:options?.nativeTaskId}),
   sendQueuedChatNow:(id,messageId) => ipcRenderer.invoke('chat:queue-now',{id,messageId}),
   removeQueuedChat:(id,messageId) => ipcRenderer.invoke('chat:queue-remove',{id,messageId}),
   resumeChatQueue:id => ipcRenderer.invoke('chat:queue-resume',id),
@@ -82,7 +83,7 @@ const api: DesktopAPI = {
   exportWorkflow:id => ipcRenderer.invoke('workflow:export',id),
   reviseWorkflowStage:(id,stageId,instruction) => ipcRenderer.invoke('workflow:revise',{id,stageId,instruction}),
   onWorkflows:callback => { const listener = () => callback(); ipcRenderer.on('workflow:changed',listener); return () => ipcRenderer.removeListener('workflow:changed',listener); },
-  onChat:callback => { const listener = (_event:Electron.IpcRendererEvent,id:string,state?:TaskState) => callback(id,state); ipcRenderer.on('chat:changed',listener); return () => ipcRenderer.removeListener('chat:changed',listener); },
+  onChat:callback => { const listener = (_event:Electron.IpcRendererEvent,id:string,state?:TaskState,version?:ChatSnapshotVersion) => callback(id,state,version); ipcRenderer.on('chat:changed',listener); return () => ipcRenderer.removeListener('chat:changed',listener); },
   onExecution:callback => { const listener = (_event:Electron.IpcRendererEvent,event:Parameters<typeof callback>[0]) => callback(event); ipcRenderer.on('execution:event',listener); return () => ipcRenderer.removeListener('execution:event',listener); },
   startSession:id => ipcRenderer.invoke('session:start',id),
   stopSession:id => ipcRenderer.invoke('session:stop',id),

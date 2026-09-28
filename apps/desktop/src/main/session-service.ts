@@ -10,6 +10,7 @@ import { exportSession } from './execution/export-session';
 import { Attachments } from './attachments';
 import { WorkflowEngine } from './workflows';
 import { ChatQueue } from './chat-queue';
+import { ChatSnapshotClock } from './chat-snapshot-clock';
 import type { WorkspaceQueries } from './workspace-queries';
 import { gitWorktreeRoot } from './git';
 import { isSessionBusy } from '../shared/session-activity';
@@ -40,6 +41,7 @@ export class SessionService {
   private notified = new Map<string,string>();
   private workflowStates = new Map<string,string>();
   private stopping = false;
+  private chatClock = new ChatSnapshotClock();
   private maintenance = false;
   private maintainedEngines = new Set<string>();
   private maintenanceOperation = false;
@@ -59,11 +61,13 @@ export class SessionService {
       if (event.type !== 'conversation.changed') return;
       const id = event.identity.sessionId, state = event.taskState;
       this.queue?.wake(id);
-      window?.webContents.send('chat:changed', id, state);
+      const version = this.chatClock.changed(id, event.identity.conversationId);
+      window?.webContents.send('chat:changed', id, state, version);
       const old = this.notified.get(id); this.notified.set(id,state);
       if (old !== state && store.state.settings.notifications && ['waiting_approval','waiting_input','completed','error'].includes(state) && Notification.isSupported()) {
         const session = store.state.sessions.find(s => s.id === id);
         const labels: Record<string,string> = {waiting_approval:'需要批准工具操作',waiting_input:'需要你的回答',completed:'本轮任务已完成',error:'任务遇到错误'};
+        if (session?.execution.providerId === 'native') labels.completed = '本轮执行已结束';
         const notification = new Notification({title:session?.title ?? 'cc-desk',body:labels[state]});
         notification.on('click',() => this.navigateFromNotification(id));
         notification.show();
@@ -99,10 +103,13 @@ export class SessionService {
       },
       blocked: id => this.admissions.has(id) || this.chat.isBusy(id) || this.workflows.isSessionBusy(id),
       acceptAttachments: (id, files, commit) => this.attachments.acceptQueued(id, files, commit),
-      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue' }),
+      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}) }),
       settled:id => this.refreshDirectoryRelease(id),
       interrupt: id => this.interruptForQueue(id),
-      changed: id => this.getWindow()?.webContents.send('chat:changed', id, this.chat.taskState(id)),
+      changed: id => {
+        const version = this.chatClock.changed(id, this.session(id).execution.conversationId);
+        this.getWindow()?.webContents.send('chat:changed', id, this.chat.taskState(id), version);
+      },
     });
   }
   private navigateFromNotification(id:string) {
@@ -511,12 +518,13 @@ export class SessionService {
     });
     registerChatHandlers(handle, {
       chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments, queue: this.queue,
+      versionSnapshot: snapshot => this.chatClock.snapshot(snapshot, this.session(snapshot.sessionId).execution.conversationId),
       structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
       captureAdmission: id => this.captureEngineAdmission(this.session(id).execution.providerId),
       requireCommands: id => { this.execution.require(id, 'commands'); },
       reserve: id => this.reserve(id), releaseAdmission: async id => { this.admissions.delete(id); await this.refreshDirectoryRelease(id); this.queue.wake(id); },
       manage: (id, action) => this.manage(id, action),
-      runChat: (id, text, attachments, requestId) => this.runChat(id, text, attachments, undefined, false, { requestId: requestId ?? randomUUID(), source: 'direct' }), getWindow: this.getWindow,
+      runChat: (id, text, attachments, requestId, nativeTaskId) => this.runChat(id, text, attachments, undefined, false, { requestId: requestId ?? randomUUID(), source: 'direct', ...(nativeTaskId ? { nativeTaskId } : {}) }), getWindow: this.getWindow,
     });
     registerWorkspaceHandlers(handle, {
       store: this.store, queries: this.queries, session: id => this.session(id), project: id => this.project(id),

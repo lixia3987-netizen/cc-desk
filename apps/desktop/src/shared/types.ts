@@ -1,4 +1,6 @@
-import type { ChatSnapshot, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
+import type { ChatSnapshot, ChatSnapshotVersion, ChatSendOptions, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
+import type { NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
+import type { NativeTaskReviewInput } from './native-task';
 import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
@@ -49,6 +51,7 @@ export interface DesktopAPI {
   confirmNativeRecovery(id: string): Promise<void>;
   resumeNativeRecovery(id: string, expectedHead: string): Promise<void>;
   compactNativeContext(id: string, expectedHead: string): Promise<void>;
+  nativeTaskReview(id: string, input: NativeTaskReviewInput): Promise<NativeTaskSnapshot>;
   snapshot(): Promise<Snapshot>;
   copyText(text: string): Promise<void>;
   chooseProject(): Promise<Project | null>;
@@ -67,8 +70,8 @@ export interface DesktopAPI {
   chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   searchChat(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   chatAttention(): Promise<ChatAttention[]>;
-  sendChat(id: string, text: string, attachments?: string[], requestId?: string): Promise<ChatTurnResult>;
-  submitChat(id: string, text: string, attachments?: string[], requestId?: string): Promise<ChatSubmission>;
+  sendChat(id: string, text: string, attachments?: string[], requestId?: string, options?: ChatSendOptions): Promise<ChatTurnResult>;
+  submitChat(id: string, text: string, attachments?: string[], requestId?: string, options?: ChatSendOptions): Promise<ChatSubmission>;
   sendQueuedChatNow(id: string, messageId: string): Promise<void>;
   removeQueuedChat(id: string, messageId: string): Promise<void>;
   resumeChatQueue(id: string): Promise<void>;
@@ -77,7 +80,7 @@ export interface DesktopAPI {
   addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
-  onChat(callback: (sessionId: string, taskState?: TaskState) => void): () => void;
+  onChat(callback: (sessionId: string, taskState?: TaskState, version?: ChatSnapshotVersion) => void): () => void;
   queryHistory(projectId: string, options?: {providerId?: string; query?: string; offset?: number; limit?: number}): Promise<HistoryPage>;
   gitChanges(id: string): Promise<GitChanges>;
   gitDiff(id: string, path: string, staged: boolean): Promise<GitDiff>;

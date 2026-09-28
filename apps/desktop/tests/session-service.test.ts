@@ -21,7 +21,7 @@ import type { Attachment, Capabilities, Session } from '../src/shared/types';
 import type { WorktreeInfo } from '../src/shared/git';
 import type { EnvironmentDiagnostics } from '../src/shared/diagnostics';
 import { emptyGitReviewDraft, emptyWorkflowDraft } from '../src/shared/panel-drafts';
-import type { ChatSnapshot, ChatSubmission, ChatTurnResult } from '../src/shared/chat';
+import type { ChatSnapshot, ChatSnapshotVersion, ChatSubmission, ChatTurnResult } from '../src/shared/chat';
 
 async function fixture(window:BrowserWindow|null=null) {
   const dir=await fs.mkdtemp(path.join(os.tmpdir(),'workbench-service-'));
@@ -1577,4 +1577,47 @@ test('idle Claude retains its reusable CLI and lease until a competing provider 
     release(); await competing;
     assert.equal(native.submissions.length, 1);
   } finally { release(); await competing?.catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('chat IPC and both conversation/queue notifications share one host version authority', async t => {
+  const sent: unknown[][] = [];
+  const window = { webContents: { send: (...args: unknown[]) => sent.push(args) } } as unknown as BrowserWindow;
+  const f = await fixture(window);
+  const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+  try {
+    t.mock.method(f.service.chat, 'isBusy', () => true);
+    const before = await f.call<ChatSnapshot>('chat:snapshot', session.id);
+    assert.ok(before.version?.hostEpoch);
+    f.registry.events.emit({ type: 'conversation.changed', identity: { sessionId: session.id, ...session.execution }, taskState: 'thinking' });
+    await f.call('chat:submit', { id: session.id, text: 'queued while busy' });
+    const notifications = sent.filter(args => args[0] === 'chat:changed');
+    assert.ok(notifications.length >= 2);
+    const versions = notifications.map(args => args[3] as ChatSnapshotVersion);
+    assert.ok(versions.every(item => item.hostEpoch === before.version!.hostEpoch));
+    for (let i = 1; i < versions.length; i++) {
+      assert.ok(versions[i].revision > versions[i - 1].revision);
+      assert.equal(versions[i].eventSequence, versions[i - 1].eventSequence + 1);
+    }
+    const after = await f.call<ChatSnapshot>('chat:snapshot', session.id);
+    assert.ok(after.version!.revision > versions.at(-1)!.revision);
+    assert.equal(after.version!.eventSequence, versions.at(-1)!.eventSequence);
+    assert.equal(after.queue?.items.length, 1);
+  } finally { t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('snapshot metadata is captured after async hydration and includes intervening notifications', async t => {
+  const f = await fixture();
+  const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+  let release!: () => void;
+  const wait = new Promise<void>(resolve => { release = resolve; });
+  try {
+    t.mock.method(f.service.chat, 'hydrate', async () => { await wait; });
+    const pending = f.call<ChatSnapshot>('chat:snapshot', session.id);
+    f.registry.events.emit({ type: 'conversation.changed', identity: { sessionId: session.id, ...session.execution }, taskState: 'waiting_approval' });
+    release();
+    const result = await pending;
+    assert.equal(result.version?.eventSequence, 1);
+    assert.equal(result.version?.revision, 2);
+    assert.equal(result.version?.conversationId, session.execution.conversationId);
+  } finally { release(); t.mock.restoreAll(); await f.dispose(); }
 });
