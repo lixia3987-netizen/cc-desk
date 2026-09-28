@@ -19,6 +19,8 @@ import { Dialog } from './Dialog';
 import { isMissingTranscriptError } from '../shared/session-recovery';
 import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
+import { NativeCommandPanel } from './NativeCommandPanel';
+import './native-command.css';
 import { NativeChangeSetPreview, NativeChangeSetResult, nativeChangeSetCanApprove, nativeChangeSetResultLabel } from './NativeChangeSetPreview';
 import './native-task.css';
 import './native-change-set.css';
@@ -243,6 +245,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
+    {session.execution.providerId==='native'&&<NativeCommandPanel commands={snapshot?.nativeCommands} currentRunId={snapshot?.nativeRun?.runId} loadError={syncState.error}/>}
     {session.execution.providerId==='native'&&<NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}
       disabled={readOnly||composerDisabled||running||submitting||!!descriptor?.maintenance} busy={reviewingTask}
