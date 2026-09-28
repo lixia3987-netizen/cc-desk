@@ -106,6 +106,15 @@ test('engineering verification preserves failed and successful attempts and refu
     assert.equal(attempt.result.verification.status, 'error', JSON.stringify(attempt.result));
   });
 
+  await t.test('oversized verifier output stops without publishing a successful receipt', async () => {
+    await fs.writeFile(path.join(context.candidate, sourcePath),
+      `process.stdout.write('x'.repeat(300000), () => process.exit(0));\n${context.greenSource}`);
+    const attempt = await verify(10_000);
+    assert.equal(attempt.result.verification.status, 'error', JSON.stringify(attempt.result));
+    assert.equal(attempt.result.verification.stdoutTruncated, true);
+    assert.equal(attempt.result.verification.cleanupConfirmed, true);
+  });
+
   await t.test('a looping oracle is stopped by the outer deadline and recorded as timeout', async () => {
     await fs.writeFile(path.join(context.candidate, sourcePath), `while (true) {}\n${context.greenSource}`);
     const started = Date.now();
