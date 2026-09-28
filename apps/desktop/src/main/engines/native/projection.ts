@@ -323,8 +323,11 @@ export class NativeProjection {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
+    // An active entry can remain solely to quarantine its directory after an
+    // unconfirmed cleanup or journal failure. It is not evidence of live work.
+    const terminalOverride = !!entry.override && ['completed', 'interrupted', 'error'].includes(entry.override.taskState);
     if (entry.commands?.items.length) snapshot.nativeCommands = snapshotNativeCommands(entry.commands,
-      this.isActive(id) && !entry.currentTerminal ? entry.currentIdentity?.runId : undefined);
+      this.isActive(id) && !entry.currentTerminal && !terminalOverride ? entry.currentIdentity?.runId : undefined);
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
     else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';

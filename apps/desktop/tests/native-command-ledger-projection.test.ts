@@ -76,3 +76,26 @@ test('reopening an acknowledged but unclosed command derives unknown without fab
     assert.equal(recovered.length, 2, 'read projection never appends a synthetic process fact'); assert.deepEqual(f.errors, []);
   } finally { await f.dispose(); }
 });
+
+test('retained directory ownership after host failure cannot keep an unclosed command running or erase a saved terminal fact', async () => {
+  const f = await fixture();
+  try {
+    await f.running(); await f.snapshot();
+    // isActive intentionally stays true, as it does while the executor keeps
+    // an unconfirmed directory lease isolated after a terminal write failure.
+    for (const state of ['error', 'interrupted', 'completed'] as const) {
+      f.projection.state(f.id, state, 'Host terminal persistence could not be confirmed.');
+      const command = f.projection.snapshot(f.id).nativeCommands!.items[0];
+      assert.equal(command.status, 'unknown', state); assert.equal(command.missingTerminal, true, state);
+      assert.equal(command.result, undefined, state);
+    }
+    await f.store.recordCommandEvent(f.req.identity, f.call, { commandId: f.commandId, status: 'finished', at, result });
+    await f.snapshot();
+    for (const state of ['error', 'interrupted', 'completed'] as const) {
+      f.projection.state(f.id, state);
+      const command = f.projection.snapshot(f.id).nativeCommands!.items[0];
+      assert.equal(command.status, 'finished', state); assert.equal(command.missingTerminal, undefined, state);
+      assert.deepEqual(command.result, result, state);
+    }
+  } finally { await f.dispose(); }
+});
