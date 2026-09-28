@@ -7,6 +7,9 @@
   "author": "Claude Workbench contributors",
   "license": "MIT",
   "main": "dist/main/index.cjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "start": "electron .",
@@ -36,7 +39,7 @@
     "zod": "4.1.12"
   },
   "devDependencies": {
-    "@electron/asar": "3.4.1",
+    "@electron/asar": "4.3.0",
     "@playwright/test": "1.58.2",
     "@types/node": "24.10.1",
     "@types/react": "19.2.2",
@@ -48,6 +51,15 @@
     "tsx": "4.20.6",
     "typescript": "5.9.3",
     "vite": "7.3.6"
+  },
+  "overrides": {
+    "app-builder-lib": {
+      "@electron/asar": "$@electron/asar",
+      "@electron/universal": "3.0.6",
+      "@electron/get": {
+        "global-agent": "4.1.3"
+      }
+    }
   },
   "build": {
     "npmRebuild": false,

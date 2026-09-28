@@ -95,6 +95,12 @@ npm ci
 npm run dev
 ```
 
+项目的 `.npmrc` 省略自动安装的 peer-only 依赖：当前锁文件中这部分仅为未使用的 Squirrel.Windows 打包器及其旧版 `temp` / `rimraf` 依赖。现有 NSIS、便携 EXE、ZIP、DMG 和 Linux 打包目标不依赖它；需要新增 Squirrel 目标时须显式添加对应打包器。新增依赖时，也应将实际使用的 peer 声明在 `package.json` 中。
+
+`npm ls --all` 仍会将这个被省略的 `electron-builder-squirrel-windows` 必需 peer 标记为 `missing` 并返回非零；这是当前安装策略的预期结果。其他缺失依赖仍需排查。旧依赖保留在锁文件中供 npm 校验 peer 约束，但不会安装到磁盘。
+
+`package.json` 的构建依赖覆盖将 ASAR / universal 与已要求的 Node.js 22.12+ 对齐，并更新下载代理依赖。保留 electron-builder 使用的 `@electron/get` 3.x，以兼容其下载代理、超时和 TLS 参数；后续升级 electron-builder 时应复查这些覆盖。
+
 也可运行 PowerShell 的 `./scripts/start.ps1`，或 macOS/Linux 的 `bash scripts/start.sh`。首次运行会安装依赖和构建；修改代码后重新构建。
 
 ```sh
