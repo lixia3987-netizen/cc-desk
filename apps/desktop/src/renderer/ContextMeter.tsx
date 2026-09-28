@@ -68,14 +68,14 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
       </>}
       {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · {maintenance.lastCompaction.trigger === 'automatic' ? '自动' : '手动'} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
       <span>这是本地运行预算，不是模型的真实上下文窗口或计费用量。预算按输入估算与上下文字节两项中较高的占比显示。</span>
-      <span>按已保存历史和项目指令的 UTF-8 字节保守估算，不含工具定义和协议封装。新输入和工具结果提交后更新。</span>
+      <span>按已保存历史、项目指令和工具定义的 UTF-8 字节保守估算，不等于服务端实际 token 计数。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}
       {budget?.status === 'near_limit' && <span>接近预算上限；超过上限时会在下一次模型请求前停止。</span>}
       {budget?.status === 'exceeded' && <span>已超过预算；下一次模型请求将停止。请调整输入预算{onCompact ? '，或在可压缩时压缩上下文' : '或新建会话继续'}。</span>}
       <span>{context?.inputTokens === undefined ? '本回合最近一次模型响应未提供输入 token 用量。' : `服务返回的最近一次请求输入：${count(context.inputTokens)} tokens（非累计）。`}</span>
       {(context?.requestModel || context?.model) && <span>请求模型：{context.requestModel ?? context.model}</span>}
       {context?.measuredAt && <span>服务响应时间：{new Date(context.measuredAt).toLocaleString()}</span>}
-      <span>费用未估算；请以服务商账单为准。</span>
+      <span>可在模型连接中填写价格；本回合费用仅在服务提供完整输入和输出用量、价格模型一致时估算，压缩等其他调用另计。请以服务商账单为准。</span>
     </div>
   </details>;
 }
