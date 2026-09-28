@@ -15,6 +15,7 @@ import { useChatSubmission } from './useChatSubmission';
 import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
 import { isMissingTranscriptError } from '../shared/session-recovery';
+import { sessionReadLifecycle } from './session-read-lifecycle';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
@@ -61,6 +62,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
   const request=useRef(0), mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
+  useLayoutEffect(()=>{
+    mounted.current=true;
+    return()=>{mounted.current=false;request.current++;pageRequest.current++;};
+  },[session.id]);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
   const initialReading=useRef(readingPositions.get(session.id));
@@ -72,8 +77,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const openPage=useCallback(async(options:ChatPageOptions,saved?:ChatReadingPosition)=>{
     const seq=++pageRequest.current;setPaging(true);
     try{
-      const page=await window.desktop.chatPage(session.id,options);
-      if(!mounted.current||seq!==pageRequest.current)return;
+      const page=await sessionReadLifecycle.read(session.id,()=>window.desktop.chatPage(session.id,options));
+      if(!page||!mounted.current||seq!==pageRequest.current)return;
       if(!page.messages.length){
         if(options.before)setExhaustedBefore(options.before);
         setHistoryNotice(options.after?'已到本地保留记录的末尾。':page.incomplete?'没有更早的本地记录；部分原始内容需导出查看。':'已到本地保留记录的开头。');
@@ -94,7 +99,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     const key=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'&&!event.isComposing&&!document.querySelector('[role=dialog]')){event.preventDefault();setShowSearch(true);}};
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
-  const load=useCallback(async()=>{const seq=++request.current;const value=await window.desktop.chatSnapshot(session.id);if(mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}},[session.id,approvalDrafts]);
+  const load=useCallback(async()=>{
+    const seq=++request.current;
+    try {
+      const value=await sessionReadLifecycle.read(session.id,()=>window.desktop.chatSnapshot(session.id));
+      if(value&&mounted.current&&seq===request.current){approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);}
+    }catch(error){if(mounted.current&&seq===request.current)throw error;}
+  },[session.id,approvalDrafts]);
   const prepareCommands=useCallback(()=>{
     if(commandsLoading.current)return commandsLoading.current;
     const pending=window.desktop.prepareChatCommands(session.id).then(async()=>{if(mounted.current)await load();});
@@ -104,10 +115,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     return pending;
   },[session.id,load]);
   useEffect(()=>{
-    mounted.current=true;let timer:ReturnType<typeof setTimeout>|undefined;
+    let timer:ReturnType<typeof setTimeout>|undefined;
     void load().catch(onError);
+    const resume=sessionReadLifecycle.subscribe(session.id,()=>{if(mounted.current)void load().catch(onError);});
     const off=window.desktop.onChat(id=>{if(id===session.id&&!timer)timer=setTimeout(()=>{timer=undefined;if(mounted.current)void load().catch(onError);},80);});
-    return ()=>{mounted.current=false;request.current++;pageRequest.current++;clearTimeout(timer);off();};
+    return ()=>{request.current++;pageRequest.current++;clearTimeout(timer);off();resume();};
   },[load,onError,session.id]);
   const handled=useRef(onAttentionHandled);handled.current=onAttentionHandled;
   const [focusRequest,setFocusRequest]=useState('');
@@ -115,14 +127,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(!attentionTarget)return;let cancelled=false;
     // Obtain a fresh snapshot before deciding whether a navigation target expired.
     const seq=++request.current;pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setShowSearch(false);
-    void window.desktop.chatSnapshot(session.id).then(value=>{
-      if(cancelled||!mounted.current)return;
+    void sessionReadLifecycle.read(session.id,()=>window.desktop.chatSnapshot(session.id)).then(value=>{
+      if(!value||cancelled||!mounted.current)return;
       if(seq===request.current)setSnapshot(value);
       if(value.pending.some(item=>item.requestId===attentionTarget.requestId)){
         jumpToItem(attentionTarget.requestId,'request');setFocusRequest(attentionTarget.requestId);
       }else onError(new Error('这项请求已处理或已失效。'));
       handled.current();
-    }).catch(error=>{if(!cancelled){onError(error);handled.current();}});
+    }).catch(error=>{if(!cancelled&&mounted.current){onError(error);handled.current();}});
     return()=>{cancelled=true;};
   },[attentionTarget?.nonce,session.id,jumpToItem,onError]);
   useLayoutEffect(()=>{

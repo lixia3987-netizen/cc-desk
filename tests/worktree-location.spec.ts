@@ -204,7 +204,9 @@ test('worktree branches: UI selects local or remote starts, refreshes remote ref
     execFileSync('git', ['init', '--bare', remotePath], { stdio: 'pipe' });
     f.git('remote', 'add', 'origin', remotePath);
     f.git('push', '-u', 'origin', 'main');
-    execFileSync('git', ['clone', '-b', 'main', remotePath, publisherPath], { stdio: 'pipe' });
+    // Apply before clone's first checkout: configuring afterward would leave
+    // CRLF bytes that a later `git add .` could commit as an unrelated change.
+    execFileSync('git', ['-c', 'core.autocrlf=false', 'clone', '-b', 'main', remotePath, publisherPath], { stdio: 'pipe' });
     const publishGit = (...args: string[]) => execFileSync('git', args, { cwd: publisherPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     publishGit('config', 'core.autocrlf', 'false');
     publishGit('config', 'user.name', 'Workbench Tests');
