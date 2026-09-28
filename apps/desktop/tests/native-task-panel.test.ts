@@ -24,6 +24,11 @@ function evidence(patch: Partial<NativeTaskEvidence> = {}): NativeTaskEvidence {
     planRevision: 2, acceptanceRevision: 1, workspaceFingerprint: 'current', workspaceComplete: true,
     reason: '审阅改动并确认竞态测试覆盖迟到响应', createdAt: at, ...patch };
 }
+function locationEvidence(patch: Partial<NativeTaskEvidence> = {}): NativeTaskEvidence {
+  return evidence({ id: 'location-1', source: 'location', status: 'unverified', reason: undefined, toolCallId: 'location-call-1',
+    location: { path: 'src/state.ts', startLine: 7, endLine: 9, fileHash: 'a'.repeat(64), fileBytes: 160,
+      excerpt: 'const current = 1;\r\n\r\nreturn current;\r\n', excerptHash: 'b'.repeat(64) }, ...patch });
+}
 const fail = () => { throw new Error('Rendering must not start a task or perform review'); };
 const render = (state: NativeTaskSnapshot | null, props: Partial<Parameters<typeof NativeTaskPanel>[0]> = {}) => renderToStaticMarkup(createElement(NativeTaskPanel, {
   task: state ? toNativeTaskView(state) : null, onContinue: fail, onRefresh: fail, onReview: async () => fail(), ...props,
@@ -158,4 +163,86 @@ test('manual acceptance remains separate from later command receipts and old tas
   assert.match(markup, /较早任务，未关联当前回合/);
   assert.match(markup, /任务最近运行：本轮正常结束/);
   assert.match(markup, /继续此任务/);
+});
+
+test('code locations present a saved, unverified excerpt and model-declared associations without changing acceptance', () => {
+  const state = task(); state.evidence = [locationEvidence()];
+  const markup = render(state);
+  assert.match(markup, /代码位置记录/);
+  assert.match(markup, /src\/state.ts:7–9/);
+  assert.match(markup, /记录时版本的只读片段，并非当前文件内容/);
+  assert.match(markup, /步骤和条件关联由模型声明，供人工核查，不自动验收/);
+  assert.match(markup, /文件 SHA-256：<code>a{64}/);
+  assert.match(markup, /文件字节数：160/);
+  assert.match(markup, /片段 SHA-256：<code>b{64}/);
+  assert.match(markup, /data-evidence-status="unverified"/);
+  assert.doesNotMatch(markup, /<span>人工核验<\/span>|data-evidence-status="passed"/);
+  assert.equal(nativeTaskCanApprove(toNativeTaskView(state)), false);
+  assert.equal(nativeTaskEvidenceState(toNativeTaskView(state), locationEvidence({ status: 'passed', reason: '模型声称已确认' })), 'unverified');
+  state.evidence.unshift(evidence());
+  assert.equal(nativeTaskCanApprove(toNativeTaskView(state)), true, 'a later location receipt does not supersede explicit human review');
+});
+
+test('linked steps and criteria use matching internal evidence anchors with task identity and safe path/excerpt text', () => {
+  const state = task(); state.taskId = 'task:" /😀';
+  const receipt = locationEvidence(); receipt.id = 'record:" /😀';
+  receipt.location!.path = 'javascript:alert(1)/<img onerror="evil">.ts';
+  receipt.location!.excerpt = '</code><script>alert("unsafe")</script>\n'; receipt.location!.startLine = receipt.location!.endLine = 1;
+  state.evidence = [receipt];
+  const markup = render(state);
+  const anchor = markup.match(/<details id="([^"]+)" tabindex="-1" class="native-task-evidence"/)?.[1];
+  assert.ok(anchor);
+  assert.match(anchor, /^native-task-evidence-[0-9a-f]+-[0-9a-f]+$/);
+  assert.equal(markup.split(`href="#${anchor}"`).length - 1, 2, 'both the matching step and criterion point at this receipt');
+  const stepMarkup = markup.match(/<ol class="native-task-steps">([\s\S]*?)<\/ol>/)![1];
+  const stepItems = stepMarkup.split('</li>');
+  assert.doesNotMatch(stepItems[0], /href=/, 'unrelated steps have no location link');
+  assert.match(stepItems[1], /href="#native-task-evidence-/);
+  assert.match(markup, /javascript:alert\(1\)\/&lt;img onerror=&quot;evil&quot;&gt;\.ts/);
+  assert.match(markup, /&lt;\/code&gt;&lt;script&gt;alert\(&quot;unsafe&quot;\)&lt;\/script&gt;/);
+  assert.doesNotMatch(markup, /<script>|<img|href="javascript:|href="file:|onerror="/);
+  state.taskId += '-other';
+  const otherAnchor = render(state).match(/<details id="([^"]+)" tabindex="-1" class="native-task-evidence"/)?.[1];
+  assert.notEqual(otherAnchor, anchor, 'the same receipt identifier in another task does not collide');
+});
+
+test('code excerpt line numbering preserves CRLF and real blank lines without a virtual trailing line', () => {
+  const state = task(); state.evidence = [locationEvidence()];
+  const markup = render(state);
+  assert.deepEqual([...markup.matchAll(/class="native-task-line-number" aria-hidden="true">(\d+)/g)].map(match => Number(match[1])), [7, 8, 9]);
+  assert.deepEqual([...markup.matchAll(/class="native-task-line-text">([\s\S]*?)<\/span>/g)].map(match => match[1]), ['const current = 1;\r\n', '\r\n', 'return current;\r\n']);
+  state.evidence[0].location!.excerpt = 'last line without newline';
+  state.evidence[0].location!.startLine = state.evidence[0].location!.endLine = 80;
+  const finalLine = render(state);
+  assert.match(finalLine, /aria-hidden="true">80<\/span><span class="native-task-line-text">last line without newline<\/span>/);
+  assert.equal((finalLine.match(/class="native-task-line-number"/g) || []).length, 1);
+});
+
+test('stale and unknown code locations keep old excerpts available while discarding current success presentation', () => {
+  const state = task(); state.evidence = [locationEvidence({ stale: true })];
+  const historical = render(state);
+  assert.match(historical, /data-evidence-status="stale"/);
+  assert.match(historical, /历史位置记录/);
+  assert.match(historical, /不能确认当前文件仍有相同内容/);
+  assert.match(historical, /const current = 1;/);
+  const unknown = render(state, { loadError: '任务记录不可读' });
+  assert.match(unknown, /data-evidence-status="unverified"/);
+  assert.match(unknown, /当前状态未知：保留的片段/);
+  assert.match(unknown, /const current = 1;/);
+  assert.doesNotMatch(historical + unknown, /data-evidence-status="passed"|class="native-task-state passed"/);
+  state.evidence = [locationEvidence({ location: undefined })];
+  assert.match(render(state), /此记录缺少代码位置内容/);
+});
+
+test('old evidence without a location remains usable and location snapshots are detached from the IPC view', () => {
+  const state = task(); state.evidence = [evidence(), evidence({ id: 'old-command', source: 'command', status: 'unverified', reason: undefined })];
+  const oldMarkup = render(state);
+  assert.match(oldMarkup, /<span>人工核验<\/span>/);
+  assert.match(oldMarkup, /宿主命令回执/);
+  assert.doesNotMatch(oldMarkup, /代码位置记录|native-task-location-excerpt/);
+  state.evidence.push(locationEvidence());
+  const view = toNativeTaskView(state);
+  assert.deepEqual(view.evidence[2].location, state.evidence[2].location);
+  view.evidence[2].location!.excerpt = 'renderer modification';
+  assert.equal(state.evidence[2].location!.excerpt, 'const current = 1;\r\n\r\nreturn current;\r\n');
 });
