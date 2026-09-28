@@ -7,6 +7,7 @@ import type {
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
+import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems } from './context-maintenance.js';
 
@@ -40,6 +41,8 @@ export interface StoredToolState {
   completedSeq?: number;
   /** Host-attested receipts only; never supplied by the model worker. */
   changeSetProgress?: Array<NativeChangeSetFileEvent & { seq: number }>;
+  /** Starting a command acknowledges its handle, not its eventual process outcome. */
+  commandProgress?: Array<NativeCommandLifecycleEvent & { seq: number }>;
 }
 export interface StoredRun {
   identity: RunIdentity;
@@ -129,6 +132,7 @@ type StoreEvent =
   | { type: 'startup_prepared'; request: NativeStartupRequest }
   | { type: 'startup_closed'; startupId: string }
   | { type: 'change_set_file'; toolCallId: string; progress: NativeChangeSetFileEvent }
+  | { type: 'command_lifecycle'; toolCallId: string; progress: NativeCommandLifecycleEvent }
   | { type: 'run_started'; request: BeginRunRequest; payloadDigest: string }
   | { type: 'run_recovered'; runId: string; reason: string }
   | { type: 'recovery_resolved'; runId: string; expectedHash: string; resourcesVerified: true; completions: RecoveryCompletion[]; result: RunResult }
@@ -167,6 +171,11 @@ const DEFAULT_LIMITS: RunStoreLimits = {
 const ZERO_HASH = '0'.repeat(64);
 const VALID_STATUSES = new Set(['completed', 'cancelled', 'failed', 'budget_exhausted', 'recovery_required']);
 const TOOL_STATUSES = new Set(['completed', 'failed', 'denied', 'cancelled', 'not_executed', 'unknown']);
+// JSON may expand a retained UTF-8 byte to six ASCII bytes. The envelope covers
+// every bounded identity/call field and the small running receipt.
+const COMMAND_ENVELOPE_BYTES = 32 * 1024;
+const commandTerminalBytes = (maxOutputBytes: number): number => maxOutputBytes * 6 + 2048 * 6 + COMMAND_ENVELOPE_BYTES;
+const uncertainCommand = (tool: StoredToolState): boolean => !!tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished';
 const SECRET_FIELD = /^(?:api[_-]?key|authorization|password|secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|credentials?|token|bearer[_-]?token)$/i;
 
 function fail(code: string, message: string): never { throw new RunStoreError(code, message); }
@@ -471,6 +480,28 @@ export class NativeRunStore implements RunStore {
     }
     if (!identity) fail('invalid_identity', 'Run event is missing identity');
     const run = this.activeOwner(identity);
+    if (event.type === 'command_lifecycle') {
+      text(event.toolCallId, 'command tool call id', 512);
+      const tool = run.tools.get(event.toolCallId);
+      const prepared = tool?.prepared;
+      if (!prepared || prepared.prepared.call.name !== 'start_command' || !prepared.prepared.requiresApproval || prepared.approval?.decision !== 'approved') fail('not_prepared', 'Command receipts require a durable approved start call');
+      const progress = event.progress;
+      if (!isNativeCommandLifecycleEvent(progress)) fail('invalid_record', 'Invalid command lifecycle receipt');
+      const previous = tool!.commandProgress ?? [];
+      if (progress.status === 'prepared') {
+        if (previous.length || tool!.completed) fail('command_already_prepared', 'A command start cannot be replayed');
+        if ([...this.runs.values()].some(item => [...item.tools.values()].some(candidate => candidate.commandProgress?.[0]?.commandId === progress.commandId))) fail('payload_mismatch', 'Command handle identity was reused');
+        if ([...run.tools.values()].filter(candidate => candidate.commandProgress?.length).length >= NATIVE_COMMAND_MAX_PER_RUN) fail('limit_exceeded', 'Run command handle budget exhausted');
+        const input = prepared.prepared.input;
+        if (!equal(progress.command, { executable: input.executable, argv: input.argv, cwd: input.cwd }) || progress.taskId !== run.configuration.nativeTaskId || progress.timeoutMs > (typeof input.timeoutMs === 'number' ? input.timeoutMs : 120_000) || progress.maxOutputBytes > (typeof input.maxOutputBytes === 'number' ? input.maxOutputBytes : 16_384)) fail('payload_mismatch', 'Command intent differs from the approved command, task or limits');
+      } else {
+        const intent = previous[0], current = previous.at(-1);
+        if (intent?.status !== 'prepared' || !current || progress.commandId !== intent.commandId) fail('not_prepared', 'Command receipt has no matching durable intent');
+        if (current.status === 'finished' || current.status === 'unknown' || current.status === 'running' && progress.status === 'running') fail('invalid_record', 'Command lifecycle cannot repeat or replace a terminal fact');
+        if ('result' in progress && Buffer.byteLength(progress.result.stdout) + Buffer.byteLength(progress.result.stderr) > intent.maxOutputBytes) fail('invalid_record', 'Command logs exceed the approved retained output bound');
+      }
+      return;
+    }
     if (event.type === 'change_set_file') {
       text(event.toolCallId, 'change-set tool call id', 512);
       const tool = run.tools.get(event.toolCallId);
@@ -526,6 +557,12 @@ export class NativeRunStore implements RunStore {
       if (tool.completed) fail('payload_mismatch', 'Duplicate tool result in journal');
       if (!object(event.result) || !TOOL_STATUSES.has(event.result.status) || !Array.isArray(event.resultItems)) fail('invalid_record', 'Invalid tool result');
       if (event.result.status === 'completed' && !tool.prepared) fail('not_prepared', 'Executed tool has no durable prepared record');
+      if (tool.call.name === 'start_command') {
+        const progress = tool.commandProgress, latest = progress?.at(-1);
+        if (event.result.status === 'completed' && (!latest || !['running', 'finished'].includes(latest.status))) fail('not_prepared', 'A completed start needs a host-attested command handle');
+        if (progress?.length && event.result.status !== 'unknown' && (!object(event.result.output) || event.result.output.commandId !== progress[0].commandId)) fail('payload_mismatch', 'Start result differs from its durable command handle');
+        if (latest?.status === 'unknown' && event.result.status !== 'unknown') fail('recovery_required', 'Unknown command effects cannot become a known start result');
+      }
       if (tool.call.name === 'apply_change_set' && tool.prepared && (event.result.status === 'completed' || isNativeChangeSetResult(event.result.output) || (tool.changeSetProgress?.length && event.result.status !== 'unknown'))) {
         const preview = this.changeSetPreview(tool);
         const result = event.result.output;
@@ -550,7 +587,7 @@ export class NativeRunStore implements RunStore {
       if (!object(result) || !VALID_STATUSES.has(result.status) || result.committed !== true || !equal(result.identity, identity)) fail('invalid_record', 'Invalid terminal run result');
       validateContext(result.context);
       if (!equal(result.context, this.context)) fail('context_mismatch', 'Terminal context differs from durable model/tool items');
-      const unresolved = [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown');
+      const unresolved = [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool));
       if (unresolved && result.status !== 'recovery_required') fail('recovery_required', 'Unresolved tool effects require recovery');
       return;
     }
@@ -587,7 +624,7 @@ export class NativeRunStore implements RunStore {
     if (event.type === 'run_recovered') {
       const run = this.runs.get(event.runId)!;
       run.status = 'recovery_required'; run.recoveryReason = event.reason;
-      for (const tool of run.tools.values()) if (tool.prepared && !tool.completed) tool.state = 'unknown';
+      for (const tool of run.tools.values()) if (tool.prepared && !tool.completed || uncertainCommand(tool)) tool.state = 'unknown';
       return;
     }
     if (event.type === 'recovery_resolved') {
@@ -630,14 +667,43 @@ export class NativeRunStore implements RunStore {
     } else if (event.type === 'change_set_file') {
       const tool = run.tools.get(event.toolCallId)!;
       (tool.changeSetProgress ??= []).push({ ...event.progress, seq: record.seq });
+    } else if (event.type === 'command_lifecycle') {
+      const tool = run.tools.get(event.toolCallId)!;
+      (tool.commandProgress ??= []).push({ ...event.progress, seq: record.seq });
     } else if (event.type === 'tool_completed') {
       const tool = run.tools.get(event.call.id)!;
       tool.completed = event; tool.completedSeq = record.seq; tool.state = event.result.status === 'unknown' ? 'unknown' : 'completed';
       this.context = { ...this.context!, items: [...this.context!.items, ...event.resultItems] };
     } else if (event.type === 'run_finished') {
       run.status = event.result.status; run.result = event.result; run.finishedSeq = record.seq;
-      if (run.status === 'recovery_required') for (const tool of run.tools.values()) if (tool.prepared && !tool.completed) tool.state = 'unknown';
+      if (run.status === 'recovery_required') for (const tool of run.tools.values()) if (tool.prepared && !tool.completed || uncertainCommand(tool)) tool.state = 'unknown';
     }
+  }
+
+  /** Remaining receipts retain their reservation while unrelated model/tools append. */
+  private commandHeadroom(identity?: RunIdentity, event?: StoreEvent): { bytes: number; records: number } {
+    let bytes = 0, records = 0;
+    for (const run of this.runs.values()) {
+      if (run.status !== 'active' || event?.type === 'run_finished' && identity?.runId === run.identity.runId || event?.type === 'run_recovered' && event.runId === run.identity.runId) continue;
+      let pending = false;
+      for (const tool of run.tools.values()) {
+        const replacement = event?.type === 'command_lifecycle' && identity?.runId === run.identity.runId && event.toolCallId === tool.call.id ? event.progress : undefined;
+        const intent = replacement?.status === 'prepared' ? replacement : tool.commandProgress?.[0];
+        const current = replacement ?? tool.commandProgress?.at(-1);
+        if (intent?.status !== 'prepared' || !current) continue;
+        const lifecyclePending = current.status !== 'finished' && current.status !== 'unknown';
+        const acknowledgementPending = !tool.completed && !(event?.type === 'tool_completed' && identity?.runId === run.identity.runId && event.call.id === tool.call.id);
+        if (!lifecyclePending && !acknowledgementPending) continue;
+        pending = true;
+        if (lifecyclePending) {
+          bytes += commandTerminalBytes(intent.maxOutputBytes) + (current.status === 'prepared' ? COMMAND_ENVELOPE_BYTES : 0);
+          records += current.status === 'prepared' ? 2 : 1;
+        }
+        if (acknowledgementPending) { bytes += this.limits.maxRecordBytes; records++; }
+      }
+      if (pending) { bytes += this.limits.maxRecordBytes; records++; }
+    }
+    return { bytes, records };
   }
 
   private async commit(identity: RunIdentity | undefined, value: StoreEvent): Promise<{ seq: number }> {
@@ -651,14 +717,17 @@ export class NativeRunStore implements RunStore {
     const line = `${canonical(record)}\n`;
     const bytes = Buffer.byteLength(line);
     if (bytes > this.limits.maxRecordBytes || this.journalBytes + bytes > this.limits.maxJournalBytes || this.records.length >= this.limits.maxRecords) fail('limit_exceeded', 'Conversation disk budget exhausted; history is never silently pruned');
+    const commandHeadroom = this.commandHeadroom(ownedIdentity, event);
+    if (event.type === 'command_lifecycle' && event.progress.status === 'prepared' && commandTerminalBytes(event.progress.maxOutputBytes) > this.limits.maxRecordBytes) fail('limit_exceeded', 'Command terminal receipt exceeds the configured record budget');
+    if (this.journalBytes + bytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Outstanding command terminal receipts have reserved durable storage');
     if (event.type === 'tool_prepared' && event.prepared.call.name === 'apply_change_set') {
       const preview = (event.prepared.preconditions as JsonObject).changeSet as unknown as NativeChangeSetPreview;
       // Reserve every before/after file receipt now. A later file must not consume
       // the room needed to attest its own effects, tool result and terminal run.
       const receiptBytes = preview.files.reduce((sum, file) => sum + 2 * (Buffer.byteLength(canonical({ type: 'change_set_file', toolCallId: event.prepared.call.id, progress: { changeSetDigest: preview.digest, index: file.index, path: file.path, status: 'not_applied', beforeHash: file.beforeHash, afterHash: file.afterHash, errorCode: 'x'.repeat(64) } })) + Buffer.byteLength(canonical(ownedIdentity)) + 1024), 0);
-      if (this.journalBytes + bytes + receiptBytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 1 + 2 * preview.files.length + 2 > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable headroom for every change-set file receipt');
+      if (this.journalBytes + bytes + receiptBytes + 2 * this.limits.maxRecordBytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + 2 * preview.files.length + 2 + commandHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable headroom for every change-set file receipt');
     }
-    if ((event.type === 'tool_prepared' || event.type === 'startup_prepared') && (this.journalBytes + bytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 3 > this.limits.maxRecords)) fail('limit_exceeded', 'Insufficient cleanup and terminal record headroom before preparing a side effect');
+    if ((event.type === 'tool_prepared' || event.type === 'startup_prepared') && (this.journalBytes + bytes + 2 * this.limits.maxRecordBytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 3 + commandHeadroom.records > this.limits.maxRecords)) fail('limit_exceeded', 'Insufficient cleanup and terminal record headroom before preparing a side effect');
     try {
       await this.checkPath();
       await this.options.fault?.('before_append', event.type);
@@ -772,6 +841,16 @@ export class NativeRunStore implements RunStore {
     });
   }
 
+  /** Host-only lifecycle facts; the execution worker cannot call or forge this API. */
+  recordCommandEvent(identity: RunIdentity, call: ToolCall, progress: NativeCommandLifecycleEvent): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable();
+      const run = this.activeOwner(identity), tool = run.tools.get(call.id);
+      if (!tool || !equal(tool.call, call)) fail('payload_mismatch', 'Command receipt does not belong to the committed start call');
+      return this.commit(identity, { type: 'command_lifecycle', toolCallId: call.id, progress });
+    });
+  }
+
   ensureCapacity(identity: RunIdentity, bytes: number): Promise<void> {
     return this.exclusive(async () => {
       this.writable(); this.activeOwner(identity);
@@ -780,7 +859,8 @@ export class NativeRunStore implements RunStore {
       // Keep room for a bounded prepared/result record and terminal context, plus
       // the atomic checkpoint's old and new copies (separately size-limited).
       const reserved = bytes + 3 * this.limits.maxRecordBytes;
-      if (this.journalBytes + reserved > this.limits.maxJournalBytes || this.records.length + 3 > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable storage headroom before tool execution');
+      const commands = this.commandHeadroom();
+      if (this.journalBytes + reserved + commands.bytes > this.limits.maxJournalBytes || this.records.length + 3 + commands.records > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable storage headroom before tool execution');
     });
   }
 
@@ -815,7 +895,7 @@ export class NativeRunStore implements RunStore {
       const run = this.runs.get(startups[0].identity.runId);
       const tools: RecoveryReport['tools'] = [...run?.tools.values() ?? []].map(tool => ({
         callId: tool.call.id, name: tool.call.name,
-        status: tool.completed?.result.status === 'unknown' || !tool.completed && tool.prepared ? 'unknown' : tool.completed ? 'completed' : 'not_executed',
+        status: tool.completed?.result.status === 'unknown' || !tool.completed && tool.prepared || uncertainCommand(tool) ? 'unknown' : tool.completed ? 'completed' : 'not_executed',
       }));
       for (const startup of startups) if (startup.closedSeq === undefined) tools.push({ callId: startup.startupId, name: 'mcp_stdio_startup', status: 'unknown' });
       return { runId: startups[0].identity.runId, expectedHash: this.records.at(-1)!.hash, classification: 'unknown_effects', tools };
@@ -824,7 +904,7 @@ export class NativeRunStore implements RunStore {
     if (!run) return null;
     const tools: RecoveryReport['tools'] = [...run.tools.values()].map(tool => ({
       callId: tool.call.id, name: tool.call.name,
-      status: tool.completed?.result.status === 'unknown' || !tool.completed && tool.prepared ? 'unknown' : tool.completed ? 'completed' : 'not_executed',
+      status: tool.completed?.result.status === 'unknown' || !tool.completed && tool.prepared || uncertainCommand(tool) ? 'unknown' : tool.completed ? 'completed' : 'not_executed',
     }));
     let classification: RecoveryReport['classification'] = tools.some(tool => tool.status === 'unknown') ? 'unknown_effects' : 'safe_to_continue';
     if (classification === 'safe_to_continue') {

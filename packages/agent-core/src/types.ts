@@ -112,7 +112,9 @@ export interface ToolPort {
   prepare(call: ToolCall, context: ToolExecutionContext): Promise<PreparedTool>
   /** Recheck exact input, ownership, instruction revisions and file versions after approval. */
   validate(prepared: PreparedTool, context: ToolExecutionContext): Promise<void>
-  /** Must settle only after tool resources are released. Throw/unknown after preparation is uncertain. */
+  /** Ordinary tools settle after resource release. An explicit host-owned command handle may
+   * outlive its start call; the host must settle it before run completion. Throw/unknown
+   * after preparation is uncertain and never authorizes automatic replay. */
   execute(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult>
 }
 export interface BeginRunRequest {
