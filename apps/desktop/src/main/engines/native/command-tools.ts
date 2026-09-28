@@ -94,7 +94,7 @@ export function createCommandTools(options: NativeCommandToolOptions): NativeCom
     await save(entry, { commandId: entry.commandId, status: unknown ? 'unknown' : 'finished', result: value, at: new Date().toISOString() });
     entry.final = value; entry.phase = unknown ? 'unknown' : 'finished';
     if (unknown) notifyFailure();
-    await options.onFinished?.(entry.prepared, terminalResult(value));
+    await options.onFinished?.(entry.prepared, { ...terminalResult(value), ...(unknown ? { status: 'unknown' as const } : {}) });
   };
   const failedLifecycle = (entry: Entry): Promise<void> => entry.failure ??= (async () => {
     notifyFailure();
