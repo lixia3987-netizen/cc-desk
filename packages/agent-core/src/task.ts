@@ -8,7 +8,10 @@ export type * from '@cc-desk/contracts/native-task';
 export class NativeTaskError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'NativeTaskError'; }
 }
-export const NATIVE_TASK_LIMITS = { steps: 64, criteria: 64, evidence: 256, history: 512, files: 4000 } as const;
+export const NATIVE_TASK_LIMITS = {
+  steps: 64, criteria: 64, evidence: 256, history: 512, files: 4000,
+  locationFileBytes: 1024 * 1024, locationLines: 80, locationExcerptBytes: 8192,
+} as const;
 function fail(code: string, message: string): never { throw new NativeTaskError(code, message); }
 function object(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value); }
 function keys(value: unknown, allowed: string[], label: string): asserts value is Record<string, unknown> {
@@ -28,6 +31,26 @@ function uuid(value: unknown, label: string): asserts value is string {
 }
 function hash(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) fail('invalid_task', 'Invalid workspace fingerprint');
+}
+/** Mirrors the portable relative-path syntax of ProjectFiles without a Node dependency. */
+function locationPath(value: unknown): asserts value is string {
+  if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f\\:]/.test(value) ||
+      value.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git' || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
+    fail('invalid_task', 'Invalid project-relative code location');
+  }
+}
+function validateLocation(value: unknown): void {
+  keys(value, ['path', 'startLine', 'endLine', 'fileHash', 'fileBytes', 'excerpt', 'excerptHash'], 'code location');
+  locationPath(value.path); hash(value.fileHash); hash(value.excerptHash);
+  integer(value.fileBytes, 'location file bytes');
+  integer(value.startLine, 'location start line', 1); integer(value.endLine, 'location end line', 1);
+  if (value.fileBytes > NATIVE_TASK_LIMITS.locationFileBytes || value.startLine > NATIVE_TASK_LIMITS.locationFileBytes + 1 ||
+      value.endLine > NATIVE_TASK_LIMITS.locationFileBytes + 1 || value.endLine < value.startLine || value.endLine - value.startLine + 1 > NATIVE_TASK_LIMITS.locationLines) fail('invalid_task', 'Code location exceeds file or line limits');
+  if (typeof value.excerpt !== 'string' || value.excerpt.length > NATIVE_TASK_LIMITS.locationExcerptBytes || value.excerpt.includes('\0')) fail('invalid_task', 'Invalid code location excerpt');
+  const encoded = new TextEncoder().encode(value.excerpt);
+  if (encoded.byteLength > NATIVE_TASK_LIMITS.locationExcerptBytes || new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(encoded) !== value.excerpt) fail('invalid_task', 'Code location excerpt must be bounded valid UTF-8');
+  // The host checks the actual file/range and both SHA-256 values before committing.
+  // This portable reducer validates their formats; it does not read files or hash text.
 }
 function time(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length > 40 || !Number.isFinite(Date.parse(value))) fail('invalid_task', 'Invalid task timestamp');
@@ -87,12 +110,12 @@ export function validateNativeTaskPlan(value: unknown): asserts value is NativeT
   }
 }
 function validateEvidence(value: unknown, task: NativeTaskSnapshot): asserts value is NativeTaskEvidence {
-  keys(value, ['id', 'identity', 'stepIds', 'criterionIds', 'source', 'status', 'planRevision', 'acceptanceRevision', 'workspaceFingerprint', 'workspaceComplete', 'toolCallId', 'command', 'exitCode', 'output', 'outputDigest', 'truncated', 'reason', 'createdAt', 'stale'], 'evidence');
+  keys(value, ['id', 'identity', 'stepIds', 'criterionIds', 'source', 'status', 'planRevision', 'acceptanceRevision', 'workspaceFingerprint', 'workspaceComplete', 'toolCallId', 'command', 'exitCode', 'output', 'outputDigest', 'truncated', 'location', 'reason', 'createdAt', 'stale'], 'evidence');
   id(value.id, 'evidence id'); validateNativeTaskIdentity(value.identity);
   if (value.identity.sessionId !== task.identity.sessionId || value.identity.conversationId !== task.identity.conversationId) fail('invalid_identity', 'Evidence belongs to a different task session');
   strings(value.stepIds, 'evidence step', 64); strings(value.criterionIds, 'evidence criterion', 64);
   if (!value.stale && (value.stepIds.some(item => !task.steps.some(step => step.id === item)) || value.criterionIds.some(item => !task.criteria.some(criterion => criterion.id === item)))) fail('invalid_task', 'Evidence refers to unknown plan entries');
-  if (!['command', 'manual'].includes(String(value.source)) || !['unverified', 'passed', 'failed', 'not_applicable'].includes(String(value.status))) fail('invalid_task', 'Invalid evidence source/status');
+  if (!['command', 'manual', 'location'].includes(String(value.source)) || !['unverified', 'passed', 'failed', 'not_applicable'].includes(String(value.status))) fail('invalid_task', 'Invalid evidence source/status');
   integer(value.planRevision, 'evidence planRevision', 1); integer(value.acceptanceRevision, 'evidence acceptanceRevision', 1);
   hash(value.workspaceFingerprint); if (typeof value.workspaceComplete !== 'boolean') fail('invalid_task', 'Invalid workspace completeness');
   time(value.createdAt);
@@ -102,6 +125,11 @@ function validateEvidence(value: unknown, task: NativeTaskSnapshot): asserts val
   if (value.outputDigest !== undefined) hash(value.outputDigest);
   if (value.reason !== undefined) text(value.reason, 'evidence reason', 4000);
   if (value.status === 'not_applicable' && !value.reason) fail('invalid_task', 'Not-applicable evidence needs a reason');
+  if (value.source === 'location') {
+    if (value.status !== 'unverified' || !value.stepIds.length) fail('invalid_task', 'Code locations require a step and cannot establish acceptance');
+    text(value.toolCallId, 'tool call id', 512); validateLocation(value.location);
+    if (['command', 'exitCode', 'output', 'outputDigest', 'truncated'].some(field => value[field] !== undefined)) fail('invalid_task', 'Code locations cannot contain command receipt fields');
+  } else if (value.location !== undefined) fail('invalid_task', 'Only location evidence may contain a code location');
   if (value.source === 'manual') text(value.reason, 'human evidence reason', 4000);
   if (value.source === 'command') {
     if (!['unverified', 'failed'].includes(String(value.status))) fail('invalid_task', 'Command receipts do not establish acceptance; human condition review is required');
@@ -220,6 +248,12 @@ export function applyNativeTaskUpdate(previous: NativeTaskSnapshot | null, updat
       if (next.evidence.length >= NATIVE_TASK_LIMITS.evidence) fail('limit_exceeded', 'Task evidence limit reached');
       if (next.evidence.some(item => item.id === mutation.evidence.id)) fail('invalid_task', 'Evidence ids cannot be reused');
       if (mutation.evidence.status === 'passed' && (!next.workspace?.current.complete || mutation.evidence.workspaceFingerprint !== next.workspace.current.fingerprint)) fail('invalid_task', 'Passing evidence needs the current complete workspace');
+      if (mutation.evidence.source === 'location') {
+        const current = next.workspace?.current;
+        const location = mutation.evidence.location!;
+        if (!current || mutation.evidence.workspaceFingerprint !== current.fingerprint || mutation.evidence.workspaceComplete !== current.complete ||
+            !current.files.some(file => file.path === location.path && file.hash === location.fileHash && file.bytes === location.fileBytes)) fail('invalid_task', 'Code location needs a matching file in the current workspace scan');
+      }
       next.evidence.push(mutation.evidence); delete next.review; break;
     }
     case 'review': {

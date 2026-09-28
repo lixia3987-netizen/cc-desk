@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { applyNativeTaskUpdate, validateNativeTaskPlan, validateNativeTaskSnapshot } from '../dist/index.js';
 const identity = { sessionId: 'session-1', conversationId: 'c0f117a2-cc31-465e-8f31-97c4fffaee91', runId: 'fdc4ef4e-5e1c-494d-860d-c47708dc477c', requestId: 'request-1', workerGeneration: 1 };
 const taskId = '74b5ba80-fc6c-4e0d-9454-f203f3ad7981';
@@ -91,4 +92,94 @@ test('only exact explicit continuation can rebind an ended task and late old run
 test('persisted verification tampering and malformed history are rejected', () => {
   const task = create(); assert.throws(() => validateNativeTaskSnapshot({ ...task, verification: 'passed' }), { code: 'invalid_task' });
   assert.throws(() => validateNativeTaskSnapshot({ ...task, history: [] }), { code: 'invalid_task' });
+});
+
+const digest = value => createHash('sha256').update(value).digest('hex');
+const codeLocation = (overrides = {}) => {
+  const excerpt = '\uFEFFexport const 状态 = "ready";\r\nreturn 状态;\n';
+  return { path: 'src/状态.ts', startLine: 1, endLine: 2, fileHash: digest(excerpt), fileBytes: Buffer.byteLength(excerpt), excerpt, excerptHash: digest(excerpt), ...overrides };
+};
+function withLocationWorkspace(location = codeLocation(), complete = true) {
+  const current = { ...workspace('a'.repeat(64), complete), files: [{ path: location.path, hash: location.fileHash, bytes: location.fileBytes, mode: 0o644 }] };
+  return update(create(), { type: 'workspace', baseline: current, current, changes });
+}
+function locationEvidence(task, overrides = {}) {
+  return { id: `location-${task.revision}`, identity: task.identity, stepIds: ['state'], criterionIds: ['resync'], source: 'location', status: 'unverified',
+    planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision, workspaceFingerprint: task.workspace?.current.fingerprint ?? 'a'.repeat(64),
+    workspaceComplete: task.workspace?.current.complete ?? true, toolCallId: 'location-call-1', location: codeLocation(), createdAt: at, ...overrides };
+}
+const attachLocation = (task, overrides = {}) => update(task, { type: 'evidence', evidence: locationEvidence(task, overrides) });
+
+test('schema 1 remains compatible and location receipts retain exact Unicode, BOM and line separators without acceptance', () => {
+  const legacy = verified(); assert.equal(legacy.schemaVersion, 1); assert.equal(legacy.evidence[0].location, undefined); validateNativeTaskSnapshot(JSON.parse(JSON.stringify(legacy)));
+  const task = attachLocation(withLocationWorkspace());
+  assert.equal(task.schemaVersion, 1); assert.equal(task.evidence[0].location.excerpt, codeLocation().excerpt); assert.equal(task.verification, 'unverified');
+  validateNativeTaskSnapshot(JSON.parse(JSON.stringify(task)));
+  assert.throws(() => validateNativeTaskSnapshot({ ...task, verification: 'passed' }), { code: 'invalid_task' });
+  assert.throws(() => update(task, { type: 'review', status: 'approved', reason: 'A source location is not acceptance' }), { code: 'verification_incomplete' });
+});
+test('location source requires an unverified tool receipt and a step, and rejects mixed command/manual payloads', () => {
+  const task = withLocationWorkspace();
+  for (const overrides of [
+    { status: 'passed' }, { status: 'failed' }, { status: 'not_applicable', reason: 'skip' }, { stepIds: [] }, { stepIds: ['missing'] }, { criterionIds: ['missing'] },
+    { toolCallId: undefined }, { toolCallId: '' }, { location: undefined }, { command: { executable: 'node', argv: [], cwd: '/project' } },
+    { exitCode: 0 }, { exitCode: null }, { output: '' }, { outputDigest: 'c'.repeat(64) }, { truncated: false },
+    { source: 'manual', reason: 'review' }, { source: 'command', command: { executable: 'node', argv: [], cwd: '/project' }, exitCode: 0 },
+  ]) assert.throws(() => attachLocation(task, overrides), { code: 'invalid_task' });
+});
+test('location paths use portable project-relative syntax', () => {
+  const task = withLocationWorkspace();
+  const invalid = ['', '.', '..', '/src/file.ts', 'src//file.ts', 'src/./file.ts', 'src/../file.ts', 'src/file.ts/', 'src\\file.ts',
+    'C:/file.ts', '//host/file.ts', '.git/config', 'src/.GIT/config', 'src/file. ', 'src/file.', 'src/CON.ts', 'src/lpt9', 'src/file\n.ts', 'src/file\x7f.ts', 'x'.repeat(4097)];
+  for (const path of invalid) assert.throws(() => attachLocation(task, { location: codeLocation({ path }) }), { code: 'invalid_task' });
+});
+test('location ranges, UTF-8 byte bounds, hashes and exact fields fail closed', () => {
+  const task = withLocationWorkspace();
+  for (const overrides of [
+    { startLine: 0 }, { startLine: 1.5 }, { startLine: 3, endLine: 2 }, { endLine: 81 }, { startLine: 1048578, endLine: 1048578 },
+    { fileBytes: -1 }, { fileBytes: 0.5 }, { fileBytes: 1048577 }, { fileHash: 'A'.repeat(64) }, { excerptHash: 'g'.repeat(64) }, { excerptHash: undefined },
+    { excerpt: '\uD800' }, { excerpt: '\uDC00' }, { excerpt: 'nul\0text' }, { excerpt: 'a'.repeat(8193) }, { excerpt: '中'.repeat(2731) }, { unknown: true },
+  ]) assert.throws(() => attachLocation(task, { location: codeLocation(overrides) }), { code: 'invalid_task' });
+  const maxExcerpt = '😀'.repeat(2048);
+  const maximum = codeLocation({ startLine: 1048498, endLine: 1048577, fileBytes: 1048576, excerpt: maxExcerpt, excerptHash: digest(maxExcerpt) });
+  assert.equal(attachLocation(withLocationWorkspace(maximum), { location: maximum }).evidence[0].location.excerpt, maxExcerpt);
+  const empty = codeLocation({ startLine: 1, endLine: 1, fileHash: digest(''), fileBytes: 0, excerpt: '', excerptHash: digest('') });
+  assert.equal(attachLocation(withLocationWorkspace(empty), { location: empty }).evidence[0].location.fileBytes, 0);
+});
+test('location append binds the inventory file and current scan but permits an incomplete scan containing that file', () => {
+  const task = withLocationWorkspace();
+  for (const overrides of [
+    { workspaceFingerprint: 'd'.repeat(64) }, { workspaceComplete: false },
+    { location: codeLocation({ path: 'src/missing.ts' }) }, { location: codeLocation({ fileHash: 'd'.repeat(64) }) }, { location: codeLocation({ fileBytes: 12 }) },
+  ]) assert.throws(() => attachLocation(task, overrides), { code: 'invalid_task' });
+  assert.throws(() => attachLocation(create()), { code: 'invalid_task' });
+  assert.throws(() => attachLocation(withWorkspace(create())), { code: 'invalid_task' });
+  const incomplete = attachLocation(withLocationWorkspace(codeLocation(), false));
+  assert.equal(incomplete.evidence[0].workspaceComplete, false); assert.equal(incomplete.verification, 'unverified');
+});
+test('changed workspace or plan preserves stale locations and their old step and criterion references', () => {
+  let task = attachLocation(withLocationWorkspace()); const original = structuredClone(task.evidence[0].location);
+  task = update(task, { type: 'workspace', current: workspace('c'.repeat(64)), changes });
+  assert.equal(task.evidence[0].stale, true); assert.equal(task.verification, 'stale'); assert.deepEqual(task.evidence[0].location, original);
+  task = update(task, { type: 'plan', plan: { goal: 'New scope', steps: [{ id: 'new', title: 'New', dependsOn: [], status: 'pending' }], criteria: [] } });
+  validateNativeTaskSnapshot(task); assert.deepEqual(task.evidence[0].stepIds, ['state']); assert.deepEqual(task.evidence[0].criterionIds, ['resync']);
+  assert.throws(() => attachLocation(task, { ...task.evidence[0], id: 'new-stale', identity: task.identity, planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision }), { code: 'invalid_identity' });
+});
+test('continuation retains historical locations while requiring new receipts to belong to the continued run', () => {
+  let task = attachLocation(withLocationWorkspace()); const original = structuredClone(task.evidence[0]);
+  task = update(task, { type: 'finish', outcome: 'completed' });
+  const newer = { ...identity, runId: 'ac644cd7-8223-4bd1-bf39-a21c6b2371a2', requestId: 'next', workerGeneration: 2 };
+  task = update(task, { type: 'continue', previousRunId: identity.runId }, { identity: newer });
+  assert.deepEqual(task.evidence[0], original); assert.equal(task.verification, 'unverified');
+  assert.throws(() => attachLocation(task, { identity }), { code: 'invalid_identity' });
+  task = attachLocation(task); assert.equal(task.evidence[1].identity.runId, newer.runId); validateNativeTaskSnapshot(task);
+});
+test('location excerpts remain subject to the shared evidence capacity', () => {
+  const excerpt = 'a'.repeat(8192); const location = codeLocation({ fileBytes: 8192, excerpt, excerptHash: digest(excerpt) });
+  const task = withLocationWorkspace(location);
+  task.evidence = Array.from({ length: 256 }, (_, index) => locationEvidence(task, { id: `loc-${index}`, location }));
+  validateNativeTaskSnapshot(task);
+  assert.throws(() => attachLocation(task, { location }), { code: 'limit_exceeded' });
+  task.evidence.push(locationEvidence(task, { id: 'overflow', location }));
+  assert.throws(() => validateNativeTaskSnapshot(task), { code: 'invalid_task' });
 });
