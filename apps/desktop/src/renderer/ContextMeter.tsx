@@ -75,7 +75,7 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
       <span>{context?.inputTokens === undefined ? '本回合最近一次模型响应未提供输入 token 用量。' : `服务返回的最近一次请求输入：${count(context.inputTokens)} tokens（非累计）。`}</span>
       {(context?.requestModel || context?.model) && <span>请求模型：{context.requestModel ?? context.model}</span>}
       {context?.measuredAt && <span>服务响应时间：{new Date(context.measuredAt).toLocaleString()}</span>}
-      <span>可在模型连接中填写价格；本回合费用仅在服务提供完整输入和输出用量、价格模型一致时估算，压缩等其他调用另计。请以服务商账单为准。</span>
+      <span>可在模型连接中填写价格；本回合费用仅在全部请求提供完整输入和输出用量、价格模型一致时估算，压缩等其他调用另计。请以服务商账单为准。</span>
     </div>
   </details>;
 }
