@@ -173,8 +173,8 @@ export function App() {
     }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
   }, [activeId, structured, executionCapabilities?.attachments, readOnly, report]);
-  const openNew = (kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string) => {
-    const candidates = fork ? [fork.projectId] : [targetProjectId, projectId, active?.projectId, state?.projects[0]?.id];
+  const openNew = (kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string, continuation?: Session) => {
+    const candidates = fork || continuation ? [(fork ?? continuation)!.projectId] : [targetProjectId, projectId, active?.projectId, state?.projects[0]?.id];
     const selected = candidates.find(id => state?.projects.some(project => project.id === id)) ?? '';
     const providerId = kind === 'shell' ? 'shell' : fork?.execution.providerId ?? 'claude';
     const mode = kind === 'shell' ? 'terminal' : fork?.execution.mode ?? 'structured';
@@ -183,7 +183,8 @@ export function App() {
       projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind,
       providerId, engineConfig: fork ? structuredClone(fork.engineConfig) : engineDefaults(selectedEngine, state?.settings),
       isolated: false, worktreeName: '', mode,
-      conversationId: fork?.execution.conversationId, fork: !!fork
+      conversationId: fork?.execution.conversationId, fork: !!fork,
+      ...(continuation ? { continuation: { sourceSessionId: continuation.id, snapshotHash: '', messageIds: [] } } : {}),
     });
     setModal('new');
   };

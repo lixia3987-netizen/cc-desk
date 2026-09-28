@@ -80,6 +80,9 @@ export function SessionContextPanel({
       {executionCapabilities?.fork && <button className="secondary full" disabled={readOnly || !!descriptor?.maintenance || !active.started || activeBusy || active.identityPending} onClick={() => openNew('agent', active)}>
         <GitBranch size={14} />从此会话创建分支
       </button>}
+      {structured && <button className="secondary full" disabled={busy || activeBusy || !project} onClick={() => openNew('agent', undefined, active.projectId, active)}>
+        <Copy size={14} />带入内容到新会话
+      </button>}
     </>}
     <button className="text-button archive-button" disabled={readOnly || busy || (structured ? activeBusy : ['running', 'stopping'].includes(active.status))} onClick={() => void perform(async () => {
       await window.desktop.updateSession({ id: active.id, archived: !active.archived });

@@ -64,6 +64,9 @@ export const sessionInputSchema = z.object({
   engineConfig: engineConfigSchema.optional(), isolated: z.boolean(),
   worktreeName: z.string().max(80).refine(s => !/[/\\\x00-\x1f\x7f]/.test(s) && !s.includes('..'), 'Worktree 名称不能包含路径分隔符、控制字符或 ..。').trim().optional(),
   providerId: providerIdSchema.optional(), conversationId: conversationIdSchema.optional(), fork: z.boolean().optional(),
+  continuation: z.object({ sourceSessionId: idSchema, snapshotHash: z.string().regex(/^[a-f0-9]{64}$/),
+    messageIds: z.array(z.string().min(1).max(4096)).max(40), summary: z.string().max(64 * 1024).optional(),
+  }).strict().optional(),
   mode: z.enum(['terminal','structured']).optional()
 }).strict();
 const draftEntries = (keyLength: number, textLength: number) => z.record(z.string().max(keyLength), z.string().max(textLength))
