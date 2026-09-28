@@ -1,6 +1,6 @@
 # 自研 Agent Alpha 操作与实现说明
 
-当前集成基线（2026-09-28，北京时间）：PR #33–#41 已合入 `dev/native-agent@cb0d909`，涵盖 P3、P4a、P4b、双项目指令文件、仅手动触发 CI、项目 Skills、MCP 2026 HTTP 与 2025 Streamable HTTP 同步工具；未改动 main，未发布 Release。P4c 项目 Skills 的范围与结果见[项目 Skills 记录](NATIVE-AGENT-PHASE-4C-SKILLS.md)；本批继续实现 [MCP stdio 本地服务](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)，图形、三平台及远程验收仍待执行。Claude 持续保持默认引擎，P5 只推进功能替换和评估；未来任何默认引擎切换须用户自行评估后另行明确决定。
+当前集成基线（2026-09-28，北京时间）：PR #33–#42 已合入 `dev/native-agent@0bec633`，包括 MCP HTTP 2026、Streamable HTTP 2025 和 stdio 2025。当前剩余开发集中在第二模型协议、显式项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估，实施与验收状态统一见[剩余交付清单](NATIVE-AGENT-COMPLETION.md)。Claude 保持默认，未修改 main、发布 Release 或触发新 CI；历史候选证据不代表本候选验收。
 
 历史阶段三候选记录（2026-09-27）：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此当时同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 对应候选的 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。当时工作分支为 `feat/native-agent-alpha`，以下开发分支及候选均为历史记录，不表示相关 PR 仍未合并。
 
@@ -12,13 +12,13 @@ P4a 固定候选 `5a1be39` 的三平台验证已通过，见 [PR #34](https://gi
 
 P4b 首批 `491e44ee` 的三平台技术验证已通过，见 [PR #35](https://github.com/lixia3987-netizen/cc-desk/pull/35)。后续 `feat/native-agent-auto-compaction` 提供默认关闭的发送前自动压缩，详见[第二批记录](NATIVE-AGENT-PHASE-4B-AUTO.md)。
 
-1. 从开发源码构建应用，在「设置与连接」登记 native 模型连接，协议选择 Responses，填写服务地址和准确模型名。地址填写 API 基础地址，例如 `https://服务域名/v1`；适配器追加 `/responses`。
+1. 从开发源码构建应用，在「设置与连接」登记 native 模型连接，明确选择 Responses 或 Chat Completions，填写服务地址和准确模型名。地址填写 API 基础地址，例如 `https://服务域名/v1`；适配器分别追加 `/responses` 或 `/chat/completions`，不自动回退。
 2. 选择认证方式：从指定环境变量读取、仅本次应用进程保存，或使用操作系统安全存储。环境变量需由启动桌面应用的环境提供。密钥只经专用输入接口进入主进程，不写 workspace；仅内存模式重启后需重新输入。
 3. 添加项目，新建 Agent 会话，显式选择「自研 Agent · Alpha」及连接。模型覆盖留空使用连接默认值。native 不依赖 Claude CLI 登录；Claude 会话继续使用各自的 CLI 配置。
 4. 提交文字任务。列目录、搜索和普通文件读取在已选项目内执行；每次文本写入、命令及敏感文件读取都单独审批。检查文件内容、版本条件或 executable / argv / cwd，再允许本次或拒绝。
 5. 查看实际 Git 差异、工具退出码和输出。运行中继续输入会进入文字队列；单会话串行工作流同样使用 native 执行器。
 
-远程地址要求 HTTPS；回环 HTTP 仅在明确勾选后开放。禁止带账号密码、查询令牌、片段的 URL，并拒绝重定向。兼容 Chat Completions 不代表支持本实现的 Responses 工具调用、流式事件和完整上下文回传。
+远程地址要求 HTTPS；回环 HTTP 仅在明确勾选后开放。禁止带账号密码、查询令牌、片段的 URL，并拒绝重定向。两个协议分别保存原生上下文；兼容服务须支持所选协议的完整流式工具调用。Chat Completions 要求标准 `max_completion_tokens`、用量和完成事件，不隐式替换参数；非标准 reasoning 等活动消息扩展会明确拒绝。
 
 Linux `basic_text`、未知或不可用安全后端不允许持久保存密钥，界面提示使用环境变量或内存模式。修改正在运行的连接被拒绝；被会话引用的连接不能删除，可以禁用。连接缺失只阻止受影响会话发起新任务，保留其记录与草稿。
 
@@ -28,19 +28,21 @@ Linux `basic_text`、未知或不可用安全后端不允许持久保存密钥�
 
 阶段四新增 `edit_file`：携带完整文件哈希、唯一精确出现的 `oldText` 与替换用 `newText`，只修改该片段。重复匹配、空匹配、无变化或批准后的版本变化会被拒绝；删除片段使用空 `newText`。仍须逐次审批，不自动扩大修改范围。
 
-聊天区显示 native 运行预算与服务实际用量。预算基于完整协议上下文的保守估算，不是模型真实窗口或计费额度；服务未提供用量时保持未知，未配置价格时不显示推算费用。达到预算会停止，不静默丢弃历史。
+聊天区显示 native 运行预算与服务实际用量。预算基于完整协议上下文的保守估算，不是模型真实窗口或计费额度；服务未提供用量时保持未知，未配置价格时不显示推算费用。可在模型连接中显式填写某个模型的每百万输入/输出 token 美元价格；仅在实际模型名称一致且服务报告完整输入/输出用量时估算。本回合保存价格快照，修改当前价格不会改写历史；估算不含缓存折扣、压缩请求或其他附加费用。达到预算会停止，不静默丢弃历史。
 
-连接设置支持用户主动测试已保存的连接：测试可能产生一次小额模型调用，发送固定文本、不带项目内容、不调用工具、不自动重试，可取消。结果仅证明本次 Responses 文本请求是否成功；不能据此认定工具调用、长任务或完整 Agent 质量已通过。列表和就绪检查仍只检查本机配置，不主动调用远程服务。
+连接设置支持用户主动测试已保存的连接：测试可能产生一次小额模型调用，发送固定文本、不带项目内容、不调用工具、不自动重试，可取消。结果仅证明本次所选协议文本请求是否成功；不能据此认定工具调用、长任务或完整 Agent 质量已通过。列表和就绪检查仍只检查本机配置，不主动调用远程服务。
 
 项目规则同时支持 `CLAUDE.md` 与 `AGENTS.md`（2026-09-28 兼容性扩展）：从授权项目/worktree 根到目标目录逐层加载，每层先 `CLAUDE.md`、后 `AGENTS.md`；深层目录优先，同层冲突以 `AGENTS.md` 为准，用户明确指令优先于项目文件。记录完整初始指令、来源、作用域及哈希；任一适用指令变化均使旧审批失效。两种文件共用原有单文件 32 KiB、合计 128 KiB 限制，不会向项目根外爬升，不额外扫描 HOME 或 `.claude` 目录作为全局指令来源，也不执行 URL/include 导入；目标位于项目内 `.claude` 时仍适用一般逐层规则。命令按 cwd 选取规则，无法静态推导任意脚本触及的全部子目录。本次扩展的验证须单独登记，不以历史候选 CI 代替。
 
-P4c 首批提供项目 Skills 的显式选择入口：在 native 会话的「运行配置」中点击「读取项目 Skills」，勾选并保存，停止后修改、下一回合生效。支持项目根的 `.agents/skills/<名称>/SKILL.md` 与 `.claude/skills/<名称>/SKILL.md`，以完整路径区分同名项，默认不启用，最多选择 16 项。已选正文与项目指令共用单文件 32 KiB、合计 128 KiB 限制；缺失、危险或超限来源阻止该回合，不静默忽略。Skills 作为任务方法补充，不扩大权限、不自动执行脚本/hooks/includes、不扫描全局来源，也不解释 frontmatter 为执行配置；来源变化使旧审批失效。本批独立验证状态见[项目 Skills 记录](NATIVE-AGENT-PHASE-4C-SKILLS.md)，不表示完整 Claude Skills 兼容。
+P4c 首批提供项目 Skills 的显式选择入口：在 native 会话的「运行配置」中点击「读取项目 Skills」，勾选并保存，停止后修改、下一回合生效。支持项目根的 `.agents/skills/<名称>/SKILL.md` 与 `.claude/skills/<名称>/SKILL.md`，也可输入其他项目相对 `目录/SKILL.md`，显式读取预览后加入选择；默认发现仍仅扫描前述两个目录。以完整路径区分同名项，默认不启用，最多选择 16 项。可检查正文、哈希和指定目录适用的双项目指令；修改使用编辑器。已选正文与项目指令共用单文件 32 KiB、合计 128 KiB 限制；缺失、危险或超限来源阻止该回合，不静默忽略。Skills 作为任务方法补充，不扩大权限、不自动执行脚本/hooks/includes、不扫描全局来源，也不解释 frontmatter 为执行配置；来源变化使旧审批失效。本批独立验证状态见[项目 Skills 记录](NATIVE-AGENT-PHASE-4C-SKILLS.md)，不表示完整 Claude Skills 兼容。
 
 写入含 `projectSkills` 的新配置后，旧版严格配置校验会拒绝继续该 native 会话；这不表示数据损坏，应保留原数据并使用支持该字段的版本。
 
 MCP 工具支持默认 `2026-07-28` HTTP、显式选择的 `2025-11-25` Streamable HTTP，以及固定 2025 的本地 stdio。先在设置中配置连接，再在 native 会话运行配置中显式选择（默认空、最多 4 项）。旧连接缺省保持 HTTP / 2026，无自动版本回退。stdio 使用已安装程序的绝对路径、字面参数和主进程环境变量名映射，每回合在启动前单独审批；打开设置、保存和读取列表不会启动程序。每次工具调用仍独立审批；目录与定义计入预算，变化使旧审批失效，未知调用或未确认清理的启动不自动重放。stdio 不是沙箱，程序可访问当前用户资源。共用边界见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)，HTTP 兼容见 [2025 记录](NATIVE-AGENT-PHASE-4C-MCP-2025.md)，本批使用、恢复与验证见 [stdio 说明](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。含新增配置字段的文件需要支持相应字段的版本读取。
 
-本阶段不提供 native 终端、外部历史导入、分叉、Claude 命令目录、附件、运行中配置、全局或自动启用的 Skills，也未提供旧 HTTP+SSE、其他历史版本、GET 长连重连、OAuth、tasks、roots、sampling、elicitation 或 resources/prompts。普通下一回合和干净重启续聊使用本地完整协议上下文。已有对话切换服务地址或模型需新建会话。用量使用服务返回值；缺失时不伪造 token、窗口或费用。P4c 整体仍未完成。
+会话侧栏的“在新会话继续”可预览并选择用户/助手可见正文或手写摘要，创建同项目的新会话草稿；明确选择目标引擎后发送才调用服务。不带入工具协议、内部推理或原 conversationId，不自动发送。native `ask_user` 可提出至多三个问题，回答沿用现有提问界面；回答不授予后续工具权限。
+
+本阶段不提供 native 终端、外部原始历史导入、原引擎内部上下文分叉、Claude 命令目录、附件、运行中配置、全局或自动启用的 Skills，也未提供旧 HTTP+SSE、其他历史版本、GET 长连重连、OAuth、tasks、roots、sampling、elicitation 或 resources/prompts。普通下一回合和干净重启续聊使用本地完整协议上下文。已有对话切换服务地址或模型需新建会话。用量使用服务返回值；缺失时不伪造 token、窗口或费用。新增实现与尚未执行的验收详见剩余交付清单，不代表全部服务兼容或真实模型任务已通过。
 
 默认每回合 30 次模型请求、60 次工具调用、10 分钟主动执行时长、5 分钟审批等待、单工具输出 64 KiB；单命令最长 120 秒。完整上下文限制 8 MiB，IPC 消息限制 16 MiB，账本总量默认 256 MiB。token 估计与请求输出上限不能保证远程费用绝对封顶。达到预算即明确停止，不静默截掉历史。
 
@@ -71,7 +73,7 @@ P4b 的预算面板提供“压缩上下文（可能计费）”：一次无工�
 | 位置 | 内容 |
 | --- | --- |
 | `packages/agent-core` | 无文件系统/Electron 依赖的端口、顺序工具循环、审批绑定、预算与终态 |
-| `packages/agent-node` | Responses SSE、完整记录库、本地工具、CLAUDE.md/AGENTS.md 项目指令与命令监管 |
+| `packages/agent-node` | Responses / Chat Completions SSE、完整记录库、本地工具、CLAUDE.md/AGENTS.md 项目指令与命令监管 |
 | `apps/desktop/src/main/engines/native` | 主进程装配、独立 utilityProcess、窄 RPC、连接凭据、UI 投影 |
 | `userData/native/connections.json` | 非秘密连接元数据及可用时的 OS 加密密文 |
 | `userData/native/conversations/<UUID>/` | 版本化完整 journal、checkpoint 与单写者锁 |

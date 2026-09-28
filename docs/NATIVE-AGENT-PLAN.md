@@ -3,7 +3,7 @@
 日期：2026-09-24（北京时间）  
 历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发集成分支：`dev/native-agent`，从上述提交创建。
-当前集成基线（2026-09-28，北京时间）：PR #33–#41 已合入 `dev/native-agent@cb0d909`，涵盖 P3、P4a、P4b、双项目指令文件支持、仅手动触发 CI、项目 Skills、MCP 2026 HTTP 与 2025 Streamable HTTP 同步工具；未改动 main，未发布 Release。本批继续实现 [MCP stdio 本地服务](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)，验收独立登记。以下候选提交和开发分支均作为历史实现及验收记录保留，不表示相关 PR 仍未合并。
+当前集成基线（2026-09-28，北京时间）：PR #33–#42 已合入 `dev/native-agent@0bec633`，包括 MCP HTTP 2026、Streamable HTTP 2025 和 stdio 2025。当前剩余开发集中在第二模型协议、显式项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估，实施与验收状态统一见[剩余交付清单](NATIVE-AGENT-COMPLETION.md)。Claude 保持默认，未修改 main、发布 Release 或触发新 CI；历史候选证据不代表本候选验收。
 
 历史验收：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二**已完成，三平台验收通过**；固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，当时工作位于 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
 
@@ -13,11 +13,11 @@
 
 阶段三 native Alpha 已实现，固定候选 `9a8c4ba` 的三平台技术验收通过；真实远程模型任务仍待验收，详见 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 与 [阶段三记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。阶段四按用户要求继续在开发分支推进，首批范围为增量编辑、上下文预算/用量展示和显式连接诊断，见 [阶段四计划与验收](NATIVE-AGENT-PHASE-4.md)。这不改变阶段三真实模型验收尚未完成的状态。
 
-P4a 与 P4b 已完成并集成。显式安全恢复与手动压缩见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)；第二批默认关闭的[发送前自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)已实现。P4c 首批[项目 Skills 显式选择](NATIVE-AGENT-PHASE-4C-SKILLS.md)已实现并完成本地定向验证：默认不启用，用户在 native 会话配置中选定后逐回合加载，并沿用预算和审批边界。P4c 整体及真实远程模型验收仍未完成；本轮未触发 CI，首批图形及三平台成品验收仍待执行，不能沿用历史候选的通过结果。
+P4a 与 P4b 已完成并集成。显式安全恢复与手动压缩见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)；第二批默认关闭的[发送前自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)已实现。P4c 首批[项目 Skills 显式选择](NATIVE-AGENT-PHASE-4C-SKILLS.md)已实现并完成本地定向验证：默认不启用，用户在 native 会话配置中选定后逐回合加载，并沿用预算和审批边界。后续扩展实现与验收状态以剩余交付清单为准，真实远程模型验收仍未完成；本轮未触发 CI，首批图形及三平台成品验收仍待执行，不能沿用历史候选的通过结果。
 
 2026-09-28 规划调整：项目指令同时支持 `CLAUDE.md` 与 `AGENTS.md`，具体规则见下文；P5 只推进功能替换及评估。Claude 持续保持默认引擎，未来任何默认引擎切换都须由用户另行明确决定。本次调整不新增或改写历史候选的 CI 验收结论。
 
-P4c MCP 已提供 `2026-07-28` HTTP 与显式选择的 `2025-11-25` Streamable HTTP 同步工具闭环；旧 HTTP 配置保持 2026，不自动降级，已集成范围见 [2025 兼容记录](NATIVE-AGENT-PHASE-4C-MCP-2025.md)。本批增加固定 2025 的本地 stdio：显式程序与参数、每回合启动审批、持久启动记录及进程清理屏障，详见 [stdio 使用与验证](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。旧 HTTP+SSE、其他历史版本、OAuth、resources/prompts 和更多模型协议仍未实现，P4c 整体未完成；共用预算与工具审批见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)。
+P4c MCP 已提供 `2026-07-28` HTTP 与显式选择的 `2025-11-25` Streamable HTTP 同步工具闭环；旧 HTTP 配置保持 2026，不自动降级，已集成范围见 [2025 兼容记录](NATIVE-AGENT-PHASE-4C-MCP-2025.md)。本批增加固定 2025 的本地 stdio：显式程序与参数、每回合启动审批、持久启动记录及进程清理屏障，详见 [stdio 使用与验证](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。本轮新增显式 Chat Completions 和项目自定义 Skills 来源，具体交付见剩余清单；旧 HTTP+SSE、其他历史版本、OAuth、resources/prompts 等额外能力未在首期工具接入中承诺；共用预算与工具审批见 [MCP 记录](NATIVE-AGENT-PHASE-4C-MCP.md)。
 
 ## 1. 目标与实施原则
 
@@ -106,6 +106,8 @@ P4c MCP 已提供 `2026-07-28` HTTP 与显式选择的 `2025-11-25` Streamable H
 建议 agent-core 可以脱离 Electron 测试和运行；桌面通过独立 Node 子进程宿主承载 native 任务，优先验证 Electron utilityProcess。宿主负责消息边界和资源管理，模型密钥不经过 renderer；它提供故障隔离，不提供文件/命令安全沙箱。为便于复用，Electron 专属启动代码留在 desktop。
 
 首版暂缓多 Agent 并行、自研终端 TUI、远程常驻服务和插件市场。MCP、完整 Skills 机制、复杂指令来源和上下文压缩等在可靠的单 Agent 闭环后继续完善。
+
+P5 当前功能对照和预先定义的质量门槛见 [P5 功能替换候选](NATIVE-AGENT-PHASE-5.md)，后续实际记录不得用本地 fixture 结果代替真实模型任务。
 
 ## 6. 分阶段交付与验收
 
