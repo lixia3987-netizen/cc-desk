@@ -3,6 +3,7 @@ import type { AppState, Capabilities, Session } from '../../shared/types';
 
 import { sessionColor, sessionLabel, time } from './presentation';
 import type { OpenNew } from './types';
+import { ProjectFilter } from './ProjectFilter';
 
 interface Props {
   state: AppState; cap: Capabilities; activeId: string; projectId: string;
@@ -42,9 +43,7 @@ export function SessionSidebar({ state, cap, activeId, projectId, archived, sear
       <Plus size={15} />
     </button>
     </div>
-    {!!state.projects.length && <select className="workspace-filter" aria-label="工作空间筛选" value={projectId} onChange={e => { onProject(e.target.value); }}>
-      <option value="all">全部项目</option>{state.projects.map(p =>
-        <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+    {!!state.projects.length && <ProjectFilter projects={state.projects} value={projectId} onChange={onProject} />}
     {!state.projects.length && <button className="add-project" onClick={() => void chooseProject()}>
       <Plus size={15} />添加本地项目文件夹</button>}
     <div className="section-label sessions-label">
