@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { normalizeProjectSkillPaths } from '@cc-desk/agent-node/project-skills';
 import type { EngineConfig } from '../../../shared/execution';
 
 const optionsSchema = z.object({
@@ -10,6 +11,10 @@ const optionsSchema = z.object({
   maxInputTokens: z.number().int().min(1024).max(2_000_000).default(64_000),
   maxOutputTokens: z.number().int().min(128).max(64_000).default(8192),
   autoCompact: z.enum(['off', 'before_send']).default('off'),
+  projectSkills: z.array(z.string().max(4096)).max(16).default([]).transform((paths, context) => {
+    try { return normalizeProjectSkillPaths(paths); }
+    catch { context.addIssue({ code: 'custom', message: '请选择项目 .agents/skills 或 .claude/skills 下有效且不重复的 SKILL.md，最多 16 项。' }); return z.NEVER; }
+  }),
 }).strict();
 export function parseNativeConfig(config: EngineConfig) {
   if (config.schemaVersion !== 1) throw new Error('不支持此 native 配置版本；原配置已保留。');

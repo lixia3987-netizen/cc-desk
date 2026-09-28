@@ -140,22 +140,54 @@ for (const mode of ['default_off', 'below_threshold'] as const) test(`automatic 
   } finally { await f.dispose(); }
 });
 
-for (const trigger of ['new_input', 'changed_project_instructions', 'changed_claude_instructions'] as const) test(`automatic compaction includes ${trigger} in the pending request estimate`, async () => {
+for (const trigger of ['new_input', 'changed_project_instructions', 'changed_claude_instructions', 'changed_project_skill'] as const) test(`automatic compaction includes ${trigger} in the pending request estimate`, async () => {
   const f = await fixture();
   try {
+    const skill = '.agents/skills/compact/SKILL.md';
     if (trigger === 'changed_claude_instructions') await fs.writeFile(path.join(f.project, 'CLAUDE.md'), 'Preserve the recorded task goal.\n');
+    if (trigger === 'changed_project_skill') {
+      await fs.mkdir(path.dirname(path.join(f.project, skill)), { recursive: true });
+      await fs.writeFile(path.join(f.project, skill), 'Retain the current task constraints.\n');
+      await f.configure({ projectSkills: [skill] });
+    }
     await f.seed(); let input = '继续下一轮';
     const baseEstimate = await f.estimate(input), limit = Math.ceil(baseEstimate / 0.85);
     const addition = 'x'.repeat(Math.ceil(limit * 0.92) - baseEstimate);
     await f.configure({ autoCompact: 'before_send', maxInputTokens: limit });
     if (trigger === 'new_input') input += addition;
-    else await fs.appendFile(path.join(f.project, trigger === 'changed_claude_instructions' ? 'CLAUDE.md' : 'AGENTS.md'), addition);
+    else await fs.appendFile(path.join(f.project, trigger === 'changed_project_skill' ? skill : trigger === 'changed_claude_instructions' ? 'CLAUDE.md' : 'AGENTS.md'), addition);
     const result = await f.executor.send(f.id, input);
     assert.equal(result.success, true, JSON.stringify(result));
     assert.equal(f.server.requests.length, 6, 'one summary precedes one ordinary request');
     assert.deepEqual(f.server.requests[4].tools, []); assert.ok(f.server.requests[5].tools.length > 0);
     assert.equal(f.server.requests[5].input.at(-1).content, input);
     if (trigger !== 'new_input') assert.ok(f.server.requests[5].instructions.includes(addition), 'the task uses freshly read instructions');
+    assert.deepEqual(f.server.errors, []);
+  } finally { await f.dispose(); }
+});
+
+test('automatic compaction rereads selected Skills changed during the summary before dispatching the task', async () => {
+  const skill = '.claude/skills/compact/SKILL.md';
+  const beforeContent = 'SKILL_BEFORE_SUMMARY', afterContent = 'SKILL_AFTER_SUMMARY';
+  let f: Awaited<ReturnType<typeof fixture>>;
+  f = await fixture({ worker: async options => {
+    const result = await inlineWorker(options);
+    if (options.request.configuration.purpose === 'context_summary') await fs.writeFile(path.join(f.project, skill), afterContent);
+    return result;
+  } });
+  try {
+    await fs.mkdir(path.dirname(path.join(f.project, skill)), { recursive: true });
+    await fs.writeFile(path.join(f.project, skill), beforeContent);
+    await f.configure({ projectSkills: [skill] }); await f.seed();
+    const input = '压缩后按最新Skill继续'; await f.enableAtThreshold(input);
+    const result = await f.executor.send(f.id, input);
+    assert.equal(result.success, true, JSON.stringify(result)); assert.equal(f.server.requests.length, 6);
+    assert.deepEqual(f.server.requests[4].tools, []);
+    assert.doesNotMatch(f.server.requests[4].instructions, /SKILL_BEFORE_SUMMARY/, 'project Skills cannot become the summarizer policy');
+    assert.match(f.server.requests[5].instructions, /SKILL_AFTER_SUMMARY/);
+    assert.doesNotMatch(f.server.requests[5].instructions, /SKILL_BEFORE_SUMMARY/);
+    const sources = (await f.readLedger()).runs.at(-1)!.configuration.instructions as Array<{ path: string; hash: string }>;
+    assert.equal(sources.find(source => source.path === skill)?.hash, digest(afterContent));
     assert.deepEqual(f.server.errors, []);
   } finally { await f.dispose(); }
 });

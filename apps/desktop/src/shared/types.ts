@@ -9,6 +9,7 @@ import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
 import type { CLIUpdateState } from './cli-update';
 import type { NativeConnectionsAPI } from './native-connections';
+import type { NativeSkillsAPI } from './native-skills';
 import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
 import type { ClaudeCapabilities } from '@cc-desk/engine-claude';
@@ -41,6 +42,7 @@ export interface HistoryEntry { providerId: string; id: string; title: string; c
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
   nativeConnections: NativeConnectionsAPI;
+  nativeSkills: NativeSkillsAPI;
   confirmNativeRecovery(id: string): Promise<void>;
   resumeNativeRecovery(id: string, expectedHead: string): Promise<void>;
   compactNativeContext(id: string, expectedHead: string): Promise<void>;

@@ -3,7 +3,7 @@
 日期：2026-09-24（北京时间）  
 历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发集成分支：`dev/native-agent`，从上述提交创建。
-当前集成状态（2026-09-28，北京时间）：PR #33–#36 已合入 `dev/native-agent@528c2d9`，涵盖 P3、P4a 与 P4b；本轮集成未改动 main，未发布 Release。以下候选提交和开发分支均作为历史实现及验收记录保留，不表示相关 PR 仍未合并。
+当前集成状态（2026-09-28，北京时间）：PR #33–#38 已合入 `dev/native-agent@062782c`，涵盖 P3、P4a、P4b、双项目指令文件支持及仅手动触发 CI 的调整；未改动 main，未发布 Release。以下候选提交和开发分支均作为历史实现及验收记录保留，不表示相关 PR 仍未合并。
 
 历史验收：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二**已完成，三平台验收通过**；固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，当时工作位于 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
 
@@ -13,7 +13,7 @@
 
 阶段三 native Alpha 已实现，固定候选 `9a8c4ba` 的三平台技术验收通过；真实远程模型任务仍待验收，详见 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 与 [阶段三记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。阶段四按用户要求继续在开发分支推进，首批范围为增量编辑、上下文预算/用量展示和显式连接诊断，见 [阶段四计划与验收](NATIVE-AGENT-PHASE-4.md)。这不改变阶段三真实模型验收尚未完成的状态。
 
-P4a 与 P4b 已完成并集成。显式安全恢复与手动压缩见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)；第二批默认关闭的[发送前自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)已实现。三平台技术验证以各固定提交的记录为准；真实远程模型验收及 P4c 扩展仍未完成。
+P4a 与 P4b 已完成并集成。显式安全恢复与手动压缩见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)；第二批默认关闭的[发送前自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)已实现。P4c 首批[项目 Skills 显式选择](NATIVE-AGENT-PHASE-4C-SKILLS.md)已实现并完成本地定向验证：默认不启用，用户在 native 会话配置中选定后逐回合加载，并沿用预算和审批边界。P4c 整体及真实远程模型验收仍未完成；本轮未触发 CI，首批图形及三平台成品验收仍待执行，不能沿用历史候选的通过结果。
 
 2026-09-28 规划调整：项目指令同时支持 `CLAUDE.md` 与 `AGENTS.md`，具体规则见下文；P5 只推进功能替换及评估。Claude 持续保持默认引擎，未来任何默认引擎切换都须由用户另行明确决定。本次调整不新增或改写历史候选的 CI 验收结论。
 

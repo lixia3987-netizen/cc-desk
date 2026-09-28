@@ -2,6 +2,9 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
+  nativeSkills: {
+    list: input => ipcRenderer.invoke('native:skills-list', input),
+  },
   nativeConnections: {
     list: () => ipcRenderer.invoke('native:connections-list'),
     upsert: input => ipcRenderer.invoke('native:connections-upsert', input),
