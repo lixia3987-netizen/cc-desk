@@ -140,21 +140,22 @@ for (const mode of ['default_off', 'below_threshold'] as const) test(`automatic 
   } finally { await f.dispose(); }
 });
 
-for (const trigger of ['new_input', 'changed_project_instructions'] as const) test(`automatic compaction includes ${trigger} in the pending request estimate`, async () => {
+for (const trigger of ['new_input', 'changed_project_instructions', 'changed_claude_instructions'] as const) test(`automatic compaction includes ${trigger} in the pending request estimate`, async () => {
   const f = await fixture();
   try {
+    if (trigger === 'changed_claude_instructions') await fs.writeFile(path.join(f.project, 'CLAUDE.md'), 'Preserve the recorded task goal.\n');
     await f.seed(); let input = '继续下一轮';
     const baseEstimate = await f.estimate(input), limit = Math.ceil(baseEstimate / 0.85);
     const addition = 'x'.repeat(Math.ceil(limit * 0.92) - baseEstimate);
     await f.configure({ autoCompact: 'before_send', maxInputTokens: limit });
     if (trigger === 'new_input') input += addition;
-    else await fs.appendFile(path.join(f.project, 'AGENTS.md'), addition);
+    else await fs.appendFile(path.join(f.project, trigger === 'changed_claude_instructions' ? 'CLAUDE.md' : 'AGENTS.md'), addition);
     const result = await f.executor.send(f.id, input);
     assert.equal(result.success, true, JSON.stringify(result));
     assert.equal(f.server.requests.length, 6, 'one summary precedes one ordinary request');
     assert.deepEqual(f.server.requests[4].tools, []); assert.ok(f.server.requests[5].tools.length > 0);
     assert.equal(f.server.requests[5].input.at(-1).content, input);
-    if (trigger === 'changed_project_instructions') assert.ok(f.server.requests[5].instructions.includes(addition), 'the task uses freshly read instructions');
+    if (trigger !== 'new_input') assert.ok(f.server.requests[5].instructions.includes(addition), 'the task uses freshly read instructions');
     assert.deepEqual(f.server.errors, []);
   } finally { await f.dispose(); }
 });

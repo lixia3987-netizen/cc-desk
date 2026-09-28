@@ -59,11 +59,11 @@ test('write and sensitive read require exact unexpired approvals; changed inputs
   assert.equal(await fs.readFile(path.join(root, 'created'), 'utf8'), 'external');
   await assert.rejects(port.prepare(call('create', 'apply_patch', { path: 'created', content: 'other', expectedHash: null }), ctx), /reused/);
 });
-test('nested instructions must be delivered to model before a write and rule changes invalidate approval', async t => {
+for (const filename of ['AGENTS.md', 'CLAUDE.md']) test(`${filename} must reach the model before a write and changes invalidate approval`, async t => {
   const { root, supervisor } = await fixture(t);
   await fs.mkdir(path.join(root, 'src'));
-  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Root rule.');
-  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Nested rule.');
+  await fs.writeFile(path.join(root, filename), 'Root rule.');
+  await fs.writeFile(path.join(root, 'src', filename), 'Nested rule.');
   await fs.writeFile(path.join(root, 'src', 'file'), 'old');
   const initialInstructions = await loadProjectInstructions({ projectRoot: root });
   const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: 'nested', initialInstructions });
@@ -72,7 +72,7 @@ test('nested instructions must be delivered to model before a write and rule cha
   const read = await executeRead(port, ctx, 'read', 'read_file', { path: 'src/file' });
   assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
   const prepared = await port.prepare(call('write', 'apply_patch', { path: 'src/file', content: 'new', expectedHash: read.output.hash }), ctx);
-  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Changed rule.');
+  await fs.writeFile(path.join(root, 'src', filename), 'Changed rule.');
   await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
   assert.equal(await fs.readFile(path.join(root, 'src', 'file'), 'utf8'), 'old');
 });
@@ -120,6 +120,27 @@ test('schema rejects unknown fields and pre-aborted tools never run', async t =>
   const controller = new AbortController(); controller.abort(new Error('Cancelled before prepare'));
   await assert.rejects(port.prepare(call('aborted', 'list_directory', { path: '.' }), { ...ctx, signal: controller.signal }), /Cancelled/);
 });
+for (const mutation of ['add', 'change', 'remove']) test(`CLAUDE ${mutation} invalidates approved commands with unchanged AGENTS rules`, async t => {
+  const { root, supervisor } = await fixture(t);
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Root rule.');
+  const claudePath = path.join(root, 'src', 'CLAUDE.md');
+  if (mutation !== 'add') await fs.writeFile(claudePath, 'Nested Claude rule.');
+  const initialInstructions = await loadProjectInstructions({ projectRoot: root });
+  const port = new LocalToolPort({ projectRoot: root, supervisor, ownerId: `claude-${mutation}`, initialInstructions });
+  const ctx = context();
+  const input = { executable: process.execPath, argv: ['-e', 'require("node:fs").writeFileSync("command-ran", "unexpected")'], cwd: 'src' };
+  if (mutation !== 'add') {
+    await assert.rejects(port.prepare(call('unseen-command', 'run_command', input), ctx), /not been shown/);
+  }
+  const read = await executeRead(port, ctx, 'scope', 'list_directory', { path: 'src' });
+  assert.deepEqual(read.output.instructions.sources.map(source => source.path), mutation === 'add' ? ['AGENTS.md'] : ['AGENTS.md', 'src/CLAUDE.md']);
+  const prepared = await port.prepare(call('command', 'run_command', input), ctx);
+  if (mutation === 'remove') await fs.rm(claudePath);
+  else await fs.writeFile(claudePath, 'Updated nested Claude rule.');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
+  await assert.rejects(fs.stat(path.join(root, 'src', 'command-ran')), /ENOENT/);
+});
 test('edit_file approval binds the exact displayed fragment replacement and cannot be reused for another edit', async t => {
   const { root, port } = await fixture(t);
   const ctx = context();
@@ -164,19 +185,19 @@ test('edit_file rejects approval-time changes outside the matched fragment and c
   assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'before\nexternal');
   assert.deepEqual(await fs.readdir(root), ['file']);
 });
-test('edit_file requires applicable file-scope instructions and changed AGENTS invalidates approval', async t => {
+for (const filename of ['AGENTS.md', 'CLAUDE.md']) test(`${filename} must reach the model before edit_file and changes invalidate approval`, async t => {
   const { root, port } = await fixture(t);
   const ctx = context();
   await fs.mkdir(path.join(root, 'src'));
-  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Root rule.');
-  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Nested rule.');
+  await fs.writeFile(path.join(root, filename), 'Root rule.');
+  await fs.writeFile(path.join(root, 'src', filename), 'Nested rule.');
   await fs.writeFile(path.join(root, 'src', 'file'), 'before');
   const input = { path: 'src/file', oldText: 'before', newText: 'after', expectedHash: contentHash('before') };
   await assert.rejects(port.prepare(call('unseen-edit', 'edit_file', input), ctx), /not been shown/);
   const read = await executeRead(port, ctx, 'read', 'read_file', { path: input.path });
   assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
   const prepared = await port.prepare(call('edit', 'edit_file', input), ctx);
-  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Changed rule.');
+  await fs.writeFile(path.join(root, 'src', filename), 'Changed rule.');
   await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
   assert.equal(await fs.readFile(path.join(root, 'src', 'file'), 'utf8'), 'before');
 });

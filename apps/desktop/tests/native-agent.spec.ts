@@ -69,6 +69,18 @@ function gate() {
 
 test('native utilityProcess completes approved patch/command, isolates credentials, survives restart and deduplicates submission', async () => {
   const f = await workspace();
+  const claudeRule = 'CLAUDE_NATIVE_RULE_V1: preserve the existing fixture workflow.';
+  const updatedClaudeRule = 'CLAUDE_NATIVE_RULE_V2: continue only from the recorded tool results.';
+  const agentsRule = 'AGENTS_NATIVE_RULE: require approval before modifying fixture.txt.';
+  await fs.writeFile(path.join(f.cwd, 'CLAUDE.md'), `${claudeRule}\n`);
+  await fs.appendFile(path.join(f.cwd, 'AGENTS.md'), `${agentsRule}\n`);
+  const expectProjectInstructions = (request: Record<string, unknown>, expectedClaudeRule: string) => {
+    expect(typeof request.instructions).toBe('string');
+    const instructions = request.instructions as string;
+    expect(instructions).toContain(expectedClaudeRule);
+    expect(instructions).toContain(agentsRule);
+    expect(instructions.indexOf(expectedClaudeRule)).toBeLessThan(instructions.indexOf(agentsRule));
+  };
   // process.execPath here is the Playwright Node host, never Electron's GUI binary.
   const fixture: Fixture = await startResponsesFixture({ task: { path: 'fixture.txt', content: 'native Electron fixture complete\n', command: {
     executable: process.execPath, argv: ['-e', 'if(process.env.OPENAI_API_KEY)process.exit(31);require("node:fs").writeFileSync("command-marker.txt","command-ok");process.stdout.write("native-command-ok")'], cwd: '.',
@@ -98,6 +110,7 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     await expect(page.locator('.chat-message.assistant').last()).toContainText('本地任务完成');
     expect(fixture.errors).toEqual([]);
     const count = fixture.requests.length;
+    for (const request of fixture.requests) expectProjectInstructions(request, claudeRule);
     const duplicate = await page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     expect(duplicate.success).toBe(true); expect(fixture.requests).toHaveLength(count);
     await noSavedSecret(f.data);
@@ -109,6 +122,8 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     // A durable receipt may be queried without restoring a credential or starting a worker.
     const recoveredReceipt = await page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     expect(recoveredReceipt.success).toBe(true); expect(fixture.requests).toHaveLength(count);
+    // A new turn must reread both files, including edits made after a clean app restart.
+    await fs.writeFile(path.join(f.cwd, 'CLAUDE.md'), `${updatedClaudeRule}\n`);
     await page.evaluate(({ item, secret }) => window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret }), { item: restarted, secret: sentinel });
     // An idle Shell terminal still owns the directory; stopping it releases that lease.
     await page.evaluate(id => window.desktop.startSession(id), competing.id);
@@ -118,6 +133,8 @@ test('native utilityProcess completes approved patch/command, isolates credentia
     const continued = await page.evaluate(id => window.desktop.sendChat(id, 'Continue using the complete prior protocol context.', [], 'after-clean-restart'), session.id);
     expect(continued.success).toBe(true); expect(continued.summary).toContain('完整上下文 2');
     expect(fixture.requests.length).toBe(count + 1); expect(fixture.errors).toEqual([]);
+    expectProjectInstructions(fixture.requests[count], updatedClaudeRule);
+    expect(fixture.requests[count].instructions).not.toContain(claudeRule);
     await noSavedSecret(f.data);
   } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });

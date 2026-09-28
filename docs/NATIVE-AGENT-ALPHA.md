@@ -1,10 +1,12 @@
 # 自研 Agent Alpha 操作与实现说明
 
-阶段三开发候选，2026-09-27。**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 当前关联 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
+当前集成状态（2026-09-28，北京时间）：PR #33–#36 已合入 `dev/native-agent@528c2d9`，涵盖 P3、P4a 与 P4b；本轮集成未改动 main，未发布 Release。Claude 持续保持默认引擎，P5 只推进功能替换和评估；未来任何默认引擎切换须用户自行评估后另行明确决定。
+
+历史阶段三候选记录（2026-09-27）：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此当时同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 对应候选的 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。当时工作分支为 `feat/native-agent-alpha`，以下开发分支及候选均为历史记录，不表示相关 PR 仍未合并。
 
 ## 配置并开始
 
-阶段四首批能力在 `feat/native-agent-daily-use` 继续开发，范围及验收见 [阶段四记录](NATIVE-AGENT-PHASE-4.md)；上方阶段三技术结果仅对应其固定候选。
+阶段四首批能力原在 `feat/native-agent-daily-use` 开发，现已集成，范围及验收见 [阶段四记录](NATIVE-AGENT-PHASE-4.md)；上方阶段三技术结果仅对应其固定候选。
 
 P4a 固定候选 `5a1be39` 的三平台验证已通过，见 [PR #34](https://github.com/lixia3987-netizen/cc-desk/pull/34)。P4b 在 `feat/native-agent-recovery-context` 增加显式安全恢复与手动上下文压缩，验收与限制见 [P4b 记录](NATIVE-AGENT-PHASE-4B.md)。
 
@@ -30,7 +32,7 @@ Linux `basic_text`、未知或不可用安全后端不允许持久保存密钥�
 
 连接设置支持用户主动测试已保存的连接：测试可能产生一次小额模型调用，发送固定文本、不带项目内容、不调用工具、不自动重试，可取消。结果仅证明本次 Responses 文本请求是否成功；不能据此认定工具调用、长任务或完整 Agent 质量已通过。列表和就绪检查仍只检查本机配置，不主动调用远程服务。
 
-项目规则从授权项目/worktree 根到目标目录逐层加载 `AGENTS.md`，记录完整初始指令、来源、作用域及哈希。不会向 HOME 或项目根外爬升，不自动访问 include URL。命令按 cwd 选取规则，无法静态推导任意脚本触及的全部子目录。
+项目规则同时支持 `CLAUDE.md` 与 `AGENTS.md`（2026-09-28 兼容性扩展）：从授权项目/worktree 根到目标目录逐层加载，每层先 `CLAUDE.md`、后 `AGENTS.md`；深层目录优先，同层冲突以 `AGENTS.md` 为准，用户明确指令优先于项目文件。记录完整初始指令、来源、作用域及哈希；任一适用指令变化均使旧审批失效。两种文件共用原有单文件 32 KiB、合计 128 KiB 限制，不会向项目根外爬升，不额外扫描 HOME 或 `.claude` 目录作为全局指令来源，也不执行 URL/include 导入；目标位于项目内 `.claude` 时仍适用一般逐层规则。命令按 cwd 选取规则，无法静态推导任意脚本触及的全部子目录。本次扩展的验证须单独登记，不以历史候选 CI 代替。
 
 本阶段不提供 native 终端、外部历史导入、分叉、Claude 命令目录、附件、运行中配置、Skills 或 MCP。普通下一回合和干净重启续聊使用本地完整协议上下文。已有对话切换服务地址或模型需新建会话。用量使用服务返回值；缺失时不伪造 token、窗口或费用。
 
@@ -63,7 +65,7 @@ P4b 的预算面板提供“压缩上下文（可能计费）”：一次无工�
 | 位置 | 内容 |
 | --- | --- |
 | `packages/agent-core` | 无文件系统/Electron 依赖的端口、顺序工具循环、审批绑定、预算与终态 |
-| `packages/agent-node` | Responses SSE、完整记录库、本地工具、AGENTS 与命令监管 |
+| `packages/agent-node` | Responses SSE、完整记录库、本地工具、CLAUDE.md/AGENTS.md 项目指令与命令监管 |
 | `apps/desktop/src/main/engines/native` | 主进程装配、独立 utilityProcess、窄 RPC、连接凭据、UI 投影 |
 | `userData/native/connections.json` | 非秘密连接元数据及可用时的 OS 加密密文 |
 | `userData/native/conversations/<UUID>/` | 版本化完整 journal、checkpoint 与单写者锁 |
