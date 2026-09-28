@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { runAgent } from '@cc-desk/agent-core';
 import { createNativeModel } from '@cc-desk/agent-node/native-model';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
+import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { ProcessSupervisor } from '@cc-desk/agent-node/process-supervisor';
 import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
@@ -130,9 +131,14 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     const evidence = f.executor.snapshot(f.id).nativeTask!.evidence.filter(item => item.source === 'command');
     assert.equal(evidence.length, 1); assert.equal(evidence[0].toolCallId, 'start'); assert.equal(evidence[0].exitCode, 0);
     assert.notEqual(f.executor.snapshot(f.id).nativeTask!.verification, 'passed');
+    const projected = f.executor.snapshot(f.id).nativeCommands!;
+    assert.equal(projected.items.length, 1); assert.equal(projected.omitted, 0);
+    assert.equal(projected.items[0].status, 'finished'); assert.equal(projected.items[0].toolCallId, 'start');
+    assert.equal(projected.items[0].result!.stdout, stdout); assert.equal(projected.items[0].result!.cleanup, 'released');
     assert.equal(JSON.stringify(ledger).includes(secret), false);
     const requests = f.server.requests.length;
     await f.restart();
+    assert.deepEqual(f.executor.snapshot(f.id).nativeCommands, projected, 'restart projects the same durable terminal and logs');
     assert.equal((await f.executor.send(f.id, 'Execute and inspect the command', [], undefined, { requestId: 'long-command' })).success, true);
     assert.equal(f.server.requests.length, requests); assert.equal(await fs.readFile(path.join(f.project, 'launches.txt'), 'utf8'), 'started\n');
   } finally { await f.dispose(); }
@@ -176,4 +182,74 @@ test('denying a long command creates neither a process nor a host launch record'
     const ledger = await f.ledger(); assert.equal(ledger.runs[0].tools.find(item => item.call.id === 'start')!.commandProgress, undefined);
     assert.equal(f.executor.snapshot(f.id).nativeTask!.evidence.length, 0);
   } finally { await f.dispose(); }
+});
+
+test('a lost acknowledgement after a durable command terminal cannot rewrite its facts or replay the process', { timeout: 15000 }, async () => {
+  const f = await fixture('responses');
+  const original = NativeRunStore.prototype.recordCommandEvent;
+  let injected = false;
+  NativeRunStore.prototype.recordCommandEvent = async function (...args) {
+    const receipt = await original.apply(this, args);
+    if (!injected && args[0].sessionId === f.id && args[2].status === 'finished') {
+      injected = true; throw new Error('Injected loss of terminal acknowledgement after durable publication');
+    }
+    return receipt;
+  };
+  try {
+    const running = f.executor.send(f.id, 'Execute with a lost terminal acknowledgement', [], undefined, { requestId: 'terminal-ack' });
+    const approval = await f.pending(); f.executor.respond(f.id, approval.requestId, { behavior: 'allow' });
+    const result = await running;
+    assert.equal(injected, true); assert.equal(result.success, false); assert.equal(f.supervisor.activeCount, 0);
+    const ledger = await f.ledger(), progress = ledger.runs[0].tools.find(item => item.call.id === 'start')!.commandProgress!;
+    assert.equal(progress.filter(item => item.status === 'finished').length, 1);
+    assert.equal(progress.filter(item => item.status === 'unknown').length, 0, 'a rejected retry cannot overwrite the original terminal');
+    const terminal = progress.at(-1)!; assert.ok('result' in terminal && terminal.result.exitCode === 0 && terminal.result.cleanup === 'released');
+    assert.equal(await fs.readFile(path.join(f.project, 'launches.txt'), 'utf8'), 'started\n');
+  } finally { NativeRunStore.prototype.recordCommandEvent = original; await f.dispose(); }
+});
+
+test('task evidence persistence failure leaves the durable command result intact and exposes unknown task status', { timeout: 15000 }, async () => {
+  const f = await fixture('responses');
+  const original = NativeTaskStore.prototype.apply;
+  let injected = false;
+  NativeTaskStore.prototype.apply = function (update, options) {
+    if (!injected && update.identity.sessionId === f.id && update.mutation.type === 'evidence' && update.mutation.evidence.source === 'command') {
+      injected = true; return Promise.reject(new Error('Injected task evidence write failure'));
+    }
+    return original.call(this, update, options);
+  };
+  try {
+    const running = f.executor.send(f.id, 'Execute with a task metadata failure', [], undefined, { requestId: 'task-evidence-failure' });
+    const approval = await f.pending(); f.executor.respond(f.id, approval.requestId, { behavior: 'allow' });
+    const result = await running; assert.equal(result.success, true, JSON.stringify(result)); assert.equal(injected, true);
+    assert.ok(f.executor.snapshot(f.id).nativeTaskError); assert.equal(f.supervisor.activeCount, 0);
+    const ledger = await f.ledger(), terminal = ledger.runs[0].tools.find(item => item.call.id === 'start')!.commandProgress!.at(-1)!;
+    assert.equal(terminal.status, 'finished'); assert.ok('result' in terminal && terminal.result.exitCode === 0 && terminal.result.cleanup === 'released');
+    assert.equal(await fs.readFile(path.join(f.project, 'launches.txt'), 'utf8'), 'started\n');
+  } finally { NativeTaskStore.prototype.apply = original; await f.dispose(); }
+});
+
+test('terminal write failure stops the process and shows unknown while the recovery owner retains its lease', { timeout: 15000 }, async () => {
+  const f = await fixture('responses');
+  const original = NativeRunStore.prototype.recordCommandEvent;
+  let rejected = 0;
+  NativeRunStore.prototype.recordCommandEvent = async function (...args) {
+    if (args[0].sessionId === f.id && ['finished', 'unknown'].includes(args[2].status)) {
+      rejected++; throw new Error('Injected terminal write failure before publication');
+    }
+    return original.apply(this, args);
+  };
+  try {
+    const running = f.executor.send(f.id, 'Execute with terminal storage unavailable', [], undefined, { requestId: 'terminal-write-failure' });
+    const approval = await f.pending(); f.executor.respond(f.id, approval.requestId, { behavior: 'allow' });
+    const result = await running; assert.equal(result.success, false); assert.ok(rejected > 0);
+    assert.equal(f.supervisor.activeCount, 0);
+    const snapshot = f.executor.snapshot(f.id), command = snapshot.nativeCommands!.items[0];
+    assert.equal(command.status, 'unknown'); assert.equal(command.missingTerminal, true); assert.equal(command.result, undefined);
+    assert.equal(snapshot.taskState, 'error');
+    const ledger = await f.ledger(), progress = ledger.runs[0].tools.find(item => item.call.id === 'start')!.commandProgress!;
+    assert.equal(progress.at(-1)!.status, 'running');
+    assert.equal(ledger.records.some(item => item.event.type === 'run_finished'), false);
+    assert.equal(await fs.readFile(path.join(f.project, 'launches.txt'), 'utf8'), 'started\n');
+  } finally { NativeRunStore.prototype.recordCommandEvent = original; await f.dispose(); }
 });
