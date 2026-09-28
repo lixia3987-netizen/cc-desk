@@ -9,6 +9,7 @@ const optionsSchema = z.object({
   maxActiveMs: z.number().int().min(1000).max(30 * 60_000).default(10 * 60_000),
   maxInputTokens: z.number().int().min(1024).max(2_000_000).default(64_000),
   maxOutputTokens: z.number().int().min(128).max(64_000).default(8192),
+  autoCompact: z.enum(['off', 'before_send']).default('off'),
 }).strict();
 export function parseNativeConfig(config: EngineConfig) {
   if (config.schemaVersion !== 1) throw new Error('不支持此 native 配置版本；原配置已保留。');

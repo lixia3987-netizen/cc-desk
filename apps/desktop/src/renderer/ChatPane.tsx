@@ -163,7 +163,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const nativeMaintenance=session.execution.providerId==='native'?snapshot?.nativeContextMaintenance:undefined;
   const compacting=compactingNativeContext||!!nativeMaintenance?.compacting;
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||session.status==='stopping'||compacting;
-  const taskLabel=compacting?'正在压缩上下文':hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
+  const taskLabel=compacting?(nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':taskLabels[task]??task;
   const composerDisabled=disabled||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery;
   const recoverNative=async(resume:boolean)=>{
     if(nativeOperation.current||running||readOnly||session.archived||!nativeRecovery||descriptor?.maintenance)return;

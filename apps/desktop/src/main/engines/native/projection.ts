@@ -70,6 +70,7 @@ export class NativeProjection {
     private getSession: (id: string) => Session,
     private isActive: (id: string) => boolean,
     private onError: (id: string, error: Error) => void,
+    private isAutoCompacting: (id: string) => boolean = () => false,
   ) {
     this.directory = path.join(dataDirectory, 'chat');
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
@@ -189,11 +190,19 @@ export class NativeProjection {
         }
         add({ type: 'message', message: { id: `recovery:${record.seq}`, turnId: runId, role: 'system', text: '已恢复为可继续状态。请发送新指令继续；已完成的操作保留原结果，未执行的操作不会自动重放。', createdAt } });
         add({ type: 'state', taskState: 'interrupted' });
+      } else if (event.type === 'context_compaction_attempted') {
+        const attempt = store.lookupAutoCompaction(event.requestId);
+        if (attempt?.status === 'attempted') {
+          currentTerminal = true;
+          add({ type: 'message', message: { id: `auto-compaction:${record.seq}`, turnId: currentIdentity?.runId ?? '', role: 'system', text: '本次发送尝试自动压缩。原始记录保留；若未完成，请手动压缩或调整设置后继续。摘要可能产生费用，不会自动重复尝试。', createdAt } });
+          add(this.isAutoCompacting(id) ? { type: 'state', taskState: 'thinking' }
+            : { type: 'state', taskState: 'error', error: '自动压缩未完成，请手动处理后重新发送。' });
+        }
       } else if (event.type === 'context_compacted') {
         currentTerminal = true;
         inputTokens = undefined; measuredAt = undefined;
         add({ type: 'metadata', resetUsage: true });
-        add({ type: 'message', message: { id: `compaction:${record.seq}`, turnId: currentIdentity?.runId ?? '', role: 'system', text: '上下文已压缩为历史摘要；原始对话记录、最初目标和最近完整回合已保留。摘要可能遗漏细节，后续重要约束可重新补充。', createdAt } });
+        add({ type: 'message', message: { id: `compaction:${record.seq}`, turnId: currentIdentity?.runId ?? '', role: 'system', text: (event.plan.automaticRequestId ? '发送前自动压缩已完成；' : '') + '上下文已压缩为历史摘要；原始对话记录、最初目标和最近完整回合已保留。摘要可能遗漏细节，后续重要约束可重新补充。', createdAt } });
         add({ type: 'state', taskState: 'interrupted' });
       } else if (event.type === 'run_recovered') {
         currentTerminal = true;
