@@ -15,6 +15,7 @@ import type { NativeStructuredExecutor } from './engines/native/structured-execu
 import { registerNativeHandlers } from './ipc/native-handlers';
 import { registerNativeSkillHandlers } from './ipc/native-skill-handlers';
 import { registerNativeMcpHandlers } from './ipc/native-mcp-handlers';
+import { registerNativeTaskHandlers } from './ipc/native-task-handlers';
 import type { ExecutionRegistry } from './execution/registry';
 import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
@@ -98,6 +99,7 @@ function registerIPC() {
   registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
   registerNativeSkillHandlers(handle, store);
   registerNativeMcpHandlers(handle, mcpConnections, notify);
+  registerNativeTaskHandlers(handle, (id, input) => services.maintainNativeContext(id, false, () => nativeExecutor.reviewTask(id, input)));
   handle('native:confirm-recovery', idSchema, async id => {
     if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
     const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请核查工作目录修改、命令及子进程；若调用过 MCP，还需核查远端操作结果和服务状态。', detail: '停止客户端不能证明远端操作未执行或已停止。确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });

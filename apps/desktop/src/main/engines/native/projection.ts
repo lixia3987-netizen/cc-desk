@@ -282,10 +282,12 @@ export class NativeProjection {
   }
 
   hasMissingContext(id: string): boolean { return this.missingContext.has(id); }
+  notifyTask(id: string): void { this.changed(id); }
 
   snapshot(id: string): ChatSnapshot {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
+    if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
     else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';
