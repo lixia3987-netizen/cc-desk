@@ -150,6 +150,8 @@ P1-01 先由一个集成负责人落定 manifest 和目录，接通迁移后的 
 
 ## 9. CI 分层和最终验收
 
+以下为阶段一的历史验收安排。2026-09-28 起，`verify.yml` 与 `build.yml` 均仅保留 `workflow_dispatch`；日常 PR 不再自动触发 CI，只有用户明确要求构建或运行 CI 时才启动工作流。当前操作规则见 [README](../README.md)。
+
 新增 `verify.yml`：针对目标为 `dev/native-agent` 或 `main` 的 pull_request，以及手动触发，运行 Ubuntu 的干净安装、全包类型/单测/构建。避免同一提交同时因 push 和 PR 重复触发；采用独立 concurrency 分组取消过时快速检查。若采用路径过滤，应覆盖所有源码、配置、脚本和 lockfile，且不造成必需状态永久等待。
 
 现有 `build.yml` 保持手动三平台完整验证：Windows x64、macOS arm64、Linux x64，覆盖 check、源码 E2E、打包和 packaged smoke。Windows 仍验真实 npm Claude launcher。更新迁移后的路径，但保留 main + 手动 publish_release=true 才正式发布的条件。
