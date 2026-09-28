@@ -53,6 +53,12 @@ test('IPC validators reject path injection, invalid IDs and unsupported permissi
   const input={projectId:randomUUID(),title:'test',kind:'agent',model:'',effort:'default',isolated:false};
   assert.equal(sessionInputSchema.safeParse({...input,permissionMode:'bypassPermissions'}).success,true);
   assert.equal(sessionInputSchema.safeParse(input).success,true);
+  for (const worktreeBaseRef of ['refs/heads/main', 'refs/remotes/origin/feature/topic']) {
+    assert.equal(sessionInputSchema.safeParse({ ...input, isolated: true, worktreeBaseRef }).success, true);
+  }
+  for (const worktreeBaseRef of ['--upload-pack=evil', 'HEAD~1', 'refs/tags/v1', 'refs/heads/main^{commit}', 'refs/remotes/origin/main\nother', 'refs/heads/a..b']) {
+    assert.equal(sessionInputSchema.safeParse({ ...input, isolated: true, worktreeBaseRef }).success, false);
+  }
   for(const permissionMode of ['auto','unknown','bypassPermissions --model injected']) {
     assert.equal(sessionInputSchema.safeParse({...input,permissionMode}).success,false);
     assert.equal(settingsSchema.safeParse({claudePath:'',shellPath:'',maxSessions:1,fontSize:14,scrollback:1000,defaultPermissionMode:permissionMode}).success,false);

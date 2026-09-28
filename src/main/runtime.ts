@@ -3,13 +3,13 @@ import path from 'node:path';
 import { execFile, spawn as spawnProcess } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { IPty } from 'node-pty';
-import type { Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
+import type { Capabilities, Session, TerminalChunk, TerminalSnapshot } from '../shared/types';
 import { StateStore } from './store';
 import type { TerminalLauncher, TerminalLaunchResource } from './execution/terminal-launch';
 import { releaseWindowsPty } from './execution/windows-pty-resources';
 import { spawnTerminal } from './execution/spawn-terminal';
 import { SubtaskTracker } from './subtask-tracker';
-import { automaticSessionTitlePatch } from '../shared/session-title';
+import { SessionTitles, type SessionTitleGenerator } from './session-titles';
 import { signalPosixGroup } from './posix-process-group';
 
 const execFileAsync = promisify(execFile);
@@ -33,6 +33,7 @@ interface ProcessEntry {
   release?: Promise<void>; released?: boolean; cleanup?: Promise<void>; cleanupError?: unknown;
 }
 export class Runtime {
+  private titles: SessionTitles;
   private running = new Map<string, ProcessEntry>();
   private stopping = new Map<string, ProcessEntry>();
   private cleanups = new Set<Promise<void>>();
@@ -50,7 +51,8 @@ export class Runtime {
   private shutdownPromise?: Promise<void>;
   private lifecycleError?: Error;
   private subtasks: SubtaskTracker;
-  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private launcher: TerminalLauncher, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void } = {}) {
+  constructor(private store: StateStore, private onState: () => void, private onData: (chunk: TerminalChunk) => void, private launcher: TerminalLauncher, private options: { maxStoppedBuffers?: number; onError?: (error: Error) => void; capabilities?: () => Capabilities; titleGenerator?: SessionTitleGenerator } = {}) {
+    this.titles = new SessionTitles(store, onState, options.titleGenerator);
     this.subtasks = new SubtaskTracker(store, onState);
     fs.mkdirSync(path.join(store.directory,'logs'), { recursive: true, mode: 0o700 });
   }
@@ -58,7 +60,7 @@ export class Runtime {
   get retainedBufferCount() { return this.buffers.size; }
   get pendingCleanupCount() { return this.cleanups.size; }
   get lastError() { return this.lifecycleError; }
-  has(id: string) { return this.running.has(id) || this.starting.has(id) || this.stopping.has(id); }
+  has(id: string) { return this.running.has(id) || this.starting.has(id) || this.stopping.has(id) || this.titles.has(id); }
   isBusy(id: string) { return this.has(id); }
   private reportError(error: unknown) {
     this.lifecycleError = error instanceof Error ? error : new Error(String(error));
@@ -150,8 +152,11 @@ export class Runtime {
   async start(id: string) {
     if (this.shuttingDown) throw new Error('工作台正在退出，无法启动新会话。');
     if (this.maintenance) throw new Error('执行程序正在更新，暂时不能启动终端。');
+    this.titles.assertReleased(id);
     const session = this.getSession(id);
-    if (this.has(id)) return;
+    if (this.running.has(id) || this.stopping.has(id) || this.starting.has(id)) return;
+    // A cancelled metadata process may still be draining; it cannot block a new foreground launch.
+    void this.titles.cancel(id);
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
     if (session.identityPending) throw new Error('CLI 已切换会话，但新会话身份尚未确认。请从历史记录重新导入目标会话，避免恢复错误的对话。');
     if (this.activeCount >= this.store.state.settings.maxSessions) throw new Error(`已达到 ${this.store.state.settings.maxSessions} 个并发会话上限，请先停止一个会话。`);
@@ -190,8 +195,7 @@ export class Runtime {
           const active = this.running.get(id);
           if (!active || active.ending || active.token !== token) return;
           this.guard(() => {
-            const patch = automaticSessionTitlePatch(this.getSession(id), prompt);
-            if (patch) this.update(id, patch);
+            this.titles.request(id, prompt, this.options.capabilities?.());
           });
         }
       });
@@ -207,6 +211,7 @@ export class Runtime {
         // Root exit does not release descendants, forwarding workers or hooks.
         // Keep UI state and ownership aligned until the same cleanup has settled.
         this.running.delete(id);
+        void this.titles.cancel(id);
         this.stopping.set(id, entry);
         this.guard(() => this.subtasks.end(id, entry.ending ? 'interrupted' : exitCode !== 0 ? 'failed' : 'unknown',
           entry.ending ? '会话已停止。' : exitCode !== 0 ? '会话进程异常退出。' : '会话进程已退出，未收到子任务完成通知。'));
@@ -256,6 +261,7 @@ export class Runtime {
     this.update(id, { taskState: 'interrupted' });
   }
   stop(id: string) {
+    void this.titles.cancel(id);
     if (this.starting.has(id)) this.cancelledStarts.add(id);
     const entry = this.running.get(id);
     if (!entry || entry.ending) return;
@@ -384,17 +390,20 @@ export class Runtime {
     await (this.shutdownPromise ??= this.performShutdown());
     // Resource cleanup is idempotent, but saving must be retried after a disk fault.
     this.store.flush();
+    this.titles.assertReleased();
     if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程和资源已释放，请检查残留进程后重试。', { cause: this.cleanupError });
   }
   setMaintenance(value: boolean) { this.maintenance = value; }
   async disconnectAll() {
     if (!this.maintenance) throw new Error('断开终端前必须暂停新会话。');
     await this.performShutdown(false);
+    this.titles.assertReleased();
     if (this.activeCount || this.cleanupError) throw new Error('无法确认全部终端进程已停止，已取消更新。请关闭残留进程并重启工作台后重试。');
     this.store.flush();
   }
   private async performShutdown(permanent = true) {
     if (permanent) this.shuttingDown = true;
+    const titlesStopped = this.titles.cancelAll();
     for (const id of this.starting) this.cancelledStarts.add(id);
     for (const id of this.running.keys()) this.guard(() => this.stop(id));
     await Promise.all([...this.startCompletions.values()]);
@@ -406,6 +415,7 @@ export class Runtime {
     }
     // Root exit is not proof that descendants, taskkill, or launcher resources have finished.
     while (this.cleanups.size) await Promise.all([...this.cleanups]);
+    await titlesStopped;
     this.guard(() => this.flush());
   }
 }

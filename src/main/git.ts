@@ -3,15 +3,23 @@ import fs from 'node:fs/promises';
 import { environment, execFileAsync } from './commands';
 import type { GitInfo } from '../shared/types';
 import { readProjectFile, resolveProjectFile } from './files';
-import type { GitChange, GitChanges, GitDiff, WorktreeInfo, WorktreeActionResult } from '../shared/git';
+import type { GitChange, GitChanges, GitDiff, WorktreeInfo, WorktreeActionResult, WorktreeBranch } from '../shared/git';
 import { ensureWorktreeParent, removeEmptyWorktreeParents, worktreeDestination, type WorktreePlacement } from './worktree-paths';
 
 const MAX_DIFF = 256 * 1024;
 const OWNER_FILE = 'workbench-owner.json';
-interface Ownership { version: 1; sessionId: string; basePath: string; branch: string; baseBranch: string }
+interface Ownership {
+  version: 1 | 2; sessionId: string; basePath: string; branch: string; baseBranch: string;
+  sourceRef?: string; sourceCommit?: string;
+}
+
+function validOwnership(owner: Ownership): boolean {
+  return owner?.version === 1 ? !!owner.baseBranch : owner?.version === 2 && typeof owner.baseBranch === 'string' &&
+    typeof owner.sourceRef === 'string' && !!owner.sourceRef && /^[a-f0-9]{40,64}$/.test(owner.sourceCommit ?? '');
+}
 
 async function git(cwd: string, args: string[], maxBuffer = 2 * 1024 * 1024): Promise<string> {
-  const result = await execFileAsync('git', ['--literal-pathspecs', ...args], { cwd, env: environment(), windowsHide: true, timeout: 20000, maxBuffer });
+  const result = await execFileAsync('git', ['--literal-pathspecs', ...args], { cwd, env: { ...environment(), GIT_TERMINAL_PROMPT: '0' }, windowsHide: true, timeout: 20000, maxBuffer });
   return result.stdout;
 }
 async function gitDirectory(cwd: string): Promise<string> {
@@ -31,6 +39,70 @@ async function withGitMutation<T>(cwd: string, action: () => Promise<T>): Promis
   if (mutations.has(key)) throw new Error('此项目正在执行另一个 Git 操作。');
   mutations.add(key);
   try { return await action(); } finally { mutations.delete(key); }
+}
+
+async function remotes(cwd: string): Promise<string[]> {
+  return (await git(cwd, ['remote'])).split(/\r?\n/).filter(Boolean).sort((a, b) => b.length - a.length);
+}
+
+function remoteBranch(ref: string, names: string[]): { remote: string; name: string } | undefined {
+  const prefix = 'refs/remotes/';
+  if (!ref.startsWith(prefix)) return;
+  const relative = ref.slice(prefix.length);
+  const remote = names.find(name => relative.startsWith(`${name}/`));
+  return remote ? { remote, name: relative.slice(remote.length + 1) } : undefined;
+}
+
+/** Explicit refspecs never update local branches, regardless of remote.*.fetch configuration. */
+async function fetchBranches(cwd: string, remote: string, name = '*'): Promise<void> {
+  // Git fetch dereferences existing symbolic refs. Refuse unusual aliases so a
+  // remote-tracking destination cannot redirect a fetch into a local branch.
+  const prefix = `refs/remotes/${remote}/`;
+  const refs = await git(cwd, ['for-each-ref', '--format=%(refname)%00%(symref)', prefix]);
+  for (const line of refs.split(/\r?\n/).filter(Boolean)) {
+    const [ref, symbolic] = line.split('\0');
+    if (symbolic && (ref !== `${prefix}HEAD` || !symbolic.startsWith(prefix))) {
+      throw new Error('远程分支含异常符号引用，请先修复后再刷新或创建工作区。');
+    }
+  }
+  await git(cwd, ['-c', 'credential.interactive=false', 'fetch', '--no-tags', '--no-recurse-submodules',
+    '--no-auto-maintenance', '--no-write-fetch-head', '--no-prune-tags', '--refmap=', ...(name === '*' ? ['--prune'] : []),
+    '--', remote, `+refs/heads/${name}:refs/remotes/${remote}/${name}`]);
+}
+
+/** Read cached refs by default. Refresh discovers remote-only branches without switching the checkout. */
+export async function listWorktreeBranches(cwd: string, refresh = false): Promise<WorktreeBranch[]> {
+  const names = await remotes(cwd);
+  if (refresh) await withGitMutation(cwd, async () => {
+    for (const remote of names) await fetchBranches(cwd, remote);
+  });
+  const raw = await git(cwd, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(symref)%00%(HEAD)', 'refs/heads/', 'refs/remotes/']);
+  return raw.split(/\r?\n/).filter(Boolean).flatMap(line => {
+    const [ref, symbolic, head] = line.split('\0');
+    if (symbolic) return []; // origin/HEAD is an alias, not a selectable branch.
+    if (ref.startsWith('refs/heads/')) return [{ ref, name: ref.slice('refs/heads/'.length), current: head === '*' }];
+    const remote = remoteBranch(ref, names);
+    return remote ? [{ ref, name: `${remote.remote}/${remote.name}`, remote: remote.remote, current: false }] : [];
+  });
+}
+
+async function worktreeSource(cwd: string, requested: string | undefined, baseBranch: string): Promise<{ sourceRef: string; sourceCommit: string }> {
+  const sourceRef = requested ?? (baseBranch ? `refs/heads/${baseBranch}` : 'HEAD');
+  if (requested !== undefined) {
+    if (!/^refs\/(heads|remotes)\/.+/.test(requested)) throw new Error('工作区起点必须是完整的本地或远程分支引用。');
+    await git(cwd, ['check-ref-format', requested]).catch(() => { throw new Error('无效的工作区起点分支。'); });
+    const symbolic = await git(cwd, ['symbolic-ref', '-q', requested]).catch(() => '');
+    if (symbolic) throw new Error('请选择具体分支，不能使用分支符号引用。');
+    if (requested.startsWith('refs/remotes/')) {
+      const source = remoteBranch(requested, await remotes(cwd));
+      if (!source) throw new Error('工作区起点的远程仓库不存在。');
+      // Never fall back to a stale tracking ref after a fetch/authentication failure.
+      await fetchBranches(cwd, source.remote, source.name);
+    }
+  }
+  const sourceCommit = await git(cwd, ['rev-parse', '--verify', '--end-of-options', `${sourceRef}^{commit}`])
+    .then(value => value.trim(), () => { throw new Error('工作区起点分支不存在或尚无提交；请选择已有提交的本地或远程分支。'); });
+  return { sourceRef, sourceCommit };
 }
 
 async function excludeWorktree(projectRoot: string, common: string, destination: string): Promise<() => Promise<void>> {
@@ -59,23 +131,22 @@ async function excludeWorktree(projectRoot: string, common: string, destination:
   };
 }
 
-export async function createWorktree(cwd: string, root: string, id: string, placement?: WorktreePlacement): Promise<string> {
+export async function createWorktree(cwd: string, root: string, id: string, placement?: WorktreePlacement, baseRef?: string): Promise<string> {
   if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Error('无效的会话标识。');
   return withGitMutation(cwd, async () => {
-  await git(cwd, ['rev-parse', '--verify', 'HEAD']);
   const basePath = await fs.realpath(cwd);
   const baseBranch = (await git(cwd, ['branch', '--show-current'])).trim();
-  if (!baseBranch) throw new Error('请先切换到一个分支，再创建隔离工作区。');
   const branch = `workbench/${id.slice(0, 8)}`;
   const sourceRoot = await gitWorktreeRoot(cwd);
   const projectRoot = placement ? await gitWorktreeRoot(placement.projectPath) : sourceRoot;
   const common = await fs.realpath((await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
   const projectCommon = await fs.realpath((await git(projectRoot, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
   if (common !== projectCommon) throw new Error('当前会话与项目不属于同一个 Git 仓库。');
+  const { sourceRef, sourceCommit } = await worktreeSource(cwd, baseRef, baseBranch);
   if (placement?.location === 'project') {
     const [tracked, sourceTracked] = await Promise.all([
       git(projectRoot, ['ls-files', '-z', '--', '.claude/worktrees']),
-      git(sourceRoot, ['ls-tree', '-r', '--name-only', '-z', 'HEAD', '--', '.claude/worktrees'])
+      git(sourceRoot, ['ls-tree', '-r', '--name-only', '-z', sourceCommit, '--', '.claude/worktrees'])
     ]);
     if (tracked || sourceTracked) throw new Error('.claude/worktrees 已包含受 Git 跟踪的文件，请先移走这些文件或选择统一目录。');
   }
@@ -90,9 +161,9 @@ export async function createWorktree(cwd: string, root: string, id: string, plac
     try { await fs.mkdir(destination); reserved = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('工作区目标目录已经存在，请更换名称后重试。'); throw error; }
     if (placement?.location === 'project') undoExclude = await excludeWorktree(projectRoot, common, destination);
-    await git(cwd, ['worktree', 'add', '-b', branch, destination, 'HEAD']);
+    await git(cwd, ['worktree', 'add', '--no-track', '-b', branch, destination, sourceCommit]);
     added = true;
-    const owner: Ownership = { version: 1, sessionId: id, basePath, branch, baseBranch };
+    const owner: Ownership = { version: 2, sessionId: id, basePath, branch, baseBranch, sourceRef, sourceCommit };
     await fs.writeFile(path.join(await gitDirectory(destination), OWNER_FILE), JSON.stringify(owner), { flag: 'wx', mode: 0o600 });
     return destination;
   } catch (error) {
@@ -185,7 +256,7 @@ async function ownership(basePath: string, worktreePath: string, sessionId: stri
     if (await fs.realpath(directory) === await fs.realpath(commonBase.trim())) return;
     const owner = JSON.parse(await fs.readFile(path.join(directory, OWNER_FILE), 'utf8')) as Ownership;
     const branch = (await git(worktreePath, ['branch', '--show-current'])).trim();
-    if (owner.version !== 1 || owner.sessionId !== sessionId || owner.basePath !== base || owner.branch !== branch || branch !== `workbench/${sessionId.slice(0, 8)}` || !owner.baseBranch) return;
+    if (!validOwnership(owner) || owner.sessionId !== sessionId || owner.basePath !== base || owner.branch !== branch || branch !== `workbench/${sessionId.slice(0, 8)}`) return;
     const registered = await git(basePath, ['worktree', 'list', '--porcelain', '-z']);
     const registeredPaths = await Promise.all(registered.split('\0').filter(record => record.startsWith('worktree ')).map(record => fs.realpath(record.slice(9)).catch(() => '')));
     if (!registeredPaths.includes(child)) return;
@@ -198,28 +269,34 @@ export async function worktreeInfo(basePath: string, worktreePath: string, sessi
   const cleanupBlocked = (message: string) => { result.reasons.push(message); result.cleanupReasons.push(message); };
   const owner = await ownership(basePath, worktreePath, sessionId);
   if (!owner) { cleanupBlocked('此工作区缺少匹配的应用所有权记录，不能自动合并或清理。'); return result; }
-  result.owned = true; result.branch = owner.branch; result.baseBranch = owner.baseBranch;
+  result.owned = true; result.branch = owner.branch; result.baseBranch = owner.baseBranch || undefined;
+  result.sourceRef = owner.sourceRef; result.sourceCommit = owner.sourceCommit;
   try {
-    const [status, baseStatus, baseBranch, ignored] = await Promise.all([
+    const [status, baseStatus, baseBranch, ignored, head] = await Promise.all([
       git(worktreePath, ['status', '--porcelain=v1', '--untracked-files=all']), git(basePath, ['status', '--porcelain=v1', '--untracked-files=all']),
-      git(basePath, ['branch', '--show-current']), git(worktreePath, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z'])
+      git(basePath, ['branch', '--show-current']), git(worktreePath, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']),
+      git(worktreePath, ['rev-parse', '--verify', 'HEAD'])
     ]);
     result.clean = !status.trim(); result.baseClean = !baseStatus.trim();
-    const targetMatches = baseBranch.trim() === owner.baseBranch;
-    result.merged = await git(basePath, ['merge-base', '--is-ancestor', owner.branch, `refs/heads/${owner.baseBranch}`]).then(() => true, () => false);
-    const forward = await git(basePath, ['merge-base', '--is-ancestor', `refs/heads/${owner.baseBranch}`, owner.branch]).then(() => true, () => false);
+    const targetExists = !!owner.baseBranch && await git(basePath, ['rev-parse', '--verify', '--end-of-options', `refs/heads/${owner.baseBranch}^{commit}`]).then(() => true, () => false);
+    const targetMatches = targetExists && baseBranch.trim() === owner.baseBranch;
+    result.merged = targetExists && await git(basePath, ['merge-base', '--is-ancestor', owner.branch, `refs/heads/${owner.baseBranch}`]).then(() => true, () => false);
+    const forward = targetExists && await git(basePath, ['merge-base', '--is-ancestor', `refs/heads/${owner.baseBranch}`, owner.branch]).then(() => true, () => false);
+    const unchanged = owner.version === 2 && head.trim() === owner.sourceCommit;
     if (running) cleanupBlocked('请先停止使用此工作区及来源目录的所有会话。');
     if (!result.clean) cleanupBlocked('工作区存在未提交或未跟踪文件，请先提交或移走需要保留的文件。');
     if (!result.baseClean) result.reasons.push('主项目存在未提交更改，不能自动合并。');
-    if (!targetMatches) result.reasons.push(`主项目已切换分支；请切回 ${owner.baseBranch} 后操作。`);
-    if (!result.merged && !forward) result.reasons.push('分支已经分叉，请手动合并并解决冲突；自动合并仅允许快进。');
-    if (!result.merged) cleanupBlocked(`隔离分支的提交尚未合入 ${owner.baseBranch}，请先合并后再清理。`);
+    if (!owner.baseBranch) result.reasons.push('创建时来源目录处于 detached HEAD，没有可自动合并的目标分支，请手动合并。');
+    else if (!targetExists) result.reasons.push(`来源分支 ${owner.baseBranch} 不存在或尚无提交，请手动处理合并目标。`);
+    else if (!targetMatches) result.reasons.push(`主项目已切换分支；请切回 ${owner.baseBranch} 后操作。`);
+    if (targetExists && !result.merged && !forward) result.reasons.push('分支已经分叉，请手动合并并解决冲突；自动合并仅允许快进。');
+    if (!result.merged && !unchanged) cleanupBlocked(`隔离分支包含新提交且尚未合入 ${owner.baseBranch || '来源分支'}，请先合并后再清理。`);
     if (ignored) {
       const files = ignored.split('\0').filter(Boolean);
       cleanupBlocked(`工作区含 ${files.length} 个被 Git 忽略的文件（${files.slice(0, 5).map(file => file.slice(0, 200)).join('、')}${files.length > 5 ? '…' : ''}），清理前请移走或自行删除。`);
     }
     result.canMerge = !running && result.clean && result.baseClean && targetMatches && (forward || result.merged);
-    result.canCleanup = !running && result.clean && result.merged && !ignored;
+    result.canCleanup = !running && result.clean && (result.merged || unchanged) && !ignored;
   } catch (error) { cleanupBlocked(errorMessage(error)); }
   return result;
 }
@@ -246,7 +323,7 @@ export async function cleanupWorktree(basePath: string, worktreePath: string, se
     if (!info.canCleanup) return { ok: false, status: 'blocked', message: info.cleanupReasons.join('\n') || '工作区提交尚未合并，不能清理。' };
     try {
       await git(basePath, ['worktree', 'remove', '--', worktreePath]);
-      return { ok: true, status: 'removed', message: '已移除干净且已合并的工作区；分支保留，可手动删除。' };
+      return { ok: true, status: 'removed', message: '已移除干净且未新增提交或已合并的工作区；分支保留，可手动删除。' };
     } catch (error) { return { ok: false, status: 'blocked', message: `工作区未被强制删除。${errorMessage(error)}` }; }
   });
 }
@@ -373,7 +450,7 @@ async function registeredWorktreeOwner(base: string, target: string, sessionId: 
     const owner = JSON.parse(await metadataText(path.join(directory, OWNER_FILE))) as Ownership;
     const shared = await fs.realpath(path.resolve(directory, (await metadataText(path.join(directory, 'commondir'))).trim()));
     const head = (await metadataText(path.join(directory, 'HEAD'))).trim();
-    if (owner.version !== 1 || owner.sessionId !== sessionId || owner.basePath !== base || owner.branch !== branch || !owner.baseBranch ||
+    if (!validOwnership(owner) || owner.sessionId !== sessionId || owner.basePath !== base || owner.branch !== branch ||
         shared !== common || head !== `ref: refs/heads/${branch}`) throw new Error('隔离目录缺少匹配的应用所有权记录，不能自动恢复。');
     if (await optionalEntry(path.join(directory, 'locked'))) throw new Error('隔离目录已被 Git 锁定（locked），请先处理锁定原因。');
     await git(base, ['rev-parse', '--verify', `refs/heads/${branch}^{commit}`]);

@@ -30,8 +30,17 @@ async function workspace(nativeHooks = true) {
   await fs.writeFile(path.join(pkg, 'cli.js'), `const logFile = ${JSON.stringify(log)}, commandsFile = ${JSON.stringify(commands)}, ackFile = ${JSON.stringify(ack)}, nativeHooks = ${nativeHooks};\n` + String.raw`
 const fs = require('node:fs'), path = require('node:path'), readline = require('node:readline');
 if (process.argv.includes('--version')) { console.log('Claude Code fixture ' + (nativeHooks ? '2.1.251' : '2.1.0')); process.exit(0); }
-if (process.argv.includes('--help')) { console.log('--session-id --resume --fork-session --permission-mode --model --effort --print --input-format --output-format --verbose --permission-prompt-tool --include-partial-messages --settings\n--effort <level> low medium high max'); process.exit(0); }
+if (process.argv.includes('--help')) { console.log('--session-id --resume --fork-session --permission-mode --model --effort --print --input-format --output-format --verbose --permission-prompt-tool --include-partial-messages --settings --tools --strict-mcp-config --mcp-config --no-session-persistence --system-prompt --max-turns\n--effort <level> low medium high max'); process.exit(0); }
 if (process.argv.includes('auth')) { console.log(JSON.stringify({ loggedIn: true, authMethod: 'fixture' })); process.exit(0); }
+if (process.argv.includes('--no-session-persistence')) {
+  let input = ''; process.stdin.setEncoding('utf8');
+  process.stdin.on('data', value => { input += value; });
+  process.stdin.on('end', () => {
+    const result = input.includes('整理终端任务') ? '终端任务整理摘要' : '登录校验修复摘要';
+    console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result }));
+  });
+  return;
+}
 const flag = name => process.argv[process.argv.indexOf(name) + 1];
 const session = process.argv.includes('--session-id') ? flag('--session-id') : flag('--resume');
 const mode = process.argv.includes('--print') ? 'structured' : 'terminal';
@@ -161,8 +170,8 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await expect(editor).toHaveValue('修复登录页面校验');
     expect((await page.evaluate(id => window.desktop.chatSnapshot(id), session.id)).messages.filter(value => value.role === 'user')).toHaveLength(0);
     await editor.press('Enter'); await completed(page);
-    await expect(page.getByRole('heading', { name: '修复登录页面校验', exact: true })).toBeVisible();
-    await expect(page.locator('.session-row.active')).toContainText('修复登录页面校验');
+    await expect(page.getByRole('heading', { name: '登录校验修复摘要', exact: true })).toBeVisible();
+    await expect(page.locator('.session-row.active')).toContainText('登录校验修复摘要');
     await expect(editor).toHaveValue('');
     expect((await f.records()).filter(value => value.event === 'prompt')).toHaveLength(1);
 
@@ -174,9 +183,9 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await editor.press('Enter'); await completed(page);
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(2);
     expect((await f.records()).filter(value => value.event === 'prompt')[1].text).toBe('第一行\na\nb\nc');
-    await expect(page.getByRole('heading', { name: '修复登录页面校验', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '登录校验修复摘要', exact: true })).toBeVisible();
     await close(app); app = await f.launch(); page = await app.firstWindow();
-    await expect(page.getByRole('heading', { name: '修复登录页面校验', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '登录校验修复摘要', exact: true })).toBeVisible();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].titleSource).toBe('auto');
     await page.getByRole('button', { name: '重命名', exact: true }).click();
     await page.getByLabel('新的会话名称', { exact: true }).fill('登录校验专项');
@@ -261,7 +270,7 @@ test('session experience: native composer submits one multiline prompt through t
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(1);
     expect((await f.records()).find(value => value.event === 'prompt')?.text).toBe('整理终端任务\nx');
     await expect(editor).toHaveValue(''); await completed(page);
-    await expect(page.getByRole('heading', { name: '整理终端任务', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '终端任务整理摘要', exact: true })).toBeVisible();
     const updated = (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0];
     expect(updated.titleSource).toBe('auto'); expect(updated.terminalSync).toBe('synced');
     await expect(page.locator('.error-banner')).toHaveCount(0);

@@ -1,5 +1,5 @@
 import type { ChatSnapshot, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
-import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult } from './git';
+import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult, WorktreeBranch } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
 import type { ThemeId } from './theme';
@@ -32,7 +32,7 @@ export interface Settings extends TypographySettings { claudePath: string; shell
 export interface AppState { version: 2; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export interface Capabilities { executable: string; version: string; available: boolean; flags: string[]; efforts: Effort[]; error?: string }
 export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
+export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; worktreeBaseRef?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalChunk { sessionId: string; seq: number; data: string }
@@ -46,6 +46,7 @@ export interface DesktopAPI {
   addProject(path: string): Promise<Project>;
   removeProject(id: string): Promise<void>;
   createSession(input: NewSession): Promise<Session>;
+  listWorktreeBranches(projectId: string, refresh?: boolean): Promise<WorktreeBranch[]>;
   updateSession(input: { id: string; title?: string; archived?: boolean; model?: string; effort?: Effort; permissionMode?: PermissionMode }): Promise<void>;
   saveDraft(id: string, text: string): Promise<void>;
   savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;

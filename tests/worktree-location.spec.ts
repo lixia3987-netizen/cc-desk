@@ -118,7 +118,9 @@ test('worktree location: UI creates named trees in both locations and preserves 
     await form.getByRole('button', { name: '创建会话', exact: true }).click();
     await expect(page.getByRole('heading', { name: 'title-derived', exact: true })).toBeVisible();
     const original = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'title-derived')!;
-    expect(original.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', `title-derived-${original.id.slice(0, 8)}`));
+    expect(original.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', original.id.slice(0, 8)));
+    expect(path.basename(original.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(path.basename(original.cwd)).not.toContain(original.title);
     expect(original.worktree).toBe(original.cwd);
     expect(await fs.readFile(path.join(original.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
     expect(f.git('status', '--porcelain')).toBe('');
@@ -192,6 +194,137 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(errors).toEqual([]);
     await expect(page.locator('.error-banner')).toHaveText([]);
   } finally { await app.close(); await f.dispose(); }
+});
+
+test('worktree branches: UI selects local or remote starts, refreshes remote refs, and preserves the dirty main checkout', async () => {
+  const f = await workspace();
+  let app: ElectronApplication | undefined;
+  try {
+    const remotePath = path.join(f.directory, 'local remote.git'), publisherPath = path.join(f.directory, 'remote publisher');
+    execFileSync('git', ['init', '--bare', remotePath], { stdio: 'pipe' });
+    f.git('remote', 'add', 'origin', remotePath);
+    f.git('push', '-u', 'origin', 'main');
+    execFileSync('git', ['clone', '-b', 'main', remotePath, publisherPath], { stdio: 'pipe' });
+    const publishGit = (...args: string[]) => execFileSync('git', args, { cwd: publisherPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    publishGit('config', 'core.autocrlf', 'false');
+    publishGit('config', 'user.name', 'Workbench Tests');
+    publishGit('config', 'user.email', 'tests@example.invalid');
+    publishGit('checkout', '-b', 'feature/base');
+    await fs.writeFile(path.join(publisherPath, 'remote-base.txt'), 'Remote branch content\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Remote branch start');
+    publishGit('push', '-u', 'origin', 'feature/base');
+    f.git('fetch', 'origin');
+    f.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+
+    f.git('checkout', '-b', 'feature/base');
+    await fs.writeFile(path.join(f.project.path, 'local-base.txt'), 'Local branch content\n');
+    f.git('add', '.'); f.git('commit', '-m', 'Local branch start');
+    const localHead = f.git('rev-parse', 'HEAD');
+    f.git('checkout', 'main');
+    const mainHead = f.git('rev-parse', 'HEAD');
+    await fs.writeFile(path.join(f.project.path, 'README.md'), 'Keep uncommitted main changes\n');
+    await fs.writeFile(path.join(f.project.path, 'untracked-main.txt'), 'Keep untracked main content\n');
+    const mainStatus = f.git('status', '--porcelain=v1');
+
+    app = await f.launch();
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    let form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await form.getByLabel('会话名称', { exact: true }).fill('Start from local branch');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    let branches = form.getByLabel('起始分支', { exact: true });
+    await expect(branches).toBeEnabled();
+    await expect(branches).toHaveValue('');
+    await expect(branches.locator('optgroup[label="本地分支"] option[value="refs/heads/feature/base"]')).toHaveText('feature/base');
+    await expect(branches.locator('optgroup[label="远程分支"] option[value="refs/remotes/origin/feature/base"]')).toHaveText('origin/feature/base');
+    await expect(branches.locator('option[value="refs/remotes/origin/HEAD"]')).toHaveCount(0);
+    await branches.selectOption('refs/heads/feature/base');
+    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Start from local branch', exact: true })).toBeVisible();
+    const local = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Start from local branch')!;
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: local.cwd, encoding: 'utf8' }).trim()).toBe(localHead);
+    expect(await fs.readFile(path.join(local.cwd, 'local-base.txt'), 'utf8')).toBe('Local branch content\n');
+    expect(await fs.readFile(path.join(local.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
+    expect(path.basename(local.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(f.git('branch', '--show-current')).toBe('main');
+    expect(f.git('rev-parse', 'HEAD')).toBe(mainHead);
+    expect(f.git('status', '--porcelain=v1')).toBe(mainStatus);
+
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await form.getByLabel('会话名称', { exact: true }).fill('Start from newly published remote branch');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    branches = form.getByLabel('起始分支', { exact: true });
+    await expect(branches).toBeEnabled();
+    publishGit('checkout', '-b', 'feature/remote-new');
+    await fs.writeFile(path.join(publisherPath, 'remote-new.txt'), 'Published after the dialog opened\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Publish a new remote branch');
+    publishGit('push', '-u', 'origin', 'feature/remote-new');
+    const firstRemoteHead = publishGit('rev-parse', 'HEAD');
+    await expect(branches.locator('option[value="refs/remotes/origin/feature/remote-new"]')).toHaveCount(0);
+    await form.getByRole('button', { name: '刷新远程分支', exact: true }).click();
+    await expect(branches.locator('option[value="refs/remotes/origin/feature/remote-new"]')).toHaveText('origin/feature/remote-new');
+    await branches.selectOption('refs/remotes/origin/feature/remote-new');
+    expect(f.git('rev-parse', 'refs/remotes/origin/feature/remote-new')).toBe(firstRemoteHead);
+
+    // Creating from a remote branch must fetch its latest commit, even if the
+    // picker was populated before another collaborator published an update.
+    await fs.writeFile(path.join(publisherPath, 'remote-new.txt'), 'Latest remote commit at creation time\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Advance the selected remote branch');
+    publishGit('push');
+    const latestRemoteHead = publishGit('rev-parse', 'HEAD');
+    expect(latestRemoteHead).not.toBe(firstRemoteHead);
+    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Start from newly published remote branch', exact: true })).toBeVisible();
+    const remote = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Start from newly published remote branch')!;
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remote.cwd, encoding: 'utf8' }).trim()).toBe(latestRemoteHead);
+    expect(await fs.readFile(path.join(remote.cwd, 'remote-new.txt'), 'utf8')).toBe('Latest remote commit at creation time\n');
+    expect(await fs.readFile(path.join(remote.cwd, 'remote-base.txt'), 'utf8')).toBe('Remote branch content\n');
+    expect(await fs.readFile(path.join(remote.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
+    expect(path.basename(remote.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(remote.cwd).not.toBe(local.cwd);
+    expect(f.git('branch', '--show-current')).toBe('main');
+    expect(f.git('rev-parse', 'HEAD')).toBe(mainHead);
+    expect(f.git('status', '--porcelain=v1')).toBe(mainStatus);
+    expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Keep uncommitted main changes\n');
+    expect(await fs.readFile(path.join(f.project.path, 'untracked-main.txt'), 'utf8')).toBe('Keep untracked main content\n');
+    expect(() => f.git('rev-parse', '--verify', 'refs/heads/feature/remote-new')).toThrow();
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally { await app?.close(); await f.dispose(); }
+});
+
+test('worktree branches: changing projects resets the selected start branch before creation', async () => {
+  const f = await workspace();
+  let app: ElectronApplication | undefined;
+  try {
+    f.git('branch', 'feature/only-first-project');
+    const otherPath = path.join(f.directory, 'other project');
+    execFileSync('git', ['clone', '-b', 'main', f.project.path, otherPath], { stdio: 'pipe' });
+    const otherHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: otherPath, encoding: 'utf8' }).trim();
+    app = await f.launch();
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+    const other = await page.evaluate(projectPath => window.desktop.addProject(projectPath), otherPath);
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    await form.getByLabel('项目', { exact: true }).selectOption(f.project.id);
+    await form.getByLabel('会话名称', { exact: true }).fill('Create in the second project');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    const branches = form.getByLabel('起始分支', { exact: true });
+    await branches.selectOption('refs/heads/feature/only-first-project');
+    await form.getByLabel('项目', { exact: true }).selectOption(other.id);
+    await expect(branches).toBeEnabled();
+    await expect(branches).toHaveValue('');
+    await expect(branches.locator('option[value="refs/heads/feature/only-first-project"]')).toHaveCount(0);
+    await expect(branches.locator('option[value="refs/heads/main"]')).toHaveText('main');
+    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Create in the second project', exact: true })).toBeVisible();
+    const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Create in the second project')!;
+    expect(created.projectId).toBe(other.id);
+    expect(created.worktreeBase).toBe(otherPath);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: created.cwd, encoding: 'utf8' }).trim()).toBe(otherHead);
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally { await app?.close(); await f.dispose(); }
 });
 
 test('worktree location: blocked cleanup explains why and record-only deletion preserves all files and the branch', async () => {

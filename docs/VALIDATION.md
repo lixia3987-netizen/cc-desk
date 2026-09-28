@@ -1,5 +1,24 @@
 # 验证记录
 
+## Agent 会话命名与 Worktree 分支起点（2026-09-28）
+
+- 本轮从 `main` 的 `a3f94b6c74f2abfad7a38306803319226dd5d436` 开发，PR 目标为 `main`；未引入 `dev/native-agent` 的其它修改，未触发 CI 或发布安装包。
+- 会话自动命名改为独立的一次性 Claude agent 摘要请求。首条已接受消息异步触发，禁工具与 MCP、不持久化辅助会话；沿用现有 CLI/代理认证和默认模型，仅在会话显式配置模型时传入模型。失败、超时和无效输出保留默认标题；手工名称、导入、分支和旧记录不覆盖。后台任务去重，停止/退出时释放；主进程退出后的重启不被辅助任务阻塞。
+- Worktree 名称留空时使用随机会话 UUID 的前 8 位。起始分支列表区分本地和远程分支；远程刷新可发现新分支，创建前再次获取所选远程分支的最新提交，失败不退回陈旧缓存。创建不切换主项目分支、不带入未提交修改。所有权 v2 记录起始引用/提交，兼容 v1；合入目标仍为创建时来源目录所在分支，detached 来源不自动合并。
+- 真实 Git 回归覆盖本地/远程同名分支、最新提交、远程新增/删除、符号引用、无效 revision、detached/unborn、随机名称、来源提交继承、所有权兼容、合并及清理保护。最终相关 Git/路径/会话创建/IPC schema 59 项全部通过。
+- 最终 TypeScript 检查与本地生产构建通过；独立复核的问题已修复，最终命名及重启相关 18 项定向测试全部通过，覆盖异步去重、手动命名竞争、默认代理模型、超时/错误输出、停止后释放、两种模式自然退出后单并发恢复与 Windows 正常退出判定。
+- 首轮全量 Node 测试：396 项，391 通过、1 项 Windows 专用跳过、4 项失败。4 项均在未修改的上述 `main` 基线独立复现：`structured shutdown waits for an ignoring descendant after the CLI root has exited`、`CLI maintenance waits for real PTY cleanup and accepts Darwin EPERM for the now-empty owned group`、`structured shutdown also awaits verification of Darwin EPERM after its real child exits`、`shutdown waits for an ignoring descendant after its root PTY has exited`。当前容器 `ps` 返回 `fatal library error, lookup self`，无法完成子进程存活与进程组验证，不能将这 4 项标为通过。
+- 桌面用例已更新标题摘要 fixture，并新增分支选择、远程刷新、最新提交、主项目脏状态不变和切换项目重置选择的用例。尝试 `npm run test:e2e -- tests/session-experience.spec.ts tests/worktree-location.spec.ts` 被缺少 Xvfb/X11 阻断，尚未执行到桌面断言。
+
+### 需要正式运行确认
+
+| 项目 | 待确认内容 | 当前状态 |
+| --- | --- | --- |
+| Windows/macOS 实际 Claude CLI | 使用真实账号或 ccSwitch 代理发送首条消息，确认快速摘要、默认模型/显式模型、标题失败不影响对话；确认辅助请求不出现于会话历史 | 未运行；协议 fixture 已覆盖。旧 CLI 缺少必要隔离参数时保留默认名称 |
+| 原生进程生命周期 | 真实命名请求中的停止、退出、自然结束后立即恢复；Windows 进程树清理、macOS 进程组验证 | 需在目标平台运行；当前容器进程表受限 |
+| Linux/Electron UI | 有 Xvfb/X11 环境执行会话体验及 worktree 桌面用例，并检查 980×680 下表单、分组列表与按钮可见性 | 环境缺少 Xvfb，未完成 |
+| 私有远程仓库认证 | 已配置 HTTPS/SSH 凭据时刷新和创建；网络/认证失败时保留表单、不给出陈旧分支创建结果 | 本地 bare remote 已验证；真实认证未运行 |
+
 ## 右侧独立工具窗口（2026-09-24）
 
 - 右侧改为常驻竖向工具栏，只显示当前选中的上下文、变更、工作流或诊断窗口。点击其他工具直接切换，再点当前工具或标题关闭按钮隐藏内容；移除整体展开入口、折叠标题和多面板网格。面板内 Shift+Esc 关闭并返回工具按钮焦点。

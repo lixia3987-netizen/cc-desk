@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { automaticSessionTitlePatch, initialSessionTitle, titleFromPrompt } from '../src/shared/session-title';
+import { automaticSessionTitlePatch, initialSessionTitle, normalizeGeneratedSessionTitle } from '../src/shared/session-title';
 import { sessionInputSchema } from '../src/shared/schema';
 import { StateStore } from '../src/main/store';
 import type { Session } from '../src/shared/types';
@@ -24,37 +24,25 @@ test('only blank names on new Claude conversations opt into automatic naming', (
   assert.equal(sessionInputSchema.safeParse({ ...input, title: 'a'.repeat(121) }).success, false);
 });
 
-test('prompt titles choose readable prose outside code, context wrappers and Markdown', () => {
-  assert.equal(titleFromPrompt('修复登录'), '修复登录');
-  assert.equal(titleFromPrompt('\n## 需求\n\n- [ ] **修复登录校验**，保持旧接口兼容\n其他细节'), '修复登录校验，保持旧接口兼容');
-  assert.equal(titleFromPrompt('```ts\nconst token = "not a title";\n```\n请修复这个登录流程\n附加说明'), '请修复这个登录流程');
-  assert.equal(titleFromPrompt('~~~~md\n```typescript\nconst data = {};\n```\n~~~~\n检查接口兼容性'), '检查接口兼容性');
-  assert.equal(titleFromPrompt('<pasted_content id="1">\n```ts\nconst secret = 1;\n```\n</pasted_content id="1">\n修复接口响应错误'), '修复接口响应错误');
-  assert.equal(titleFromPrompt('> ## 修复 [登录页](https://example.test) 的 `validate` 方法'), '修复 登录页 的 validate 方法');
-  assert.equal(titleFromPrompt('修复用户登录和权限校验。随后补充相关测试。'), '修复用户登录和权限校验');
-  assert.equal(titleFromPrompt('\u001b[31m修复\u001b[0m登录\u202e\u0000校验'), '修复登录校验');
-});
-
-test('commands, code-only payloads and blank attachment messages leave naming available', () => {
-  for (const prompt of ['', ' \n\t', '/clear', '/resume previous', '!git status', '$ npm run build', 'https://example.test/docs', 'C:\\work\\project',
-    '```ts\nconst secret = "value";\n```', '{\n "code": "value"\n}', 'import x from "x";\nexport const y = x;', '![screenshot](attachment.png)']) {
-    assert.equal(titleFromPrompt(prompt), undefined, prompt);
+test('generated labels are normalized without extracting titles from user prose', () => {
+  assert.equal(normalizeGeneratedSessionTitle('  标题：“登录校验修复”  '), '登录校验修复');
+  assert.equal(normalizeGeneratedSessionTitle('\u001b[31m修复\u001b[0m登录\u202e\u0000校验'), '修复登录校验');
+  for (const output of ['', ' \n\t', '这是标题\n另有说明', '```text\n登录修复\n```', '---']) {
+    assert.equal(normalizeGeneratedSessionTitle(output), undefined, output);
   }
-  assert.equal(automaticSessionTitlePatch({ kind: 'agent', titleSource: 'default', execution: {providerId:'claude',mode:'structured'} }, '/clear'), undefined);
-  assert.deepEqual(automaticSessionTitlePatch({ kind: 'agent', titleSource: 'default', execution: {providerId:'claude',mode:'structured'} }, '检查接口'), { title: '检查接口', titleSource: 'auto' });
 });
 
 test('automatic labels are short, single-line and retain complete Unicode graphemes', () => {
   const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
   const prompt = '修复👨‍👩‍👧‍👦的多语言输入体验'.repeat(20);
-  const title = titleFromPrompt(prompt)!;
+  const title = normalizeGeneratedSessionTitle(prompt)!;
   assert.ok(title.endsWith('…'));
   assert.ok(title.length <= 120);
   assert.ok([...segmenter.segment(title)].length <= 48);
   assert.ok(!/[\r\n]/.test(title));
   assert.ok(prompt.startsWith(title.slice(0, -1)));
-  assert.equal(titleFromPrompt('Cafe\u0301 输入问题'), 'Café 输入问题');
-  assert.equal(titleFromPrompt('Fix authentication refresh handling and preserve the previous user settings while adding validation tests'), 'Fix authentication refresh handling and…');
+  assert.equal(normalizeGeneratedSessionTitle('Cafe\u0301 输入问题'), 'Café 输入问题');
+  assert.equal(normalizeGeneratedSessionTitle('Fix authentication refresh handling and preserve the previous user settings while adding validation tests'), 'Fix authentication refresh handling and…');
 });
 
 test('auto naming never changes manual, legacy, shell, imported, forked or already named sessions', () => {

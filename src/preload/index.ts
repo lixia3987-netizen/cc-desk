@@ -8,6 +8,7 @@ const api: DesktopAPI = {
   addProject:path => ipcRenderer.invoke('project:add',path),
   removeProject:id => ipcRenderer.invoke('project:remove',id),
   createSession:input => ipcRenderer.invoke('session:create',input),
+  listWorktreeBranches:(projectId,refresh) => ipcRenderer.invoke('worktree:branches',{projectId,refresh}),
   updateSession:input => ipcRenderer.invoke('session:update',input),
   saveDraft:(id,text) => ipcRenderer.invoke('session:draft',{id,text}),
   savePanelDrafts:(id,patch) => ipcRenderer.invoke('session:panel-drafts',{id,patch}),
