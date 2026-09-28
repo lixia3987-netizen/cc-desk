@@ -69,6 +69,7 @@ async function read(options: NativeTaskStoreReadOptions): Promise<TaskFile> {
 export class NativeTaskStore {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
+  private closing = false;
   private poisoned = false;
   private constructor(private readonly options: NativeTaskStoreOptions, private readonly directory: string, private state: TaskFile, private readonly release: () => Promise<void>) {}
   static async readAllSnapshots(options: NativeTaskStoreReadOptions): Promise<NativeTaskSnapshot[]> { return clone((await read(options)).tasks); }
@@ -84,6 +85,7 @@ export class NativeTaskStore {
   latest(): NativeTaskSnapshot | null { return clone(this.state.tasks.at(-1) ?? null); }
   list(): NativeTaskSnapshot[] { return clone(this.state.tasks); }
   apply(update: NativeTaskUpdate, writeOptions: NativeTaskWriteOptions = {}): Promise<NativeTaskSnapshot> {
+    if (this.closed || this.closing) return Promise.reject(new NativeTaskError('store_closed', 'Task store is closing or closed'));
     // Snapshot input immediately: callers cannot alter a queued or in-flight write.
     const request = clone(update);
     const operation = this.queue.then(() => this.write(request, writeOptions));
@@ -140,7 +142,10 @@ export class NativeTaskStore {
     } finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
   }
   close(): Promise<void> {
-    const operation = this.queue.then(async () => { if (!this.closed) { this.closed = true; await this.release(); } });
+    // A failed release remains owned and retryable. Do not admit more writes
+    // after closing starts, even if the lock was removed before directory fsync failed.
+    this.closing = true;
+    const operation = this.queue.then(async () => { if (!this.closed) { await this.release(); this.closed = true; } });
     this.queue = operation.catch(() => {});
     return operation;
   }

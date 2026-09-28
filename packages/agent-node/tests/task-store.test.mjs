@@ -97,3 +97,23 @@ test('explicit continuation selects old task as current without late evidence st
   await store.apply(request({ identity: nextIdentity, mutationId: 'continue', expectedRevision: 3, mutation: { type: 'continue', previousRunId: identity.runId } }));
   assert.equal(store.latest().taskId, taskId);
 });
+
+test('failed close retains ownership barrier and can retry the real release', async t => {
+  const f = await fixture(t); const store = await f.open(); await store.apply(request());
+  const lock = path.join(path.dirname(f.file), '.writer-lock');
+  const original = await readFile(lock, 'utf8');
+  await writeFile(lock, '{}');
+  await assert.rejects(store.close(), { code: 'writer_lost' });
+  await assert.rejects(store.apply(request({ mutationId: 'after-failed-close', expectedRevision: 1 })), { code: 'store_closed' });
+  await writeFile(lock, original);
+  await store.close();
+  const reopened = await f.open(); assert.equal(reopened.latest().revision, 1);
+});
+
+test('close drains admitted writes while refusing newly submitted writes', async t => {
+  const f = await fixture(t); const store = await f.open();
+  const pending = store.apply(request()); const closing = store.close();
+  await assert.rejects(store.apply(request({ mutationId: 'late' })), { code: 'store_closed' });
+  assert.equal((await pending).revision, 1); await closing;
+  assert.equal((await NativeTaskStore.readSnapshot(f.options)).revision, 1);
+});
