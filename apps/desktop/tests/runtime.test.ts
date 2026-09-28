@@ -1,11 +1,11 @@
-import { test } from 'node:test';
+import { after, afterEach, before, test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { inspect, stripVTControlCharacters } from 'node:util';
-import { Runtime } from '../src/main/runtime';
+import { Runtime as DesktopRuntime } from '../src/main/runtime';
 import { StateStore } from '../src/main/store';
 import type { Capabilities, Session } from '../src/shared/types';
 import { ClaudeTerminalLauncher } from '../src/main/engines/claude/terminal-launcher';
@@ -14,6 +14,71 @@ import type { TerminalLauncher, TerminalLaunchCallbacks } from '../src/main/exec
 import { createWorktree, gitInfo } from '../src/main/git';
 import { environment, execFileAsync } from '../src/main/commands';
 import { fileURLToPath } from 'node:url';
+import { linuxLiveProcesses } from '@cc-desk/agent-node/process-supervisor';
+
+const diagnosticTokens = new Set(['windows.tree', 'pty.release', 'resource.close', 'posix.release_inspection',
+  'windows_snapshot', 'windows_terminate', 'windows_helper_release', 'running', 'timeout', 'spawn_error', 'helper_exit',
+  'invalid_snapshot', 'identity_changed', 'identity_unavailable', 'unreleased', 'os_error', 'bootstrap', 'modules',
+  'input', 'compile', 'snapshot', 'capture', 'terminate', 'ENOENT', 'EACCES', 'EPERM', 'ESRCH', 'UNKNOWN']);
+function cleanupDiagnostic(value: unknown, depth = 0): unknown {
+  if (!value || typeof value !== 'object' || depth > 6) return {};
+  const item = value as Record<string, unknown>, result: Record<string, unknown> = {};
+  for (const key of ['cleanupPhase', 'phase', 'code', 'helperStage', 'osCode']) {
+    if (typeof item[key] === 'string' && diagnosticTokens.has(item[key])) result[key] = item[key];
+  }
+  for (const key of ['snapshots', 'terminationAttempts', 'liveProcesses', 'nativeCode', 'helperExitCode', 'helperOutputBytes']) {
+    if (typeof item[key] === 'number' && Number.isSafeInteger(item[key])) result[key] = item[key];
+  }
+  if (typeof item.helperExited === 'boolean') result.helperExited = item.helperExited;
+  if (item.cause) result.cause = cleanupDiagnostic(item.cause, depth + 1);
+  if (value instanceof AggregateError) result.errors = value.errors.slice(0, 8).map(error => cleanupDiagnostic(error, depth + 1));
+  // The legacy wrapper carries its structured progress in this fixed message.
+  // Parse that payload but emit only the same whitelisted fields, never text.
+  const prefix = 'Windows process descendants have not released. ';
+  if (value instanceof Error && value.message.startsWith(prefix)) {
+    try { result.windows = cleanupDiagnostic(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* Unknown diagnostics stay opaque. */ }
+  }
+  return result;
+}
+class Runtime extends DesktopRuntime {
+  constructor(...args: ConstructorParameters<typeof DesktopRuntime>) {
+    const [store, onState, onData, launcher, options] = args;
+    super(store, onState, onData, launcher, { ...options, onError: error => {
+      if (process.platform === 'win32') console.error(JSON.stringify({ phase: 'runtime.test.cleanup-error', detail: cleanupDiagnostic(error) }));
+      options?.onError?.(error);
+    } });
+  }
+}
+async function finishFixture(root: string, runtimes: Runtime[], failures: unknown[], pending: Promise<unknown>[] = []) {
+  const results = await Promise.allSettled([...runtimes.map(runtime => runtime.shutdown()), ...pending]);
+  for (const result of results) if (result.status === 'rejected') failures.push(result.reason);
+  if (results.every(result => result.status === 'fulfilled')) fs.rmSync(root, { recursive: true, force: true });
+  if (failures.length) {
+    console.error(JSON.stringify({ phase: 'runtime.test.fixture-failures', errors: failures.map(error => cleanupDiagnostic(error)) }));
+    throw new AggregateError(failures, 'Runtime fixture failed; primary and cleanup errors are preserved.', { cause: failures[0] });
+  }
+}
+
+// Windows CI has completed every assertion in this file without the owning test
+// process exiting. Record only fixed resource types/counts. The native diagnostic
+// report API is exercised separately so it cannot alter every lifecycle test.
+if (process.platform === 'win32') {
+  const counts = (types: readonly string[]) => Object.fromEntries([...new Set(types)].sort()
+    .map(type => [type, types.filter(value => value === type).length]));
+  const snapshot = (phase: string) => {
+    console.error(JSON.stringify({ phase: `runtime.test.${phase}`,
+      resources: counts(process.getActiveResourcesInfo()),
+    }));
+  };
+  let completedTests = 0;
+  before(() => snapshot('before'));
+  afterEach(() => snapshot(`after-test-${++completedTests}`));
+  after(() => {
+    snapshot('after');
+    // An unref timer observes an existing leak without extending file lifetime.
+    for (const delay of [1000, 6000]) setTimeout(() => snapshot(`after-${delay}ms`), delay).unref();
+  });
+}
 
 async function until(check:()=>boolean, phase: string, diagnostics: () => string = () => '', timeout = 7000) {
   const deadline = Date.now() + timeout;
@@ -21,6 +86,15 @@ async function until(check:()=>boolean, phase: string, diagnostics: () => string
     if (Date.now() > deadline) throw new Error(`Timed out waiting for PTY ${phase}: ${diagnostics()}`);
     await new Promise(resolve => setTimeout(resolve,25));
   }
+}
+async function processIsRunning(pid: number): Promise<boolean> {
+  try {
+    if (process.platform === 'linux') {
+      return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
+    }
+    const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]);
+    return Boolean(result.stdout.trim()) && !result.stdout.trim().startsWith('Z');
+  } catch { return false; }
 }
 test('real PTY supports Unicode/spaces, isolated output, input, resize, concurrency and stopping', { timeout: 40000 }, async()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'workbench-pty-'));const cwd=path.join(root,'项目 space & quote');fs.mkdirSync(cwd);
@@ -46,7 +120,7 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
     assert.equal(output.has(b.id),false);
     const snapshot=runtime.snapshot(a.id);assert.ok(snapshot.chunks.length>0);
     const exported=runtime.exportLogs(a.id);assert.match(exported,/retained-before-rotation/);assert.match(stripVTControlCharacters(exported),/中文输入完成/);
-    runtime.stop(a.id);await until(()=>runtime.activeCount===0, 'stop', () => JSON.stringify({ status: store.state.sessions[0].status, active: runtime.activeCount }));
+    runtime.stop(a.id);await runtime.whenReleased(a.id);
     assert.equal(store.state.sessions[0].status,'stopped');
     await runtime.start(b.id);assert.equal(store.state.sessions[1].status,'running');
   }finally{await runtime.shutdown();fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});}
@@ -121,6 +195,7 @@ function lifecycleFixture(shellPath = '') {
 
 test('terminal runtime accepts another provider and isolates identity observations to the current launch', { timeout: 12000 }, async () => {
   const f = lifecycleFixture();
+  const failures: unknown[] = [];
   const callbacks: TerminalLaunchCallbacks[] = [];
   let resourcesClosed = 0;
   f.store.change(state => {
@@ -144,7 +219,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
     assert.equal(current().id, f.session.id);
     assert.deepEqual(current().execution, { providerId: 'test-agent', mode: 'terminal', conversationId: 'second-conversation' });
     runtime.stop(f.session.id);
-    await until(() => !runtime.has(f.session.id), 'first provider cleanup');
+    await runtime.whenReleased(f.session.id);
     assert.equal(resourcesClosed, 1);
     await runtime.start(f.session.id);
     callbacks[0].update({ conversationId: 'stale-conversation', engineConfig: { schemaVersion: 1, options: { variant: 'stale' } } });
@@ -161,10 +236,8 @@ test('terminal runtime accepts another provider and isolates identity observatio
     f.store.flush();
     assert.deepEqual(new StateStore(f.store.directory).state.sessions[0].engineConfig, current().engineConfig);
     assert.equal(current().title, '新的会话标题');
-  } finally {
-    await runtime.shutdown(); await f.runtime.shutdown();
-    fs.rmSync(f.root, { recursive: true, force: true });
-  }
+  } catch (error) { failures.push(error); }
+  finally { await finishFixture(f.root, [runtime, f.runtime], failures); }
   assert.equal(resourcesClosed, 2);
 });
 
@@ -195,11 +268,8 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
     try {
       checkpoint('natural-start');
       await runtime.start(id);
-      const deadline = Date.now() + 5000;
-      while (runtime.activeCount) {
-        assert.ok(Date.now() < deadline, 'natural exit must release its worker');
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
+      await runtime.whenReleased(id);
+      assert.equal(runtime.activeCount, 0, 'natural exit must release its worker');
       assert.equal(runtime.lastError, undefined);
       checkpoint('natural-released');
       program = 'setInterval(() => {}, 1000)';
@@ -240,6 +310,7 @@ test('shutdown reports launch-resource failure even when the terminal process al
     assert.equal(runtime.activeCount, 0); assert.equal(runtime.pendingCleanupCount, 0);
     assert.equal(runtime.lastError, failure);
     assert.equal(f.store.state.sessions[0].status, 'error', 'failed cleanup must not advertise a successful stop');
+    await assert.rejects(runtime.whenReleased(f.session.id), /资源已释放|清理失败/);
     assert.match(f.store.state.sessions[0].error ?? '', /资源清理失败/);
     await assert.rejects(runtime.shutdown(), /资源已释放/, 'failed resource cleanup cannot be reported as successful on retry');
   } finally {
@@ -251,6 +322,8 @@ test('shutdown reports launch-resource failure even when the terminal process al
 test('terminal exit keeps stopping status and ownership until all launch resources close', { timeout: 20000 }, async () => {
   for (const ending of ['stop', 'success', 'failure'] as const) {
     const f = lifecycleFixture();
+    const failures: unknown[] = [];
+    let releaseBarrier: Promise<void> | undefined;
     const ready = path.join(f.root, 'ready'), exit = path.join(f.root, 'exit');
     let release!: () => void;
     const resourceGate = new Promise<void>(resolve => { release = resolve; });
@@ -264,6 +337,9 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
     }) });
     try {
       await runtime.start(f.session.id);
+      let released = false;
+      releaseBarrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
+      void releaseBarrier.catch(() => {}); // Still awaited below; never a floating rejection while the resource gate is held.
       await until(() => fs.existsSync(ready), `${ending} fixture ready`);
       if (ending === 'stop') runtime.stop(f.session.id); else fs.writeFileSync(exit, 'exit');
       await until(() => closing, `${ending} resource close began`);
@@ -271,28 +347,49 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
       assert.equal(runtime.has(f.session.id), true);
       assert.equal(runtime.activeCount, 1);
       assert.deepEqual(finalOwnership, [], 'no stopped/error event may precede cleanup');
+      assert.equal(released, false, 'physical release waits for process and launch resources');
       release();
+      await releaseBarrier;
       await until(() => !runtime.has(f.session.id), `${ending} complete cleanup`);
       assert.equal(f.store.state.sessions[0].status, ending === 'failure' ? 'error' : 'stopped');
       assert.deepEqual(finalOwnership, [false], 'final status is published only after ownership is released');
       assert.equal(runtime.activeCount, 0);
-    } finally {
-      release(); await runtime.shutdown(); await f.runtime.shutdown();
-      fs.rmSync(f.root, { recursive: true, force: true });
-    }
+    } catch (error) { failures.push(error); }
+    finally { release(); await finishFixture(f.root, [runtime, f.runtime], failures, releaseBarrier ? [releaseBarrier] : []); }
   }
 });
 
-test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async () => {
+test('CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime', { timeout: 15000 }, async t => {
   const f = lifecycleFixture();
+  let phase = 'initial start';
+  const failures: { phase: string; error: unknown }[] = [];
   try {
     await f.runtime.start(f.session.id);
+    phase = 'maintenance disconnect';
     f.runtime.setMaintenance(true); await f.runtime.disconnectAll();
+    phase = 'maintenance release assertions';
     assert.equal(f.runtime.activeCount, 0); assert.equal(f.runtime.pendingCleanupCount, 0);
     await assert.rejects(f.runtime.start(f.session.id), /正在更新/);
+    phase = 'restart after maintenance';
     f.runtime.setMaintenance(false); await f.runtime.start(f.session.id);
     assert.equal(f.runtime.activeCount, 1);
-  } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
+  } catch (error) { failures.push({ phase, error }); }
+  finally {
+    phase = 'final shutdown';
+    try {
+      await f.runtime.shutdown();
+      phase = 'fixture removal';
+      fs.rmSync(f.root, { recursive: true, force: true });
+    } catch (error) { failures.push({ phase, error }); }
+  }
+  if (failures.length) {
+    // A failed disconnect is retained by Runtime and shutdown reports it again. Preserve both
+    // phases and onError causes: the test runner does not print nested Error causes by default.
+    t.diagnostic(inspect({ failures, reportedErrors: f.errors, activeCount: f.runtime.activeCount,
+      pendingCleanupCount: f.runtime.pendingCleanupCount, sessionStatus: f.store.state.sessions[0].status },
+    { depth: 8, maxArrayLength: 20, maxStringLength: 6000, breakLength: 100 }));
+    throw new AggregateError(failures.map(failure => failure.error), `CLI update lifecycle failed during ${failures[0].phase}`, { cause: failures[0].error });
+  }
 });
 
 function deferred<T>() {
@@ -410,6 +507,8 @@ test('session maintenance cancels deferred prepare and awaits its resource witho
 
 test('session disconnect awaits selected launcher cleanup and leaves unrelated stopping cleanup owned', { timeout: 16000 }, async () => {
   const f = lifecycleFixture();
+  const failures: unknown[] = [];
+  let disconnect: Promise<void> | undefined;
   const target: Session = { ...f.session, id: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'terminal' } };
   f.store.change(state => { state.sessions.push(target); state.settings.maxSessions = 2; });
   const targetClosing = deferred<void>(), targetRelease = deferred<void>();
@@ -426,18 +525,21 @@ test('session disconnect awaits selected launcher cleanup and leaves unrelated s
     runtime.stop(f.session.id); await shellClosing.promise;
     runtime.setSessionMaintenance([target.id], true);
     let disconnected = false;
-    const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    let disconnectSettled = false;
+    disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
+    void disconnect.then(() => { disconnectSettled = true; }, () => { disconnectSettled = true; });
     await targetClosing.promise;
     assert.equal(disconnected, false); assert.equal(runtime.has(target.id), true);
     targetRelease.resolve();
-    await until(() => disconnected, 'target disconnect while Shell cleanup remains deferred');
+    await until(() => disconnectSettled, 'target disconnect while Shell cleanup remains deferred');
     await disconnect;
     assert.equal(runtime.has(target.id), false); assert.equal(runtime.has(f.session.id), true);
     assert.ok(runtime.pendingCleanupCount > 0, 'unrelated launch cleanup remains tracked');
     assert.equal(f.store.state.sessions[0].status, 'stopping');
-  } finally {
+  } catch (error) { failures.push(error); }
+  finally {
     targetRelease.resolve(); shellRelease.resolve();
-    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
+    await finishFixture(f.root, [runtime, f.runtime], failures, disconnect ? [disconnect] : []);
   }
 });
 
@@ -550,12 +652,7 @@ test('session disconnect waits for a target descendant after its PTY root exits 
     file: process.execPath, args: ['-e', session.id === target.id ? rootCode : 'setInterval(()=>{},1000)'], env: environment(),
   }) });
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const processRunning = async (pid: number) => {
-    try {
-      const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]);
-      return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z');
-    } catch { return false; }
-  };
+  const processRunning = processIsRunning;
   let rootPid = 0, childPid = 0;
   try {
     await runtime.start(f.session.id); await runtime.start(target.id);
@@ -615,10 +712,7 @@ test('state failure after spawn terminates the process before start rejects', { 
 test('shutdown waits for an ignoring descendant after its root PTY has exited', { skip: process.platform === 'win32', timeout: 15000 }, async () => {
   const f = lifecycleFixture(); let childPid = 0; let rootPid = 0;
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const processRunning = async (pid: number) => {
-    try { const result = await execFileAsync('ps', ['-o', 'stat=', '-p', String(pid)]); return result.stdout.trim().length > 0 && !result.stdout.trim().startsWith('Z'); }
-    catch { return false; }
-  };
+  const processRunning = processIsRunning;
   try {
     const rootFile = path.join(f.root, 'root-pid'); const childFile = path.join(f.root, 'child-pid'); const heartbeat = path.join(f.root, 'heartbeat');
     const script = path.join(f.root, 'fixture-shell');
@@ -646,6 +740,35 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
   } finally {
     for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
     await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  }
+});
+
+test('natural PTY root exit kills surviving descendants before whenReleased resolves', { skip: process.platform === 'win32', timeout: 12000 }, async () => {
+  const f = lifecycleFixture();
+  const childFile = path.join(f.root, 'natural-child'), exitFile = path.join(f.root, 'natural-exit');
+  const childCode = `require('node:fs').writeFileSync(${JSON.stringify(childFile)},String(process.pid));process.on('SIGTERM',()=>{});process.on('SIGHUP',()=>{});setInterval(()=>{},1000);`;
+  const rootCode = `const fs=require('node:fs');require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});setInterval(()=>{if(fs.existsSync(${JSON.stringify(exitFile)}))process.exit(0)},10);`;
+  const runtime = new Runtime(f.store, () => {}, () => {}, { prepare: async () => ({ file: process.execPath, args: ['-e', rootCode], env: environment() }) });
+  let childPid = 0;
+  try {
+    await runtime.start(f.session.id);
+    await until(() => fs.existsSync(childFile), 'natural descendant ready');
+    childPid = Number(fs.readFileSync(childFile, 'utf8'));
+    let released = false;
+    const barrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
+    fs.writeFileSync(exitFile, 'exit');
+    await until(() => f.store.state.sessions[0].status === 'stopping', 'natural root exit');
+    assert.equal(await processIsRunning(childPid), true);
+    assert.equal(runtime.has(f.session.id), true);
+    assert.equal(released, false);
+    await barrier;
+    assert.equal(await processIsRunning(childPid), false);
+    assert.equal(runtime.has(f.session.id), false);
+    await runtime.stopAndWait(f.session.id);
+  } finally {
+    if (childPid && await processIsRunning(childPid)) process.kill(childPid, 'SIGKILL');
+    await runtime.shutdown(); await f.runtime.shutdown();
+    fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
 
@@ -721,7 +844,7 @@ const send = async (hook_event_name, fields = {}) => {
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
       if (ending === 'crash') {
         fs.writeFileSync(crash, 'exit');
-        await until(() => !f.runtime.has(f.session.id), 'crashed hooked PTY');
+        await f.runtime.whenReleased(f.session.id);
         assert.equal(session().status, 'error');
         assert.equal(session().subtasks?.tasks[1].status, 'failed');
       } else {

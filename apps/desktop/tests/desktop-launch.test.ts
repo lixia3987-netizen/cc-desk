@@ -30,8 +30,16 @@ test('desktop launch requires X11 on Linux and preserves application arguments o
   assert.throws(() => electronLaunchArgs(args, 'linux', ''), /npm run test:e2e/);
   assert.throws(() => electronLaunchArgs(args, 'linux', '  '), /X11 DISPLAY/);
   assert.deepEqual(electronLaunchArgs(args, 'linux', ':123'), [...args, '--no-sandbox', '--ozone-platform=x11', '--disable-gpu']);
-  for (const platform of ['win32', 'darwin'] as const) assert.deepEqual(electronLaunchArgs(args, platform, ''), args);
+  assert.deepEqual(electronLaunchArgs(args, 'win32', ''), args);
+  assert.deepEqual(electronLaunchArgs(args, 'darwin', ''), [...args, '--use-mock-keychain']);
   assert.deepEqual(args, ['--user-data-dir=/tmp/profile with spaces']);
+});
+
+test('macOS default and isolated packaged launches both avoid native Keychain prompts without changing profile selection', () => {
+  assert.deepEqual(electronLaunchArgs([], 'darwin'), ['--use-mock-keychain']);
+  const profile = '--user-data-dir=/var/folders/fixture/用户 profile with spaces';
+  assert.deepEqual(electronLaunchArgs([profile], 'darwin'), [profile, '--use-mock-keychain']);
+  assert.deepEqual(electronLaunchArgs(undefined, 'darwin'), [desktopRoot, '--use-mock-keychain']);
 });
 
 test('desktop runner preserves filter arguments, desktop cwd and Xvfb child exit status', { skip: process.platform !== 'linux' }, () => {

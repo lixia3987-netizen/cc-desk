@@ -12,6 +12,8 @@ interface QueueOptions {
   /** Returns only after the old turn and its process resources have settled. */
   interrupt(id: string): Promise<void>;
   changed(id: string): void;
+  /** Invoked after the durable turn ACK, never from inside the executor's send barrier. */
+  settled?(id: string): void | Promise<void>;
 }
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 4000);
 
@@ -25,6 +27,7 @@ export class ChatQueue {
   private generation = new Map<string, number>();
   private replaced = new Set<string>();
   private scheduled = new Set<string>();
+  private failedAcks = new Map<string, { messageId: string; result: ChatTurnResult }>();
   constructor(directory: string, private options: QueueOptions) { this.storage = new ChatQueueStorage(directory); }
   private state(id: string) {
     let state = this.states.get(id);
@@ -61,6 +64,7 @@ export class ChatQueue {
   }
   async submit(id: string, text: string, attachments: string[] = [], requestId: string = randomUUID()): Promise<ChatSubmission> {
     const assertAdmission = this.captureAdmission(id);
+    const epoch = this.generation.get(id) ?? 0;
     return this.serial(id, async () => {
       assertAdmission();
       if ((!text.trim() && !attachments.length) || text.length > 128 * 1024) throw new Error('消息为空或超过 128 KiB 上限。');
@@ -74,7 +78,6 @@ export class ChatQueue {
       if (state.items.length >= 100) throw new Error('最多保留 100 条排队消息，请先移除部分消息。');
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
       const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued' };
-      const epoch = this.generation.get(id) ?? 0;
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
         assertAdmission();
         item.attachmentNames = attachmentNames;
@@ -91,7 +94,7 @@ export class ChatQueue {
     });
   }
   hasPending(id: string) { return this.state(id).items.length > 0 || this.priorities.has(id); }
-  hasActive(id: string) { return this.active.has(id) || this.priorities.has(id); }
+  hasActive(id: string) { return this.active.has(id) || this.priorities.has(id) || this.failedAcks.has(id); }
   isPrioritizing(id: string) { return this.priorities.has(id); }
   references(id: string, file: string) { return this.state(id).items.some(item => item.attachments.includes(file)); }
   removeAttachment(id: string, file: string, remove: () => Promise<void>) {
@@ -126,8 +129,17 @@ export class ChatQueue {
   }
   async resume(id: string) {
     const assertAdmission = this.captureAdmission(id);
+    const epoch = this.generation.get(id) ?? 0;
+    const failedAck = this.failedAcks.get(id);
+    if (failedAck) {
+      // Retry the acknowledgement, never the already-settled execution.
+      await this.complete(id, failedAck.messageId, failedAck.result);
+      this.failedAcks.delete(id);
+      await this.options.settled?.(id);
+    }
     await this.serial(id, () => {
       assertAdmission();
+      if (epoch !== (this.generation.get(id) ?? 0)) throw new Error('队列操作已被后续停止取消。');
       if (this.priorities.has(id)) throw new Error('正在中断上一轮，请稍后重试。');
       this.commit(id, next => { next.paused = false; delete next.error; });
       this.wake(id);
@@ -136,17 +148,19 @@ export class ChatQueue {
   sendNow(id: string, messageId: string): Promise<void> {
     let assertAdmission: () => void;
     try { assertAdmission = this.captureAdmission(id); } catch (error) { return Promise.reject(error); }
+    if (this.failedAcks.has(id)) return Promise.reject(new Error('上一轮执行回执尚未保存，请先继续队列以修复回执；不会重复执行已完成任务。'));
     const pending = this.priorities.get(id);
     if (pending) return pending.messageId === messageId ? pending.promise : Promise.reject(new Error('正在发送另一条排队消息，请稍后重试。'));
-    const operation = this.prioritize(id, messageId, assertAdmission);
+    const operation = this.prioritize(id, messageId, assertAdmission, this.generation.get(id) ?? 0);
     this.priorities.set(id, { messageId, promise: operation });
-    void operation.finally(() => { this.priorities.delete(id); this.wake(id); }).catch(() => {});
+    void operation.finally(async () => { this.priorities.delete(id); await this.options.settled?.(id); this.wake(id); }).catch(() => {});
     return operation;
   }
-  private async prioritize(id: string, messageId: string, assertAdmission: () => void) {
+  private async prioritize(id: string, messageId: string, assertAdmission: () => void, capturedGeneration: number) {
     let epoch = 0, selected = false;
     await this.serial(id, () => {
       assertAdmission();
+      if (capturedGeneration !== (this.generation.get(id) ?? 0)) throw new Error('队列操作已被后续停止取消。');
       const item = this.state(id).items.find(value => value.id === messageId);
       if (!item || item.status === 'sending') return;
       selected = true;
@@ -163,6 +177,7 @@ export class ChatQueue {
     try {
       await this.options.interrupt(id);
       await this.active.get(id);
+      if (this.failedAcks.has(id)) throw new Error('上一轮执行回执尚未保存，请先继续队列以修复回执。');
       await this.serial(id, () => {
         if (this.generation.get(id) !== epoch) return; // A later user stop or maintenance wins.
         assertAdmission();
@@ -182,25 +197,33 @@ export class ChatQueue {
   }
   private dispatch(id: string) {
     const state = this.state(id);
-    if (state.paused || !state.items.length || this.active.has(id) || this.priorities.has(id) || this.options.blocked(id)) return;
+    if (state.paused || !state.items.length || this.active.has(id) || this.priorities.has(id) || this.failedAcks.has(id) || this.options.blocked(id)) return;
     this.options.assertAvailable(id);
     const item = state.items.find(value => value.status === 'queued');
     if (!item) return;
     this.commit(id, next => { next.items.find(value => value.id === item.id)!.status = 'sending'; });
+    let outcome: ChatTurnResult | undefined;
     const running = Promise.resolve().then(() => this.options.run(id, structuredClone(item))).then(
-      result => this.complete(id, item.id, result),
-      error => this.complete(id, item.id, { success: false, summary: '', error: messageOf(error) }),
+      result => { outcome = result; return this.complete(id, item.id, result); },
+      error => { outcome = { success: false, summary: '', error: messageOf(error) }; return this.complete(id, item.id, outcome); },
     ).catch(error => {
+      if (outcome) this.failedAcks.set(id, { messageId: item.id, result: outcome });
       const state = this.state(id); state.paused = true; state.error = '执行状态保存失败，请检查聊天记录后再继续：' + messageOf(error);
       state.items.forEach(value => { if (value.status === 'sending') value.status = 'queued'; });
       this.generation.set(id, (this.generation.get(id) ?? 0) + 1);
       this.notify(id);
-    }).finally(() => { this.active.delete(id); this.wake(id); });
+    }).finally(async () => {
+      this.active.delete(id);
+      if (!this.failedAcks.has(id)) await this.options.settled?.(id);
+      this.wake(id);
+    });
+    // Cleanup failure keeps the directory lease; do not produce an unhandled rejection.
+    void running.catch(() => {});
     this.active.set(id, running);
   }
   private complete(id: string, messageId: string, result: ChatTurnResult) {
     return this.serial(id, () => {
-      const replaced = this.replaced.delete(messageId);
+      const replaced = this.replaced.has(messageId);
       this.commit(id, next => {
         if (result.success || replaced) next.items = next.items.filter(value => value.id !== messageId);
         else {
@@ -210,6 +233,8 @@ export class ChatQueue {
           next.error = (result.error || (result.interrupted ? '本轮已中断。' : '本轮执行失败。')).slice(0, 4000) + ' 消息已保留，请检查已产生的操作，移除不应重复执行的消息后再继续。';
         }
       });
+      // Failed ACK retries need the replacement decision just as much as the result.
+      this.replaced.delete(messageId);
     });
   }
   delete(id: string) {

@@ -16,7 +16,7 @@ export function HistoryImport({ state, executors, draft, setDraft, busy, history
   const sources = [...new Map(executors.filter(item => item.history).map(item => [item.providerId, item])).values()];
   const descriptor = executors.find(item => item.providerId === draft.providerId && item.mode === draft.mode && item.history);
   const claude = draft.providerId === 'claude';
-  const blocked = busy || !descriptor || !!descriptor.maintenance || !configurationSupported(descriptor, draft.engineConfig);
+  const blocked = busy || !descriptor || !descriptor.capabilities.resume || !!descriptor.maintenance || !configurationSupported(descriptor, draft.engineConfig);
   const name = descriptor?.displayName ?? draft.providerId;
   return <>
     <div className="eyebrow">CONTINUE YOUR WORK</div>
@@ -34,10 +34,11 @@ export function HistoryImport({ state, executors, draft, setDraft, busy, history
         <div><strong>{h.title}</strong><small>{time(h.modifiedAt)} · {h.id.slice(0, 8)}</small></div><ArrowUpRight size={16} />
       </button>) : <p>没有找到可导入的记录。也可以使用会话{claude ? ' UUID' : ' ID'}。</p>}</div>
     {historyNext !== null && <button className="secondary compact full" disabled={busy || historyBusy} onClick={() => void moreHistory()}>加载更多历史</button>}
-    <form onSubmit={event => { event.preventDefault(); if (!blocked) void importHistory(draft.conversationId || '', `导入会话 · ${(draft.conversationId || '').slice(0, 8)}`, draft.providerId); }}>
+    {descriptor?.capabilities.resume && <form onSubmit={event => { event.preventDefault(); if (!blocked) void importHistory(draft.conversationId || '', `导入会话 · ${(draft.conversationId || '').slice(0, 8)}`, draft.providerId); }}>
       <label>通过{claude ? ' UUID' : '会话 ID'}导入<input aria-label={claude ? '历史会话 UUID' : '历史会话 ID'} placeholder={claude ? '00000000-0000-0000-0000-000000000000' : '原始会话标识'} value={draft.conversationId || ''} onChange={e => setDraft({ ...draft, conversationId: e.target.value })} /></label>
       <button className="primary full" disabled={blocked || !draft.conversationId}><History size={15} />导入会话</button>
-    </form>
+    </form>}
+    {descriptor && !descriptor.capabilities.resume && <p className="hint">此引擎不支持导入外部会话；已有本机会话仍可从侧栏浏览和继续。</p>}
     <p className="hint">只读扫描{name}记录。导入不会修改原始历史；首次恢复时会由{name}校验。</p>
   </>;
 }

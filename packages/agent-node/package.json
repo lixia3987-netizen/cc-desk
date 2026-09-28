@@ -1,0 +1,19 @@
+{
+  "name": "@cc-desk/agent-node",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": ["dist"],
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./responses-model": { "types": "./dist/responses-model.d.ts", "default": "./dist/responses-model.js" },
+    "./run-store": { "types": "./dist/run-store.d.ts", "default": "./dist/run-store.js" },
+    "./tools": { "types": "./dist/tools/index.d.ts", "default": "./dist/tools/index.js" },
+    "./process-supervisor": { "types": "./dist/process-supervisor.d.ts", "default": "./dist/process-supervisor.js" },
+    "./project-instructions": { "types": "./dist/project-instructions.d.ts", "default": "./dist/project-instructions.js" }
+  },
+  "scripts": { "build": "tsc -p tsconfig.json", "typecheck": "tsc -p tsconfig.json --noEmit", "test": "node --test tests/*.test.mjs" },
+  "dependencies": { "@cc-desk/agent-core": "0.0.0", "zod": "4.1.12" },
+  "devDependencies": { "@types/node": "24.10.1", "typescript": "5.9.3" }
+}

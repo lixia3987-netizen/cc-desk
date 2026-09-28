@@ -13,6 +13,7 @@ import { useInspectorPanels } from './useInspectorPanels';
 
 interface Props extends SessionContextPanelProps {
   executors: ExecutionDescriptor[]; sessions: Session[];
+  connectionUnavailable?(session: Session): string | undefined;
   appendReview: (text: string) => boolean; activePanels: PanelDrafts;
   updatePanel: <K extends keyof PanelDrafts>(id: string, key: K, update: (value: NonNullable<PanelDrafts[K]>) => NonNullable<PanelDrafts[K]>) => void;
 }
@@ -21,6 +22,8 @@ const panels = {
   context: { title: '上下文', icon: Activity }, git: { title: '变更', icon: GitBranch },
   workflows: { title: '工作流', icon: Workflow }, diagnostics: { title: '诊断', icon: Stethoscope },
 };
+
+const nativeRecoveryReadOnly = (session: Session) => session.execution.providerId === 'native' && !!session.error?.includes('此会话只读');
 
 export function SessionInspector(props: Props) {
   const { active, report, appendReview, activePanels, updatePanel } = props;
@@ -57,10 +60,11 @@ export function SessionInspector(props: Props) {
       {orderedPanels.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
         {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
-        {id === 'workflows' && <WorkflowPanel session={active} disabled={props.readOnly || !!props.descriptor?.maintenance || !props.descriptor?.capabilities.structured} executionBlocked={run => {
+        {/* Saving a workflow draft does not require a live CLI or model credential. */}
+        {id === 'workflows' && <WorkflowPanel session={active} disabled={props.readOnly || nativeRecoveryReadOnly(active) || !!props.descriptor?.maintenance || !props.descriptor?.capabilities.structured} executionBlocked={run => {
           const session = props.sessions.find(item => item.id === run.sessionId);
           const descriptor = props.executors.find(item => item.providerId === run.providerId && item.mode === run.executionMode);
-          return !session || !!executionUnavailable(descriptor, session);
+          return !session || nativeRecoveryReadOnly(session) || !!executionUnavailable(descriptor, session) || !!props.connectionUnavailable?.(session);
         }} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
         {id === 'diagnostics' && (active.execution.providerId === 'claude' ? <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} /> : <div className="panel-content"><p className="panel-note">{props.unavailable ?? `${props.descriptor?.displayName ?? active.execution.providerId} 暂未提供连接诊断。`}</p></div>)}
       </InspectorPanel>)}

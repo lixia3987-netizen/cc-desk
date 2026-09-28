@@ -4,7 +4,7 @@
 
 分析基线：`dev/native-agent@2c67d6acf04746548d5b7e0782f25d366418e8d6`。阶段二代码候选 `a4e34ce` 已完成三平台验收，见[阶段二验收记录](ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。
 
-状态：**计划分析完成，尚未开始阶段三实现**。本文中的新包、接口、工具和 native 入口均为拟议交付，不是当前产品已有能力。本次只提交计划文档，不调用真实付费模型，不修改运行代码，不合入 main、不发布 Release。
+状态：**Windows 陈旧父进程关系修复已实现，真实远程模型验收尚未完成**。第十六候选曾通过三平台检查；后续纯文档提交又发生 Windows `creation_before_spawn` 清理失败，因此本轮同时修复 Claude 与终端树的父 PID 复用判断，并增加真实 Windows 基线对照和具体诊断。基线对照已通过；各提交完整技术验收以 [PR #33](https://github.com/lixia3987-netizen/cc-desk/pull/33) 当前关联 CI 为准。详见[阶段三验收记录](NATIVE-AGENT-PHASE-3-VALIDATION.md)。历史终端故障缺少原始 cause，不能确认同源。真实服务、模型、凭据来源及预算仍待用户指定。变更仅在 `feat/native-agent-alpha`，PR #33 保持 Draft，不合入 main 或 dev/native-agent，不发布 Release；v0.5.0 稳定版仍以 Claude 为默认引擎。
 
 关联：[总体计划](NATIVE-AGENT-PLAN.md)、[阶段二边界设计](ENGINE-BOUNDARIES-PHASE-2.md)、[架构说明](ARCHITECTURE.md)。下文路径相对于仓库根目录。
 
@@ -265,7 +265,7 @@ native 模型和连接配置只在停止且没有 queue/workflow 所有权时修
 
 00 的契约和平台验证是基础任务门槛；实际服务、凭据与预算可单独标为待确认，不阻塞 01/02。它们必须在 05 的远程 smoke 和最终真实模型验收前落实，不能把待确认项记成已验证。
 
-实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。沿用验证后自动合入开发分支的偏好；main 和 Release 仍需用户另行授权。本次计划 PR 不启动这些实现任务。
+实现分支建议分别为 `feat/native-agent-foundation`、`feat/native-agent-tools`、`feat/native-agent-alpha`，PR 目标均为 `dev/native-agent`。当前实现保留在 `feat/native-agent-alpha`，PR #33 的目标为 `dev/native-agent`。本轮技术修复与真实模型验收未完成前保持 Draft。本轮不合入 main 或 dev/native-agent，不发布 Release。候选统一按上述门槛验收。
 
 ## 10. 验收矩阵与完成定义
 
@@ -304,7 +304,7 @@ P3-00 需要确认：首个实际模型服务/模型/认证来源和小额验收
 
 ## 12. 依据
 
-本计划基于上述固定代码、三路独立源码核查及以下官方文档（查阅于 2026-09-25）。阶段三尚未实现、未进行真实模型调用；文中阶段三验收项是后续门槛，计划 PR 的现有项目检查不能替代这些验收。官方说明用于核实 API 能力，包边界、默认协议、权限与里程碑属于针对 cc-desk 的设计建议。
+本计划基于上述固定代码、三路独立源码核查及以下官方文档（查阅于 2026-09-25）。阶段三已进入实现验收，尚未进行真实远程模型调用；计划分析时的既有项目检查不能替代实现候选验收。官方说明用于核实 API 能力，包边界、默认协议、权限与里程碑属于针对 cc-desk 的设计建议。
 
 1. [Electron utilityProcess](https://www.electronjs.org/docs/latest/api/utility-process)：启动时机、环境、消息与进程终止。
 2. [Electron parentPort](https://www.electronjs.org/docs/latest/api/parent-port)：utility worker 与父进程通信。

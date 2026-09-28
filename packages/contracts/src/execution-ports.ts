@@ -9,6 +9,12 @@ export interface ExecutionLifecycle {
   isBusy(id: string): boolean;
   interrupt(id: string): void | Promise<void>;
   stop(id: string): void | Promise<void>;
+  /** Request stop and resolve only after processes, streams, tools and persistence settle. */
+  stopAndWait?(id: string): Promise<void>;
+  /** Physical resources only; never waits for queue/workflow acknowledgement ownership. */
+  whenReleased?(id: string): Promise<void>;
+  /** Persisted uncertain effects/cleanup quarantine, including after application restart. */
+  recoveryRequired?(id: string): boolean;
   stopIdle(id: string): Promise<void>;
   forget(id: string): void;
   setMaintenance(value: boolean): void;
@@ -25,6 +31,15 @@ export interface SessionExport {
   write(destination: string): Promise<void>;
 }
 
+/** Stable source identity survives dispatch/acknowledgement retries. */
+export interface ExecutionSubmission {
+  requestId: string;
+  source?: 'direct' | 'queue' | 'workflow';
+  workflowRunId?: string;
+  stageId?: string;
+  attempt?: number;
+}
+
 export interface StructuredExecutor extends ExecutionLifecycle {
   /** Optional graceful-interrupt barrier; routers safely close older executors. */
   interruptAndWait?(id: string): Promise<void>;
@@ -36,7 +51,7 @@ export interface StructuredExecutor extends ExecutionLifecycle {
   page(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   search(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   attention(): ChatAttention[];
-  send(id: string, text: string, attachments?: string[], titlePrompt?: string): Promise<ChatTurnResult>;
+  send(id: string, text: string, attachments?: string[], titlePrompt?: string, submission?: ExecutionSubmission): Promise<ChatTurnResult>;
   prepareCommands(id: string): Promise<ChatSnapshot>;
   respond(id: string, requestId: string, decision: ChatDecision): void | Promise<void>;
   /** Persist each confirmed configuration change through the host; partial failure must not revert it. */

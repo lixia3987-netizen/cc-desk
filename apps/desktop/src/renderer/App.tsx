@@ -26,6 +26,7 @@ import { useSessionMemory } from './workspace/useSessionMemory';
 import { useWorkspacePreferences } from './workspace/useWorkspacePreferences';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader';
 import { WorkspaceWelcome } from './workspace/WorkspaceWelcome';
+import { useNativeConnectionReadiness } from './useNativeConnectionReadiness';
 
 type Modal = 'new' | 'settings' | 'history' | 'rename' | 'palette' | null;
 
@@ -83,7 +84,8 @@ export function App() {
   const structured = active?.execution.mode === 'structured';
   const descriptor = executors.find(executor => executor.providerId === active?.execution.providerId && executor.mode === active?.execution.mode);
   const executionCapabilities = descriptor?.capabilities;
-  const unavailable = active ? executionUnavailable(descriptor, active) : undefined;
+  const connectionUnavailable = useNativeConnectionReadiness(state?.sessions);
+  const unavailable = active ? executionUnavailable(descriptor, active) ?? (active.execution.providerId === 'native' && active.error?.includes('此会话只读') ? active.error : undefined) ?? connectionUnavailable(active) : undefined;
   const readOnly = !!active && !configurationSupported(descriptor, active.engineConfig);
   const historySources = executors.filter(item => item.history);
   const activeBusy = !!active && isSessionBusy(active);
@@ -287,7 +289,7 @@ export function App() {
                 changeAttachments(active.id, current => current.filter(file => !submittedPaths.has(file.path)));
               }} />}
           </SessionViewport>
-          <SessionInspector executors={executors} sessions={state.sessions} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
+          <SessionInspector executors={executors} sessions={state.sessions} connectionUnavailable={connectionUnavailable} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
             perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession} deleteConfirm={deleteConfirm}
             setDeleteConfirm={setDeleteConfirm} flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} />
         </div>

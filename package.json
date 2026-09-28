@@ -16,15 +16,17 @@
     "start": "npm run start --workspace claude-workbench --",
     "build": "npm run build:packages && npm run build --workspace claude-workbench --",
     "typecheck": "npm run build:packages && npm run typecheck --workspace claude-workbench --",
-    "test": "npm run build:packages && npm run test --workspace @cc-desk/contracts && npm run test --workspace @cc-desk/engine-claude && npm run test --workspace claude-workbench --",
+    "test": "npm run build:packages && npm run test --workspace @cc-desk/contracts && npm run test --workspace @cc-desk/engine-claude && npm run test --workspace @cc-desk/agent-core && npm run test --workspace @cc-desk/agent-node && npm run test --workspace claude-workbench --",
     "test:e2e": "npm run test:e2e --workspace claude-workbench --",
     "test:packaged": "npm run test:packaged --workspace claude-workbench --",
-    "check": "npm run build:packages && npm run typecheck --workspace claude-workbench && npm run test --workspace @cc-desk/contracts && npm run test --workspace @cc-desk/engine-claude && npm run test --workspace claude-workbench && npm run build --workspace claude-workbench --",
+    "check": "npm run build:packages && npm run typecheck --workspace claude-workbench && npm run test --workspace @cc-desk/contracts && npm run test --workspace @cc-desk/engine-claude && npm run test --workspace @cc-desk/agent-core && npm run test --workspace @cc-desk/agent-node && npm run test --workspace claude-workbench && npm run build --workspace claude-workbench --",
     "dist:win": "npm run build && npm run package:win --workspace claude-workbench --",
     "dist:mac": "npm run build && npm run package:mac --workspace claude-workbench --",
     "dist:linux": "npm run build && npm run package:linux --workspace claude-workbench --",
     "postinstall": "node apps/desktop/scripts/prepare-native.mjs",
     "build:engine": "npm run build --workspace @cc-desk/engine-claude --",
-    "build:packages": "npm run build:contracts && npm run build:engine"
+    "build:packages": "npm run build:contracts && npm run build:engine && npm run build:core && npm run build:node",
+    "build:core": "npm run build --workspace @cc-desk/agent-core --",
+    "build:node": "npm run build --workspace @cc-desk/agent-node --"
   }
 }

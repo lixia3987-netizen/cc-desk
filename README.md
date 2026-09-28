@@ -14,11 +14,12 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 
 [下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.5.0 版本说明](docs/releases/v0.5.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
-客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
+客户端不是 Anthropic 官方产品，不附带模型服务或账户；稳定版和 Claude 会话需安装并登录本机 Claude Code CLI。开发分支的 native Alpha 使用独立模型连接，见 [操作说明](docs/NATIVE-AGENT-ALPHA.md)。
 
-## 当前源码进展：引擎边界与会话体验
+## 当前源码进展：自研 Agent Alpha 与引擎边界
 
-- **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。正式应用仍默认使用 Claude，并保留 Shell；第二引擎仅通过测试注入，真实 native 编码能力留待阶段三。
+- **自研 Agent Alpha**：Responses 模型连接、独立 worker、完整本地上下文、逐次文件/命令审批、文字队列与串行工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
+- **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。正式应用仍默认使用 Claude，并保留 Shell；开发分支已接入自研 native Alpha，按会话显式选择，阶段三统一验收进行中。
 - **独立配置与 v3 数据**：会话统一保存带版本的 `engineConfig`，按引擎描述显示可用功能。读取旧工作区时保留身份和路径，在首次写入 v3 前保存独立的原始迁移快照；回退方法见 [阶段二验证记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。未知引擎保留配置并可读取已有结构化展示日志，不自动回退到 Claude。
 - **CLI 更新只影响 Claude**：确认后暂停 Claude 队列、中断工作流并释放目标进程与资源，Shell 和其他已注册引擎继续运行。进入实际更新阶段后等待安装和检测结束再退出；完成后不会自动继续 Claude 任务。
 - **发送后即可继续输入**：结构化消息保存成功后立即清空对应输入和附件，任务执行期间可继续发送，按会话依次排队。悬停或聚焦排队消息，点击「立即发送」可中断当前任务并优先执行该消息，其余消息保留顺序。停止、失败或重启后队列暂停并保留，检查已产生的操作后可手动继续。
@@ -97,6 +98,8 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 | 目录 | 职责 |
 | --- | --- |
+| `packages/agent-core` | 平台中立的 Agent 循环、审批、预算与端口 |
+| `packages/agent-node` | Responses、完整记录库、本地工具、命令监管与项目指令 |
 | `apps/desktop` | Electron、React、IPC、数据存储、会话/队列/工作流调度、共享 PTY 与桌面装配 |
 | `packages/contracts` | 公共执行身份、配置、能力、消息、事件和生命周期接口 |
 | `packages/engine-claude` | Claude runtime、CLI 探测/参数、协议、transcript、hooks 与专属配置，通过宿主端口接入桌面 |
@@ -120,9 +123,11 @@ npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
-Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
+Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windows SDK 和对应的 Spectre-mitigated C++ 库。`npm ci` 的 postinstall 会核对 node-pty 1.1.0 源码 SHA-256、应用仓库中的 ConPTY 生命周期补丁，并用固定的 node-gyp 12.4.0 编译 N-API 模块；编译或修复标记验证失败会直接终止，不回退旧预编译模块。重复运行 `node apps/desktop/scripts/prepare-native.mjs` 可重新构建。打包时还会通过成品 Electron 加载 ASAR 中的模块，确认 `build/Release/conpty.node` 与已验证的构建一致。安装包用户不需要编译工具链。
 
-PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。三平台安装包仍仅手动触发：在 Actions → Verify and package desktop → Run workflow 选择待验证的分支；默认只验证和打包，产物保存在 Artifacts。测试报告位于根 `test-results/`，安装包位于根 `release/`。
+Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。macOS/Linux 的 postinstall 保留 node-pty macOS spawn-helper 执行权限修复，不编译 Windows 模块。所有打包命令显式关闭自动发布。
+
+PR 的目标为 `main` 或 `dev/native-agent` 时，GitHub Actions 的 Verify workspaces 自动运行 Ubuntu 类型检查、单测和构建。面向 `dev/native-agent` 的 PR 还会自动触发三平台桌面验证与打包；也可在 Actions → Verify and package desktop → Run workflow 选择待验证的分支手动运行。默认只验证和打包，产物保存在 Artifacts，不发布 Release。测试报告位于根 `test-results/`，安装包位于根 `release/`。
 
 维护者发布版本时，先更新 `apps/desktop/package.json` 的应用版本、根锁文件中的对应 workspace 元数据及 `docs/releases/v<版本>.md`。根编排包和内部包的版本不作为应用发布版本。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 

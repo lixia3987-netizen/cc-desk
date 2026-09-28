@@ -61,6 +61,68 @@ test('workflow follows real result completion and topological dependencies, pers
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
+test('a failed terminal ACK retains workflow ownership until explicit durable cancellation, without replay', async () => {
+  const directory = temporary();
+  try {
+    const binding = makeBinding(), pending = deferred<WorkflowStageResult>();
+    let calls = 0, released = 0;
+    const engine = new WorkflowEngine(directory, {
+      getSession: () => binding, cancelSession: () => {},
+      runStage: async () => { calls++; return pending.promise; },
+      settled: () => { released++; },
+    });
+    const run = engine.create({ sessionId: binding.sessionId, goal: 'one effect', stages: [steps[0]] });
+    engine.start(run.id); await tick();
+    const storage = (engine as unknown as { storage: WorkflowStorage }).storage;
+    const save = storage.save.bind(storage);
+    storage.save = () => { throw new Error('terminal ACK disk failure'); };
+    pending.resolve({ success: true, summary: 'effect completed' });
+    await engine.wait(run.id);
+    assert.equal(engine.isSessionBusy(binding.sessionId), true);
+    assert.equal(released, 0);
+    assert.throws(() => engine.start(run.id), /仅新建|仍在运行/);
+    storage.save = save;
+    await engine.cancel(run.id);
+    assert.equal(engine.isSessionBusy(binding.sessionId), false);
+    assert.equal(released, 1);
+    assert.equal(calls, 1);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test('cancel still stops the active stage after a save failure and a durable retry releases its retained owner', async () => {
+  const directory = temporary(), binding = makeBinding(), pending = deferred<WorkflowStageResult>();
+  let calls = 0, cancellations = 0, released = 0;
+  const engine = new WorkflowEngine(directory, {
+    getSession: () => binding, cancelSession: () => { cancellations++; },
+    runStage: async () => { calls++; return pending.promise; }, settled: () => { released++; },
+  });
+  const storage = (engine as unknown as { storage: WorkflowStorage }).storage, save = storage.save.bind(storage);
+  const run = engine.create({ sessionId: binding.sessionId, goal: 'cancel during disk failure', stages: steps });
+  try {
+    engine.start(run.id); await tick();
+    storage.save = () => { throw new Error('cancel ACK disk failure'); };
+    await assert.rejects(engine.cancel(run.id), /cancel ACK disk failure/);
+    assert.equal(cancellations, 1, 'disk failure must never prevent physical cancellation');
+    assert.equal(engine.isSessionBusy(binding.sessionId), true);
+    storage.save = save;
+    await engine.cancel(run.id);
+    assert.equal(engine.isSessionBusy(binding.sessionId), true, 'durable cancellation still awaits the active executor');
+    pending.resolve({ success: true, summary: 'late result' });
+    const finished = await engine.wait(run.id);
+    assert.equal(finished.status, 'cancelled');
+    assert.equal(finished.stages[1].attempts, 0);
+    assert.equal(calls, 1);
+    assert.equal(cancellations, 2);
+    assert.equal(engine.isSessionBusy(binding.sessionId), false);
+    assert.equal(released, 1);
+    await engine.cancel(run.id);
+    assert.equal(released, 1, 'repeated cancellation must not release another owner');
+  } finally {
+    storage.save = save; pending.resolve({ success: false, summary: '' });
+    await engine.wait(run.id); await engine.shutdown(); fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('failure stops downstream stages and retries require an explicit bounded action', async () => {
   const directory = temporary();
   try {
@@ -384,7 +446,7 @@ test('session maintenance aggregates save and cancel failures only after every s
     assert.equal(settled, false); assert.equal(engine.isSessionBusy(bindings[1].sessionId), true);
     pending[1].resolve({ success: true, summary: 'late second success' });
     await rejected;
-    assert.ok(bindings.every(binding => !engine.isSessionBusy(binding.sessionId)));
+    assert.ok(bindings.every(binding => engine.isSessionBusy(binding.sessionId)), 'failed terminal persistence retains outer ownership');
     assert.ok(engine.list().every(run => run.status === 'running' && run.stages[0].artifacts.length === 0 && run.stages[1].attempts === 0));
     storage.save = save;
     await engine.disconnectSessions([bindings[0].sessionId], 'retry first save');
@@ -393,6 +455,7 @@ test('session maintenance aggregates save and cancel failures only after every s
     assert.equal(cancelled.length, 2, 'stale records must be repaired without recancelling settled runners');
     await engine.disconnectSessions([bindings[1].sessionId], 'retry second save');
     assert.ok(engine.list().every(run => run.status === 'interrupted'));
+    assert.ok(bindings.every(binding => !engine.isSessionBusy(binding.sessionId)));
   } finally {
     storage.save = save;
     for (const value of pending) value.resolve({ success: false, summary: '' });
@@ -480,9 +543,10 @@ test('shutdown cancels all runners despite disk failure and retries saving after
     assert.deepEqual(cancelled.sort(),bindings.map(binding=>binding.sessionId).sort());
     pending.resolve({success:true,summary:'Late success'});
     await Promise.all(runs.map(run=>engine.wait(run.id)));
-    assert.ok(bindings.every(binding=>!engine.isSessionBusy(binding.sessionId)));
+    assert.ok(bindings.every(binding=>engine.isSessionBusy(binding.sessionId)), 'failed shutdown ACK remains an owner after physical release');
     t.mock.restoreAll();
     await engine.shutdown();
+    assert.ok(bindings.every(binding=>!engine.isSessionBusy(binding.sessionId)));
     const saved=JSON.parse(fs.readFileSync(engine.file,'utf8'));
     assert.ok(saved.runs.every((run:{status:string;stages:{attempts:number;status:string}[]})=>
       run.status==='interrupted'&&run.stages[0].status==='interrupted'&&run.stages[1].attempts===0));

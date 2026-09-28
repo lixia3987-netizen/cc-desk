@@ -1,7 +1,7 @@
 import type { ExecutionCapabilities, ExecutionMode, SessionExecution, EngineConfig, EngineConfiguration } from '../../shared/execution';
 import type { Session } from '../../shared/types';
 import type { StructuredExecutor, TerminalExecutor } from '@cc-desk/contracts/execution-ports';
-export type { ExecutionLifecycle, SessionExport, StructuredExecutor, TerminalExecutor } from '@cc-desk/contracts/execution-ports';
+export type { ExecutionLifecycle, ExecutionSubmission, SessionExport, StructuredExecutor, TerminalExecutor } from '@cc-desk/contracts/execution-ports';
 
 interface RegistrationBase {
   providerId: string;

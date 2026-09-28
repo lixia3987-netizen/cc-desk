@@ -404,7 +404,7 @@ test('removing a queued message leaves the active turn and remaining FIFO order 
   } finally { await f.close(); }
 });
 
-test('completion persistence failure pauses consumption and retains uncertain work for explicit review', async () => {
+test('completion persistence failure retains ownership and retries only the ACK after explicit review', async () => {
   const f = fixture(), sessionId = randomUUID();
   const storage = (f.queue as unknown as { storage: ChatQueueStorage }).storage;
   const save = storage.save.bind(storage);
@@ -417,7 +417,8 @@ test('completion persistence failure pauses consumption and retains uncertain wo
       save(id, state);
     };
     f.runs[0].result.resolve(success);
-    await until(() => !f.queue.hasActive(sessionId));
+    await until(() => !!f.queue.snapshot(sessionId).error);
+    assert.equal(f.queue.hasActive(sessionId), true, 'missing durable ACK must retain outer ownership');
     const snapshot = f.queue.snapshot(sessionId);
     assert.equal(snapshot.paused, true);
     assert.match(snapshot.error ?? '', /disk full on completion/);
@@ -429,6 +430,12 @@ test('completion persistence failure pauses consumption and retains uncertain wo
     f.queue.wake(sessionId);
     await tick();
     assert.equal(f.runs.length, 1);
+    storage.save = save;
+    await f.queue.resume(sessionId);
+    await until(() => f.runs.length === 2);
+    assert.equal(f.runs[1].item.text, 'must wait', 'resume repairs the completed item without executing it again');
+    f.runs[1].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
   } finally { storage.save = save; await f.close(); }
 });
 
@@ -499,4 +506,55 @@ test('a user stop after send now takes precedence when the interruption eventual
     assert.equal(f.queue.snapshot(sessionId).paused, true);
     assert.deepEqual(f.queue.snapshot(sessionId).items.map(item => item.text), ['urgent', 'later']);
   } finally { ack.resolve(); await f.close(); }
+});
+
+test('a replaced interrupted turn is never replayed when its durable ACK needs a retry', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  const storage = (f.queue as unknown as { storage: ChatQueueStorage }).storage, save = storage.save.bind(storage);
+  try {
+    const original = await f.queue.submit(sessionId, 'interrupted original');
+    const urgent = await f.queue.submit(sessionId, 'urgent replacement');
+    await until(() => f.runs.length === 1);
+    storage.save = (id, state) => {
+      if (!state.items.some(item => item.id === original.messageId)) throw new Error('replacement ACK disk failure');
+      save(id, state);
+    };
+    const promotion = f.queue.sendNow(sessionId, urgent.messageId);
+    const failed = assert.rejects(promotion, /回执尚未保存/);
+    await until(() => f.interruptions.length === 1);
+    f.runs[0].result.resolve(interrupted);
+    await failed;
+    assert.equal(f.queue.hasActive(sessionId), true);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    storage.save = save;
+    await f.queue.resume(sessionId);
+    await until(() => f.runs.length === 2);
+    assert.equal(f.runs[1].item.id, urgent.messageId);
+    f.runs[1].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
+    assert.deepEqual(f.queue.snapshot(sessionId).items, []);
+    assert.deepEqual(f.runs.map(run => run.item.text), ['interrupted original', 'urgent replacement']);
+  } finally { storage.save = save; await f.close(); }
+});
+
+for (const operation of ['resume', 'sendNow', 'submit'] as const) test(`a stop wins an older ${operation} waiting behind another queue mutation`, async () => {
+  let blocked = true;
+  const entered = deferred<void>(), release = deferred<void>();
+  const f = fixture({ blocked: () => blocked }), sessionId = randomUUID();
+  try {
+    const message = operation === 'submit' ? undefined : await f.queue.submit(sessionId, 'kept queued');
+    f.queue.pause(sessionId);
+    const removing = f.queue.removeAttachment(sessionId, '/unused', async () => { entered.resolve(); await release.promise; });
+    await entered.promise;
+    const pending = operation === 'resume' ? f.queue.resume(sessionId) : operation === 'sendNow'
+      ? f.queue.sendNow(sessionId, message!.messageId) : f.queue.submit(sessionId, 'accepted after stop');
+    const settled = operation === 'submit' ? pending : assert.rejects(pending, /后续停止/);
+    f.queue.pause(sessionId, 'user stop');
+    blocked = false; release.resolve(); await removing; await settled;
+    f.queue.wake(sessionId); await tick(); await tick();
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    assert.equal(f.queue.snapshot(sessionId).items.length, 1);
+    assert.equal(f.runs.length, 0);
+    assert.equal(f.interruptions.length, 0);
+  } finally { release.resolve(); await f.close(); }
 });

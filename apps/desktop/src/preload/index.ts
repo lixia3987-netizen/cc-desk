@@ -2,6 +2,14 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
+  nativeConnections: {
+    list: () => ipcRenderer.invoke('native:connections-list'),
+    upsert: input => ipcRenderer.invoke('native:connections-upsert', input),
+    remove: input => ipcRenderer.invoke('native:connections-remove', input),
+    setCredential: input => ipcRenderer.invoke('native:connections-credential', input),
+    readiness: input => ipcRenderer.invoke('native:connections-readiness', input),
+  },
+  confirmNativeRecovery: id => ipcRenderer.invoke('native:confirm-recovery', id),
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
   copyText:text => ipcRenderer.invoke('clipboard:write-text',text),
   chooseProject:() => ipcRenderer.invoke('project:choose'),
@@ -19,7 +27,7 @@ const api: DesktopAPI = {
   chatPage:(id,options) => ipcRenderer.invoke('chat:page',{id,...options}),
   searchChat:(id,query,before) => ipcRenderer.invoke('chat:search',{id,query,before}),
   chatAttention:() => ipcRenderer.invoke('chat:attention'),
-  sendChat:(id,text,attachments) => ipcRenderer.invoke('chat:send',{id,text,attachments}),
+  sendChat:(id,text,attachments,requestId) => ipcRenderer.invoke('chat:send',{id,text,attachments,requestId}),
   submitChat:(id,text,attachments,requestId) => ipcRenderer.invoke('chat:submit',{id,text,attachments,requestId}),
   sendQueuedChatNow:(id,messageId) => ipcRenderer.invoke('chat:queue-now',{id,messageId}),
   removeQueuedChat:(id,messageId) => ipcRenderer.invoke('chat:queue-remove',{id,messageId}),

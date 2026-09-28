@@ -128,7 +128,10 @@ test('experience: panel drafts keep session/file identity, open panels and unsav
     let page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
     await openPanel(page,'工作流');await page.getByLabel('工作流目标').fill('已提交的工作流目标');
+    // The unavailable CLI blocks execution, while a local workflow draft stays editable.
+    await expect(page.getByRole('button',{name:'创建工作流',exact:true})).toBeEnabled();
     await page.getByRole('button',{name:'创建工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(1);
+    await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
     await expect(page.getByLabel('工作流目标')).toHaveValue('');
     await page.getByLabel('工作流目标').fill('下一项任务的草稿');
     await page.getByLabel('每阶段结束后由我确认继续').uncheck();await page.getByLabel('最大尝试次数').selectOption('3');
@@ -158,6 +161,7 @@ test('experience: panel drafts keep session/file identity, open panels and unsav
     await expect(page.getByLabel('代码审阅反馈')).toHaveValue('one 的审阅意见');
     await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
     await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
+    await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
     await page.getByRole('button',{name:'保存指令',exact:true}).click();await expect(page.getByLabel('阶段指令')).toHaveCount(0);
     const saved=await page.evaluate(async id=>(await window.desktop.workflows(id))[0].stages[0].instruction,f.sessions[0].id);
     expect(saved).toBe('尚未保存的阶段指令');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');

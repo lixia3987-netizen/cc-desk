@@ -8,6 +8,7 @@ import type { SubtaskActivity } from './subtasks';
 import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
 import type { CLIUpdateState } from './cli-update';
+import type { NativeConnectionsAPI } from './native-connections';
 import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
 import type { ClaudeCapabilities } from '@cc-desk/engine-claude';
@@ -39,6 +40,8 @@ export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStat
 export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
+  nativeConnections: NativeConnectionsAPI;
+  confirmNativeRecovery(id: string): Promise<void>;
   snapshot(): Promise<Snapshot>;
   copyText(text: string): Promise<void>;
   chooseProject(): Promise<Project | null>;
@@ -56,7 +59,7 @@ export interface DesktopAPI {
   chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   searchChat(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   chatAttention(): Promise<ChatAttention[]>;
-  sendChat(id: string, text: string, attachments?: string[]): Promise<ChatTurnResult>;
+  sendChat(id: string, text: string, attachments?: string[], requestId?: string): Promise<ChatTurnResult>;
   submitChat(id: string, text: string, attachments?: string[], requestId?: string): Promise<ChatSubmission>;
   sendQueuedChatNow(id: string, messageId: string): Promise<void>;
   removeQueuedChat(id: string, messageId: string): Promise<void>;

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
+import { finishInspectorApp, installInspectorStopDiagnostics } from './helpers/inspector-cleanup';
 
 async function workspace(shellSelected = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-inspector-'));
@@ -314,10 +315,12 @@ test('inspector: single-panel and older multi-panel preferences migrate while pr
 
 test('inspector: the vertical rail and stacked panels fit wide and narrow windows without restarting a running terminal', async ({}, testInfo) => {
   const f = await workspace(true), app = await f.launch();
+  const failures: unknown[] = [];
   try {
     const page = await app.firstWindow(), errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await expect(page.getByRole('heading', { name: f.shell.title, exact: true })).toBeVisible();
+    await app.evaluate(installInspectorStopDiagnostics, f.shell.id);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await expectOpenPanels(page, ['上下文']);
     expect(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)).toBe(false);
@@ -405,14 +408,9 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
     await expect(page.locator('.session-header .status-tag')).toContainText('运行中');
     await expect(page.locator('.error-banner')).toHaveCount(0);
     expect(errors).toEqual([]);
-  } finally {
-    const page = await app.firstWindow().catch(() => null);
-    if (page) {
-      await page.evaluate(id => window.desktop.stopSession(id), f.shell.id).catch(() => {});
-      await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).state.sessions.every(session => !['running', 'stopping'].includes(session.status))), { timeout: 5000 }).toBe(true).catch(() => {});
-    }
-    await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }); }).catch(() => {});
-    await app.close();
+  } catch (error) { failures.push(error); }
+  finally {
+    await finishInspectorApp(app, f.shell.id, testInfo.attach.bind(testInfo), failures);
     await f.dispose();
   }
 });
