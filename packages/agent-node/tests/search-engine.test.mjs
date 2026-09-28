@@ -196,3 +196,27 @@ test('zero-byte files remain searchable with a zero-byte per-read reservation', 
   const result = await f.search.search({ path: '.', query: '^$', mode: 'regex' }, context());
   assert.equal(result.complete, true); assert.equal(result.matches.length, 1); assert.equal(result.scanned.bytes, 0); assert.equal(result.matches[0].hash, hash(''));
 });
+
+test('multi-directory pagination conserves an independently known 150-file result set', async t => {
+  const contents = {};
+  for (let directory = 0; directory < 3; directory++) for (let index = 0; index < 50; index++) contents[`module-${directory}/file-${String(index).padStart(2, '0')}.ts`] = `needle:${directory}:${index}\n`;
+  const f = await fixture(t, contents), expected = new Map(Object.entries(contents).map(([file, text]) => [file, hash(text)]));
+  const input = { path: '.', query: 'needle:', pageSize: 17 };
+  const collect = async search => {
+    const seen = new Map(); let page = await search.search(input, context());
+    while (true) {
+      for (const hit of page.matches) {
+        assert.equal(seen.has(hit.path), false, 'each observed file appears exactly once');
+        assert.equal(hit.hash, expected.get(hit.path)); seen.set(hit.path, hit.hash);
+      }
+      if (!page.nextCursor) return { seen, page };
+      assert.equal(page.complete, false);
+      page = await search.search({ ...input, cursor: page.nextCursor }, context());
+    }
+  };
+  const full = await collect(f.search);
+  assert.deepEqual([...full.seen].sort(), [...expected].sort()); assert.equal(full.page.totalMatches, 150); assert.equal(full.page.complete, true);
+  const limited = await collect(new ProjectSearch({ projectRoot: f.root, ownerId: 'limited', maxScanEntries: 70 }));
+  assert.ok(limited.seen.size > 0 && limited.seen.size < expected.size); assert.equal(limited.page.scanComplete, false);
+  assert.equal(limited.page.pageComplete, true); assert.equal(limited.page.complete, false); assert.ok(limited.page.truncationReasons.includes('entry_limit'));
+});
