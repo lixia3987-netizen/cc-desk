@@ -9,12 +9,14 @@ import { isSensitivePath, isWithin, normalizeProjectPath, ProjectFiles, throwIfA
 export type TaskWorkspace = NativeTaskWorkspace;
 export type TaskWorkspaceFile = TaskWorkspace['files'][number];
 export type TaskChangeSummary = NativeTaskChangeSummary;
+/** Receipt comparison needs no second copy of the complete file inventory. */
+export type TaskCommandWorkspace = Pick<TaskWorkspace, 'fingerprint' | 'rootFingerprint' | 'complete'>;
 export interface TaskWorkspaceOptions {
   projectRoot: string; excludedRoots?: readonly string[]; signal?: AbortSignal;
   limits?: { maxEntries?: number; maxBytes?: number; maxFileBytes?: number; maxMs?: number };
 }
 export interface TaskCommandEvidenceOptions {
-  task: NativeTaskSnapshot; before: TaskWorkspace; after: TaskWorkspace;
+  task: Pick<NativeTaskSnapshot, 'taskId' | 'identity' | 'planRevision' | 'acceptanceRevision'>; before: TaskCommandWorkspace; after: TaskCommandWorkspace;
   /** Chosen by host UI/declared acceptance, never inferred from stdout. */
   stepIds?: string[]; criterionIds?: string[]; now?: string;
 }
@@ -179,6 +181,16 @@ export function describeTaskChanges(baseline: TaskWorkspace, current: TaskWorksp
 /** A command receipt stays unverified until a human reviews its relevance/coverage. */
 export function commandEvidenceReceipt(prepared: PreparedTool, result: ToolResult, options: TaskCommandEvidenceOptions): NativeTaskEvidence | undefined {
   if (prepared.call.name !== 'run_command' || prepared.definition.risk !== 'command') return undefined;
+  return makeCommandEvidenceReceipt(prepared, result, options);
+}
+
+/** Only the host's durable terminal observer may use a start_command call as evidence. */
+export function terminalCommandEvidenceReceipt(prepared: PreparedTool, result: ToolResult, options: TaskCommandEvidenceOptions): NativeTaskEvidence | undefined {
+  if (prepared.call.name !== 'start_command' || prepared.definition.risk !== 'command') return undefined;
+  return makeCommandEvidenceReceipt(prepared, result, options);
+}
+
+function makeCommandEvidenceReceipt(prepared: PreparedTool, result: ToolResult, options: TaskCommandEvidenceOptions): NativeTaskEvidence {
   const { task, before, after } = options;
   if (typeof prepared.input.executable !== 'string' || !Array.isArray(prepared.input.argv) || prepared.input.argv.some(arg => typeof arg !== 'string') || typeof prepared.input.cwd !== 'string') throw new Error('Invalid host command receipt.');
   const command: NativeTaskCommand = { executable: prepared.input.executable, argv: [...prepared.input.argv] as string[], cwd: prepared.input.cwd };
@@ -198,7 +210,8 @@ export function commandEvidenceReceipt(prepared: PreparedTool, result: ToolResul
     identity: { ...task.identity }, stepIds: [...(options.stepIds ?? [])], criterionIds: [...(options.criterionIds ?? [])],
     source: 'command', status: failed ? 'failed' : 'unverified', planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision,
     workspaceFingerprint: after.fingerprint, workspaceComplete: sameWorkspace,
-    toolCallId: prepared.call.id, command, exitCode, output: outputBytes.subarray(0, 8192).toString('utf8'),
+    toolCallId: prepared.call.id, command, exitCode,
+    output: new TextDecoder('utf-8', { fatal: true }).decode(outputBytes.subarray(0, 8192), { stream: true }),
     outputDigest: hash(recordedOutput), truncated, reason: reasons.join(' '), createdAt: options.now ?? new Date().toISOString(),
   };
 }
