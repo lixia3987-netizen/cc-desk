@@ -33,7 +33,7 @@ export interface NativeTaskCodeLocation {
   path: string; startLine: number; endLine: number;
   fileHash: string; fileBytes: number; excerpt: string; excerptHash: string;
 }
-/** Constructed only by the host from a committed tool receipt or explicit human review. */
+/** Host evidence from a committed tool receipt, explicit human review, or host-read observation durably recorded in the task store. */
 export interface NativeTaskEvidence {
   id: string; identity: NativeTaskIdentity; stepIds: string[]; criterionIds: string[];
   source: 'command' | 'manual' | 'location'; status: 'unverified' | 'passed' | 'failed' | 'not_applicable';
