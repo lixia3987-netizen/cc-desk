@@ -23,6 +23,7 @@ export const LOCAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'apply_patch', risk: 'write', description: 'Create or replace exactly one UTF-8 text file. expectedHash is the SHA-256 from read_file, or null to create without overwriting. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) },
   { name: 'edit_file', risk: 'write', description: 'Replace one unique exact oldText fragment in an existing UTF-8 file with newText (empty to delete). oldText must be nonempty and match exactly once, including whitespace and line endings; include surrounding text to disambiguate. No fuzzy matching or replace-all. expectedHash must be the complete SHA-256 from read_file; read again after each edit. Preserves all other text. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, oldText: string, newText: string, expectedHash: string }, ['path', 'oldText', 'newText', 'expectedHash']) },
   { name: 'apply_change_set', risk: 'write', description: 'Apply an explicitly approved ordered group of 1–16 UTF-8 file creates/replacements, at most 256 KiB total new content. Read every applicable AGENTS.md/CLAUDE.md and selected Skill first. expectedHash is the complete previous SHA-256, or null only for a new file. Approval shows the complete changed regions, with hashes and line-ending markers; oversized previews are rejected, never silently truncated. Sensitive paths, AGENTS.md/CLAUDE.md and selected Skills cannot be edited in a group. This is not a filesystem transaction: each file is validated and durably recorded before/after its individual write, and partial results are explicit. Never automatically retry unknown results or undo external changes. Splitting or changing a group needs a fresh approval.', inputSchema: schema({ changes: { type: 'array', minItems: 1, maxItems: 16, items: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) } }, ['changes']) },
+  { name: 'start_command', risk: 'command', description: 'Start an explicitly approved executable with literal argv and project-relative cwd (shell:false), returning a handle owned only by this run. Requires approval for this exact command. Startup is not completion: use command_status and read_command_output; stop_command revokes only this handle. No stdin or cross-run/restart attachment. timeoutMs defaults to 120000 and is capped by the remaining run budget, at most 3600000. maxOutputBytes defaults to 16384, at most 65536 combined retained stdout/stderr bytes; excess output is drained and marked truncated. All commands are stopped before this run ends. Commands can access user resources beyond cwd; this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: { type: 'integer', minimum: 1, maximum: 3600000 }, maxOutputBytes: { type: 'integer', minimum: 256, maximum: 65536 } }, ['executable', 'argv', 'cwd']) },
   { name: 'run_command', risk: 'command', description: 'Run an executable with literal argv and project-relative cwd (shell:false). Always requires approval. Commands may affect files/network beyond cwd: this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: integer, maxOutputBytes: integer }, ['executable', 'argv', 'cwd']) },
 ];
 const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'release', '.next', 'coverage']);
@@ -59,6 +60,8 @@ export interface LocalToolOptions extends FilePolicyOptions {
   maxOperationMs?: number;
   /** Trusted host-only durable progress. Required before any grouped file effect. */
   recordChangeSetEvent?: (identity: RunIdentity, call: ToolCall, event: NativeChangeSetFileEvent) => Promise<void>;
+  /** Host owns run-scoped processes and their durable lifecycle. The guard must run after intent persistence and immediately before launch. */
+  startCommand?: (prepared: PreparedTool, context: ToolExecutionContext, command: { cwd: string; beforeStart(): Promise<void> }) => Promise<ToolResult>;
 }
 interface PreparedState {
   prepared: PreparedTool;
@@ -73,10 +76,11 @@ interface PreparedState {
   changeSet?: PreparedChangeSet;
   changeSetInstructions?: Array<{ path: string; instructions: ProjectInstructions }>;
   changeSetExecution?: Promise<ToolResult>;
+  commandExecution?: Promise<ToolResult>;
 }
 
 export class LocalToolPort implements ToolPort {
-  readonly definitions = LOCAL_TOOL_DEFINITIONS;
+  readonly definitions: ToolDefinition[];
   private readonly files: ProjectFiles;
   private readonly searcher: ProjectSearch;
   private readonly changeSets: ProjectChangeSet;
@@ -85,6 +89,7 @@ export class LocalToolPort implements ToolPort {
   private readonly maxScanEntries: number;
   private readonly maxOperationMs: number;
   constructor(private readonly options: LocalToolOptions) {
+    this.definitions = LOCAL_TOOL_DEFINITIONS.filter(definition => definition.name !== 'start_command' || options.startCommand);
     this.files = new ProjectFiles(options);
     this.searcher = new ProjectSearch(options);
     this.changeSets = new ProjectChangeSet({ ...options, protectedPaths: options.projectSkills });
@@ -132,14 +137,15 @@ export class LocalToolPort implements ToolPort {
     let targetPath: string;
     let targetKind: 'file' | 'directory' = 'directory';
     let patch: PreparedPatch | undefined;
-    if (call.name === 'run_command') {
+    if (call.name === 'run_command' || call.name === 'start_command') {
       exactFields(input, ['executable', 'argv', 'cwd'], ['timeoutMs', 'maxOutputBytes']);
       const executable = textField(input, 'executable');
+      if (call.name === 'start_command' && (context.maxOutputBytes < 2048 || Buffer.byteLength(executable) > 4096)) throw new Error('Command handle output budget or executable size is invalid.');
       if (/[\x00-\x1f\x7f]/.test(executable)) throw new Error('Invalid executable.');
       if (!Array.isArray(input.argv) || input.argv.length > 256 || input.argv.some(arg => typeof arg !== 'string' || arg.includes('\0')) || size(input.argv) > 32768) throw new Error('Invalid command argv.');
       targetPath = normalizeProjectPath(textField(input, 'cwd'), true);
-      numberField(input, 'timeoutMs', 1, 120000);
-      numberField(input, 'maxOutputBytes', 256, 1024 * 1024);
+      numberField(input, 'timeoutMs', 1, call.name === 'start_command' ? 3600000 : 120000);
+      numberField(input, 'maxOutputBytes', 256, call.name === 'start_command' ? 65536 : 1024 * 1024);
     } else {
       targetPath = normalizeProjectPath(textField(input, 'path'), call.name === 'search' || call.name === 'find_files' || call.name === 'list_directory');
       if (call.name === 'apply_patch') {
@@ -221,7 +227,7 @@ export class LocalToolPort implements ToolPort {
       await this.assertChangeSetCurrent(prepared, state, context);
       return;
     }
-    const targetPath = String(prepared.input[prepared.call.name === 'run_command' ? 'cwd' : 'path']);
+    const targetPath = String(prepared.input[['run_command', 'start_command'].includes(prepared.call.name) ? 'cwd' : 'path']);
     const targetKind = prepared.call.name === 'read_file' || prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file' ? 'file' : 'directory';
     if ((await this.instructions(targetPath, targetKind, context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed; the approval is invalid. Read the scope again.');
     await this.files.verify(state.target, state.target.kind === 'file');
@@ -232,6 +238,13 @@ export class LocalToolPort implements ToolPort {
   }
   async execute(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
     if (prepared.call.name === 'apply_change_set') return this.executeChangeSet(prepared, context, approval);
+    if (prepared.call.name === 'start_command') {
+      const state = this.state(prepared, context);
+      throwIfAborted(context.signal); await this.options.assertOwnership?.(context.identity); throwIfAborted(context.signal);
+      this.state(prepared, context);
+      state.commandExecution ??= this.executePrepared(prepared, context, approval);
+      return structuredClone(await state.commandExecution);
+    }
     if (prepared.call.name !== 'search' && prepared.call.name !== 'find_files') return this.executePrepared(prepared, context, approval);
     const state = this.state(prepared, context);
     throwIfAborted(context.signal);
@@ -347,6 +360,24 @@ export class LocalToolPort implements ToolPort {
       if (prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file') {
         const effect = await this.files.applyPatch(state.patch!, context.signal);
         result = { status: 'completed', output: asJson(effect), effects: asJson(effect) };
+      } else if (prepared.call.name === 'start_command') {
+        if (!this.options.startCommand) throw new Error('Run-scoped commands are unavailable.');
+        const beforeStart = async () => {
+          // validate() forbids replay once execution starts. Recheck its exact
+          // authority here after the host has durably saved its launch intent.
+          throwIfAborted(context.signal); this.state(prepared, context);
+          await this.options.assertOwnership?.(context.identity);
+          const binding = { ...context.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: context.policyRevision };
+          const checkApproval = () => {
+            if (!approval || approval.decision !== 'approved' || !Number.isFinite(approval.expiresAt) || approval.expiresAt <= Date.now() || canonical(asJson(approval.binding)) !== canonical(asJson(binding))) throw new Error('Command approval is no longer current.');
+          };
+          checkApproval();
+          if ((await this.instructions(String(prepared.input.cwd), 'directory', context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed before command launch.');
+          await this.files.verify(state.target);
+          await this.options.assertOwnership?.(context.identity);
+          throwIfAborted(context.signal); this.state(prepared, context); checkApproval();
+        };
+        result = await this.options.startCommand(structuredClone(prepared), context, { cwd: state.target.absolute, beforeStart });
       } else if (prepared.call.name === 'run_command') {
         const command = await this.options.supervisor.run(this.options.ownerId, { executable: String(prepared.input.executable), argv: prepared.input.argv as string[], cwd: state.target.absolute, timeoutMs: prepared.input.timeoutMs as number | undefined, maxOutputBytes: Math.min((prepared.input.maxOutputBytes as number | undefined) ?? context.maxOutputBytes, Math.max(256, Math.floor(context.maxOutputBytes / 2))) }, context.signal, this.options.forbiddenValues);
         result = { status: command.cleanup === 'cleanup_failed' ? 'unknown' : command.cancelled ? 'cancelled' : command.timedOut || command.exitCode !== 0 ? 'failed' : 'completed', output: asJson(command), truncated: command.truncated, effects: { exitCode: command.exitCode, cleanup: command.cleanup } };
