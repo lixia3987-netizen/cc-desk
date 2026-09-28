@@ -155,6 +155,37 @@ test('failed Windows preparation retains occupancy until the outstanding helper 
   }
 });
 
+test('a command handle stopped during Windows preparation settles startup only after physical cleanup', async () => {
+  const f = fixture();
+  const supervisor = new ProcessSupervisor({ environment: { SystemRoot: 'C:\\Windows' }, cleanupTimeoutMs: 200, terminationGraceMs: 1 });
+  try {
+    const handle = supervisor.start('handle-preparing', { executable: process.execPath, argv: [], cwd: process.cwd() });
+    let startedSettled = false;
+    void handle.started.then(() => { startedSettled = true; });
+    await tick();
+    const helper = f.helpers[1];
+    const stopped = handle.stop();
+    await tick();
+    assert.equal(handle.snapshot().started, false);
+    assert.equal(handle.snapshot().stopping, true);
+    assert.equal(handle.snapshot().settled, false);
+    assert.equal(startedSettled, false);
+    assert.equal(f.messages.some(message => message.type === 'launch'), false);
+    f.guardian.finish();
+    await tick();
+    assert.equal(startedSettled, false, 'guardian close cannot replace helper close');
+    helper.finish();
+    assert.equal((await stopped).cleanup, 'released');
+    assert.equal(await handle.started, false);
+    assert.equal((await handle.closed).cancelled, true);
+    assert.equal(supervisor.has('handle-preparing'), false);
+  } finally {
+    for (const helper of f.helpers) helper.finish();
+    await supervisor.dispose();
+    f.restore();
+  }
+});
+
 for (const loss of ['invalid output', 'failed result', 'helper exit']) {
   test(`Windows Job readiness followed by ${loss} before the await resumes never authorizes launch`, async () => {
     const f = fixture();
