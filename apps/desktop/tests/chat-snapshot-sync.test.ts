@@ -71,6 +71,13 @@ test('visibility/manual refresh discovers a new host epoch even when all its not
   assert.equal(f.sync.notify(version(100,100,'host-a')),false);f.sync.dispose();
 });
 
+test('a fresh request discovers another restart after an earlier host notice without waiting for another event',async()=>{
+  let reads=0;const f=fixture(async()=>++reads===1?snapshot(40):snapshot(1,'waiting_approval','host-c'));
+  await f.sync.refresh();f.sync.notify(version(1,1,'host-b'));await f.sync.refresh();
+  assert.equal(f.sync.snapshot?.version?.hostEpoch,'host-c');
+  assert.equal(f.sync.notify(version(9,9,'host-b')),false);f.sync.dispose();
+});
+
 test('a lost final event is repaired by an explicit/watchdog refresh without a later event',async()=>{
   let reads=0;const f=fixture(async()=>snapshot(++reads,reads===1?'thinking':'completed'));
   await f.sync.refresh();await f.sync.refresh();assert.equal(f.sync.snapshot?.taskState,'completed');f.sync.dispose();

@@ -101,7 +101,8 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   });
   handle('chat:attention', z.undefined(), () => ports.chat.attention());
   handle('chat:send', sendSchema, async ({ id, text, attachments, requestId, nativeTaskId }) => {
-    ports.structured(id);
+    const session = ports.structured(id);
+    if (nativeTaskId && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话可以继续已有任务。');
     const checkAdmission = ports.captureAdmission(id);
     if (!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流正在执行，请先取消后再手动发送。');
@@ -111,7 +112,8 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.runChat(id, text, approved, requestId, nativeTaskId);
   });
   handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId, nativeTaskId }) => {
-    ports.structured(id);
+    const session = ports.structured(id);
+    if (nativeTaskId && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话可以继续已有任务。');
     if (invokedCommand(text) && attachments?.length) throw new Error('执行斜杠命令时请先移除附件，再单独发送命令。');
     return ports.queue.submit(id, text, attachments, requestId, { nativeTaskId });
   });

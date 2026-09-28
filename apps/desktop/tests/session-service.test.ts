@@ -1614,10 +1614,23 @@ test('snapshot metadata is captured after async hydration and includes interveni
     t.mock.method(f.service.chat, 'hydrate', async () => { await wait; });
     const pending = f.call<ChatSnapshot>('chat:snapshot', session.id);
     f.registry.events.emit({ type: 'conversation.changed', identity: { sessionId: session.id, ...session.execution }, taskState: 'waiting_approval' });
+    f.store.change(state => { state.sessions.find(item => item.id === session.id)!.status = 'stopped'; });
     release();
     const result = await pending;
     assert.equal(result.version?.eventSequence, 1);
     assert.equal(result.version?.revision, 2);
     assert.equal(result.version?.conversationId, session.execution.conversationId);
+    assert.equal(result.sessionStatus, 'stopped', 'the chat snapshot also repairs a lost workspace status notification');
   } finally { release(); t.mock.restoreAll(); await f.dispose(); }
+});
+
+test('task continuation cannot silently attach a native task to a Claude submission', async () => {
+  const f = await fixture();
+  const session = f.add(f.repo, { kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() } });
+  try {
+    for (const name of ['chat:send', 'chat:submit']) {
+      await assert.rejects(f.call(name, { id: session.id, text: 'continue', nativeTaskId: 'foreign-native-task' }), /只有自研 Agent/);
+    }
+    assert.equal(f.service.queue.snapshot(session.id).items.length, 0);
+  } finally { await f.dispose(); }
 });

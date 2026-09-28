@@ -518,7 +518,10 @@ export class SessionService {
     });
     registerChatHandlers(handle, {
       chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments, queue: this.queue,
-      versionSnapshot: snapshot => this.chatClock.snapshot(snapshot, this.session(snapshot.sessionId).execution.conversationId),
+      versionSnapshot: snapshot => {
+        const session = this.session(snapshot.sessionId);
+        return this.chatClock.snapshot({ ...snapshot, sessionStatus: session.status }, session.execution.conversationId);
+      },
       structured: id => this.structured(id), assertUnlocked: session => this.assertUnlocked(session),
       captureAdmission: id => this.captureEngineAdmission(this.session(id).execution.providerId),
       requireCommands: id => { this.execution.require(id, 'commands'); },

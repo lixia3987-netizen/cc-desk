@@ -1,5 +1,5 @@
-import type { SessionCommand, ContextUsage } from './execution.js';
-import type { NativeTaskIdentity, NativeTaskSnapshot } from './native-task.js';
+import type { SessionCommand, SessionStatus, ContextUsage } from './execution.js';
+import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 export interface ChatMessage {
@@ -56,13 +56,15 @@ export interface ChatSnapshotVersion {
 }
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
+  /** Read with this snapshot, so a lost workspace event cannot leave the pane stopping forever. */
+  sessionStatus?: SessionStatus;
   messages: ChatMessage[]; pending: ChatApproval[];
   usage?: ChatUsage; model?: string; permissionMode?: string;
   context?: ContextUsage;
   nativeRecovery?: NativeRecoveryStatus;
   nativeContextMaintenance?: NativeContextMaintenance;
   nativeRun?: NativeTaskIdentity;
-  nativeTask?: NativeTaskSnapshot;
+  nativeTask?: NativeTaskView;
   nativeTaskError?: string;
   version?: ChatSnapshotVersion;
   /** The current process's command catalog; never restored from disk. */

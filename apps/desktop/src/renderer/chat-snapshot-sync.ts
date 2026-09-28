@@ -6,7 +6,7 @@ export interface ChatSyncState { loading: boolean; failures: number; error?: str
 export class ChatSnapshotSync {
   private current?: ChatSnapshot;
   private expected?: ChatSnapshotVersion;
-  private expectedFromEvent = false;
+  private notificationGeneration = 0;
   private retiredEpochs = new Set<string>();
   private inFlight?: Promise<void>;
   private requested = false;
@@ -31,24 +31,26 @@ export class ChatSnapshotSync {
       if (prior?.hostEpoch === version.hostEpoch && version.revision <= prior.revision) return false;
       if (prior && prior.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(prior.hostEpoch);
       this.expected = version;
-      this.expectedFromEvent = true;
     }
+    this.notificationGeneration++;
     if (this.inFlight) this.requested = true;
     return true;
   }
-  private accept(snapshot: ChatSnapshot): boolean {
+  private accept(snapshot: ChatSnapshot, requestGeneration: number): boolean {
     if (snapshot.sessionId !== this.sessionId) throw new Error('读取到其他会话的状态，已拒绝更新。');
     const version = snapshot.version, old = this.current?.version, expected = this.expected;
     if (version) {
       if (this.retiredEpochs.has(version.hostEpoch)) return false;
       if (expected?.hostEpoch === version.hostEpoch && (version.revision < expected.revision || version.eventSequence < expected.eventSequence)) return false;
-      if (expected && expected.hostEpoch !== version.hostEpoch && this.expectedFromEvent) return false;
+      // A reply begun before a host-change notice cannot supersede that notice.
+      // A fresh read may discover another restart even if all its events were lost.
+      if (expected && expected.hostEpoch !== version.hostEpoch && requestGeneration !== this.notificationGeneration) return false;
       if (old?.hostEpoch === version.hostEpoch && (version.revision < old.revision || version.eventSequence < old.eventSequence)) return false;
       if (old?.hostEpoch === version.hostEpoch && old.conversationId === version.conversationId
         && old.workerGeneration !== undefined && version.workerGeneration !== undefined && version.workerGeneration < old.workerGeneration) return false;
       if (old && old.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(old.hostEpoch);
+      if (expected && expected.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(expected.hostEpoch);
       this.expected = version;
-      this.expectedFromEvent = false;
     } else if (old || expected) return false; // Once versioned, never regress to unversioned state.
     this.current = snapshot;
     this.ports.apply(snapshot);
@@ -73,9 +75,10 @@ export class ChatSnapshotSync {
     for (let attempt = 0; attempt < 2 && !this.disposed; attempt++) {
       this.requested = false;
       try {
+        const requestGeneration = this.notificationGeneration;
         const value = await this.ports.read();
         if (this.disposed) return;
-        if (!this.accept(value)) {
+        if (!this.accept(value, requestGeneration)) {
           this.requested = true;
           if (attempt === 1) throw new Error('会话状态仍在变化，请重试同步。');
           continue;
