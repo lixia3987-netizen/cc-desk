@@ -56,7 +56,7 @@ export interface NativeTaskToolOptions {
   forbiddenValues: string[];
   /** Rechecks run ownership, cancellation and the applicable project instructions. */
   assertOwnership(): Promise<void>;
-  store: { read(taskId: string): NativeTaskSnapshot | undefined; apply(update: NativeTaskUpdate): Promise<NativeTaskSnapshot> };
+  store: { read(taskId: string): NativeTaskSnapshot | null | undefined; apply(update: NativeTaskUpdate): Promise<NativeTaskSnapshot> };
   /** Host may append a workspace observation; the returned revision is read after it. */
   onCommitted?(snapshot: NativeTaskSnapshot): Promise<void>;
 }
@@ -75,7 +75,7 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
   const snapshot = () => {
     const task = options.store.read(taskId);
     if (task && (task.taskId !== taskId || encode(task.identity) !== identity)) throw new Error('任务归属已改变。');
-    return task;
+    return task ?? undefined;
   };
   const stateFor = (prepared: PreparedTool, context: ToolExecutionContext) => {
     current(context);
