@@ -22,7 +22,7 @@ export { MessageText } from './MessageText';
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
-function ApprovalCard({approval,sessionId,onError,drafts,engineName}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string}) {
+function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean}) {
   const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId)),[busy,setBusy]=useState(false);
   const {answers,reason}=value;
   const update=(patch:Partial<ApprovalDraft>)=>setValue(previous=>{const next={...previous,...patch};drafts.set(sessionId,approval.requestId,next);return next;});
@@ -30,7 +30,7 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName}:{approval:C
   const setReason=(reason:string)=>update({reason});
   const respond=async(behavior:'allow'|'deny')=>{
     setBusy(true);
-    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:reason||undefined,answers:approval.kind==='question'?answers:undefined});drafts.delete(sessionId,approval.requestId);}
+    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:approval.kind==='question'?answers:undefined});drafts.delete(sessionId,approval.requestId);}
     catch(error){onError(error);} finally {setBusy(false);}
   };
   const questions=approval.questions??[];
@@ -43,7 +43,7 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName}:{approval:C
         return {...value,[q.question]:q.multiSelect?(selected?old.filter(p=>p!==option.label):[...old,option.label]).join(', '):option.label};
       })}><span>{selected&&<Check size={12}/>}{option.label}</span>{option.description&&<small>{option.description}</small>}</button>;
     })}</div><input aria-label={'回答：'+q.question} placeholder="也可以填写自己的回答" value={answers[q.question]??''} onChange={e=>setAnswers(value=>({...value,[q.question]:e.target.value}))}/></fieldset>):<pre className="tool-input">{JSON.stringify(approval.input,null,2)}</pre>}
-    <input aria-label="审批说明" placeholder="可选：拒绝原因或补充说明" value={reason} onChange={e=>setReason(e.target.value)} disabled={busy}/>
+    {allowMessage&&<input aria-label="审批说明" placeholder="可选：拒绝原因或补充说明" value={reason} onChange={e=>setReason(e.target.value)} disabled={busy}/>}
     <div className="approval-actions"><button className="secondary compact" disabled={busy} onClick={()=>void respond('deny')}><X size={14}/>拒绝</button><button className="primary compact" disabled={busy||(approval.kind==='question'&&questions.some(q=>!answers[q.question]?.trim()))} onClick={()=>void respond('allow')}>{busy?<Loader2 className="spin" size={14}/>:<Check size={14}/>} {approval.kind==='question'?'提交回答':'允许本次'}</button></div>
   </section>;
 }
@@ -207,7 +207,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName}/>)}
-      {!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName}/>)}
+      {!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
@@ -218,7 +218,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     <SubtaskPanel session={session}/>
-    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'服务返回的本回合累计用量；未估算费用':'引擎实际返回的用量与费用估算'}>{session.execution.providerId==='native'&&Object.values(snapshot.usage).some(value=>typeof value==='number')&&'本回合累计 · '}{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
+    <div className="chat-meta"><span className={'dot '+(task==='error'?'error':running?'running':'idle')}/>{session.status==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'服务返回的本回合累计用量；费用按本回合保存的用户价格估算，未含压缩、缓存折扣和其他附加费用':'引擎实际返回的用量与费用估算'}>{session.execution.providerId==='native'&&Object.values(snapshot.usage).some(value=>typeof value==='number')&&'本回合累计 · '}{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
     {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}
       maintenance={nativeMaintenance?{...nativeMaintenance,compacting}:undefined}
       compactDisabled={running||composerDisabled||readOnly||!!descriptor.maintenance||!!snapshot?.queue?.items.length}

@@ -7,6 +7,7 @@ import { createLocalToolPort } from '@cc-desk/agent-node/tools';
 import { ProcessSupervisor } from '@cc-desk/agent-node/process-supervisor';
 import { loadProjectInstructions } from '@cc-desk/agent-node/project-instructions';
 import { composeToolPorts, createMcpToolPort, type ManagedMcpToolPort } from '@cc-desk/agent-node/mcp-tools';
+import { extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import type { ExecutionSubmission } from '@cc-desk/contracts/execution-ports';
 import type { ChatDecision, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '../../../shared/chat';
@@ -24,6 +25,7 @@ import { nativeRunError } from './run-errors';
 import { summarizeNativeContext } from './context-summary';
 import { assertNativeInputBudget, autoCompactBeforeSend } from './automatic-compaction';
 import { mcpConnectionMetadata, mcpStartupMetadata } from './mcp-startup';
+import { createQuestionTool, type NativeQuestionTool } from './question-tool';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -36,7 +38,8 @@ interface ActiveRun {
   abort: AbortController; promise: Promise<ChatTurnResult>; identity?: RunIdentity;
   store?: NativeRunStore; cleanupUnconfirmed: boolean; released: boolean;
   phase?: 'compacting';
-  approval?: { publicId: string; request: ApprovalRequest; createdAt: string; settle(decision: ApprovalDecision['decision']): void };
+  questions?: NativeQuestionTool;
+  approval?: { publicId: string; kind: 'permission' | 'question'; request: ApprovalRequest; createdAt: string; settle(decision: ApprovalDecision['decision']): void };
 }
 interface ContextOperation {
   kind: 'resume' | 'compact' | 'confirm'; expectedHead: string; connectionId: string;
@@ -165,7 +168,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   async page(id: string, options?: ChatPageOptions) { await this.hydrate(id); return this.projection.page(id, options); }
   async search(id: string, query: string, before?: string) { await this.hydrate(id); return this.projection.search(id, query, before); }
-  attention() { return [...this.active.entries()].flatMap(([sessionId, run]) => run.approval ? [{ sessionId, requestId: run.approval.publicId, kind: 'permission' as const, toolName: run.approval.request.tool.name, createdAt: run.approval.createdAt }] : []); }
+  attention() { return [...this.active.entries()].flatMap(([sessionId, run]) => run.approval ? [{ sessionId, requestId: run.approval.publicId, kind: run.approval.kind, toolName: run.approval.request.tool.name, createdAt: run.approval.createdAt }] : []); }
   send(id: string, text: string, attachments: string[] = [], _titlePrompt?: string, submission?: ExecutionSubmission): Promise<ChatTurnResult> {
     const session = this.session(id), config = parseNativeConfig(session.engineConfig);
     if (attachments.length) return Promise.reject(new Error('自研 agent Alpha 尚不支持附件。'));
@@ -221,7 +224,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       });
       const forbiddenValues = [connection.apiKey, ...mcpConnections.flatMap(item => item.transport === 'stdio' ? Object.values(item.environment) : [item.bearerToken])].filter((value): value is string => Boolean(value));
       const previous = ledger.listRuns().at(-1)?.configuration;
-      if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL)) throw new Error('已有上下文绑定原服务与模型。切换服务或模型请新建会话。');
+      if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
       const generation = Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1;
       await ledger.close(); active.store = undefined;
       ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId!, forbiddenValues });
@@ -283,11 +286,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           }, assertConnectionCurrent: (id, revision) => this.options.mcpConnections!.assertCurrent({ id, revision }),
         }, AbortSignal.any([active.abort.signal, AbortSignal.timeout(Math.min(remaining, 30_000))]));
       }
+      const questions = createQuestionTool({ identity, forbiddenValues, assertOwnership });
+      active.questions = questions;
       const createTools = (): ToolPort => {
-        const local = createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {
+        const local = composeToolPorts([questions, createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {
           if (!sameRun(run, identity)) throw new Error('工具运行归属已失效。');
           await assertOwnership();
-        } });
+        } })]);
         if (!mcpTools) return local;
         const remote = mcpTools, instructionDigest = instructions.digest;
         const validateInstructions = async (signal: AbortSignal) => {
@@ -308,7 +313,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         }]);
       };
       let tools = createTools();
-      const model = { baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
+      const model = { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
       for (const secret of forbiddenValues) assertNoModelCredential({ input: active.input, instructions: modelInstructions, tools: tools.definitions, context: ledger.loadContext() }, secret);
       const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, config, model, instructions: modelInstructions, forbiddenValues,
         signal: active.abort.signal, startedAt, assertOwnership, worker: this.options.worker,
@@ -337,7 +342,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.phase = undefined;
       this.changed(id, 'starting');
       const run = await (this.options.worker ?? runNativeWorker)({
-        request: { identity, input: active.input, policyRevision, configuration: json({ connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, sessionOptions: config, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, policyRevision, configuration: json({ connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: config, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: (request, signal) => this.approve(id, active, request, signal) }, signal: active.abort.signal,
         onEvent: event => this.projection.event(id, event),
@@ -403,14 +408,16 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   private turnResult(result: RunResult): ChatTurnResult {
     let lastUser = -1;
     for (let index = result.context.items.length - 1; index >= 0; index--) { const item = result.context.items[index]; if (item && typeof item === 'object' && !Array.isArray(item) && item.role === 'user') { lastUser = index; break; } }
-    const messages = result.context.items.slice(lastUser + 1).filter(item => item && typeof item === 'object' && !Array.isArray(item) && item.type === 'message' && item.role === 'assistant');
-    const last = messages.at(-1) as { content?: Array<{ type?: string; text?: string }> } | undefined;
-    const summary = last?.content?.filter(item => item.type === 'output_text').map(item => item.text ?? '').join('\n') ?? '';
+    const last = result.context.items.slice(lastUser + 1).findLast(item => Boolean(extractNativeAssistantText([item])));
+    const summary = last ? extractNativeAssistantText([last]) : '';
     return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
     this.assertActive(id, active);
     if (!active.identity || !sameRun(request.binding, active.identity) || request.expiresAt <= Date.now() || active.approval) throw new Error('审批归属或有效期无效。');
+    const questions = request.tool.name === 'ask_user' ? active.questions?.questions(request) : undefined;
+    if (request.tool.name === 'ask_user' && !questions) throw new Error('提问归属无效。');
+    const kind = questions ? 'question' as const : 'permission' as const;
     return new Promise(resolve => {
       const publicId = randomUUID(); let settled = false;
       const settle = (decision: ApprovalDecision['decision']) => {
@@ -421,13 +428,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       };
       const cancel = () => settle('denied');
       const timer = setTimeout(() => settle('expired'), Math.max(0, request.expiresAt - Date.now()));
-      active.approval = { publicId, request: structuredClone(request), createdAt: new Date().toISOString(), settle };
+      active.approval = { publicId, kind, request: structuredClone(request), createdAt: new Date().toISOString(), settle };
       // Remote schemas may themselves define a parameter named "preconditions".
       // Keep arbitrary MCP arguments separate so the approval displays the exact call.
       const approvalInput = request.tool.name.startsWith('mcp_')
         ? { arguments: request.input, preconditions: request.preconditions }
         : { ...request.input, preconditions: request.preconditions };
-      this.projection.approval(id, { requestId: publicId, toolName: request.tool.name, toolUseId: request.binding.toolCallId, input: approvalInput, kind: 'permission', createdAt: new Date().toISOString() });
+      this.projection.approval(id, { requestId: publicId, toolName: request.tool.name, toolUseId: request.binding.toolCallId, input: approvalInput, kind, ...(questions ? { questions } : {}), createdAt: new Date().toISOString() });
       signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel();
     });
   }
@@ -435,6 +442,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const active = this.active.get(id), approval = active?.approval;
     if (!active || !approval || approval.publicId !== requestId) throw new Error('审批已结束或不属于当前运行。');
     this.assertActive(id, active);
+    if (approval.kind === 'question') {
+      if (approval.request.expiresAt <= Date.now()) { approval.settle('expired'); throw new Error('提问已过期，请等待模型继续。'); }
+      if (decision.message) throw new Error('请在回答框中填写内容。');
+      if (decision.behavior === 'allow') active.questions!.answer(approval.request, decision.answers);
+      approval.settle(decision.behavior === 'allow' ? 'approved' : 'denied');
+      return;
+    }
     if (decision.answers || decision.message) throw new Error('此审批只接受允许或拒绝，不能修改工具参数。');
     approval.settle(approval.request.expiresAt > Date.now() ? decision.behavior === 'allow' ? 'approved' : 'denied' : 'expired');
   }
@@ -443,7 +457,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const session = this.session(id), options = parseNativeConfig(config);
     if (this.has(id)) throw new Error('请停止运行后修改配置。');
     const current = parseNativeConfig(session.engineConfig);
-    if (session.started && (options.connectionId !== current.connectionId || options.model !== current.model)) throw new Error('已有上下文绑定原服务与模型。切换服务或模型请新建会话。');
+    if (session.started && (options.connectionId !== current.connectionId || options.model !== current.model)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
     // Structured session updates delegate persistence to their provider. Commit
     // the normalized configuration before the IPC reports a successful save.
     this.store.change(state => { state.sessions.find(item => item.id === id)!.engineConfig = { schemaVersion: config.schemaVersion, options }; });
@@ -536,7 +550,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const config = parseNativeConfig(this.session(id).engineConfig);
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
       const previous = ledger.listRuns().at(-1)?.configuration;
-      if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL)) throw new Error('已有上下文绑定原服务与模型。切换服务或模型请新建会话。');
+      if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
       await ledger.close(); operation.store = undefined;
       ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: this.session(id).execution.conversationId!, forbiddenValues: [connection.apiKey] });
       operation.store = ledger;
@@ -545,7 +559,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const identity: RunIdentity = { sessionId: id, conversationId: ledger.conversationId, runId: randomUUID(), requestId: `compact:${expectedHead}`, workerGeneration: Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1 };
       operation.identity = identity;
       const result = await summarizeNativeContext({ identity, context: source.context,
-        model: { baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
+        model: { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
         maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, maxActiveMs: config.maxActiveMs,
         signal: operation.abort.signal, worker: this.options.worker });
       this.assertContextOperation(id, operation);
