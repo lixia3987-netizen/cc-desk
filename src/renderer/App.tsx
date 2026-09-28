@@ -12,6 +12,7 @@ import { FilePicker } from './ProjectPanels';
 import { SessionSelection } from './selection';
 import { SettingsPanel } from './SettingsPanel';
 import { CommandPalette } from './workspace/CommandPalette';
+import { ConnectionManager } from './workspace/ConnectionManager';
 import { HistoryImport } from './workspace/HistoryImport';
 import { NewSessionForm } from './workspace/NewSessionForm';
 import { RenameSession } from './workspace/RenameSession';
@@ -230,7 +231,6 @@ export function App() {
   };
   const appendReview = (text: string) => active ? appendDraft(active.id, text) : false;
   const activePanels = active ? (panelDrafts.current.get(active.id) ?? active.panelDrafts ?? {}) : {};
-  const liveCount = state.sessions.filter(s => s.status === 'running' || s.status === 'stopping').length;
   const taskCount = state.sessions.filter(isSessionBusy).length;
 
   return <div className="app">
@@ -280,8 +280,11 @@ export function App() {
         <span>
           <span className={`dot ${cap.available ? 'running' : 'stopped'}`} />{cap.available ? cap.version : '未检测到 Claude Code'}</span>
         <span>
-          <span className="running-count" title="执行中包含任务、Shell 和尚未同步状态的终端；连接数包含等待下一轮的 CLI 进程">
-            <span className={`dot ${taskCount ? 'running' : 'idle'}`} />{taskCount} 执行中 · {liveCount} / {state.settings.maxSessions} 已连接</span>{platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'macOS' : 'Linux'}<span>UTF-8</span>
+          <span className="running-count" title="执行中包含任务、Shell 和尚未同步状态的终端">
+            <span className={`dot ${taskCount ? 'running' : 'idle'}`} />{taskCount} 执行中</span>
+          <ConnectionManager sessions={state.sessions} projects={state.projects} limit={state.settings.maxSessions} disabled={busy}
+            onError={report} onSelect={session => { setProjectId('all'); setArchived(session.archived); setSearch(''); selectSession(session.id); }} />
+          {platform === 'win32' ? 'Windows' : platform === 'darwin' ? 'macOS' : 'Linux'}<span>UTF-8</span>
           <span>v{appVersion}</span>
         </span>
       </footer>

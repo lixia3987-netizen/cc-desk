@@ -1,4 +1,5 @@
 import { electronLaunchArgs } from './helpers/electron-launch';
+import { selectProjectFilter } from './helpers/project-filter';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -137,9 +138,10 @@ async function close(app: ElectronApplication) {
   await app.close();
 }
 
-async function create(page: Page, title = '', adapter: 'structured' | 'terminal' = 'structured') {
+async function create(page: Page, title = '', adapter: 'structured' | 'terminal' = 'structured', projectId?: string) {
   await page.getByRole('button', { name: /新建会话/ }).click();
   const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+  if (projectId) await form.getByLabel('项目', { exact: true }).selectOption(projectId);
   await form.getByLabel('会话名称', { exact: true }).fill(title);
   await form.getByLabel('交互方式', { exact: true }).selectOption(adapter);
   await form.getByRole('button', { name: '创建会话', exact: true }).click();
@@ -152,6 +154,63 @@ async function completed(page: Page) {
   await expect(page.locator('.session-actions').getByRole('button', { name: '中断任务', exact: true })).toHaveCount(0);
   await expect(page.locator('.session-actions').getByRole('button', { name: '停止', exact: true })).toHaveCount(0);
 }
+
+test('session connections: list idle and active processes across sidebar filters and close only the chosen session', async () => {
+  const f = await workspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
+    const idle = await create(page, '已完成但保持连接');
+    await page.getByLabel('提示词编辑器', { exact: true }).fill('快速完成任务');
+    await page.getByLabel('提示词编辑器', { exact: true }).press('Enter'); await completed(page);
+    const running = await create(page, '正在执行的连接');
+    await page.getByLabel('提示词编辑器', { exact: true }).fill('保持运行直到关闭连接');
+    await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(s => s.id === running.id)?.taskState).toBe('thinking');
+    await page.getByLabel('提示词编辑器', { exact: true }).fill('保留未发送草稿');
+    const otherPath = path.join(f.directory, '另一个工程'); await fs.mkdir(otherPath);
+    const otherProject = await page.evaluate(folder => window.desktop.addProject(folder), otherPath);
+    const native = await create(page, '等待输入的原生连接', 'terminal', otherProject.id);
+    await page.getByRole('button', { name: '启动会话', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(id => window.desktop.terminalSnapshot(id), native.id)).chunks.map(value => value.data).join('')).toContain('NATIVE_READY');
+    const neverStarted = await create(page, '尚未启动的会话');
+    await selectProjectFilter(page, f.project.name);
+    await page.getByLabel('搜索会话', { exact: true }).fill('隐藏全部会话');
+    await expect(page.locator('.session-row')).toHaveCount(0);
+    // The modal makes the app inert; keep count assertions independent of the accessibility tree.
+    const trigger = page.locator('.connection-trigger');
+    await expect(trigger).toContainText('3 / 4 已连接'); await trigger.click();
+    const dialog = page.getByRole('dialog', { name: '已连接会话', exact: true });
+    await expect(dialog.locator('.connection-list > li')).toHaveCount(3);
+    await expect(dialog).toContainText(idle.title); await expect(dialog).toContainText(running.title); await expect(dialog).toContainText(native.title);
+    await expect(dialog).not.toContainText(neverStarted.title);
+    const target = dialog.locator(`[data-connection-session-id="${running.id}"]`);
+    await target.getByRole('button', { name: `关闭会话「${running.title}」的连接`, exact: true }).click();
+    await expect(target).toHaveCount(0); await expect(trigger).toContainText('2 / 4 已连接');
+    const state = (await page.evaluate(() => window.desktop.snapshot())).state;
+    expect(state.sessions.find(s => s.id === running.id)?.status).toBe('stopped');
+    expect(state.sessions.find(s => s.id === running.id)?.draft).toBe('保留未发送草稿');
+    expect(state.sessions.find(s => s.id === idle.id)?.status).toBe('running');
+    expect(state.sessions.find(s => s.id === native.id)?.status).toBe('running');
+    expect((await page.evaluate(id => window.desktop.chatSnapshot(id), running.id)).messages.some(message => message.role === 'user' && message.text === '保持运行直到关闭连接')).toBe(true);
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await page.screenshot({ path: test.info().outputPath('connection-manager.png') });
+    await dialog.locator(`[data-connection-session-id="${idle.id}"] .connection-session`).click();
+    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: idle.title, exact: true })).toBeVisible();
+    await expect(page.getByLabel('搜索会话', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('工作空间筛选', { exact: true })).toHaveText('全部项目');
+    await trigger.click();
+    for (const session of [idle, native]) {
+      await dialog.locator(`[data-connection-session-id="${session.id}"]`).getByRole('button', { name: `关闭会话「${session.title}」的连接`, exact: true }).click();
+    }
+    await expect(dialog).toContainText('当前没有已连接的会话');
+    await expect(trigger).toContainText('0 / 4 已连接');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0); await expect(trigger).toBeFocused();
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(4);
+  } finally { await close(app); await f.dispose(); }
+});
 
 test('session experience: Enter sends once, modifiers insert lines, IME is safe, and automatic/manual names persist', async ({}, testInfo) => {
   const f = await workspace(); let app = await f.launch();
