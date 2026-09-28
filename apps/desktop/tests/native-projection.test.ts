@@ -299,3 +299,67 @@ test('a failed later request cannot price partial reported usage as the complete
     assert.deepEqual(restored.snapshot(f.id).usage, usage); restored.flush();
   } finally { await f.dispose(); }
 });
+
+async function prepareChangeSetProjection(f: Awaited<ReturnType<typeof fixture>>) {
+  const preview = { schemaVersion: 1 as const, digest: 'a'.repeat(64), atomic: false as const, files: Array.from({ length: 3 }, (_, index) => ({ index, path: `file-${index}.txt`, kind: 'replace' as const, beforeHash: 'b'.repeat(64), afterHash: 'c'.repeat(64), beforeBytes: 3, afterBytes: 3, diff: '-old\n+new', lineEndings: { before: 'none' as const, after: 'none' as const }, noFinalNewline: { before: true, after: true } })), totalContentBytes: 9, previewBytes: 0 };
+  while (preview.previewBytes !== Buffer.byteLength(JSON.stringify(preview))) preview.previewBytes = Buffer.byteLength(JSON.stringify(preview));
+  const call: ToolCall = { id: 'batch', name: 'apply_change_set', arguments: '{"changes":[]}' };
+  const prepared: PreparedTool = { call, definition: { name: call.name, description: '', inputSchema: {}, risk: 'write' }, input: { changes: [] }, inputDigest: 'digest', policyRevision: 'alpha-1', requiresApproval: true, preconditions: { changeSet: preview } };
+  const approval: ApprovalDecision = { decision: 'approved', expiresAt: Date.now() + 1000, binding: { ...f.req.identity, toolCallId: call.id, inputDigest: prepared.inputDigest, policyRevision: 'alpha-1' } };
+  await f.store.beginRun(f.req);
+  await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [{ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments }], toolCalls: [call], finishReason: 'tool_calls', usage: null } });
+  await f.projection.hydrate(f.id, f.store);
+  assert.equal(f.projection.snapshot(f.id).messages.at(-1)?.nativeChangeSetState, 'pending');
+  await f.store.append(f.req.identity, { type: 'tool_prepared', prepared, approval });
+  await f.projection.hydrate(f.id, f.store);
+  assert.equal(f.projection.snapshot(f.id).messages.at(-1)?.nativeChangeSetState, 'running');
+  return { preview, call, record: (index: number, status: 'prepared' | 'applied' | 'not_applied' | 'unknown') => f.store.recordChangeSetEvent(f.req.identity, call, { changeSetDigest: preview.digest, index, path: preview.files[index].path, status, beforeHash: preview.files[index].beforeHash, afterHash: preview.files[index].afterHash }) };
+}
+
+test('multi-file crash projection preserves applied prefix, unknown current file and unstarted remainder', async () => {
+  const f = await fixture();
+  try {
+    const batch = await prepareChangeSetProjection(f);
+    await batch.record(0, 'prepared'); await batch.record(0, 'applied'); await batch.record(1, 'prepared');
+    await f.reopen(); f.setActive(false); const restored = f.create(); await restored.hydrate(f.id, f.store);
+    const message = restored.snapshot(f.id).messages.find(item => item.toolName === batch.call.name)!;
+    assert.equal(message.nativeChangeSetState, 'result');
+    assert.equal(message.nativeChangeSetResult?.status, 'unknown');
+    assert.deepEqual(message.nativeChangeSetResult?.files.map(file => file.status), ['applied', 'unknown', 'not_applied']);
+    assert.match(message.text, /不会自动重试/);
+    assert.equal(f.store.getRecoveryReport()?.classification, 'unknown_effects');
+    restored.flush(); const disk = f.create();
+    assert.deepEqual(disk.snapshot(f.id).messages.find(item => item.toolName === batch.call.name)?.nativeChangeSetResult, message.nativeChangeSetResult);
+    disk.flush();
+  } finally { await f.dispose(); }
+});
+
+test('all durable file successes still show overall unknown when the final tool receipt is missing', async () => {
+  const f = await fixture();
+  try {
+    const batch = await prepareChangeSetProjection(f);
+    for (let index = 0; index < 3; index++) { await batch.record(index, 'prepared'); await batch.record(index, 'applied'); }
+    await f.reopen(); await f.projection.hydrate(f.id, f.store);
+    const result = f.projection.snapshot(f.id).messages.find(item => item.toolName === batch.call.name)?.nativeChangeSetResult;
+    assert.equal(result?.status, 'unknown'); assert.equal(result?.receiptCommitted, false);
+    assert.deepEqual(result?.files.map(file => file.status), ['applied', 'applied', 'applied']);
+    assert.equal(f.projection.snapshot(f.id).taskState, 'error');
+    assert.equal(f.store.getToolState(f.req.identity.runId, batch.call.id)?.completed, undefined);
+  } finally { await f.dispose(); }
+});
+
+test('unknown tool output cannot overwrite host-attested per-file effects in recovered projection', async () => {
+  const f = await fixture();
+  try {
+    const batch = await prepareChangeSetProjection(f);
+    await batch.record(0, 'prepared'); await batch.record(0, 'applied'); await batch.record(1, 'prepared');
+    const output = { digest: batch.preview.digest, atomic: false, status: 'unknown', receiptCommitted: false, files: batch.preview.files.map(file => ({ index: file.index, path: file.path, beforeHash: file.beforeHash, afterHash: file.afterHash, status: 'applied' })) };
+    await assert.rejects(f.store.append(f.req.identity, { type: 'tool_completed', call: batch.call, result: { status: 'unknown', output }, resultItems: [] }), { code: 'payload_mismatch' });
+    output.files[1].status = 'unknown'; output.files[2].status = 'not_applied';
+    await f.store.append(f.req.identity, { type: 'tool_completed', call: batch.call, result: { status: 'unknown', output }, resultItems: [{ type: 'function_call_output', call_id: batch.call.id, output: JSON.stringify(output) }] });
+    await f.finish('recovery_required'); await f.projection.hydrate(f.id, f.store);
+    const message = f.projection.snapshot(f.id).messages.find(item => item.toolName === batch.call.name)!;
+    assert.deepEqual(message.nativeChangeSetResult?.files.map(file => file.status), ['applied', 'unknown', 'not_applied']);
+    assert.equal(message.nativeChangeSetResult?.status, 'unknown');
+  } finally { await f.dispose(); }
+});

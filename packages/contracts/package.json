@@ -27,6 +27,10 @@
     "./native-task": {
       "types": "./dist/native-task.d.ts",
       "default": "./dist/native-task.js"
+    },
+    "./native-changes": {
+      "types": "./dist/native-changes.d.ts",
+      "default": "./dist/native-changes.js"
     }
   },
   "scripts": {

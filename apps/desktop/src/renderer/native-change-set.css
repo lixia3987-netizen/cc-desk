@@ -1,0 +1,20 @@
+.native-change-set{min-width:0;margin:10px 0;padding:10px;border:1px solid var(--border);border-radius:6px;line-height:1.6;overflow-wrap:anywhere}
+.native-change-set h4{font-size:inherit;margin:0 0 6px;font-weight:600}
+.native-change-set p{margin:6px 0}
+.native-change-set-note,.native-change-set-meta{color:var(--text-secondary);font-size:calc(11px * var(--ui-font-scale))}
+.native-change-set-warning,.native-change-set [data-file-status="unknown"] .native-change-set-state{color:var(--warning)}
+.native-change-set-invalid{border-color:var(--warning)}
+.native-change-set-files{list-style:none;padding:0;margin:10px 0 0}
+.native-change-set-file{min-width:0;margin-top:10px;padding-top:10px;border-top:1px solid var(--border)}
+.native-change-set-file>header{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:6px}
+.native-change-set-file code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere;unicode-bidi:plaintext}
+.native-change-set-hashes{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 10px;margin:6px 0;font-size:calc(10px * var(--ui-font-scale))}
+.native-change-set-hashes dt{color:var(--text-secondary)}
+.native-change-set-hashes dd{margin:0;min-width:0}
+.native-change-set-diff{max-height:360px;overflow:auto;margin:8px 0 0;padding:8px;background:var(--input-bg);border:1px solid var(--border);border-radius:4px;font-size:calc(11px * var(--ui-font-scale));line-height:1.55;white-space:pre;tab-size:4;unicode-bidi:plaintext}
+.native-change-set-diff .added{color:var(--success)}
+.native-change-set-diff .removed{color:var(--danger)}
+.native-change-set-diff .hunk{color:var(--accent)}
+.native-change-set [data-file-status="applied"] .native-change-set-state{color:var(--success)}
+.native-change-set [data-file-status="not_applied"] .native-change-set-state{color:var(--text-secondary)}
+@media(max-width:650px){.native-change-set{padding:8px}.native-change-set-hashes{grid-template-columns:1fr;gap:0}.native-change-set-hashes dd{margin-bottom:5px}.native-change-set-diff{max-height:280px}}

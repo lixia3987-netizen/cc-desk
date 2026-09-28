@@ -2,7 +2,7 @@
 
 正式运行验收统一见[独立清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)：真实服务、图形与当前候选三平台结果按稳定 ID 登记；本页保留实现说明与历史证据，不以旧候选通过替代当前验收。
 
-当前 native 开发入口（2026-09-28）：[总体计划](NATIVE-AGENT-PLAN.md)、[PR #43 交付与待验收](NATIVE-AGENT-COMPLETION.md)、[下一轮能力规划](NATIVE-AGENT-NEXT-PLAN.md)。[N1 任务闭环](NATIVE-AGENT-N1.md)、[N2-01 检索能力](NATIVE-AGENT-N2.md)和 [E0-01 工程任务准备](NATIVE-AGENT-E0.md)已实现并完成各自本地验证；下一步推进 N2-02 多文件变更预览。当前候选真实服务、图形与平台仍待正式验收。Claude 继续默认，仅集成到 `dev/native-agent`，不自动触发 CI。
+当前 native 开发入口（2026-09-28）：[总体计划](NATIVE-AGENT-PLAN.md)、[PR #43 交付与待验收](NATIVE-AGENT-COMPLETION.md)、[下一轮能力规划](NATIVE-AGENT-NEXT-PLAN.md)。[N1 任务闭环](NATIVE-AGENT-N1.md)、[N2-01 检索能力](NATIVE-AGENT-N2.md)、[N2-02 多文件变更预览与回执](NATIVE-AGENT-N2-CHANGES.md)和 [E0-01 工程任务准备](NATIVE-AGENT-E0.md)已实现并完成各自本地验证；下一步推进 E0-02 版本化评估报告。当前候选真实服务、图形与平台仍待正式验收。Claude 继续默认，仅集成到 `dev/native-agent`，不自动触发 CI。
 
 以下保留 v0.3.0 阶段的产品路线记录，不作为当前 native 能力或验收状态的总表。当时源码进度为 v0.3.0，已实现项目分组、会话自动命名、主任务与子任务状态、可配置 Worktree 与 IDE、本地图形化开发流程及顺序工作流。完整版本改动见 [v0.3.0 版本说明](releases/v0.3.0.md)，发布验证见 [验证记录](VALIDATION.md)。此前的 [v0.2.3 体验检查](UX-REVIEW-v0.2.3.md) 保留为问题与验收标准的历史记录。
 

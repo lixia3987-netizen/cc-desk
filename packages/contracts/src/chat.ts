@@ -1,4 +1,5 @@
 import type { SessionCommand, SessionStatus, ContextUsage } from './execution.js';
+import type { NativeChangeSetPreview, NativeChangeSetResult } from './native-changes.js';
 import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
@@ -7,6 +8,9 @@ export interface ChatMessage {
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
+  /** Structured host projection of durable multi-file effects. */
+  nativeChangeSetResult?: NativeChangeSetResult;
+  nativeChangeSetState?: 'pending' | 'running' | 'not_executed' | 'result';
   /** The visible text or tool input omits content retained in the event journal. */
   truncated?: boolean;
   /** Stable CLI identity used when reconciling a stopped session with its transcript. */
@@ -21,6 +25,8 @@ export interface ChatApproval {
   requestId: string; toolName: string; input: Record<string, unknown>;
   kind: 'permission' | 'question'; questions?: ChatQuestion[];
   createdAt: string; toolUseId?: string;
+  /** Complete approval preview; never replaced with a truncated JSON string. */
+  nativeChangeSet?: NativeChangeSetPreview;
 }
 export interface ChatDecision {
   behavior: 'allow' | 'deny'; message?: string;
