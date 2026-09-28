@@ -37,6 +37,7 @@ export async function generateClaudeSessionTitle(request: SessionTitleRequest, o
   const prompt = request.prompt.length > 12_000 ? request.prompt.slice(0, 8_000) + '\n[…中间内容省略…]\n' + request.prompt.slice(-4_000) : request.prompt;
   let connection: ClaudeConnection | undefined;
   let timer: NodeJS.Timeout | undefined;
+  let outputExitTimer: NodeJS.Timeout | undefined;
   let abort: (() => void) | undefined;
   let closedBeforeCleanup = false;
   try {
@@ -57,11 +58,16 @@ export async function generateClaudeSessionTitle(request: SessionTitleRequest, o
         },
         // Even errors normally exit by themselves; wait for close to avoid racing Windows taskkill.
         error: () => { invalid = true; },
+        outputLimit: () => {
+          invalid = true;
+          // An oversized final write can arrive just before natural exit. Allow
+          // close to settle briefly; taskkill cannot find an already-gone root.
+          // The connection has stopped decoding and still drains the pipe. A
+          // continuing producer is terminated after this grace or the main deadline.
+          outputExitTimer = setTimeout(() => finish(), 250);
+        },
         close: code => { closedBeforeCleanup = !connection?.ending; connection?.finish(); finish(code === 0 && !invalid ? result : undefined); },
-      });
-      // The existing connection owns process-tree cleanup. Bound auxiliary output separately.
-      let bytes = 0;
-      connection.child.stdout.on('data', chunk => { bytes += Buffer.byteLength(chunk); if (bytes > 64 * 1024) finish(); });
+      }, undefined, 64 * 1024);
       abort = () => finish();
       request.signal.addEventListener('abort', abort, { once: true });
       timer = setTimeout(() => finish(), options.timeoutMs ?? 15_000);
@@ -70,6 +76,7 @@ export async function generateClaudeSessionTitle(request: SessionTitleRequest, o
     });
   } finally {
     if (timer) clearTimeout(timer);
+    if (outputExitTimer) clearTimeout(outputExitTimer);
     if (abort) request.signal.removeEventListener('abort', abort);
     connection?.terminate();
     if (connection?.termination) {
