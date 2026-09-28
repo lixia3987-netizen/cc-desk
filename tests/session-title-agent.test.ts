@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { StateStore } from '../src/main/store';
+import { ClaudeConnection } from '../src/main/engines/claude/connection';
 import { SessionTitles, type SessionTitleGenerator, type SessionTitleRequest } from '../src/main/session-titles';
 import { generateClaudeSessionTitle, sessionTitleArguments, titleCleanupSucceeded } from '../src/main/engines/claude/title-generator';
 import type { Capabilities, Session } from '../src/shared/types';
@@ -14,7 +15,7 @@ const capabilities: Capabilities = { available: true, executable: process.execPa
   efforts: ['default', 'low'] };
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 function fixture(generate?: SessionTitleGenerator) {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-title-agent-'));
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'cc-title-agent-')));
   const store = new StateStore(directory);
   const timestamp = new Date().toISOString();
   const session: Session = { id: randomUUID(), projectId: randomUUID(), kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
@@ -119,24 +120,99 @@ test('real title subprocess receives stdin only and returns a bounded standalone
   } finally { await f.cleanup(); }
 });
 
-test('real title subprocess failures, malformed results and timeout never return user text', { timeout: 20000 }, async () => {
+test('real title subprocess failures, malformed results and timeout never return user text', { timeout: 25000 }, async t => {
   const f = fixture();
   try {
-    for (const code of [
-      `process.stdout.write('not json');`,
-      `process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:123}));`,
-      `process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:'错误进程的标题'}));process.exitCode=2;`,
-      `process.stdout.write('x'.repeat(70*1024));`,
-      `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);`,
-    ]) {
+    const cases = [
+      { name: 'malformed JSON', code: `process.stdout.write('not json');` },
+      { name: 'non-string result', code: `process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:123}));` },
+      { name: 'nonzero exit', code: `process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:'错误进程的标题'}));process.exitCode=2;` },
+      { name: 'oversized final output followed by natural exit', code: `process.stdout.write('x'.repeat(70*1024));` },
+      { name: 'timeout while process remains alive', code: `process.on('SIGTERM',()=>{});setInterval(()=>{},1000);` },
+    ];
+    for (const { name, code } of cases) await t.test(name, async () => {
       const script = path.join(f.directory, 'failure.cjs'); fs.writeFileSync(script, code);
       const result = await generateClaudeSessionTitle({ session: f.session, prompt: '不要截取这个文本', settings: f.store.state.settings, capabilities, signal: new AbortController().signal },
-        { invocation: { file: process.execPath, prefix: [script] }, timeoutMs: 100 });
-      assert.equal(result, undefined);
-    }
+        { invocation: { file: process.execPath, prefix: [script] }, timeoutMs: 1500 });
+      assert.equal(result, undefined, name);
+    });
   } finally { await f.cleanup(); }
 });
 
+const waitFor = async (condition: () => boolean, message: string) => {
+  const deadline = Date.now() + 5000;
+  while (!condition()) {
+    if (Date.now() >= deadline) throw new Error(message);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+};
+
+test('bounded stdout stops decoding and drains oversized output until natural close', { timeout: 10000 }, async () => {
+  const f = fixture(); let connection: ClaudeConnection | undefined;
+  try {
+    const script = path.join(f.directory, 'bounded-output.cjs');
+    fs.writeFileSync(script, `process.stdout.write('x'.repeat(70*1024));setTimeout(()=>{
+      for(let i=0;i<100;i++)process.stdout.write(JSON.stringify({type:'result',subtype:'success',result:'must not be decoded'})+'\\n');
+    },50);`);
+    let limits = 0, frames = 0, errors = 0;
+    const exit = await new Promise<number | null>(resolve => {
+      connection = new ClaudeConnection({ file: process.execPath, args: [script] }, f.directory, process.env, {
+        frame: () => { frames++; }, error: () => { errors++; }, outputLimit: () => { limits++; },
+        close: code => { connection?.finish(); resolve(code); },
+      }, undefined, 64 * 1024);
+      connection.child.stdin.end();
+    });
+    assert.equal(exit, 0); assert.equal(limits, 1);
+    assert.equal(frames, 0, 'frames after the output cap must not be parsed');
+    assert.equal(errors, 0, 'discarded overflow must not be retained for decoder.finish');
+  } finally { await f.cleanup(); }
+});
+
+function titleFixtureProcessRunning(pid: number): boolean {
+  try { process.kill(pid, 0); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false; throw error; }
+  return true;
+}
+
+for (const reason of ['continuous oversized output', 'explicit abort'] as const) {
+  test(`Windows title cleanup confirms both root and descendant exit after ${reason}`, { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+    const f = fixture(); const controller = new AbortController();
+    const rootFile = path.join(f.directory, 'root-pid'); const childFile = path.join(f.directory, 'child-pid');
+    const outputTrigger = path.join(f.directory, 'begin-output');
+    let running: Promise<string | undefined> | undefined;
+    let rootPid = 0, childPid = 0;
+    try {
+      const childCode = `const fs=require('node:fs');process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(childFile)},String(process.pid));setInterval(()=>{},1000);`;
+      const script = path.join(f.directory, 'live-tree.cjs');
+      fs.writeFileSync(script, `const fs=require('node:fs');const {spawn}=require('node:child_process');
+        process.on('SIGTERM',()=>{});fs.writeFileSync(${JSON.stringify(rootFile)},String(process.pid));
+        spawn(process.execPath,['-e',${JSON.stringify(childCode)}],{stdio:'ignore'});
+        const ready=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(childFile)}))return;
+          if(${JSON.stringify(reason)}==='continuous oversized output'&&!fs.existsSync(${JSON.stringify(outputTrigger)}))return;clearInterval(ready);
+          if(${JSON.stringify(reason)}==='continuous oversized output') {process.stdout.write('x'.repeat(70*1024));setInterval(()=>process.stdout.write('x'.repeat(16*1024)),10);}
+        },10);setInterval(()=>{},1000);`);
+      let settled = false;
+      running = generateClaudeSessionTitle({ session: f.session, prompt: '检查命名进程清理', settings: f.store.state.settings, capabilities, signal: controller.signal },
+        { invocation: { file: process.execPath, prefix: [script] }, timeoutMs: 10000 }).finally(() => { settled = true; });
+      await waitFor(() => fs.existsSync(rootFile) && fs.existsSync(childFile), 'fixture process tree did not become ready');
+      rootPid = Number(fs.readFileSync(rootFile, 'utf8')); childPid = Number(fs.readFileSync(childFile, 'utf8'));
+      assert.equal(titleFixtureProcessRunning(rootPid), true); assert.equal(titleFixtureProcessRunning(childPid), true);
+      assert.equal(settled, false, 'cleanup cannot finish while the fixture tree is still alive');
+      const cleanupStarted = Date.now();
+      if (reason === 'explicit abort') controller.abort();
+      else fs.writeFileSync(outputTrigger, 'ready');
+      assert.equal(await running, undefined);
+      assert.ok(Date.now() - cleanupStarted < 5000, 'output grace/abort must settle well before the 10-second model deadline');
+      await waitFor(() => !titleFixtureProcessRunning(rootPid) && !titleFixtureProcessRunning(childPid), 'title process tree survived cleanup');
+      assert.equal(titleFixtureProcessRunning(rootPid), false); assert.equal(titleFixtureProcessRunning(childPid), false);
+    } finally {
+      controller.abort();
+      await running?.catch(() => {});
+      for (const pid of [childPid, rootPid]) if (pid && titleFixtureProcessRunning(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* The owned fixture just exited. */ } }
+      await f.cleanup();
+    }
+  });
+}
 
 test('Windows title cleanup accepts an already-closed root but not an unconfirmed abort', () => {
   assert.equal(titleCleanupSucceeded(false, true, 'win32'), true);

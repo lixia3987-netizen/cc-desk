@@ -12,6 +12,8 @@ async function fixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-git-'));
   const repo = path.join(dir, 'repo'); await fs.mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Workbench Tests'); await git(repo, 'config', 'user.email', 'tests@example.invalid');
+  // Checkout bytes are part of the fixture, independent of the host's Git policy.
+  await git(repo, 'config', 'core.autocrlf', 'false');
   await fs.writeFile(path.join(repo, 'file.txt'), 'initial\n');
   await fs.writeFile(path.join(repo, '.gitignore'), 'ignored.txt\n');
   await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'Initial');
@@ -308,7 +310,11 @@ test('malformed existing gitfiles and missing source repositories are preserved 
   const f = await fixture(); try {
     const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
     const broken = 'gitdir: /missing/other/repository\n';
-    await fs.writeFile(path.join(tree, '.git'), broken);
+    // Git marks .git hidden on Windows; opening it with 'w' fails with EPERM.
+    // Update the existing file in place, retaining its attributes and identity.
+    const marker = await fs.open(path.join(tree, '.git'), 'r+');
+    try { await marker.truncate(0); await marker.writeFile(broken); }
+    finally { await marker.close(); }
     const existing = await forceCleanupWorktree(f.repo, tree, id);
     assert.equal(existing.ok, false); assert.match(existing.message, /\.git 信息已损坏/);
     assert.match(existing.message, /仅删除会话/); assert.doesNotMatch(existing.message, /Command failed|fatal:/);

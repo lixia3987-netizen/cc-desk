@@ -135,6 +135,8 @@ test('isolated session creation forwards the selected ref and keeps an empty wor
   const git = async (...args: string[]) => (await execFileAsync('git', args, { cwd: f.projectPath })).stdout.trim();
   try {
     await git('init', '-b', 'main');
+    // Keep fixture checkout bytes stable when Windows enables autocrlf globally.
+    await git('config', 'core.autocrlf', 'false');
     await git('config', 'user.name', 'Workbench Tests'); await git('config', 'user.email', 'tests@example.invalid');
     fs.writeFileSync(path.join(f.projectPath, 'file.txt'), 'initial\n');
     await git('add', '.'); await git('commit', '-m', 'Initial');
