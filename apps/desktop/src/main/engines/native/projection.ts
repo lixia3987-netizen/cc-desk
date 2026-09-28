@@ -165,7 +165,10 @@ export class NativeProjection {
       } else if (event.type === 'run_finished') {
         currentTerminal = true;
         const result = event.result;
-        const costUSD = estimateNativeCost(result.usage, configuration?.pricing, configuration?.model);
+        // A failed request can consume service tokens without yielding a durable response.
+        // Earlier reported usage is then partial and cannot price the complete run.
+        const costUSD = result.modelRequests === (modelCounts.get(runId) ?? 0)
+          ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
         add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {

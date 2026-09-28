@@ -233,7 +233,9 @@ test('native cost projection uses the durable model price snapshot across restar
   try {
     const pricing = { model: 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8 };
     f.req.configuration.pricing = pricing;
-    await f.store.beginRun(f.req); await f.finish(); await f.projection.hydrate(f.id, f.store);
+    await f.store.beginRun(f.req);
+    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Known complete response')], toolCalls: [], finishReason: 'completed', usage: { inputTokens: 10, outputTokens: 5 } } });
+    await f.finish(); await f.projection.hydrate(f.id, f.store);
     const expected = (10 * 2 + 5 * 8) / 1_000_000;
     assert.ok(Math.abs(f.projection.snapshot(f.id).usage!.costUSD! - expected) < 1e-12);
     pricing.inputUSDPerMillion = 999; pricing.outputUSDPerMillion = 999;
@@ -249,6 +251,7 @@ for (const scenario of ['missing_usage', 'partial_usage', 'model_mismatch', 'no_
   try {
     if (scenario !== 'no_pricing') f.req.configuration.pricing = { model: scenario === 'model_mismatch' ? 'different-model' : 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8 };
     await f.store.beginRun(f.req);
+    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Complete response')], toolCalls: [], finishReason: 'completed', usage: scenario === 'missing_usage' ? null : scenario === 'partial_usage' ? { inputTokens: 10 } : { inputTokens: 10, outputTokens: 5 } } });
     await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'completed', reason: 'model_completed', modelRequests: 1, toolCalls: 0,
       usage: scenario === 'missing_usage' ? null : scenario === 'partial_usage' ? { inputTokens: 10 } : { inputTokens: 10, outputTokens: 5 }, context: f.store.loadContext()!, committed: true } });
     await f.projection.hydrate(f.id, f.store); assert.equal(f.projection.snapshot(f.id).usage?.costUSD, undefined);
@@ -278,5 +281,21 @@ test('unknown context protocol preserves readable evidence without claiming a su
     await f.store.beginRun(f.req); await f.finish(); await f.projection.hydrate(f.id, f.store);
     assert.equal(f.projection.snapshot(f.id).messages[0].text, f.req.input);
     assert.equal(f.projection.snapshot(f.id).context?.budget, undefined);
+  } finally { await f.dispose(); }
+});
+
+
+test('a failed later request cannot price partial reported usage as the complete native run', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration.pricing = { model: 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8 };
+    await f.store.beginRun(f.req);
+    const usage = { inputTokens: 10, outputTokens: 5 };
+    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('First response was measured')], toolCalls: [], finishReason: 'completed', usage } });
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'failed', reason: 'model_error', modelRequests: 2, toolCalls: 0, usage, context: f.store.loadContext()!, committed: true } });
+    await f.projection.hydrate(f.id, f.store);
+    assert.deepEqual(f.projection.snapshot(f.id).usage, usage, 'known token counts stay visible without an invented whole-run cost');
+    await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).usage, usage); restored.flush();
   } finally { await f.dispose(); }
 });
