@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { ChatQueueSnapshot, ChatSubmission, ChatTurnResult, QueuedChatMessage } from '../shared/chat';
+import type { ChatQueueSnapshot, ChatSendOptions, ChatSubmission, ChatTurnResult, QueuedChatMessage } from '../shared/chat';
 import { ChatQueueStorage, type StoredChatQueue } from './chat-queue-storage';
 
 interface QueueOptions {
@@ -62,14 +62,16 @@ export class ChatQueue {
     const check = this.options.captureAdmission?.(id);
     return () => { check?.(); this.options.assertAvailable(id); };
   }
-  async submit(id: string, text: string, attachments: string[] = [], requestId: string = randomUUID()): Promise<ChatSubmission> {
+  async submit(id: string, text: string, attachments: string[] = [], requestId: string = randomUUID(), options: ChatSendOptions = {}): Promise<ChatSubmission> {
+    const nativeTaskId = options.nativeTaskId;
+    if (nativeTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(nativeTaskId)) throw new Error('无效任务标识。');
     const assertAdmission = this.captureAdmission(id);
     const epoch = this.generation.get(id) ?? 0;
     return this.serial(id, async () => {
       assertAdmission();
       if ((!text.trim() && !attachments.length) || text.length > 128 * 1024) throw new Error('消息为空或超过 128 KiB 上限。');
       if (attachments.length > 8 || new Set(attachments).size !== attachments.length) throw new Error('最多发送 8 个不同附件。');
-      const digest = createHash('sha256').update(JSON.stringify({ text, attachments })).digest('hex');
+      const digest = createHash('sha256').update(JSON.stringify({ text, attachments, ...(nativeTaskId ? { nativeTaskId } : {}) })).digest('hex');
       const state = this.state(id), receipt = state.receipts.find(item => item.requestId === requestId);
       if (receipt) {
         if (receipt.digest !== digest) throw new Error('同一消息提交标识不能用于不同内容。');
@@ -77,7 +79,7 @@ export class ChatQueue {
       }
       if (state.items.length >= 100) throw new Error('最多保留 100 条排队消息，请先移除部分消息。');
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
-      const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued' };
+      const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}) };
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
         assertAdmission();
         item.attachmentNames = attachmentNames;

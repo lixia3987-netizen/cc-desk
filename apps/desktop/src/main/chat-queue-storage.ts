@@ -7,6 +7,7 @@ const itemSchema = z.object({
   id: z.string().uuid(), text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8),
   createdAt: z.string().max(100), status: z.enum(['queued', 'sending']),
   attachmentNames: z.array(z.string().max(1024)).max(8).optional(),
+  nativeTaskId: z.string().uuid().optional(),
 });
 const schema = z.object({
   version: z.literal(1), items: z.array(itemSchema).max(100), paused: z.boolean(), error: z.string().max(8000).optional(),
