@@ -286,7 +286,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           }, assertConnectionCurrent: (id, revision) => this.options.mcpConnections!.assertCurrent({ id, revision }),
         }, AbortSignal.any([active.abort.signal, AbortSignal.timeout(Math.min(remaining, 30_000))]));
       }
-      const questions = createQuestionTool({ identity, forbiddenValues, assertOwnership });
+      const questions = createQuestionTool({ identity, forbiddenValues, assertOwnership: async () => {
+        await assertOwnership();
+        const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
+        if (current.digest !== instructions.digest) throw new Error('项目指令或 Skills 已改变，提问已失效，请重新发送任务。');
+        await assertOwnership();
+      } });
       active.questions = questions;
       const createTools = (): ToolPort => {
         const local = composeToolPorts([questions, createLocalToolPort({ projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {

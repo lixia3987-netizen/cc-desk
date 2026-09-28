@@ -28,9 +28,11 @@ const inline = (budget: Partial<RunBudget> = {}): NonNullable<NativeExecutorOpti
     return { signal: controller.signal, dispose() { clearTimeout(timer); parent.removeEventListener('abort', abort); } };
   } },
 });
-async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterPrepared?: boolean; budget?: Partial<RunBudget> } = {}) {
+async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterPrepared?: boolean; skill?: boolean; budget?: Partial<RunBudget> } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-questions-')), data = path.join(directory, 'data'), project = path.join(directory, 'project');
   await fs.mkdir(project);
+  const skillPath = 'tools/review/SKILL.md';
+  if (options.skill) { await fs.mkdir(path.join(project, 'tools/review'), { recursive: true }); await fs.writeFile(path.join(project, skillPath), 'Original selected question guide.'); }
   const server = await startResponsesFixture({ handler: ({ index }: { index: number }) => ({ output: index === 0
     ? [functionCall('question-1', 'ask_user', input)] : index === 1 && options.repeat
     ? [functionCall('question-2', 'ask_user', input)] : index === 1 && options.write
@@ -42,7 +44,7 @@ async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterP
   const id = randomUUID(), conversationId = randomUUID(), projectId = randomUUID();
   store.change(state => {
     state.projects.push({ id: projectId, name: 'project', path: project, createdAt: new Date().toISOString() });
-    state.sessions.push({ id, projectId, title: 'questions', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId }, engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id } }), started: false, archived: false, status: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    state.sessions.push({ id, projectId, title: 'questions', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId }, engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, ...(options.skill ? { projectSkills: [skillPath] } : {}) } }), started: false, archived: false, status: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
   const worker: NonNullable<NativeExecutorOptions['worker']> = workerOptions => inline(options.budget)(!options.crashAfterPrepared ? workerOptions : { ...workerOptions, store: { ...workerOptions.store,
     append: async (identity, event) => {
@@ -120,6 +122,31 @@ test('cancellation dismisses a question and rejects its stale answer', async () 
     assert.equal(f.executor.snapshot(f.id).pending.length, 0); assert.equal(f.executor.attention().length, 0);
     assert.throws(() => f.executor.respond(f.id, question.requestId, { behavior: 'allow', answers }), /审批/);
     assert.equal(f.server.requests.length, 1);
+  } finally { await f.dispose(); }
+});
+
+for (const source of ['CLAUDE.md', 'tools/review/SKILL.md']) test(`changing ${source} while waiting invalidates the question before answers enter context`, async () => {
+  const f = await fixture({ skill: source.endsWith('SKILL.md') });
+  const sentinelAnswer = 'ANSWER_FROM_STALE_INSTRUCTIONS_MUST_NOT_BE_COMMITTED';
+  try {
+    await fs.writeFile(path.join(f.project, source), 'Original instructions.');
+    const running = f.executor.send(f.id, '等待回答时修改指令');
+    const question = await f.pending();
+    assert.equal(question.kind, 'question');
+    await fs.writeFile(path.join(f.project, source), 'Changed instructions invalidate pending interactions.');
+    f.executor.respond(f.id, question.requestId, { behavior: 'allow', answers: { '采用哪个方案？': sentinelAnswer } });
+    assert.equal((await running).success, true);
+    assert.equal(f.executor.snapshot(f.id).pending.length, 0);
+    const result = JSON.parse(f.server.requests[1].input.find((item: { type: string }) => item.type === 'function_call_output').output);
+    assert.equal(result.status, 'failed'); assert.equal(result.output.error, 'tool_preconditions_changed');
+    assert.equal(JSON.stringify(f.server.requests).includes(sentinelAnswer), false, 'stale answer never reaches a model request');
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try {
+      assert.equal(JSON.stringify(ledger.replay()).includes(sentinelAnswer), false);
+      const tool = ledger.listRuns()[0].tools[0];
+      assert.equal(tool.prepared, undefined);
+      assert.equal(tool.completed?.result.status, 'failed');
+    } finally { await ledger.close(); }
   } finally { await f.dispose(); }
 });
 

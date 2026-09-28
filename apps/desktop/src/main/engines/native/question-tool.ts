@@ -13,7 +13,7 @@ const questionSchema = z.object({
 const inputSchema = z.object({ questions: z.array(questionSchema).min(1).max(3) }).strict();
 const definition: ToolDefinition = {
   name: 'ask_user', risk: 'read',
-  description: 'Ask the user up to three concise questions when a task needs their input. Options are optional; the user can always write a free-text answer. Answers do not authorize any file write, command, or external tool; those operations still require their own approval.',
+  description: 'Ask the user up to three concise questions when a task needs their input. The options array may be empty; the user can always write a free-text answer. Answers do not authorize any file write, command, or external tool; those operations still require their own approval.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['questions'], properties: { questions: {
     type: 'array', minItems: 1, maxItems: 3, items: { type: 'object', additionalProperties: false, required: ['question', 'options'], properties: {
       question: { type: 'string', minLength: 1, maxLength: 1000 }, header: { type: 'string', maxLength: 80 },
