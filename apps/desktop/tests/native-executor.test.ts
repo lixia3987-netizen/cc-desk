@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
@@ -313,4 +315,85 @@ test('snapshot-only history remains readable and permanently read-only after rec
     assert.match(f.executor.snapshot(f.id).error!, /只读/);
     assert.equal(await fs.readFile(file, 'utf8'), original, 'initialization and rejected sends never erase display evidence');
   } finally { await f.dispose(); }
+});
+
+test('native shutdown waits through an empty writer-lock opening and late history reads cannot reopen it', async t => {
+  const f = await fixture();
+  // safeDirectory resolves the ledger root. macOS temp roots and test TMPDIR
+  // aliases can spell the same directory differently from fs.open's real path.
+  const root = await fs.realpath(path.join(f.data, 'native', 'conversations'));
+  const lock = path.join(root, f.conversationId, '.writer-lock');
+  const originalOpen = fs.open.bind(fs);
+  let enter!: () => void, release!: () => void, opens = 0, shutdownFinished = false;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    if (args[0] === lock && typeof args[1] === 'number' && (args[1] & constants.O_EXCL)) {
+      opens++; enter(); await pending;
+    }
+    return handle;
+  });
+  syncBuiltinESMExports();
+  const hydration = f.executor.hydrate(f.id);
+  let shutdown: Promise<void> | undefined;
+  let enterTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      entered,
+      hydration.then(() => { throw new Error('Writer-lock injection did not intercept the admitted ledger open'); }),
+      new Promise<never>((_, reject) => { enterTimeout = setTimeout(() => reject(new Error('Writer-lock injection was not reached within 5 seconds')), 5_000); }),
+    ]);
+    clearTimeout(enterTimeout);
+    assert.equal((await fs.stat(lock)).size, 0, 'pause after O_EXCL creates the lock, before its owner record is written');
+    shutdown = f.executor.shutdown().then(() => { shutdownFinished = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(shutdownFinished, false, 'normal app exit must wait for every admitted ledger open and close');
+    await f.executor.hydrate(f.id);
+    assert.deepEqual((await f.executor.page(f.id)).messages, []);
+    assert.deepEqual((await f.executor.search(f.id, 'late refresh')).hits, []);
+    assert.equal(opens, 1, 'late renderer reads use the existing projection without creating a writer');
+    release(); await hydration; await shutdown;
+    await assert.rejects(fs.stat(lock), { code: 'ENOENT' });
+    await f.executor.page(f.id); await f.executor.search(f.id, 'after shutdown');
+    assert.equal(opens, 1);
+    t.mock.restoreAll(); syncBuiltinESMExports();
+    const reopened = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try { assert.equal(reopened.recoveryRequired, false); assert.deepEqual(reopened.listRuns(), []); }
+    finally { await reopened.close(); }
+  } finally {
+    clearTimeout(enterTimeout);
+    release(); await hydration.catch(() => {}); await shutdown?.catch(() => {});
+    t.mock.restoreAll(); syncBuiltinESMExports(); await f.dispose();
+  }
+});
+
+test('native failed hydration close remains owned and an explicit shutdown retry performs real release', async t => {
+  const f = await fixture();
+  const lock = path.join(f.data, 'native', 'conversations', f.conversationId, '.writer-lock');
+  const originalOpen = NativeRunStore.open.bind(NativeRunStore);
+  let failClose = true, closeAttempts = 0, opens = 0;
+  t.mock.method(NativeRunStore, 'open', async (options: Parameters<typeof NativeRunStore.open>[0]) => {
+    opens++;
+    const ledger = await originalOpen(options), close = ledger.close.bind(ledger);
+    t.mock.method(ledger, 'close', async () => {
+      closeAttempts++;
+      if (failClose) throw new Error('fixture writer release unavailable');
+      await close();
+    });
+    return ledger;
+  });
+  try {
+    await assert.rejects(f.executor.hydrate(f.id), /writer release unavailable/);
+    await assert.rejects(f.executor.shutdown(), /尚未完全释放/);
+    assert.equal((await fs.stat(lock)).isFile(), true);
+    await f.executor.page(f.id); await f.executor.search(f.id, 'failed quit');
+    assert.equal(opens, 1);
+    failClose = false;
+    await f.executor.shutdown();
+    assert.equal(closeAttempts, 3, 'the failed hydration and both quit attempts all reach the same owned close barrier');
+    await assert.rejects(fs.stat(lock), { code: 'ENOENT' });
+    const reopened = await originalOpen({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    await reopened.close();
+  } finally { failClose = false; await f.executor.shutdown().catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
 });

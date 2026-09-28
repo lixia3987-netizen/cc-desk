@@ -132,7 +132,7 @@ export class NativeProjection {
     for (const record of records) {
       const event = record.event;
       if (record.identity && record.identity.sessionId !== id) throw new Error('Native 记录不属于当前会话。');
-      const runId = record.identity?.runId ?? (event.type === 'run_recovered' ? event.runId : '');
+      const runId = record.identity?.runId ?? (event.type === 'run_recovered' || event.type === 'recovery_resolved' ? event.runId : '');
       const createdAt = record.committedAt ?? session.createdAt;
       const add = (value: ChatJournalEvent) => { projected.push({ seq: record.seq, event: value }); if (value.type === 'state') finalState = value.taskState; };
       if (event.type === 'run_started') {
@@ -179,6 +179,22 @@ export class NativeProjection {
           const message = tools.get(messageId);
           if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true } });
         }
+      } else if (event.type === 'recovery_resolved') {
+        currentTerminal = true;
+        inputTokens = undefined; measuredAt = undefined;
+        for (const completion of event.completions) {
+          const messageId = `${runId}:tool:${completion.call.id}`;
+          const message = tools.get(messageId);
+          if (message) add({ type: 'message', message: { ...message, text: '未执行：原回合已收束，不会重放旧工具或审批。', isError: true } });
+        }
+        add({ type: 'message', message: { id: `recovery:${record.seq}`, turnId: runId, role: 'system', text: '已恢复为可继续状态。请发送新指令继续；已完成的操作保留原结果，未执行的操作不会自动重放。', createdAt } });
+        add({ type: 'state', taskState: 'interrupted' });
+      } else if (event.type === 'context_compacted') {
+        currentTerminal = true;
+        inputTokens = undefined; measuredAt = undefined;
+        add({ type: 'metadata', resetUsage: true });
+        add({ type: 'message', message: { id: `compaction:${record.seq}`, turnId: currentIdentity?.runId ?? '', role: 'system', text: '上下文已压缩为历史摘要；原始对话记录、最初目标和最近完整回合已保留。摘要可能遗漏细节，后续重要约束可重新补充。', createdAt } });
+        add({ type: 'state', taskState: 'interrupted' });
       } else if (event.type === 'run_recovered') {
         currentTerminal = true;
         for (const message of tools.values()) {

@@ -51,6 +51,8 @@ export interface ExecutionCapabilities {
   liveConfig: boolean;
   attachments: boolean;
   recoverContext?: boolean;
+  /** Explicit context summarization, distinct from rebuilding an empty conversation. */
+  compactContext?: boolean;
   export?: boolean;
 }
 export interface ExecutionDescriptor {

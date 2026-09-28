@@ -42,6 +42,8 @@ export interface GitInfo { branch: string; status: string; diff: string; error?:
 export interface DesktopAPI {
   nativeConnections: NativeConnectionsAPI;
   confirmNativeRecovery(id: string): Promise<void>;
+  resumeNativeRecovery(id: string, expectedHead: string): Promise<void>;
+  compactNativeContext(id: string, expectedHead: string): Promise<void>;
   snapshot(): Promise<Snapshot>;
   copyText(text: string): Promise<void>;
   chooseProject(): Promise<Project | null>;

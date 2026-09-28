@@ -12,6 +12,8 @@ const api: DesktopAPI = {
     cancelTest: input => ipcRenderer.invoke('native:connections-test-cancel', input),
   },
   confirmNativeRecovery: id => ipcRenderer.invoke('native:confirm-recovery', id),
+  resumeNativeRecovery: (id, expectedHead) => ipcRenderer.invoke('native:resume-recovery', { id, expectedHead }),
+  compactNativeContext: (id, expectedHead) => ipcRenderer.invoke('native:compact-context', { id, expectedHead }),
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
   copyText:text => ipcRenderer.invoke('clipboard:write-text',text),
   chooseProject:() => ipcRenderer.invoke('project:choose'),

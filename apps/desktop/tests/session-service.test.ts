@@ -1214,11 +1214,13 @@ test('workflow cancellation invalidates a stage admission before it can become a
 });
 
 function installNative(f: Awaited<ReturnType<typeof fixture>>, options: {
+  providerId?: string;
   cwd?: string;
   send?: (submission?: ExecutionSubmission) => Promise<ChatTurnResult>;
   released?: () => Promise<void>;
 } = {}) {
-  const session = f.add(options.cwd ?? f.repo, { kind: 'agent', execution: { providerId: 'test.native', mode: 'structured', conversationId: randomUUID() } });
+  const providerId = options.providerId ?? 'test.native';
+  const session = f.add(options.cwd ?? f.repo, { kind: 'agent', execution: { providerId, mode: 'structured', conversationId: randomUUID() } });
   let active = false, recovery = false;
   const submissions: (ExecutionSubmission | undefined)[] = [];
   const snapshot = (): ChatSnapshot => ({ sessionId: session.id, taskState: active ? 'thinking' : 'completed', messages: [], pending: [] });
@@ -1239,9 +1241,133 @@ function installNative(f: Awaited<ReturnType<typeof fixture>>, options: {
     stopIdle: async () => { if (active) throw new Error('busy'); }, forget: () => {},
     setMaintenance: () => {}, disconnectAll: async () => {}, shutdown: async () => {},
   };
-  f.registry.register({ providerId: 'test.native', mode: 'structured', executor, capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false }) });
+  f.registry.register({ providerId, mode: 'structured', executor, capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false }) });
   return { session, executor, submissions, setRecovery(value: boolean) { recovery = value; } };
 }
+
+test('native context maintenance holds lifecycle and directory ownership and never resumes its paused queue', async () => {
+  const f = await fixture();
+  const native = installNative(f, { providerId: 'native' });
+  const terminal = f.add(path.join(f.repo, 'src'));
+  let entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  const operation = f.service.maintainNativeContext(native.session.id, false, async () => { entered(); await waiting; return 'compacted'; });
+  try {
+    await ready;
+    assert.equal(f.service.queue.snapshot(native.session.id).paused, true);
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, true, async () => {}), /管理操作/);
+    await assert.rejects(f.call('chat:send', { id: native.session.id, text: 'racing direct send' }), /管理操作/);
+    await assert.rejects(f.call('chat:submit', { id: native.session.id, text: 'racing queue submit' }), /管理操作/);
+    assert.throws(() => f.service.workflows.create({ sessionId: native.session.id, goal: 'racing workflow', pauseAfterEachStage: false, maxAttempts: 1 }), /管理操作/);
+    await assert.rejects(f.call('session:update', { id: native.session.id, engineConfig: { schemaVersion: 1, options: { maxInputTokens: 32000 } } }), /管理操作/);
+    await assert.rejects(f.call('session:delete', native.session.id), /管理操作/);
+    await assert.rejects(f.service.start(terminal.id), /管理操作/);
+    let directoryChanged = false;
+    await assert.rejects(f.service.withSessionCreation(f.repo, true, async () => { directoryChanged = true; }), /管理操作/);
+    assert.equal(directoryChanged, false);
+    assert.equal(native.submissions.length, 0);
+    release(); assert.equal(await operation, 'compacted');
+    assert.equal(f.service.queue.snapshot(native.session.id).paused, true);
+    const queued = await f.call<ChatSubmission>('chat:submit', { id: native.session.id, text: 'retained until manual resume' });
+    await f.service.maintainNativeContext(native.session.id, false, async () => {});
+    const snapshot = f.service.queue.snapshot(native.session.id);
+    assert.equal(snapshot.paused, true);
+    assert.deepEqual(snapshot.items.map(item => [item.id, item.status]), [[queued.messageId, 'queued']]);
+    assert.equal(native.submissions.length, 0);
+    await f.service.queue.resume(native.session.id);
+    await until(() => !f.service.queue.hasActive(native.session.id) && f.service.queue.snapshot(native.session.id).items.length === 0);
+    assert.equal(native.submissions.length, 1);
+    assert.equal(native.submissions[0]?.requestId, queued.messageId);
+  } finally { release(); await operation.catch(() => {}); await f.dispose(); }
+});
+
+test('native context admission is cancelled by stop, completed global maintenance, or shutdown while resolving roots', async t => {
+  for (const cancellation of ['stop', 'maintenance', 'shutdown'] as const) await t.test(cancellation, async t => {
+    const f = await fixture();
+    const native = installNative(f, { providerId: 'native' });
+    const internals = f.service as unknown as { executionRoots(session: Session): Promise<string[]> };
+    const roots = internals.executionRoots.bind(f.service);
+    let entered!: () => void, release!: () => void, actions = 0;
+    const ready = new Promise<void>(resolve => { entered = resolve; });
+    const waiting = new Promise<void>(resolve => { release = resolve; });
+    t.mock.method(internals, 'executionRoots', async (session: Session) => { entered(); await waiting; return roots(session); });
+    const operation = assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => { actions++; }), /取消|退出/);
+    try {
+      await ready;
+      if (cancellation === 'stop') await f.service.stop(native.session.id);
+      else if (cancellation === 'maintenance') await f.service.withDisconnectedWorkspaces(async () => {});
+      else await f.service.shutdown();
+      release(); await operation;
+      assert.equal(actions, 0);
+      assert.equal(native.submissions.length, 0);
+      assert.equal(f.service.queue.snapshot(native.session.id).paused, true);
+      t.mock.restoreAll();
+      if (cancellation === 'shutdown') await assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => { actions++; }), /退出/);
+      else {
+        await f.service.maintainNativeContext(native.session.id, false, async () => { actions++; });
+        assert.equal(actions, 1, 'a new explicit operation can enter after the old admission is cancelled');
+      }
+    } finally { release(); await operation; t.mock.restoreAll(); await f.dispose(); }
+  });
+});
+
+test('native context maintenance rejects sibling execution, sibling recovery, and concurrent directory management', async () => {
+  const f = await fixture();
+  const native = installNative(f, { providerId: 'native', cwd: path.join(f.repo, 'other') });
+  const other = installNative(f, { cwd: path.join(f.repo, 'src') });
+  const terminal = f.add(path.join(f.repo, 'src'));
+  let actions = 0, entered!: () => void, release!: () => void;
+  const ready = new Promise<void>(resolve => { entered = resolve; });
+  const waiting = new Promise<void>(resolve => { release = resolve; });
+  let directoryOperation: Promise<void> | undefined;
+  try {
+    await f.service.start(terminal.id);
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => { actions++; }), /同一工作目录/);
+    await f.service.stop(terminal.id);
+    other.setRecovery(true);
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, true, async () => { actions++; }), /同一工作目录/);
+    other.setRecovery(false);
+    directoryOperation = f.service.withSessionCreation(f.repo, true, async () => { entered(); await waiting; });
+    await ready;
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => { actions++; }), /管理操作/);
+    assert.equal(actions, 0);
+    release(); await directoryOperation;
+    await f.service.maintainNativeContext(native.session.id, false, async () => { actions++; });
+    assert.equal(actions, 1);
+  } finally { release(); await directoryOperation?.catch(() => {}); await f.dispose(); }
+});
+
+test('native recovery can clear its own barrier while uncertain maintenance cleanup retains the directory lease', async () => {
+  const f = await fixture();
+  const native = installNative(f, { providerId: 'native' });
+  const terminal = f.add(f.repo);
+  const leases = (f.service as unknown as { executionLeases: Map<string, unknown> }).executionLeases;
+  let actions = 0;
+  try {
+    native.setRecovery(true);
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => { actions++; }), /恢复状态/);
+    assert.equal(actions, 0);
+    await f.service.maintainNativeContext(native.session.id, true, async () => {
+      actions++;
+      assert.equal(leases.has(native.session.id), true);
+      native.setRecovery(false);
+    });
+    assert.equal(actions, 1);
+    assert.equal(leases.has(native.session.id), false);
+    await assert.rejects(f.service.maintainNativeContext(native.session.id, false, async () => {
+      native.setRecovery(true);
+      throw Object.assign(new Error('worker cleanup unconfirmed'), { cleanupUnconfirmed: true });
+    }), /cleanup unconfirmed/);
+    assert.equal(leases.has(native.session.id), true, 'an unresolved executor barrier must retain the original ownership');
+    await assert.rejects(f.service.start(terminal.id), /需要核查/);
+    await assert.rejects(f.service.withSessionCreation(f.repo, true, async () => { actions++; }), /需要核查/);
+    await f.service.maintainNativeContext(native.session.id, true, async () => { native.setRecovery(false); });
+    assert.equal(leases.has(native.session.id), false);
+    await f.service.start(terminal.id);
+    assert.equal(f.active.has(terminal.id), true);
+  } finally { await f.dispose(); }
+});
 
 test('registered terminal lifetime blocks native and Claude across sibling directories while linked worktrees remain independent', async () => {
   const f = await fixture();

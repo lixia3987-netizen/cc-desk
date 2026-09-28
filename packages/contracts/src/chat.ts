@@ -32,11 +32,27 @@ export interface ChatUsage {
   /** CLI-reported estimate; this is not the user's subscription quota. */
   costUSD?: number; durationMs?: number; turns?: number;
 }
+/** Derived from the native ledger by the host; the renderer never decides recovery safety. */
+export interface NativeRecoveryStatus {
+  status: 'recoverable' | 'blocked' | 'acknowledged';
+  headHash: string;
+  runId?: string;
+  reason?: string;
+  tools: { completed: number; notExecuted: number; unknown: number };
+}
+export interface NativeContextMaintenance {
+  headHash: string;
+  canCompact: boolean;
+  compacting?: boolean;
+  lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string };
+}
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
   messages: ChatMessage[]; pending: ChatApproval[];
   usage?: ChatUsage; model?: string; permissionMode?: string;
   context?: ContextUsage;
+  nativeRecovery?: NativeRecoveryStatus;
+  nativeContextMaintenance?: NativeContextMaintenance;
   /** The current process's command catalog; never restored from disk. */
   commands?: SessionCommand[];
   mcpServers?: { name: string; status: string }[];
