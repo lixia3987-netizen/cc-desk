@@ -131,7 +131,7 @@ test('commands before a plan keep bounded terminal summaries and attach only aft
   const f = await fixture(false);
   try {
     await f.start(); await f.finish(result({ stdout: 'x'.repeat(64000) }));
-    assert.equal(f.task, null); await f.plan();
+    assert.equal(f.store.read(f.taskId), null); await f.plan();
     const evidence = f.task.evidence[0];
     assert.equal(evidence.status, 'unverified'); assert.equal(evidence.truncated, true); assert.ok(Buffer.byteLength(evidence.output!) <= 8192);
     assert.equal(evidence.outputDigest!.length, 64); assert.deepEqual(evidence.stepIds, []); assert.match(evidence.reason!, /尚无计划/);
