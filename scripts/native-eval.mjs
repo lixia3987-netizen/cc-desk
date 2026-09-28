@@ -208,11 +208,15 @@ export async function compareReports(leftFile, rightFile) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const [command, first, second] = process.argv.slice(2);
+  const args = process.argv.slice(2), [command, first, second] = args;
   try {
-    if (command === 'prepare' && first && !second) console.log(JSON.stringify(await prepareEvaluation(first), null, 2));
-    else if (command === 'verify' && first && !second) { const report = await verifyEvaluation(first); console.log(JSON.stringify({ report: path.resolve(first, 'report.json'), functionalStatus: report.functionalStatus, realQualityStatus: report.realQualityStatus }, null, 2)); process.exitCode = report.functionalStatus === 'pass' ? 0 : 1; }
-    else if (command === 'compare' && first && second) console.log(JSON.stringify(await compareReports(first, second), null, 2));
-    else throw new Error('Usage: node scripts/native-eval.mjs prepare <empty-directory> | verify <directory> | compare <left-report.json> <right-report.json>');
+    if (command?.startsWith('engineering-')) {
+      const { engineeringCommand } = await import('./native-eval-engineering-cli.mjs');
+      const result = await engineeringCommand(args); console.log(JSON.stringify(result.output, null, 2)); process.exitCode = result.exitCode;
+    }
+    else if (command === 'prepare' && first && args.length === 2) console.log(JSON.stringify(await prepareEvaluation(first), null, 2));
+    else if (command === 'verify' && first && args.length === 2) { const report = await verifyEvaluation(first); console.log(JSON.stringify({ report: path.resolve(first, 'report.json'), functionalStatus: report.functionalStatus, realQualityStatus: report.realQualityStatus }, null, 2)); process.exitCode = report.functionalStatus === 'pass' ? 0 : 1; }
+    else if (command === 'compare' && first && second && args.length === 3) console.log(JSON.stringify(await compareReports(first, second), null, 2));
+    else throw new Error('Usage: node scripts/native-eval.mjs prepare <empty-directory> | verify <directory> | compare <left-report.json> <right-report.json>; engineering commands: engineering-init, engineering-verify, engineering-report, engineering-compare');
   } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 2; }
 }
