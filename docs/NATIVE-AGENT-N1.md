@@ -1,5 +1,7 @@
 # N1：任务闭环、可信状态与验证证据
 
+正式运行验收统一见[独立清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)：真实服务、图形与当前候选三平台结果按稳定 ID 登记；本页保留实现说明与历史证据，不以旧候选通过替代当前验收。
+
 日期：2026-09-28（北京时间）。开发起始基线：`dev/native-agent@a9e1653`（规划 PR #44）。代码候选：本地 `2ff411200a7129c0fd4e08a2a4abb040d7ce859e`，远端同树 `3237913cb0eedf8f5a9cf4d3b34c56dbf8061482`，tree `4f3cceb65771421e15fc0397b4ef3af186c7c2ee`。
 
 状态：N1 四个交付单元已实现，本地代码验收通过；Electron 图形和目标平台实际验收保持待执行。真实模型质量仍属于 E0/P5 的独立评估，不用本地 fixtures 替代。Claude 保持默认，仅集成到 `dev/native-agent`，不触发 CI、不修改 main、不发布 Release。
