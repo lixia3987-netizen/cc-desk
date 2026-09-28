@@ -23,6 +23,7 @@ import { sameRun } from './worker-protocol';
 import { nativeRunError } from './run-errors';
 import { summarizeNativeContext } from './context-summary';
 import { assertNativeInputBudget, autoCompactBeforeSend } from './automatic-compaction';
+import { mcpConnectionMetadata, mcpStartupMetadata } from './mcp-startup';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -186,7 +187,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   private async execute(id: string, active: ActiveRun): Promise<ChatTurnResult> {
     let result: ChatTurnResult | undefined, failure: unknown;
     let mcpTools: ManagedMcpToolPort | undefined;
-    const startedAt = performance.now();
+    let startup: { identity: RunIdentity; startupId: string } | undefined;
+    let startedAt = performance.now();
     try {
       await this.hydration.get(id);
       this.assertActive(id, active);
@@ -196,6 +198,10 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.store = ledger;
       await this.refreshProjection(id, ledger);
       if (this.projection.hasMissingContext(id)) this.recovery.add(id);
+      // A terminal model receipt is not proof that its local service resources closed.
+      if (ledger.getRecoveryReport()?.tools.some(tool => tool.name === 'mcp_stdio_startup' && tool.status === 'unknown')) throw new Error(RECOVERY);
+      const priorStartup = ledger.lookupStartup(active.requestId);
+      if (priorStartup?.status === 'recovery_required') throw new Error(RECOVERY);
       const duplicate = ledger.lookupSubmission(active.requestId);
       if (duplicate) {
         const priorOptions = parseNativeConfig({ schemaVersion: 1, options: duplicate.request.configuration.sessionOptions as EngineConfig['options'] });
@@ -203,6 +209,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
         result = this.turnResult(duplicate.result);
+      } else if (priorStartup) {
+        if (priorStartup.inputDigest !== digest(active.input) || priorStartup.optionsDigest !== digest(active.options)) throw new Error('此提交标识已用于不同的输入或配置。');
+        result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
@@ -210,7 +219,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (!this.options.mcpConnections) throw new Error('MCP 连接管理尚未就绪。');
         return this.options.mcpConnections.resolve(id);
       });
-      const forbiddenValues = [connection.apiKey, ...mcpConnections.map(item => item.bearerToken)].filter((value): value is string => Boolean(value));
+      const forbiddenValues = [connection.apiKey, ...mcpConnections.flatMap(item => item.transport === 'stdio' ? Object.values(item.environment) : [item.bearerToken])].filter((value): value is string => Boolean(value));
       const previous = ledger.listRuns().at(-1)?.configuration;
       if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL)) throw new Error('已有上下文绑定原服务与模型。切换服务或模型请新建会话。');
       const generation = Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1;
@@ -225,12 +234,47 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.assertActive(id, active);
       let modelInstructions = modelInstructionsFor(instructions.text);
       const assertOwnership = async () => { this.assertActive(id, active); await this.options.assertOwnership?.(id, identity); this.assertActive(id, active); };
+      const stdioConnections = mcpConnections.filter(item => item.transport === 'stdio');
+      let assertStartupCurrent: (() => Promise<void>) | undefined;
+      if (stdioConnections.length) {
+        const metadata = await mcpStartupMetadata(mcpConnections, session.cwd);
+        for (const secret of forbiddenValues) assertNoModelCredential(metadata, secret);
+        const policyRevision = digest(canonicalJson(json({ instructions: instructions.digest, launch: metadata })));
+        const request: ApprovalRequest = {
+          binding: { ...identity, toolCallId: 'mcp_stdio_startup', inputDigest: digest(canonicalJson(metadata)), policyRevision },
+          tool: { name: 'mcp_stdio_startup', description: '启动所选本地 MCP 服务。程序可访问当前用户资源；启动及后续工具调用分别审批。', risk: 'command', inputSchema: { type: 'object' } },
+          input: metadata, preconditions: { instructions: instructions.digest }, expiresAt: Date.now() + 5 * 60_000,
+        };
+        const waitingAt = performance.now();
+        const approval = await this.approve(id, active, request, active.abort.signal);
+        startedAt += performance.now() - waitingAt;
+        if (approval.decision !== 'approved' || approval.expiresAt <= Date.now()) throw new Error('本地 MCP 服务启动未获批准，未启动服务。');
+        const recheck = async () => {
+          await assertOwnership();
+          const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
+          if (current.digest !== instructions.digest) throw new Error('项目指令或 Skills 已改变，本地 MCP 启动审批失效。');
+          for (const selected of stdioConnections) {
+            const current = this.options.mcpConnections!.resolve(selected.connectionId);
+            if (canonicalJson(json(current)) !== canonicalJson(json(selected))) throw new Error('MCP 连接或环境值已改变，请重新审批启动。');
+          }
+          if (canonicalJson(await mcpStartupMetadata(mcpConnections, session.cwd)) !== canonicalJson(metadata)) throw new Error('MCP 可执行文件已改变，请重新审批启动。');
+          if (approval.expiresAt <= Date.now()) throw new Error('MCP 启动审批已过期。');
+          await assertOwnership();
+        };
+        assertStartupCurrent = recheck;
+        await recheck();
+        await ledger.prepareStartup({ identity, startupId: 'mcp_stdio_startup', inputDigest: digest(active.input), optionsDigest: digest(active.options), metadata, policyRevision, approval });
+        startup = { identity, startupId: 'mcp_stdio_startup' };
+        await recheck();
+        this.changed(id, 'starting');
+      }
       // Catalog reads are explicit consequences of this session's selected services.
       // They precede the model request and share its elapsed-time/input budget.
       if (mcpConnections.length) {
         const remaining = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
         if (remaining < 1) throw new Error('本次执行时长预算已耗尽，未读取 MCP 工具目录。');
         mcpTools = await createMcpToolPort({ connections: mcpConnections, forbiddenValues,
+          ...(stdioConnections.length ? { stdio: { supervisor: this.supervisor, ownerId: identity.runId, cwd: session.cwd, assertStartupCurrent: assertStartupCurrent! } } : {}),
           assertOwnership: async () => {
             await assertOwnership();
             const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
@@ -281,7 +325,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await assertOwnership();
       const maxActiveMs = automatic.compacted || mcpConnections.length ? Math.floor(config.maxActiveMs - (performance.now() - startedAt)) : config.maxActiveMs;
       if (maxActiveMs < 1 || automatic.remainingRequests < 1) throw new Error('自动压缩尝试已占用本次请求或时长预算，剩余额度不足；请检查已保存记录并调整预算后重新发送。');
-      const mcpMetadata = mcpConnections.map(({ connectionId, revision, name, endpoint, protocolVersion }) => ({ connectionId, revision, name, endpoint, protocolVersion }));
+      const mcpMetadata = mcpConnections.map(mcpConnectionMetadata);
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest,
         ...(mcpMetadata.length ? { mcpConnections: mcpMetadata, mcpTools: mcpTools!.definitions } : {}) })));
       const durable: RunStore = {
@@ -314,6 +358,10 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       catch { active.cleanupUnconfirmed = true; }
       try { if (active.identity) await this.supervisor.stopOwner(active.identity.runId); }
       catch { active.cleanupUnconfirmed = true; }
+      if (startup && active.store && !active.cleanupUnconfirmed) {
+        try { await active.store.closeStartup(startup.identity, startup.startupId); }
+        catch { active.cleanupUnconfirmed = true; }
+      }
       try {
         if (active.store) {
           // A worker crash can leave an active ledger. Reopen below to mark it interrupted/unknown.

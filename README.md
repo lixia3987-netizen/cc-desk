@@ -19,7 +19,7 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 ## 当前源码进展：自研 Agent Alpha 与引擎边界
 
 - **自研 Agent Alpha**：Responses 模型连接、独立 worker、完整本地上下文、逐次文件/命令审批、文字队列与串行工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
-- **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills 和 MCP HTTP 工具。MCP 服务在设置中配置，再由 native 会话显式选择；协议默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP 同步工具，无自动版本回退。每次调用单独审批，默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [2025 兼容说明](docs/NATIVE-AGENT-PHASE-4C-MCP-2025.md)；P4c 整体未完成，图形、三平台与真实服务验收仍待执行。
+- **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills，以及 MCP HTTP / 本地 stdio 工具。HTTP 默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP；stdio 固定 `2025-11-25`，使用已安装程序的绝对路径与字面参数，无自动安装或协议回退。每回合启动本地服务前审批，每次工具调用另行审批；默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [stdio 说明](docs/NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。P4c 整体未完成，图形、三平台与真实服务验收仍待执行。
 - **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。正式应用仍默认使用 Claude，并保留 Shell；开发分支已接入自研 native Alpha，按会话显式选择，阶段三统一验收进行中。
 - **独立配置与 v3 数据**：会话统一保存带版本的 `engineConfig`，按引擎描述显示可用功能。读取旧工作区时保留身份和路径，在首次写入 v3 前保存独立的原始迁移快照；回退方法见 [阶段二验证记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。未知引擎保留配置并可读取已有结构化展示日志，不自动回退到 Claude。
 - **CLI 更新只影响 Claude**：确认后暂停 Claude 队列、中断工作流并释放目标进程与资源，Shell 和其他已注册引擎继续运行。进入实际更新阶段后等待安装和检测结束再退出；完成后不会自动继续 Claude 任务。

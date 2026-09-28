@@ -28,7 +28,10 @@ test('MCP IPC: exposes only metadata operations and a write-only token channel',
     assert.equal(f.changes(), 1);
     const saved = f.call('credential', { id: created.id, revision: created.revision, mode: 'memory', secret: sentinel }) as NativeMcpConnectionView;
     assert.equal(f.changes(), 2); assert.equal(saved.ready, true);
-    assert.equal(f.store.resolve(saved.id).bearerToken, sentinel);
+    const resolved = f.store.resolve(saved.id);
+    assert.equal(resolved.transport, 'http');
+    if (resolved.transport !== 'http') throw new Error('Expected HTTP fixture.');
+    assert.equal(resolved.bearerToken, sentinel);
     assert.ok(!JSON.stringify(saved).includes(sentinel));
     assert.ok(!JSON.stringify(f.call('list')).includes(sentinel));
     assert.equal(f.changes(), 2);
