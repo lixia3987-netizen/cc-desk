@@ -20,3 +20,5 @@ export function viewState(snapshot: ChatSnapshot, approval: ChatApproval, decisi
   const result: ChatTurnResult = { success: !snapshot.error, summary: snapshot.messages.at(-1)?.text ?? '' };
   return { result, resolved, messages: snapshot.messages, queued: snapshot.queue?.items, terminalText: chunk.data };
 }
+
+export type { NativeTaskSnapshot, NativeTaskUpdate } from '@cc-desk/contracts/native-task';

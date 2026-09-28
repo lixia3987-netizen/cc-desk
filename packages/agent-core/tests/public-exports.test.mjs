@@ -36,7 +36,7 @@ test('source and build imports stay inside the engine or its declared platform d
           assert.ok(relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative), `Engine import escapes ${directory}: ${specifier} in ${file}`);
           assert.ok(specifier.endsWith('.js'), `Engine relative import must resolve compiled ESM: ${specifier} in ${file}`);
         } else {
-          assert.ok(false, `Unexpected engine dependency: ${specifier} in ${file}`);
+          assert.ok(specifier === '@cc-desk/contracts/native-task' && manifest.dependencies?.['@cc-desk/contracts'] === '0.0.0', `Unexpected engine dependency: ${specifier} in ${file}`);
         }
       }
     }

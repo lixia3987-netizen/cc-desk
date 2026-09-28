@@ -65,6 +65,34 @@ function fixture(overrides: Partial<Options> = {}, directory = fs.mkdtempSync(pa
   };
 }
 
+test('explicit native continuation survives queue persistence and participates in submission identity', async () => {
+  const f = fixture({ blocked: () => true }), sessionId = randomUUID(), nativeTaskId = randomUUID();
+  let restored: ReturnType<typeof fixture> | undefined;
+  try {
+    const accepted = await f.queue.submit(sessionId, 'continue selected task', [], 'task-request', { nativeTaskId });
+    assert.deepEqual(await f.queue.submit(sessionId, 'continue selected task', [], 'task-request', { nativeTaskId }), accepted);
+    await assert.rejects(f.queue.submit(sessionId, 'continue selected task', [], 'task-request', { nativeTaskId: randomUUID() }), /不同内容/);
+    await assert.rejects(f.queue.submit(sessionId, 'continue selected task', [], 'task-request'), /不同内容/);
+    await assert.rejects(f.queue.submit(sessionId, 'bad', [], 'bad', { nativeTaskId: '../other-session' }), /任务标识/);
+    assert.equal(f.queue.snapshot(sessionId).items.length, 1);
+    restored = fixture({}, f.directory);
+    assert.equal(restored.queue.snapshot(sessionId).items[0].nativeTaskId, nativeTaskId);
+    assert.equal(restored.queue.snapshot(sessionId).paused, true);
+    await restored.queue.resume(sessionId);
+    const dispatched = await restored.waitForRun('continue selected task');
+    assert.equal(dispatched.item.nativeTaskId, nativeTaskId);
+    // Execution ACK remains independent of whether an engineering task has human verification.
+    dispatched.result.resolve({ success: true, summary: '运行已结束，任务尚未验证' });
+    await until(() => !restored!.queue.hasPending(sessionId));
+    await restored.queue.submit(sessionId, 'continue selected task', [], 'task-request', { nativeTaskId });
+    await tick(); assert.equal(restored.runs.length, 1);
+  } finally {
+    // Both fixtures share the directory; finish the blocked original before final removal.
+    f.queue.pauseAll();
+    if (restored) await restored.close(); else await f.close();
+  }
+});
+
 test('queue accepts messages before turn completion and executes accepted messages once in FIFO order', async () => {
   const f = fixture(), sessionId = randomUUID();
   try {

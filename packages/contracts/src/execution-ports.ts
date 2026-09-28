@@ -34,6 +34,8 @@ export interface SessionExport {
 /** Stable source identity survives dispatch/acknowledgement retries. */
 export interface ExecutionSubmission {
   requestId: string;
+  /** Explicit user selection; never inferred from model text or queue position. */
+  nativeTaskId?: string;
   source?: 'direct' | 'queue' | 'workflow';
   workflowRunId?: string;
   stageId?: string;

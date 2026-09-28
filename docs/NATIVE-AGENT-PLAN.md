@@ -3,7 +3,7 @@
 日期：2026-09-24（北京时间）  
 历史代码分析基线：`main@a3f94b6c74f2abfad7a38306803319226dd5d436`，基线应用版本 `0.5.0`。
 开发集成分支：`dev/native-agent`，从上述提交创建。
-当前实现基线（2026-09-28，北京时间）：PR #33–#43 已合入 `dev/native-agent@59172f8`。本期协议扩展、项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估工具已实现并完成本地验证，见[交付与验收清单](NATIVE-AGENT-COMPLETION.md)；真实模型质量、当前候选图形及三平台成品仍待验收。后续新增能力按[工程任务闭环与持续执行规划](NATIVE-AGENT-NEXT-PLAN.md)推进，首批为任务计划、状态刷新与验证证据。Claude 保持默认，仅集成到 `dev/native-agent`，不自动触发 CI；历史候选证据不代表本候选验收。
+P4/P5 实现基线（2026-09-28，北京时间）：PR #33–#43 已合入 `dev/native-agent@59172f8`。本期协议扩展、项目来源管理、提问、跨引擎可见上下文续聊、成本信息和固定任务评估工具已实现并完成本地验证，见[交付与验收清单](NATIVE-AGENT-COMPLETION.md)；真实模型质量、当前候选图形及三平台成品仍待验收。后续新增能力按[工程任务闭环与持续执行规划](NATIVE-AGENT-NEXT-PLAN.md)推进，其中 N1 任务计划、状态刷新与验证证据已实现，实际验证和外部待验收范围见 [N1 记录](NATIVE-AGENT-N1.md)。Claude 保持默认，仅集成到 `dev/native-agent`，不自动触发 CI；历史候选证据不代表本候选验收。
 
 历史验收：阶段一 monorepo 迁移已完成，验收记录见 [MONOREPO-PHASE-1-VALIDATION.md](MONOREPO-PHASE-1-VALIDATION.md)。阶段二**已完成，三平台验收通过**；固定实现候选为 `a4e34ce736dd59a6c29ca3a5878a64d0a10b2711`，当时工作位于 `refactor/engine-boundaries`，目标集成分支为 `dev/native-agent`。完整 CI 证据见 [#37](https://github.com/lixia3987-netizen/cc-desk/actions/runs/36107597893)，结论以固定候选的验收记录为准。
 

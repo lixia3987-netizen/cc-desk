@@ -23,6 +23,10 @@
     "./execution-ports": {
       "types": "./dist/execution-ports.d.ts",
       "default": "./dist/execution-ports.js"
+    },
+    "./native-task": {
+      "types": "./dist/native-task.d.ts",
+      "default": "./dist/native-task.js"
     }
   },
   "scripts": {

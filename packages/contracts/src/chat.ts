@@ -1,4 +1,5 @@
-import type { SessionCommand, ContextUsage } from './execution.js';
+import type { SessionCommand, SessionStatus, ContextUsage } from './execution.js';
+import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 export interface ChatMessage {
@@ -48,13 +49,24 @@ export interface NativeContextMaintenance {
   autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean };
   lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' };
 }
+/** Host lifetime and observable state ordering; independent from durable task revisions. */
+export interface ChatSnapshotVersion {
+  hostEpoch: string; revision: number; eventSequence: number;
+  conversationId?: string; runId?: string; workerGeneration?: number;
+}
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
+  /** Read with this snapshot, so a lost workspace event cannot leave the pane stopping forever. */
+  sessionStatus?: SessionStatus;
   messages: ChatMessage[]; pending: ChatApproval[];
   usage?: ChatUsage; model?: string; permissionMode?: string;
   context?: ContextUsage;
   nativeRecovery?: NativeRecoveryStatus;
   nativeContextMaintenance?: NativeContextMaintenance;
+  nativeRun?: NativeTaskIdentity;
+  nativeTask?: NativeTaskView;
+  nativeTaskError?: string;
+  version?: ChatSnapshotVersion;
   /** The current process's command catalog; never restored from disk. */
   commands?: SessionCommand[];
   mcpServers?: { name: string; status: string }[];
@@ -68,7 +80,10 @@ export interface QueuedChatMessage {
   id: string; text: string; attachments: string[]; createdAt: string;
   attachmentNames?: string[];
   status: 'queued' | 'sending';
+  nativeTaskId?: string;
 }
+/** Only explicit user selection continues an existing native task. */
+export interface ChatSendOptions { nativeTaskId?: string }
 export interface ChatQueueSnapshot { items: QueuedChatMessage[]; paused: boolean; error?: string }
 export interface ChatSubmission { messageId: string }
 export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean }
