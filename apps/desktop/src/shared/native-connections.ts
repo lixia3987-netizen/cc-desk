@@ -1,15 +1,17 @@
+import type { NativeModelPricing } from './native-cost';
 /** Only references and connection metadata may cross the renderer boundary. */
 export type NativeConnectionAuth = { mode: 'env'; variable: string } | { mode: 'memory' } | { mode: 'encrypted' };
 export interface NativeConnection {
   id: string;
   revision: number;
   name: string;
-  protocol: 'responses';
+  protocol: 'responses' | 'chat-completions';
   baseURL: string;
   model: string;
   allowLoopbackHttp: boolean;
   enabled: boolean;
   auth: NativeConnectionAuth;
+  pricing?: NativeModelPricing;
 }
 export interface NativeConnectionInput extends Omit<NativeConnection, 'id' | 'revision'> { id?: string; revision?: number }
 export interface NativeConnectionView extends NativeConnection { credentialConfigured: boolean; ready: boolean; error?: string }
@@ -30,6 +32,7 @@ export interface NativeConnectionTestResult {
   durationMs: number;
   httpStatus?: number;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  estimatedCostUSD?: number;
 }
 export interface NativeConnectionsAPI {
   list(): Promise<NativeConnectionList>;
