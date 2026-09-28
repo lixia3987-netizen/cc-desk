@@ -90,6 +90,79 @@ test('native MCP settings persist explicit protocol choices locally and clear wr
   }
 });
 
+test('native stdio settings persist literal program configuration without launching and erase HTTP credential input on transport changes', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-stdio-ui-'));
+  const data = path.join(directory, 'data'), marker = path.join(directory, 'must-not-start');
+  const executable = process.execPath, script = path.join(directory, 'local server.mjs');
+  const secret = 'stdio-ui-main-only-environment-value';
+  await fs.mkdir(data);
+  await fs.writeFile(script, `import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(marker)}, 'started');`);
+  await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [], sessions: [], settings: {
+    claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {},
+  } }));
+  const launch = () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, MCP_UI_SECRET_SOURCE: secret } });
+  let app = await launch();
+  try {
+    let page = await app.firstWindow();
+    const open = async () => {
+      await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+      return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
+    };
+    let region = await open();
+    await region.getByRole('button', { name: '新增 MCP 连接', exact: true }).click();
+    await expect(page.getByLabel('MCP 传输方式', { exact: true })).toHaveValue('http');
+    await page.getByLabel('MCP 连接名称', { exact: true }).fill('本地 stdio 配置');
+    await page.getByLabel('MCP 服务端点', { exact: true }).fill('https://unused.example.test/mcp');
+    await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('memory');
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.locator('.connection-box')).toHaveCount(1);
+    await page.getByLabel('MCP 新的 Bearer 凭据', { exact: true }).fill('clear-on-transport-change');
+    await page.getByLabel('MCP 传输方式', { exact: true }).selectOption('stdio');
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('MCP 认证方式', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('MCP 服务端点', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('MCP 协议版本', { exact: true })).toHaveValue('2025-11-25');
+    await expect(page.getByLabel('MCP 协议版本', { exact: true })).toBeDisabled();
+    await expect(region).toContainText('stdio 不是沙箱');
+    await page.getByLabel('MCP 传输方式', { exact: true }).selectOption('http');
+    await expect(page.getByLabel('MCP 服务端点', { exact: true })).toHaveValue('');
+    await expect(page.getByLabel('MCP 协议版本', { exact: true })).toHaveValue('2026-07-28');
+    await page.getByLabel('MCP 认证方式', { exact: true }).selectOption('memory');
+    await expect(page.getByLabel('MCP 新的 Bearer 凭据', { exact: true })).toHaveValue('');
+    await page.getByLabel('MCP 传输方式', { exact: true }).selectOption('stdio');
+    await page.getByLabel('MCP 可执行程序', { exact: true }).fill(executable);
+    await page.getByLabel('MCP 启动参数', { exact: true }).fill('node "local server.mjs"');
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.getByRole('alert')).toContainText('启动参数须为 JSON 字符串数组');
+    expect((await page.evaluate(async () => (await window.desktop.nativeMcp.list()).connections[0])).transport).toBe('http');
+    const argv = [script, 'space preserved', '$(literal)', '$KEY'];
+    const environment = { API_KEY: 'MCP_UI_SECRET_SOURCE' };
+    await page.getByLabel('MCP 启动参数', { exact: true }).fill(JSON.stringify(argv));
+    await page.getByLabel('MCP 环境变量映射', { exact: true }).fill(JSON.stringify(environment));
+    await region.getByRole('button', { name: '保存 MCP 连接', exact: true }).click();
+    await expect(region.locator('.connection-box')).toContainText('stdio');
+    await expect(region.locator('.connection-box')).toContainText('本机配置就绪');
+    await region.getByRole('button', { name: '刷新', exact: true }).click();
+    await expect(region.getByRole('button', { name: '刷新', exact: true })).toBeEnabled();
+    const list = await page.evaluate(async () => window.desktop.nativeMcp.list());
+    expect(list.connections[0]).toMatchObject({ transport: 'stdio', executable, argv, environment, protocolVersion: '2025-11-25', auth: { mode: 'none' } });
+    expect(list.connections[0]).not.toHaveProperty('endpoint');
+    expect(JSON.stringify(list)).not.toContain(secret);
+    expect(await page.locator('body').textContent()).not.toContain(secret);
+    expect(await fs.readFile(path.join(data, 'native/mcp-connections.json'), 'utf8')).not.toContain(secret);
+    await expect(fs.access(marker)).rejects.toThrow();
+    await app.close(); app = await launch(); page = await app.firstWindow(); region = await open();
+    await expect(region.locator('.connection-box')).toContainText('stdio');
+    await region.getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(page.getByLabel('MCP 传输方式', { exact: true })).toHaveValue('stdio');
+    await expect(page.getByLabel('MCP 可执行程序', { exact: true })).toHaveValue(executable);
+    expect(JSON.parse(await page.getByLabel('MCP 启动参数', { exact: true }).inputValue())).toEqual(argv);
+    expect(JSON.parse(await page.getByLabel('MCP 环境变量映射', { exact: true }).inputValue())).toEqual(environment);
+    await expect(fs.access(marker)).rejects.toThrow();
+  } finally { await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
 test('native MCP choices save per session, retain removable unavailable entries, and discard late metadata after session switching', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-mcp-selection-'));
   const data = path.join(directory, 'data'), cwd = path.join(directory, 'project');

@@ -338,6 +338,8 @@ test('legacy session echoes in catalog and call output are rejected before model
 test('the selected legacy protocol cannot change during approval and becomes editable only after session cleanup', async () => {
   const f = await fixture(); let pending: ReturnType<NativeStructuredExecutor['send']> | undefined;
   try {
+    assert.equal(f.mcpConnection.transport, 'http');
+    if (f.mcpConnection.transport !== 'http') throw new Error('Expected HTTP fixture.');
     const { credentialConfigured: _credentialConfigured, ready: _ready, error: _error, ...input } = f.mcpConnection;
     pending = f.executor.send(f.id, 'hold protocol while awaiting approval'); const approval = await f.approval();
     assert.throws(() => f.mcpConnections.upsert({ ...input, protocolVersion: '2026-07-28' }), /运行|使用|占用/);

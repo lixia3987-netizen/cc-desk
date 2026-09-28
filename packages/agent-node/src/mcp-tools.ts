@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { ApprovalDecision, JsonValue, PreparedTool, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
 import { McpClientError, McpHttpClient, type McpTool, type McpProtocolVersion } from './mcp-client.js';
+import { McpStdioClient } from './mcp-stdio-client.js';
+import type { ProcessSupervisor } from './process-supervisor.js';
 import { assertMcpInputSchema, assertMcpToolInput, assertMcpOutputSchema, assertMcpToolOutput } from './mcp-schema.js';
 
 const MAX_CONNECTIONS = 4;
@@ -14,26 +16,46 @@ const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as
 const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
 const stopped = (signal: AbortSignal): void => { if (signal.aborted) throw new Error('MCP operation cancelled.'); };
 
-export interface McpToolConnection {
+interface McpConnectionBase {
   connectionId: string;
   revision: number;
   name: string;
+}
+export interface McpHttpToolConnection extends McpConnectionBase {
+  transport?: 'http';
   endpoint: string;
   allowLoopbackHttp: boolean;
   bearerToken?: string;
   protocolVersion?: McpProtocolVersion;
 }
+export interface McpStdioToolConnection extends McpConnectionBase {
+  transport: 'stdio';
+  protocolVersion: '2025-11-25';
+  executable: string;
+  argv: readonly string[];
+  /** Resolved values stay in the host and only enter this service's process. */
+  environment: Readonly<Record<string, string>>;
+  environmentSources: Readonly<Record<string, string>>;
+}
+export type McpToolConnection = McpHttpToolConnection | McpStdioToolConnection;
+interface McpClient {
+  discoverTools(signal: AbortSignal): Promise<McpTool[]>;
+  callTool(tool: McpTool, input: import('@cc-desk/agent-core').JsonObject, signal: AbortSignal): Promise<import('@cc-desk/agent-core').JsonObject>;
+  close(): Promise<void>;
+}
 /** The host owns this handle until all local requests have settled. */
 export interface ManagedMcpToolPort extends ToolPort { close(): Promise<void> }
 export interface McpToolOptions {
   connections: McpToolConnection[];
+  /** Supplied only after the host has approved and durably reserved local startup. */
+  stdio?: { supervisor: ProcessSupervisor; ownerId: string; cwd: string; assertStartupCurrent(): void | Promise<void> };
   forbiddenValues?: readonly (string | undefined)[];
   assertOwnership?: () => void | Promise<void>;
   assertConnectionCurrent?: (id: string, revision: number) => void;
 }
 interface Entry {
   connection: McpToolConnection;
-  client: McpHttpClient;
+  client: McpClient;
   remote: McpTool;
   remoteHash: string;
   definition: ToolDefinition;
@@ -74,7 +96,7 @@ class McpToolPort implements ManagedMcpToolPort {
   private readonly entries: Map<string, Entry>;
   private closed = false;
   private closing?: Promise<void>;
-  constructor(entries: Entry[], private readonly options: McpToolOptions, private readonly forbidden: string[], private readonly clients: McpHttpClient[]) {
+  constructor(entries: Entry[], private readonly options: McpToolOptions, private readonly forbidden: string[], private readonly clients: McpClient[]) {
     this.entries = new Map(entries.map(entry => [entry.definition.name, entry]));
   }
   get definitions(): ToolDefinition[] { return [...this.entries.values()].map(entry => structuredClone(entry.definition)); }
@@ -122,7 +144,9 @@ class McpToolPort implements ManagedMcpToolPort {
       preconditions: {
         connectionId: entry.connection.connectionId, connectionRevision: entry.connection.revision,
         protocolVersion: entry.connection.protocolVersion ?? '2026-07-28',
-        server: entry.connection.name, endpointHash: hash(entry.connection.endpoint), remoteTool: entry.remote.name,
+        transport: entry.connection.transport ?? 'http', server: entry.connection.name,
+        ...(entry.connection.transport === 'stdio' ? { launchHash: hash(canonical(json({ executable: entry.connection.executable, argv: entry.connection.argv, environmentSources: entry.connection.environmentSources }))) } : { endpointHash: hash(entry.connection.endpoint) }),
+        remoteTool: entry.remote.name,
         toolDefinitionHash: entry.remoteHash, schemaHash: hash(canonical(entry.remote.inputSchema)),
       },
     };
@@ -193,7 +217,7 @@ class McpToolPort implements ManagedMcpToolPort {
   }
 }
 
-async function closeClients(clients: McpHttpClient[]): Promise<void> {
+async function closeClients(clients: McpClient[]): Promise<void> {
   const results = await Promise.allSettled(clients.map(async client => client.close()));
   if (results.some(result => result.status === 'rejected')) {
     // Only a failure to settle local requests reaches here. Remote DELETE is best effort.
@@ -205,22 +229,32 @@ export async function createMcpToolPort(options: McpToolOptions, signal: AbortSi
   stopped(signal);
   if (!Array.isArray(options.connections) || options.connections.length > MAX_CONNECTIONS) throw new Error('MCP connection budget exceeded.');
   // A server must never echo credentials belonging to another selected connection/model.
-  const forbidden = [...new Set([...(options.forbiddenValues ?? []), ...options.connections.map(connection => connection.bearerToken)].filter((value): value is string => typeof value === 'string' && value.length > 0))];
+  const forbidden = [...new Set([...(options.forbiddenValues ?? []), ...options.connections.flatMap(connection => connection.transport === 'stdio' ? Object.values(connection.environment) : [connection.bearerToken])].filter((value): value is string => typeof value === 'string' && value.length > 0))];
   const entries: Entry[] = [];
   const ids = new Set<string>();
   const names = new Set<string>();
-  const clients: McpHttpClient[] = [];
+  const clients: McpClient[] = [];
   let metadataBytes = 0;
   let definitionBytes = 0;
   try {
     for (const source of options.connections) {
-      const connection = { ...structuredClone(source), protocolVersion: source.protocolVersion ?? '2026-07-28' as const };
+      const connection: McpToolConnection = source.transport === 'stdio' ? structuredClone(source) : { ...structuredClone(source), protocolVersion: source.protocolVersion ?? '2026-07-28' };
       if (!/^[a-zA-Z0-9_-]{1,200}$/.test(connection.connectionId) || ids.has(connection.connectionId) || !Number.isSafeInteger(connection.revision) || connection.revision < 1 || !connection.name || connection.name.length > 200) throw new Error('Invalid or duplicate MCP connection.');
       ids.add(connection.connectionId);
-      checkedJson({ connectionId: connection.connectionId, name: connection.name, endpoint: connection.endpoint }, forbidden);
+      checkedJson(json(connection.transport === 'stdio'
+        ? { connectionId: connection.connectionId, name: connection.name, executable: connection.executable, argv: connection.argv, environmentSources: connection.environmentSources }
+        : { connectionId: connection.connectionId, name: connection.name, endpoint: connection.endpoint }), forbidden);
       await options.assertOwnership?.();
       options.assertConnectionCurrent?.(connection.connectionId, connection.revision);
-      const client = new McpHttpClient({ endpoint: connection.endpoint, protocolVersion: connection.protocolVersion, allowLoopbackHttp: connection.allowLoopbackHttp, bearerToken: connection.bearerToken, forbiddenValues: forbidden });
+      if (connection.transport === 'stdio' && !options.stdio) throw new Error('MCP stdio requires an approved host process owner.');
+      if (connection.transport === 'stdio') {
+        // A preceding service's discovery may have consumed most of the startup approval window.
+        await options.stdio!.assertStartupCurrent();
+        stopped(signal);
+      }
+      const client: McpClient = connection.transport === 'stdio'
+        ? new McpStdioClient({ ...options.stdio!, executable: connection.executable, argv: [...connection.argv], environment: { ...connection.environment }, forbiddenValues: forbidden })
+        : new McpHttpClient({ endpoint: connection.endpoint, protocolVersion: connection.protocolVersion, allowLoopbackHttp: connection.allowLoopbackHttp, bearerToken: connection.bearerToken, forbiddenValues: forbidden });
       clients.push(client);
       let remoteTools: McpTool[];
       try { remoteTools = await client.discoverTools(signal); }

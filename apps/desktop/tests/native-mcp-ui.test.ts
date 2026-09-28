@@ -3,15 +3,15 @@ import assert from 'node:assert/strict';
 import { createElement, isValidElement, type ReactNode } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { NativeMcpChoices, NativeMcpSelection, toggleMcpConnection } from '../src/renderer/components/NativeMcpSelection';
-import { NativeMcpConnections, submitMcpCredential } from '../src/renderer/components/NativeMcpConnections';
+import { NativeMcpConnections, parseStdioInputs, submitMcpCredential, switchMcpTransport } from '../src/renderer/components/NativeMcpConnections';
 import { SessionConfig } from '../src/renderer/SessionConfig';
-import type { NativeMcpConnectionInput, NativeMcpConnectionList, NativeMcpConnectionView } from '../src/shared/native-mcp';
+import type { NativeMcpConnectionInput, NativeMcpConnectionList, NativeMcpConnectionView, NativeMcpHttpConnection } from '../src/shared/native-mcp';
 import type { Session } from '../src/shared/types';
 import type { ExecutionDescriptor } from '../src/shared/execution';
 
 const fail = () => { throw new Error('Initial rendering must not read or change connections'); };
-function connection(id: string, options: Partial<NativeMcpConnectionView> = {}): NativeMcpConnectionView {
-  return { id, name: 'same-name', revision: 1, endpoint: `https://${id}.example.test/mcp`, protocolVersion: '2026-07-28', allowLoopbackHttp: false,
+function connection(id: string, options: Partial<NativeMcpHttpConnection & { credentialConfigured: boolean; ready: boolean; error?: string }> = {}): NativeMcpConnectionView & { transport: 'http' } {
+  return { transport: 'http', id, name: 'same-name', revision: 1, endpoint: `https://${id}.example.test/mcp`, protocolVersion: '2026-07-28', allowLoopbackHttp: false,
     enabled: true, auth: { mode: 'none' }, credentialConfigured: true, ready: true, ...options };
 }
 const result: NativeMcpConnectionList = { connections: [connection('one'), connection('two', { protocolVersion: '2025-11-25' }), connection('disabled', { enabled: false, ready: false }), connection('unready', { ready: false, error: '<script>missing token</script>' })], storage: { persistentAvailable: false } };
@@ -109,7 +109,11 @@ test('MCP settings explain local-only operations, supported transport, and expli
   assert.match(markup, /Native MCP 连接/);
   assert.match(markup, /MCP HTTP 2026-07-28/);
   assert.match(markup, /2025-11-25 Streamable HTTP 同步工具/);
-  assert.match(markup, /旧 HTTP\+SSE 与 stdio 暂不支持/);
+  assert.match(markup, /2025-11-25 本地 stdio/);
+  assert.match(markup, /不访问远端或启动程序/);
+  assert.match(markup, /stdio 每回合启动本地服务前需要审批/);
+  assert.match(markup, /每次 MCP 工具调用也需要独立审批/);
+  assert.match(markup, /旧 HTTP\+SSE 暂不支持/);
   assert.match(markup, /协议版本不会自动回退/);
   assert.match(markup, /默认引擎仍为 Claude/);
   assert.doesNotMatch(markup, /测试连接|type="password"/);
@@ -139,5 +143,38 @@ test('MCP credential clearing also covers synchronous bridge errors, rejection a
   }
   const input = { value: 'clear-invalid-too' };
   assert.throws(() => submitMcpCredential({ setCredential: fail }, { ...draft, id: undefined }, input), /请先保存/);
+  assert.equal(input.value, '');
+});
+
+
+test('stdio selection identifies the executable without leaking environment values or using HTTP fields', () => {
+  const stdio: NativeMcpConnectionView = { id: 'local', revision: 1, name: '<local>', enabled: true, transport: 'stdio', protocolVersion: '2025-11-25', executable: '/opt/my server/node', argv: ['/project/server.mjs'], environment: { API_KEY: 'PRIVATE_SOURCE_NAME' }, auth: { mode: 'none' }, ready: true, credentialConfigured: true };
+  const markup = renderChoices(['local'], { connections: [stdio], storage: { persistentAvailable: false } });
+  assert.match(markup, /stdio · 协议 2025-11-25 · \/opt\/my server\/node/);
+  assert.match(markup, /&lt;local&gt;/);
+  assert.doesNotMatch(markup, /undefined|PRIVATE_SOURCE_NAME|Bearer/);
+});
+
+test('transport changes preserve identity but clear incompatible program, endpoint and credential fields', () => {
+  const http: NativeMcpConnectionInput = { ...connection('one'), name: 'chosen', auth: { mode: 'memory' } };
+  const stdio = switchMcpTransport(http, 'stdio');
+  assert.deepEqual(stdio, { id: 'one', revision: 1, name: 'chosen', enabled: true, transport: 'stdio', protocolVersion: '2025-11-25', executable: '', argv: [], environment: {}, auth: { mode: 'none' } });
+  assert.ok(stdio.transport === 'stdio');
+  const restored = switchMcpTransport({ ...stdio, transport: 'stdio', executable: '/usr/bin/node', argv: ['literal'], environment: { KEY: 'SOURCE' }, auth: { mode: 'none' } }, 'http');
+  assert.deepEqual(restored, { id: 'one', revision: 1, name: 'chosen', enabled: true, transport: 'http', protocolVersion: '2026-07-28', endpoint: '', allowLoopbackHttp: false, auth: { mode: 'none' } });
+});
+
+test('stdio input preserves literal arguments and accepts only environment variable names', () => {
+  const argv = ['/a directory/server.mjs', 'a b', '$(literal)', '$KEY', '', '中'];
+  const environment = { API_KEY: 'PRIVATE_API_KEY', _REGION: 'MCP_REGION' };
+  assert.deepEqual(parseStdioInputs(JSON.stringify(argv), JSON.stringify(environment)), { argv, environment });
+  for (const value of ['node server.mjs', '{}', '[1]', '[null]', JSON.stringify(['bad\0value']), JSON.stringify(Array(129).fill('x')), JSON.stringify(['x'.repeat(32768)])]) assert.throws(() => parseStdioInputs(value, '{}'), /启动参数/);
+  for (const value of ['[]', 'null', '{"KEY":123}', '{"KEY":"literal-secret-value"}', '{"1KEY":"SOURCE"}', JSON.stringify(Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`KEY${i}`, 'SOURCE'])))]) assert.throws(() => parseStdioInputs('[]', value), /环境变量/);
+});
+
+test('stdio drafts reject the credential bridge and still erase an attempted secret immediately', () => {
+  const input = { value: 'must-clear' };
+  const draft = switchMcpTransport(connection('one'), 'stdio');
+  assert.throws(() => submitMcpCredential({ setCredential: fail }, draft, input), /请先保存/);
   assert.equal(input.value, '');
 });

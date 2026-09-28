@@ -3,8 +3,8 @@ import { lstat, open, readdir, rename, unlink } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type {
-  BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
-  JsonValue, RunResult, RunStore, ToolCall, Usage,
+  ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
+  JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { contextSummaryItem, requireCompleteResponsesContext, responsesPendingCalls } from './context-maintenance.js';
@@ -57,6 +57,24 @@ export interface RecoveryReport {
   classification: 'safe_to_continue' | 'unknown_effects' | 'unsupported_protocol';
   tools: Array<{ callId: string; name: string; status: 'completed' | 'not_executed' | 'unknown' }>;
 }
+/** Host-only launch reservation. Environment values and process handles never enter this record. */
+export interface NativeStartupRequest {
+  identity: RunIdentity;
+  startupId: string;
+  inputDigest: string;
+  optionsDigest: string;
+  metadata: JsonObject;
+  policyRevision: string;
+  approval: ApprovalDecision;
+}
+export interface NativeStartupReceipt {
+  identity: RunIdentity;
+  inputDigest: string;
+  optionsDigest: string;
+  status: 'live' | 'closed' | 'recovery_required';
+  startups: Array<{ startupId: string; metadata: JsonObject; preparedSeq: number; closedSeq?: number }>;
+}
+interface StoredStartup extends NativeStartupRequest { preparedSeq: number; closedSeq?: number }
 export interface ContextCompactionSource {
   expectedHash: string;
   sourceSeq: number;
@@ -105,6 +123,8 @@ export interface AutoCompactionAttempt extends AutoCompactionRequest {
 type RecoveryCompletion = Extract<RunJournalEvent, { type: 'tool_completed' }>;
 type StoreEvent =
   | { type: 'conversation_created' }
+  | { type: 'startup_prepared'; request: NativeStartupRequest }
+  | { type: 'startup_closed'; startupId: string }
   | { type: 'run_started'; request: BeginRunRequest; payloadDigest: string }
   | { type: 'run_recovered'; runId: string; reason: string }
   | { type: 'recovery_resolved'; runId: string; expectedHash: string; resourcesVerified: true; completions: RecoveryCompletion[]; result: RunResult }
@@ -159,6 +179,20 @@ function validateAutoCompactionRequest(request: AutoCompactionRequest): void {
   hash(request.inputDigest, 'automatic input digest');
   hash(request.configurationDigest, 'automatic configuration digest');
   hash(request.expectedHash, 'automatic expected head');
+}
+function validateStartupRequest(request: NativeStartupRequest, conversationId: string): void {
+  if (!object(request)) fail('invalid_record', 'Invalid startup reservation');
+  validateIdentity(request.identity, conversationId);
+  text(request.startupId, 'startup id', 256);
+  hash(request.inputDigest, 'startup input digest');
+  hash(request.optionsDigest, 'startup options digest');
+  text(request.policyRevision, 'startup policy revision', 256);
+  validateConfiguration(request.metadata);
+  const approval = request.approval;
+  if (!object(approval) || approval.decision !== 'approved' || !object(approval.binding)) fail('approval_required', 'Local service startup requires a bound approval');
+  if (!Number.isSafeInteger(approval.expiresAt) || approval.expiresAt <= 0) fail('invalid_record', 'Invalid startup approval expiry');
+  const { toolCallId, inputDigest, policyRevision, ...identity } = approval.binding;
+  if (!equal(identity, request.identity) || toolCallId !== request.startupId || inputDigest !== digest(request.metadata) || policyRevision !== request.policyRevision) fail('stale_approval', 'Startup approval is not bound to this exact launch and identity');
 }
 function canonical(value: unknown): string {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value);
@@ -218,6 +252,10 @@ export class NativeRunStore implements RunStore {
   private readonly records: RunStoreRecord[] = [];
   private readonly runs = new Map<string, InternalRun>();
   private readonly submissions = new Map<string, string>();
+  private readonly startups = new Map<string, Map<string, StoredStartup>>();
+  /** Not reconstructed during replay: only this writer may attest its own resource cleanup. */
+  private readonly liveStartups = new Set<StoredStartup>();
+  private readonly recoveredStartupRequests = new Set<string>();
   private context: ModelContext | null = null;
   private originalUserItems: JsonValue[] | undefined;
   private contextTurns: Array<{ runId: string; start: number }> = [];
@@ -335,12 +373,45 @@ export class NativeRunStore implements RunStore {
     for (const run of this.runs.values()) {
       if (run.status === 'active') await this.commit(undefined, { type: 'run_recovered', runId: run.identity.runId, reason: 'Previous host stopped before committing a terminal run; resources and prepared effects require verification' });
     }
+    for (const [requestId, startups] of this.startups) {
+      if ([...startups.values()].some(startup => startup.closedSeq === undefined)) this.recoveredStartupRequests.add(requestId);
+    }
   }
 
   private validateEvent(identity: RunIdentity | undefined, event: StoreEvent): void {
     if (!object(event) || typeof event.type !== 'string') fail('invalid_record', 'Invalid event');
     if (event.type === 'conversation_created') {
       if (identity || this.records.length) fail('invalid_record', 'Duplicate conversation creation');
+      return;
+    }
+    if (event.type === 'startup_prepared') {
+      const request = event.request;
+      validateStartupRequest(request, this.conversationId);
+      if (!identity || !equal(identity, request.identity)) fail('invalid_identity', 'Startup identity mismatch');
+      if (this.submissions.has(identity.requestId) || this.runs.has(identity.runId)) fail('payload_mismatch', 'A started submission cannot launch another service');
+      if ([...this.runs.values()].some(run => run.status === 'active' || run.status === 'recovery_required')) fail('conversation_busy', 'Conversation has an active or unresolved run');
+      const previous = this.startups.get(identity.requestId);
+      if (previous?.has(request.startupId)) fail('startup_already_prepared', 'Service startup has already been reserved; replay is forbidden');
+      for (const [requestId, startups] of this.startups) {
+        for (const startup of startups.values()) {
+          if (requestId === identity.requestId) {
+            if (!equal(startup.identity, identity) || startup.inputDigest !== request.inputDigest || startup.optionsDigest !== request.optionsDigest) fail('payload_mismatch', 'Startup submission identity was reused with different input/configuration');
+            if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot launch another service');
+          } else {
+            if (startup.identity.runId === identity.runId) fail('payload_mismatch', 'Startup run identity was reused');
+            if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
+          }
+        }
+      }
+      return;
+    }
+    if (event.type === 'startup_closed') {
+      if (!identity) fail('invalid_identity', 'Startup cleanup is missing identity');
+      validateIdentity(identity, this.conversationId);
+      text(event.startupId, 'startup id', 256);
+      const startup = this.startups.get(identity.requestId)?.get(event.startupId);
+      if (!startup || !equal(startup.identity, identity)) fail('stale_owner', 'Startup no longer belongs to this execution');
+      if (startup.closedSeq !== undefined) fail('invalid_record', 'Duplicate startup cleanup in journal');
       return;
     }
     if (event.type === 'run_started') {
@@ -354,6 +425,15 @@ export class NativeRunStore implements RunStore {
       validateConfiguration(request.configuration);
       if (event.payloadDigest !== payloadDigest(request)) fail('payload_mismatch', 'Submission payload digest mismatch');
       if (this.runs.has(identity.runId) || this.submissions.has(identity.requestId)) fail('payload_mismatch', 'Duplicate run or submission in journal');
+      for (const [requestId, startups] of this.startups) {
+        for (const startup of startups.values()) {
+          if (requestId === identity.requestId) {
+            if (!equal(startup.identity, identity)) fail('stale_owner', 'Only the startup owner may begin its associated run');
+            if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot begin a new run');
+            if (startup.inputDigest !== createHash('sha256').update(request.input).digest('hex') || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
+          } else if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
+        }
+      }
       if ([...this.runs.values()].some(run => run.status === 'active' || run.status === 'recovery_required')) fail('conversation_busy', 'Conversation has an active or unresolved run');
       if (this.context && !equal(this.context.protocol, request.protocol)) fail('protocol_mismatch', 'Existing conversation protocol cannot change');
       return;
@@ -440,6 +520,17 @@ export class NativeRunStore implements RunStore {
   private apply(record: RunStoreRecord): void {
     const event = record.event;
     if (event.type === 'conversation_created') return;
+    if (event.type === 'startup_prepared') {
+      const request = event.request;
+      let startups = this.startups.get(request.identity.requestId);
+      if (!startups) { startups = new Map(); this.startups.set(request.identity.requestId, startups); }
+      startups.set(request.startupId, { ...request, preparedSeq: record.seq });
+      return;
+    }
+    if (event.type === 'startup_closed') {
+      this.startups.get(record.identity!.requestId)!.get(event.startupId)!.closedSeq = record.seq;
+      return;
+    }
     if (event.type === 'run_started') {
       const request = event.request;
       this.originalUserItems ??= clone(request.userItems);
@@ -517,7 +608,7 @@ export class NativeRunStore implements RunStore {
     const line = `${canonical(record)}\n`;
     const bytes = Buffer.byteLength(line);
     if (bytes > this.limits.maxRecordBytes || this.journalBytes + bytes > this.limits.maxJournalBytes || this.records.length >= this.limits.maxRecords) fail('limit_exceeded', 'Conversation disk budget exhausted; history is never silently pruned');
-    if (event.type === 'tool_prepared' && (this.journalBytes + bytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 3 > this.limits.maxRecords)) fail('limit_exceeded', 'Insufficient result and terminal record headroom before preparing a tool');
+    if ((event.type === 'tool_prepared' || event.type === 'startup_prepared') && (this.journalBytes + bytes + 2 * this.limits.maxRecordBytes > this.limits.maxJournalBytes || this.records.length + 3 > this.limits.maxRecords)) fail('limit_exceeded', 'Insufficient cleanup and terminal record headroom before preparing a side effect');
     try {
       await this.checkPath();
       await this.options.fault?.('before_append', event.type);
@@ -538,9 +629,50 @@ export class NativeRunStore implements RunStore {
     } catch (error) { this.poisoned = true; throw error; }
   }
 
+  /** Commit exact host approval before any local service process may be spawned. Never authorizes a replay. */
+  prepareStartup(request: NativeStartupRequest): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable();
+      if (this.recoveredStartupRequests.size) fail('conversation_busy', 'Previous startup resources require recovery');
+      const owned = clone(request);
+      validateStartupRequest(owned, this.conversationId);
+      if (owned.approval.expiresAt <= Date.now()) fail('stale_approval', 'Startup approval has expired');
+      const accepted = await this.commit(owned.identity, { type: 'startup_prepared', request: owned });
+      this.liveStartups.add(this.startups.get(owned.identity.requestId)!.get(owned.startupId)!);
+      return accepted;
+    });
+  }
+
+  /** Only the writer that prepared the startup can confirm all of its local resources have closed. */
+  closeStartup(identity: RunIdentity, startupId: string): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable();
+      validateIdentity(identity, this.conversationId);
+      text(startupId, 'startup id', 256);
+      const startup = this.startups.get(identity.requestId)?.get(startupId);
+      if (!startup || !equal(startup.identity, identity)) fail('stale_owner', 'Startup no longer belongs to this execution');
+      if (startup.closedSeq !== undefined) return { seq: startup.closedSeq };
+      if (!this.liveStartups.has(startup)) fail('recovery_required', 'A new writer cannot attest cleanup of a previous host startup');
+      const closed = await this.commit(identity, { type: 'startup_closed', startupId });
+      this.liveStartups.delete(startup);
+      return closed;
+    });
+  }
+
+  lookupStartup(requestId: string): NativeStartupReceipt | undefined {
+    const startups = this.startups.get(requestId);
+    if (!startups?.size) return undefined;
+    const first = startups.values().next().value!;
+    return clone({ identity: first.identity, inputDigest: first.inputDigest, optionsDigest: first.optionsDigest,
+      status: this.recoveredStartupRequests.has(requestId) ? 'recovery_required' : [...startups.values()].every(startup => startup.closedSeq !== undefined) ? 'closed' : 'live',
+      startups: [...startups.values()].map(({ startupId, metadata, preparedSeq, closedSeq }) => ({ startupId, metadata, preparedSeq, ...(closedSeq === undefined ? {} : { closedSeq }) })),
+    });
+  }
+
   beginRun(request: BeginRunRequest): Promise<BeginRunResult> {
     return this.exclusive(async () => {
       this.writable();
+      if (this.recoveredStartupRequests.size) fail('conversation_busy', 'Previous startup resources require recovery');
       validateIdentity(request.identity, this.conversationId);
       const existingId = this.submissions.get(request.identity.requestId);
       if (existingId) {
@@ -556,6 +688,7 @@ export class NativeRunStore implements RunStore {
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
+      if ((event as { type: string }).type.startsWith('startup_')) fail('invalid_record', 'Startup records are owned by the host lifecycle API');
       const run = this.owner(identity);
       if (event.type === 'tool_completed') {
         const tool = run.tools.get(event.call.id);
@@ -609,6 +742,17 @@ export class NativeRunStore implements RunStore {
   }
 
   getRecoveryReport(): RecoveryReport | null {
+    const startupRequestId = this.recoveredStartupRequests.values().next().value;
+    if (startupRequestId !== undefined) {
+      const startups = [...this.startups.get(startupRequestId)!.values()];
+      const run = this.runs.get(startups[0].identity.runId);
+      const tools: RecoveryReport['tools'] = [...run?.tools.values() ?? []].map(tool => ({
+        callId: tool.call.id, name: tool.call.name,
+        status: tool.completed?.result.status === 'unknown' || !tool.completed && tool.prepared ? 'unknown' : tool.completed ? 'completed' : 'not_executed',
+      }));
+      for (const startup of startups) if (startup.closedSeq === undefined) tools.push({ callId: startup.startupId, name: 'mcp_stdio_startup', status: 'unknown' });
+      return { runId: startups[0].identity.runId, expectedHash: this.records.at(-1)!.hash, classification: 'unknown_effects', tools };
+    }
     const run = [...this.runs.values()].find(item => item.status === 'recovery_required');
     if (!run) return null;
     const tools: RecoveryReport['tools'] = [...run.tools.values()].map(tool => ({
@@ -791,7 +935,7 @@ export class NativeRunStore implements RunStore {
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) fail('invalid_limits', 'Invalid replay range');
     return clone(this.records.filter(record => record.seq > afterSeq).slice(0, limit));
   }
-  get recoveryRequired(): boolean { return this.poisoned || [...this.runs.values()].some(run => run.status === 'recovery_required'); }
+  get recoveryRequired(): boolean { return this.poisoned || this.recoveredStartupRequests.size > 0 || [...this.runs.values()].some(run => run.status === 'recovery_required'); }
   get usage(): { journalBytes: number; records: number } { return { journalBytes: this.journalBytes, records: this.records.length }; }
   close(): Promise<void> {
     return this.exclusive(async () => {

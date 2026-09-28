@@ -6,4 +6,5 @@ export * from './process-supervisor.js';
 export * from './project-instructions.js';
 export * from './project-skills.js';
 export * from './mcp-client.js';
+export * from './mcp-stdio-client.js';
 export * from './mcp-tools.js';

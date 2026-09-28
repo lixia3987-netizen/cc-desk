@@ -32,7 +32,7 @@ export function NativeMcpChoices({ selected, disabled = false, onChange, result 
   return <>
     {(entries.length > 0 || missing.length > 0) && <div className="native-project-skill-list">
       {entries.map(item => choice(item.id, item.name, item.ready && !result?.error,
-        `${item.enabled ? item.ready ? '本机配置就绪' : '未就绪' : '已禁用'} · 协议 ${item.protocolVersion} · ${item.endpoint}${item.error ? ` · ${item.error}` : ''}`))}
+        `${item.enabled ? item.ready ? '本机配置就绪' : '未就绪' : '已禁用'} · ${item.transport === 'stdio' ? 'stdio' : 'HTTP'} · 协议 ${item.protocolVersion} · ${item.transport === 'stdio' ? item.executable : item.endpoint}${item.error ? ` · ${item.error}` : ''}`))}
       {missing.map(id => choice(id, id, false, result ? '连接当前不可用，已保留选择；可取消勾选。' : '已保存的选择，尚未读取连接列表。'))}
     </div>}
     {result && entries.length === 0 && !result.error && <p className="panel-note" role="status">尚无 MCP 连接，请先在“设置与连接”中新增。</p>}
@@ -62,11 +62,11 @@ function NativeMcpSelectionForSession({ selected, disabled = false, onChange }: 
   };
   return <section className="native-project-skills native-mcp-selection" aria-label="会话 MCP 工具">
     <div className="native-project-skills-heading"><h4>MCP 工具</h4><span>已选 {selected.length} / {selectionLimit}</span></div>
-    <p className="panel-note">读取列表只查看本机保存的连接，不访问远端服务。</p>
+    <p className="panel-note">读取列表只查看本机保存的连接，不访问远端服务或启动本地程序。</p>
     <button type="button" className="secondary compact" disabled={disabled || loading} onClick={() => void refresh()}>{loading ? '正在读取 MCP 连接…' : result ? '刷新 MCP 连接' : '读取 MCP 连接'}</button>
     {error && <p className="panel-note warning" role="alert">{error}</p>}
     <NativeMcpChoices selected={selected} disabled={disabled || loading} onChange={onChange} result={result} />
-    <p className="panel-note">默认不启用。停止会话后修改并保存，下一轮任务连接所选服务；每次工具调用仍需审批。</p>
+    <p className="panel-note">默认不启用。停止会话后修改并保存，下一轮任务连接所选服务。stdio 每回合启动前需审批，每次工具调用仍需审批。</p>
   </section>;
 }
 

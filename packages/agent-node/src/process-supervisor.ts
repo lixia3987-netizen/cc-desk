@@ -28,6 +28,39 @@ export interface CommandResult {
   error?: string;
 }
 
+/** Main-process-only, explicitly approved, bidirectional process input. */
+export interface StdioProcessRequest {
+  executable: string;
+  argv: string[];
+  cwd: string;
+  /** Resolved explicit mappings; never inherited provider credentials. */
+  environment?: Record<string, string>;
+  /** Must consume synchronously and keep its own bounded protocol buffer. */
+  onStdout: (data: Buffer) => void;
+  startupTimeoutMs?: number;
+  maxInputBytes?: number;
+}
+
+/** No process output, paths, executable, argv, or environment are returned. */
+export interface StdioProcessResult {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  cancelled: boolean;
+  cleanup: 'released' | 'cleanup_failed';
+  cleanupDiagnostic?: ProcessCleanupDiagnostic;
+  error?: string;
+}
+
+export interface StdioProcessHandle {
+  /** Bounded pending input, with completion after the pipe write callback. */
+  write(data: string | Uint8Array): Promise<void>;
+  endInput(): Promise<void>;
+  /** Settles after the first cleanup attempt; cleanup_failed retains ownership. */
+  readonly closed: Promise<StdioProcessResult>;
+  /** Idempotent while pending; a failed cleanup may be retried. */
+  close(): Promise<StdioProcessResult>;
+}
+
 export interface ProcessCleanupDiagnostic {
   phase: 'windows_snapshot' | 'windows_terminate' | 'windows_streams' | 'windows_helper_release' | 'windows_job' | 'posix_terminate';
   code: 'running' | 'timeout' | 'spawn_error' | 'helper_exit' | 'invalid_snapshot' | 'identity_changed' | 'identity_unavailable' | 'unreleased' | 'os_error'
@@ -100,6 +133,44 @@ export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: r
   return result;
 }
 
+const STDIO_BLOCKED_ENVIRONMENT_NAMES = new Set([
+  ...ENVIRONMENT_KEYS, ...WINDOWS_BACKFILLED_KEYS,
+  'BASH_ENV', 'ENV', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GLOBIGNORE', 'IFS',
+  'PSMODULEPATH', 'JAVA_TOOL_OPTIONS', '_JAVA_OPTIONS', 'JDK_JAVA_OPTIONS', 'CLASSPATH',
+  'PHPRC', 'PHP_INI_SCAN_DIR', '__PROTO__', 'PROTOTYPE', 'CONSTRUCTOR',
+]);
+
+/** Shared with the connection store: explicit mappings cannot alter launch/runtime hooks. */
+export function assertStdioEnvironmentName(name: string): void {
+  if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)
+    || STDIO_BLOCKED_ENVIRONMENT_NAMES.has(name.toUpperCase())
+    || /^(?:NODE_|NPM_|LD_|DYLD_|PYTHON|RUBY|PERL|DOTNET_|COMPLUS_|ELECTRON_|BASH_FUNC_)/.test(name.toUpperCase())) {
+    throw new TypeError('Stdio environment target is invalid or reserved.');
+  }
+}
+
+/** Copies at most sixteen explicitly resolved values; no ambient environment is copied. */
+export function validateStdioEnvironment(environment: Record<string, string> = {}): Record<string, string> {
+  if (!environment || typeof environment !== 'object' || Array.isArray(environment)
+    || ![Object.prototype, null].includes(Object.getPrototypeOf(environment))
+    || Object.keys(environment).length > 16) throw new TypeError('Invalid stdio environment mapping.');
+  const result: Record<string, string> = {};
+  let bytes = 0;
+  const names = new Set<string>();
+  for (const [name, value] of Object.entries(environment)) {
+    assertStdioEnvironmentName(name);
+    if (names.has(name.toUpperCase())) throw new TypeError('Duplicate stdio environment target.');
+    names.add(name.toUpperCase());
+    if (typeof value !== 'string' || value.includes('\0') || Buffer.byteLength(value) > 8 * 1_024) {
+      throw new TypeError('Invalid stdio environment value.');
+    }
+    bytes += Buffer.byteLength(name) + Buffer.byteLength(value);
+    if (bytes > 32 * 1_024) throw new TypeError('Stdio environment exceeds its size limit.');
+    Object.defineProperty(result, name, { value, enumerable: true, configurable: true, writable: true });
+  }
+  return result;
+}
+
 // The guardian waits for host authorization before launching the command. Windows
 // first binds it to an owned Job; POSIX uses its detached process group.
 const GUARDIAN = String.raw`
@@ -117,7 +188,7 @@ process.on('message', message => {
     const spawnStartedAt = Date.now();
     const child = spawn(message.command.executable, message.command.argv, {
       cwd: message.command.cwd, env: message.environment, shell: false,
-      windowsHide: true, stdio: ['ignore', 1, 2],
+      windowsHide: true, stdio: [message.stdio === true ? 0 : 'ignore', 1, 2],
     });
     const spawnCompletedAt = Date.now();
     child.once('spawn', () => process.send?.({ type: 'command-started', pid: child.pid, spawnStartedAt, spawnCompletedAt }));
@@ -167,6 +238,15 @@ interface CommandRecord {
   timer?: NodeJS.Timeout;
   abort?: () => void;
   signal?: AbortSignal;
+  stdio?: StdioProcessControl;
+}
+
+interface StdioProcessControl {
+  environment: Record<string, string>;
+  startupTimeoutMs: number;
+  maxInputBytes: number;
+  onStdout: (data: Buffer) => void;
+  onStarted: (record: CommandRecord) => void;
 }
 
 function positiveInteger(value: number, name: string, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -343,13 +423,106 @@ export class ProcessSupervisor {
   has(ownerId: string): boolean { return [...this.records].some(record => record.owner === ownerId); }
 
   async run(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): Promise<CommandResult> {
+    return this.runOwned(ownerId, command, signal, forbiddenValues);
+  }
+
+  async openStdio(ownerId: string, request: StdioProcessRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): Promise<StdioProcessHandle> {
+    if (!request || typeof request.onStdout !== 'function') throw new TypeError('Stdio requires an output consumer.');
+    validateCommand(request);
+    if (!path.isAbsolute(request.executable) || /\.(?:cmd|bat)$/i.test(request.executable)
+      || request.argv.length > 128
+      || Buffer.byteLength(JSON.stringify(request.argv)) > 32 * 1_024) {
+      throw new TypeError('Stdio requires an absolute executable and bounded explicit argv without batch scripts.');
+    }
+    const environment = validateStdioEnvironment(request.environment);
+    const startupTimeoutMs = positiveInteger(request.startupTimeoutMs ?? 30_000, 'startupTimeoutMs', 30_000);
+    const maxInputBytes = positiveInteger(request.maxInputBytes ?? 128 * 1_024, 'maxInputBytes', 1_048_576);
+    let ready!: (handle: StdioProcessHandle) => void;
+    let failed!: (error: unknown) => void;
+    const opened = new Promise<StdioProcessHandle>((resolve, reject) => { ready = resolve; failed = reject; });
+    const control: StdioProcessControl = {
+      environment, startupTimeoutMs, maxInputBytes, onStdout: request.onStdout,
+      onStarted: record => ready(this.stdioHandle(record)),
+    };
+    void this.runOwned(ownerId, request, signal, forbiddenValues, control).then(result => {
+      const error = new Error(result.cancelled ? 'Stdio process was cancelled.' : 'Unable to start or retain the stdio process.');
+      if (result.cleanup !== 'released') Object.assign(error, { cleanupUnconfirmed: true });
+      failed(error);
+    }, failed);
+    return opened;
+  }
+
+  private stdioHandle(record: CommandRecord): StdioProcessHandle {
+    const result = (): StdioProcessResult => ({
+      exitCode: record.result.exitCode, signal: record.result.signal, cancelled: record.result.cancelled,
+      cleanup: record.result.cleanup, ...(record.result.error ? { error: record.result.error } : {}),
+      ...(record.result.cleanupDiagnostic ? { cleanupDiagnostic: { ...record.result.cleanupDiagnostic } } : {}),
+    });
+    const input = record.child.stdin!;
+    let pendingBytes = 0;
+    let ended = false;
+    let endPromise: Promise<void> | undefined;
+    let closing: Promise<StdioProcessResult> | undefined;
+    const write = (data: string | Uint8Array): Promise<void> => {
+      if (ended || record.cleanupRequested || record.closed || input.destroyed || !input.writable) {
+        return Promise.reject(new Error('Stdio process input is closed.'));
+      }
+      if (typeof data !== 'string' && !(data instanceof Uint8Array)) return Promise.reject(new TypeError('Invalid stdio input.'));
+      const bytes = typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+      if (bytes > record.stdio!.maxInputBytes || pendingBytes + bytes > record.stdio!.maxInputBytes) {
+        return Promise.reject(new Error('Stdio process input exceeds its pending byte limit.'));
+      }
+      pendingBytes += bytes;
+      return new Promise<void>((resolve, reject) => {
+        input.write(data, error => {
+          pendingBytes -= bytes;
+          if (error || record.cleanupRequested) reject(new Error('Stdio process input could not be written.'));
+          else resolve();
+        });
+      });
+    };
+    const endInput = (): Promise<void> => {
+      if (endPromise) return endPromise;
+      ended = true;
+      endPromise = new Promise<void>((resolve, reject) => {
+        if (input.destroyed || !input.writable) { resolve(); return; }
+        input.end(() => resolve());
+        const failed = () => reject(new Error('Stdio process input could not be closed.'));
+        input.once('error', failed);
+        input.once('close', () => { input.off('error', failed); resolve(); });
+      });
+      return endPromise;
+    };
+    return {
+      write, endInput, closed: record.done.then(result),
+      close: () => {
+        if (closing) return closing;
+        ended = true;
+        input.end();
+        closing = (async () => {
+          // Normal shutdown gives the server a bounded chance to observe EOF.
+          // Natural exit begins the same containment cleanup; cancellation and
+          // owner revocation still start the immediate stopRecord barrier.
+          const deadline = Date.now() + Math.min(250, this.cleanupTimeoutMs);
+          while (!record.cleanupRequested && !record.closed && Date.now() < deadline) await delay(10);
+          await this.stopRecord(record);
+          const value = result();
+          if (value.cleanup !== 'released') closing = undefined;
+          return value;
+        })();
+        return closing;
+      },
+    };
+  }
+
+  private async runOwned(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], stdio?: StdioProcessControl): Promise<CommandResult> {
     if (typeof ownerId !== 'string' || !ownerId || ownerId.length > 1_024) throw new TypeError('An owner ID is required.');
     if (this.disposed || this.revokedOwners.has(ownerId)) throw new Error('Command owner has been released.');
     validateCommand(command);
     const launchCommand: CommandRequest = {
       executable: command.executable, argv: [...command.argv], cwd: command.cwd,
     };
-    const timeoutMs = positiveInteger(command.timeoutMs ?? this.timeoutMs, 'timeoutMs', this.maxTimeoutMs);
+    const timeoutMs = stdio?.startupTimeoutMs ?? positiveInteger(command.timeoutMs ?? this.timeoutMs, 'timeoutMs', this.maxTimeoutMs);
     const outputLimit = positiveInteger(command.maxOutputBytes ?? this.outputLimit, 'maxOutputBytes', this.maxOutputBytes);
     const result: CommandResult = {
       exitCode: null, signal: null, stdout: '', stderr: '', outputBytes: 0,
@@ -360,7 +533,7 @@ export class ProcessSupervisor {
     // Credentials resolved for this run may be stored in an otherwise operational
     // variable (for example LANG). Scrub values in both guardian and tool envs,
     // without changing another concurrent run's launch environment.
-    const launchEnvironment = commandEnvironment(this.environment, forbiddenValues);
+    const launchEnvironment = commandEnvironment(this.environment, stdio ? [...forbiddenValues, ...Object.values(stdio.environment)] : forbiddenValues);
     if (!path.isAbsolute(command.executable) && !/[\\/]/.test(command.executable)
       && !Object.entries(launchEnvironment).some(([key, value]) => key.toUpperCase() === 'PATH' && Boolean(value))) {
       result.error = 'Executable lookup requires PATH; select an absolute executable when PATH is unavailable or filtered.';
@@ -371,7 +544,7 @@ export class ProcessSupervisor {
     const child = spawn(this.nodeExecutable, ['-e', GUARDIAN], {
       cwd: command.cwd, env: guardianEnvironment, shell: false,
       detached: process.platform !== 'win32', windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+      stdio: [stdio ? 'pipe' : 'ignore', 'pipe', 'pipe', 'ipc'],
     });
     let finish!: () => void;
     const done = new Promise<CommandResult>(resolve => {
@@ -382,7 +555,7 @@ export class ProcessSupervisor {
       windowsHelpers: new Map(), cleanupRequested: false, commandLaunched: false,
       windowsPreparationAbort: process.platform === 'win32' ? new AbortController() : undefined,
       result, stdout: [], stderr: [], capturedBytes: 0, outputLimit,
-      cleanupFailed: false, done, finish, signal,
+      cleanupFailed: false, done, finish, signal, stdio,
     };
     this.records.add(record);
     const capture = (chunks: Buffer[], data: Buffer) => {
@@ -395,8 +568,22 @@ export class ProcessSupervisor {
         record.capturedBytes += retained.length;
       }
     };
-    child.stdout!.on('data', (data: Buffer) => capture(record.stdout, data));
-    child.stderr!.on('data', (data: Buffer) => capture(record.stderr, data));
+    child.stdout!.on('data', (data: Buffer) => {
+      if (!stdio) { capture(record.stdout, data); return; }
+      if (record.cleanupRequested) return;
+      try { stdio.onStdout(data); }
+      catch {
+        result.error = 'Stdio process output could not be consumed.';
+        void this.stopRecord(record);
+      }
+    });
+    // Long-lived protocol stderr is drained and discarded, never retained or returned.
+    child.stderr!.on('data', (data: Buffer) => { if (!stdio) capture(record.stderr, data); });
+    child.stdin?.on('error', () => {
+      if (record.cleanupRequested) return;
+      result.error = 'Stdio process input failed.';
+      void this.stopRecord(record);
+    });
     child.once('error', () => {
       result.error = 'Unable to start the command runtime.';
       void this.stopRecord(record);
@@ -412,6 +599,10 @@ export class ProcessSupervisor {
       const value = message as Record<string, unknown>;
       if (value.type === 'command-started' && Number.isSafeInteger(value.pid) && Number(value.pid) > 0) {
         record.commandPid = Number(value.pid);
+        if (stdio && !record.cleanupRequested) {
+          if (record.timer) clearTimeout(record.timer);
+          stdio.onStarted(record);
+        }
         return;
       }
       if (value.type === 'command-exit') {
@@ -437,7 +628,7 @@ export class ProcessSupervisor {
       // budget starts only after containment is ready and launch is authorized.
       if (process.platform === 'win32') startTimer();
       record.commandLaunched = true;
-      child.send({ type: 'launch', command: launchCommand, environment: launchEnvironment }, error => {
+      child.send({ type: 'launch', command: launchCommand, environment: stdio ? { ...launchEnvironment, ...stdio.environment } : launchEnvironment, stdio: Boolean(stdio) }, error => {
         if (error && !record.cleanupPromise) {
           result.error = 'Unable to initialize the command runtime.';
           void this.stopRecord(record);
@@ -559,7 +750,7 @@ export class ProcessSupervisor {
       if (released) this.records.delete(record);
       // Always keep draining until the bounded release attempt finishes. Failed
       // cleanup is retained as occupied even though host stream handles are closed.
-      if (!released) { record.child.stdout?.destroy(); record.child.stderr?.destroy(); }
+      if (!released) { record.child.stdin?.destroy(); record.child.stdout?.destroy(); record.child.stderr?.destroy(); }
       record.result.stdout = boundedText(record.stdout);
       record.result.stderr = boundedText(record.stderr);
       record.finish();
