@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ResponsesModel, ResponsesModelError } from '../dist/responses-model.js';
+import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core';
+import { ResponsesModel, ResponsesModelError, SafeModelDeltas, assertNoModelCredential } from '../dist/responses-model.js';
 import { startResponsesFixture, assistantMessage, functionCall, reasoningItem, responseEvents, sse } from './fixtures/responses-server.mjs';
 
 const identity = { sessionId: 'session', conversationId: 'conversation', runId: 'run', requestId: 'request', workerGeneration: 1 };
@@ -13,7 +14,7 @@ const makeRequest = (model, input = model.userItems('测试 Unicode'), options =
 async function fixtureTest(t, options = {}, modelOptions = {}) {
   const fixture = await startResponsesFixture(options);
   t.after(() => fixture.close());
-  const model = new ResponsesModel({ model: 'fixture-model', baseURL: fixture.baseURL, allowLoopbackHttp: true, ...modelOptions });
+  const model = new ResponsesModel({ model: 'fixture-model', baseURL: fixture.baseURL, allowLoopbackHttp: true, toolDefinitions: definitions, ...modelOptions });
   return { fixture, model };
 }
 
@@ -50,7 +51,7 @@ test('manual history replays full responses and legal results across fresh adapt
     if (!response.toolCalls.length) assert.equal(index, 3);
   }
   assert.deepEqual(seen, ['read_file', 'apply_patch', 'run_command']);
-  const restarted = new ResponsesModel({ model: 'fixture-model', baseURL: fixture.baseURL, allowLoopbackHttp: true });
+  const restarted = new ResponsesModel({ model: 'fixture-model', baseURL: fixture.baseURL, allowLoopbackHttp: true, toolDefinitions: definitions });
   items = JSON.parse(JSON.stringify(items));
   items.push(...restarted.userItems('continue after clean restart'));
   const response = await restarted.generate(makeRequest(restarted, items));
@@ -132,7 +133,7 @@ test('request and response bytes are bounded and no network occurs for oversized
 test('timeout and caller cancellation abort an active HTTP stream', async t => {
   const { fixture, model } = await fixtureTest(t, { handler: () => ({ hang: true }) }, { timeoutMs: 30 });
   await assert.rejects(model.generate(makeRequest(model)), { code: 'timeout' });
-  const cancellable = new ResponsesModel({ baseURL: fixture.baseURL, model: 'fixture-model', allowLoopbackHttp: true });
+  const cancellable = new ResponsesModel({ baseURL: fixture.baseURL, model: 'fixture-model', allowLoopbackHttp: true, toolDefinitions: definitions });
   const controller = new AbortController();
   const promise = cancellable.generate(makeRequest(cancellable, undefined, { signal: controller.signal }));
   setTimeout(() => controller.abort('secret-cancel-reason'), 30);
@@ -221,4 +222,55 @@ test('interleaved text and different tool channels cannot flush credential prefi
     await assert.rejects(model.generate(makeRequest(model, undefined, { onEvent: event => projected.push(event) })), { code: 'credential_echo' });
     assert.ok(!projected.filter(event => target === 'text' ? event.type === 'text_delta' : event.callId === 'a').map(event => event.text ?? event.delta).join('').includes(key));
   }
+});
+
+test('the budget includes the complete transmitted tool schemas and binds generation to an immutable catalog', async t => {
+  const catalog = [{ ...definition('mcp_fixture_inspect'), description: '工具说明🙂'.repeat(300), inputSchema: {
+    type: 'object', properties: { value: { type: 'string', description: 'schema detail '.repeat(200) } }, required: ['value'],
+  } }];
+  const original = structuredClone(catalog);
+  const instructions = '项目指令';
+  const { fixture, model } = await fixtureTest(t, { handler: () => ({ output: [assistantMessage('answer', 'done')] }) }, { instructions, toolDefinitions: catalog });
+  const context = { protocol: model.protocol, items: model.userItems('inspect') };
+  const wireTools = original.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false }));
+  const estimate = estimateContextInputTokens(context, instructions + canonicalJson(wireTools));
+  assert.equal(model.estimateInputTokens(context), estimate);
+  assert.ok(estimate > 5000, 'large MCP descriptions and nested schemas are not omitted from the budget');
+  catalog[0].description = 'mutated';
+  catalog[0].inputSchema.properties.value.description = 'mutated schema';
+  assert.equal(model.estimateInputTokens(context), estimate, 'caller mutations cannot alter the budget snapshot');
+  await assert.rejects(model.generate(makeRequest(model, context.items, { tools: catalog })), { code: 'tool_catalog' });
+  await assert.rejects(model.generate(makeRequest(model, context.items, { tools: [] })), { code: 'tool_catalog' });
+  assert.equal(fixture.requests.length, 0, 'an unbudgeted catalog never reaches the provider');
+  await model.generate(makeRequest(model, context.items, { tools: original }));
+  assert.deepEqual(fixture.requests[0].tools, wireTools);
+});
+
+test('an omitted model tool catalog means no tools and cannot acquire schemas at generation time', async t => {
+  const { fixture, model } = await fixtureTest(t, { handler: () => ({ output: [assistantMessage('answer', 'done')] }) }, { toolDefinitions: undefined });
+  const context = { protocol: model.protocol, items: [] };
+  assert.equal(model.estimateInputTokens(context), estimateContextInputTokens(context, '[]'));
+  await assert.rejects(model.generate(makeRequest(model)), { code: 'tool_catalog' });
+  assert.equal(fixture.requests.length, 0);
+  await model.generate(makeRequest(model, undefined, { tools: [] }));
+  assert.deepEqual(fixture.requests[0].tools, []);
+});
+
+test('main-process credential guards protect multiple independent secrets and their interleaved delta suffixes', () => {
+  const values = ['long-model-key-that-is-not-the-mcp-key', 'mcp-secret', undefined, ''];
+  for (const secret of values.filter(Boolean)) {
+    const escaped = secret.split('').map(character => `\\u${character.charCodeAt(0).toString(16).padStart(4, '0')}`).join('');
+    assert.throws(() => assertNoModelCredential({ arguments: `{"value":"${escaped}"}` }, values), { code: 'credential_echo' });
+    const emitted = [];
+    const deltas = new SafeModelDeltas(values, event => emitted.push(event));
+    deltas.push({ type: 'text_delta', text: secret.slice(0, 4) });
+    deltas.push({ type: 'tool_arguments_delta', callId: 'unrelated', delta: 'innocuous '.repeat(20) });
+    assert.throws(() => deltas.push({ type: 'text_delta', text: secret.slice(4) }), { code: 'credential_echo' });
+    assert.equal(emitted.filter(event => event.type === 'text_delta').map(event => event.text).join(''), '');
+  }
+  const emitted = [];
+  const deltas = new SafeModelDeltas(values, event => emitted.push(event.text));
+  deltas.push({ type: 'text_delta', text: 'short safe tail' });
+  deltas.finish();
+  assert.equal(emitted.join(''), 'short safe tail');
 });

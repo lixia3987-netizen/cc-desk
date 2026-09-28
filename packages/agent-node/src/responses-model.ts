@@ -1,5 +1,5 @@
-import type { JsonObject, JsonValue, ModelContext, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolResult, Usage } from '@cc-desk/agent-core'
-import { estimateContextInputTokens } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core'
 
 export interface ResponsesModelOptions {
   /** API base, normally https://api.openai.com/v1. /responses is appended. */
@@ -7,6 +7,8 @@ export interface ResponsesModelOptions {
   model: string
   apiKey?: string
   instructions?: string
+  /** Fixed tool catalog included in every input estimate and request. Defaults to no tools. */
+  toolDefinitions?: readonly ToolDefinition[]
   /** HTTP is accepted only for literal loopback/localhost and this explicit opt-in. */
   allowLoopbackHttp?: boolean
   timeoutMs?: number
@@ -98,14 +100,18 @@ function usageFrom(value: JsonValue | undefined): Usage | null {
   return Object.keys(result).length ? result : null
 }
 
-/** Fail closed if a service echoes its bearer credential into any provider data. */
-export function assertNoModelCredential(value: unknown, secret: string | undefined): void {
-  if (!secret) return
+type ProtectedValues = string | readonly (string | undefined)[] | undefined
+const protectedValues = (value: ProtectedValues): string[] => [...new Set((Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === 'string' && item.length > 0))]
+
+/** Fail closed if protected credentials occur in model inputs, outputs, or host RPC data. */
+export function assertNoModelCredential(value: unknown, secrets: ProtectedValues): void {
+  const values = protectedValues(secrets)
+  if (!values.length) return
   const pending: unknown[] = [value]
   while (pending.length) {
     const current = pending.pop()
     if (typeof current === 'string') {
-      if (current.includes(secret)) failure('credential_echo', 'Model data contained a protected credential.')
+      if (values.some(secret => current.includes(secret))) failure('credential_echo', 'Model data contained a protected credential.')
       // Function arguments and tool outputs are nested JSON strings. Escaping a
       // key must not bypass the check before those strings are later decoded.
       if (/^[\s]*[\[{\"]/.test(current)) {
@@ -131,20 +137,24 @@ export class SafeModelDeltas {
   private pending: ModelStreamEvent[] = []
   private channels = new Map<string, { length: number; safe: number; scanTail: string }>()
   private globalTail = ''
-  readonly #secret: string | undefined
-  constructor(secret: string | undefined, private readonly emit: (event: ModelStreamEvent) => void) { this.#secret = secret }
+  readonly #secrets: string[]
+  readonly #holdLength: number
+  constructor(secrets: ProtectedValues, private readonly emit: (event: ModelStreamEvent) => void) {
+    this.#secrets = protectedValues(secrets)
+    this.#holdLength = Math.max(0, ...this.#secrets.map(secret => secret.length - 1))
+  }
   push(event: ModelStreamEvent): void {
-    if (!this.#secret) { this.emit(event); return }
+    if (!this.#secrets.length) { this.emit(event); return }
     const channel = this.channel(event)
     const state = this.channels.get(channel) ?? { length: 0, safe: 0, scanTail: '' }
     const delta = event.type === 'text_delta' ? event.text : event.delta
     const candidate = state.scanTail + delta
-    assertNoModelCredential(candidate, this.#secret)
-    assertNoModelCredential(this.globalTail + delta, this.#secret)
-    this.globalTail = this.#secret.length > 1 ? (this.globalTail + delta).slice(-(this.#secret.length - 1)) : ''
-    state.scanTail = this.#secret.length > 1 ? candidate.slice(-(this.#secret.length - 1)) : ''
+    assertNoModelCredential(candidate, this.#secrets)
+    assertNoModelCredential(this.globalTail + delta, this.#secrets)
+    this.globalTail = this.#holdLength ? (this.globalTail + delta).slice(-this.#holdLength) : ''
+    state.scanTail = this.#holdLength ? candidate.slice(-this.#holdLength) : ''
     state.length += delta.length
-    state.safe = Math.max(0, state.length - this.#secret.length + 1)
+    state.safe = Math.max(0, state.length - this.#holdLength)
     this.channels.set(channel, state)
     this.pending.push(event)
     this.flush()
@@ -170,6 +180,16 @@ export class SafeModelDeltas {
       }
     }
   }
+}
+
+const responsesTools = (tools: readonly ToolDefinition[]): JsonObject[] => tools.map(tool => ({
+  type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false,
+}))
+const estimateWithTools = (context: ModelContext, instructions: string, toolsJson: string): number => estimateContextInputTokens(context, instructions + toolsJson)
+
+/** Same conservative UTF-8 estimate used by ResponsesModel, usable without credentials. */
+export function estimateResponsesInputTokens(context: ModelContext, instructions = '', toolDefinitions: readonly ToolDefinition[] = []): number {
+  return estimateWithTools(context, instructions, canonicalJson(responsesTools(toolDefinitions)))
 }
 
 function completeResponse(response: JsonObject): ModelResponse {
@@ -220,6 +240,8 @@ export class ResponsesModel implements ModelPort {
   readonly #apiKey: string | undefined
   readonly #model: string
   readonly #instructions: string | undefined
+  readonly #tools: JsonObject[]
+  readonly #toolsJson: string
   readonly #timeoutMs: number
   readonly #maxResponseBytes: number
   readonly #maxRequestBytes: number
@@ -232,6 +254,10 @@ export class ResponsesModel implements ModelPort {
     this.#model = options.model
     this.#apiKey = options.apiKey
     this.#instructions = options.instructions
+    // Detach schemas from mutable discovery results and bind generation to the
+    // same catalog that the run loop budgets before any network request.
+    this.#tools = structuredClone(responsesTools(options.toolDefinitions ?? []))
+    this.#toolsJson = canonicalJson(this.#tools)
     this.#timeoutMs = positive(options.timeoutMs, 120_000, 600_000)
     this.#maxResponseBytes = positive(options.maxResponseBytes, 8 * 1024 * 1024, 64 * 1024 * 1024)
     this.#maxRequestBytes = positive(options.maxRequestBytes, 8 * 1024 * 1024, 64 * 1024 * 1024)
@@ -245,7 +271,7 @@ export class ResponsesModel implements ModelPort {
 
   estimateInputTokens(context: ModelContext): number {
     // Conservative UTF-8 byte estimate; never represents provider-billed usage.
-    return estimateContextInputTokens(context, this.#instructions)
+    return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson)
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
@@ -253,11 +279,12 @@ export class ResponsesModel implements ModelPort {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
     }
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
+    if (canonicalJson(responsesTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
     const body = JSON.stringify({
       model: this.#model,
       input: request.context.items,
       ...(this.#instructions === undefined ? {} : { instructions: this.#instructions }),
-      tools: request.tools.map(tool => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.inputSchema, strict: false })),
+      tools: this.#tools,
       // ToolPort executes the completed batch sequentially. The flag also asks the
       // provider to emit at most one call, but incoming batches remain supported.
       parallel_tool_calls: false,

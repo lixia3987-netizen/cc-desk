@@ -404,6 +404,69 @@ test('an environment credential is stripped even if its reference names an allow
   assert.equal(h.forkOptions?.env.LANG, undefined);
 });
 
+test('MCP credentials stay in main and are stripped from allowed environment variables', async () => {
+  const secret = 'mcp-main-process-sentinel', previous = process.env.LANG;
+  let h: ReturnType<typeof harness>;
+  try {
+    process.env.LANG = `prefix-${secret}-suffix`;
+    h = harness(async worker => { const context = await begin(worker); await finish(worker, context); }, { forbiddenValues: [secret] });
+  } finally { if (previous === undefined) delete process.env.LANG; else process.env.LANG = previous; }
+  assert.equal((await h.promise).status, 'completed');
+  assert.equal(h.forkOptions?.env.LANG, undefined);
+  const start = h.worker.sent.find(message => message.type === 'start')!;
+  assert.equal('forbiddenValues' in start, false);
+  assert.equal('forbiddenValues' in (start.model as Record<string, unknown>), false);
+  assert.equal(JSON.stringify(start).includes(secret), false);
+});
+
+test('protected MCP credentials in initial input or instructions fail before a worker starts', async () => {
+  const secret = 'mcp-main-process-sentinel';
+  for (const overrides of [
+    { request: { ...run, input: secret } },
+    { model: { baseURL: 'http://127.0.0.1:1/v1', model: 'local', allowLoopbackHttp: true, instructions: secret } },
+  ]) {
+    const h = harness(async () => assert.fail('A worker must not receive protected inputs.'), { ...overrides, forbiddenValues: [secret] });
+    await assert.rejects(h.promise, { code: 'credential' });
+    assert.equal(h.forkOptions, undefined);
+  }
+});
+
+test('independent shorter MCP secret fragments cannot pass model-key stream buffering', async () => {
+  const secret = 'mcp-secret';
+  const h = harness(async worker => {
+    await begin(worker);
+    await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: secret.slice(0, 4) });
+    await worker.rpc('event', { type: 'tool_arguments_delta', identity: run.identity, callId: 'other', delta: 'padding'.repeat(20) });
+    await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: secret.slice(4) });
+  }, { forbiddenValues: [secret] });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.events.filter(event => (event as { type: string }).type === 'text_delta').map(event => (event as { text: string }).text).join(''), '');
+  assert.equal(JSON.stringify(h.worker.sent).includes(secret), false);
+});
+
+test('MCP credential echoes cannot become durable responses or worker tool replies', async () => {
+  const secret = 'mcp-main-process-sentinel';
+  const response = harness(async worker => {
+    await begin(worker);
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response: {
+      outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: secret }] }], toolCalls: [], usage: null, finishReason: 'completed',
+    } } });
+  }, { forbiddenValues: [secret] });
+  await assert.rejects(response.promise, { code: 'protocol' });
+  assert.deepEqual(response.journal, []);
+  const tool = harness(async worker => {
+    const context = await begin(worker), prepared = await prepare(worker, context);
+    const approval = await worker.rpc('approval', approvalRequest(prepared));
+    await worker.rpc('tools.validate', { prepared, context: executionContext() });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+    await worker.rpc('tools.execute', { prepared, context: executionContext(), approval });
+  }, { forbiddenValues: [secret] });
+  tool.options.tools.execute = async () => ({ status: 'completed', output: secret });
+  await assert.rejects(tool.promise, { code: 'protocol' });
+  assert.equal(JSON.stringify(tool.worker.sent).includes(secret), false);
+  assert.equal(JSON.stringify(tool.journal).includes(secret), false);
+});
+
 test('missing exit proof triggers kill fallback and a cleanup barrier', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const h = harness(async worker => { worker.autoCancel = false; worker.emit('error', 'FatalError', 'secret', 'secret'); });

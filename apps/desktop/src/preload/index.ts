@@ -2,6 +2,12 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { TaskState } from '../shared/chat';
 const api: DesktopAPI = {
+  nativeMcp: {
+    list: () => ipcRenderer.invoke('native:mcp-connections-list'),
+    upsert: input => ipcRenderer.invoke('native:mcp-connections-upsert', input),
+    remove: input => ipcRenderer.invoke('native:mcp-connections-remove', input),
+    setCredential: input => ipcRenderer.invoke('native:mcp-connections-credential', input),
+  },
   nativeSkills: {
     list: input => ipcRenderer.invoke('native:skills-list', input),
   },

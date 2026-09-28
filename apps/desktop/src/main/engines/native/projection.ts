@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { contextBudgetUsage, DEFAULT_RUN_BUDGET, estimateContextInputTokens, type AgentEvent, type JsonObject, type JsonValue, type RunResult } from '@cc-desk/agent-core';
+import { contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type JsonObject, type JsonValue, type RunResult, type ToolDefinition } from '@cc-desk/agent-core';
+import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, TaskState } from '../../../shared/chat';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
@@ -220,12 +221,13 @@ export class NativeProjection {
     if (configuration && modelContext) {
       const options = parseNativeConfig({ schemaVersion: 1, options: object(configuration.sessionOptions) ? configuration.sessionOptions : {} });
       const instructions = typeof configuration.modelInstructions === 'string' ? configuration.modelInstructions : '';
+      const definitions = Array.isArray(configuration.toolDefinitions) ? configuration.toolDefinitions as unknown as ToolDefinition[] : [];
       const model = typeof configuration.model === 'string' ? configuration.model : undefined;
       projected.push({ seq: latest.seq, event: { type: 'context', context: {
         ...(model ? { model, requestModel: model } : {}),
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(measuredAt ? { measuredAt } : {}), source: 'request', status: inputTokens === undefined ? 'unknown' : 'ready',
-        budget: contextBudgetUsage(modelContext, estimateContextInputTokens(modelContext, instructions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }),
+        budget: contextBudgetUsage(modelContext, estimateResponsesInputTokens(modelContext, instructions, definitions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }),
       } } });
     }
     const temporary = path.join(this.directory, `${id}.native-${randomUUID()}.tmp`);

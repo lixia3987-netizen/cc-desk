@@ -8,10 +8,13 @@ import { z } from 'zod';
 import { StateStore } from './store';
 import { createExecutors } from './execution/create-executors';
 import { ConnectionStore } from './engines/native/connections';
+import { NativeCredentialStore } from './engines/native/credentials';
+import { NativeMcpConnectionStore } from './engines/native/mcp-connections';
 import { NativeConnectionDiagnostics } from './engines/native/connection-diagnostics';
 import type { NativeStructuredExecutor } from './engines/native/structured-executor';
 import { registerNativeHandlers } from './ipc/native-handlers';
 import { registerNativeSkillHandlers } from './ipc/native-skill-handlers';
+import { registerNativeMcpHandlers } from './ipc/native-mcp-handlers';
 import type { ExecutionRegistry } from './execution/registry';
 import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
@@ -39,6 +42,7 @@ let window: BrowserWindow | null = null;
 let executors: ExecutionRegistry;
 let nativeExecutor: NativeStructuredExecutor;
 let connections: ConnectionStore;
+let mcpConnections: NativeMcpConnectionStore;
 let connectionDiagnostics: NativeConnectionDiagnostics;
 let sessionCreation: SessionCreation;
 let services: SessionService;
@@ -93,9 +97,10 @@ async function addProject(value: string): Promise<Project> {
 function registerIPC() {
   registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
   registerNativeSkillHandlers(handle, store);
+  registerNativeMcpHandlers(handle, mcpConnections, notify);
   handle('native:confirm-recovery', idSchema, async id => {
     if (!nativeExecutor.recoveryRequired(id)) throw new Error('此会话当前没有待确认的目录隔离。');
-    const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请先核查工作目录的实际修改，并确认上次命令及其子进程已停止。', detail: '确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });
+    const choice = await dialog.showMessageBox(window!, { type: 'warning', title: '确认已核查执行现场', message: '请核查工作目录修改、命令及子进程；若调用过 MCP，还需核查远端操作结果和服务状态。', detail: '停止客户端不能证明远端操作未执行或已停止。确认只解除目录隔离；旧会话和未知工具记录继续保留为只读，系统不会重新执行它们。请新建会话继续。', buttons: ['取消', '我已核查，解除隔离'], defaultId: 0, cancelId: 0 });
     if (choice.response !== 1) return;
     await services.maintainNativeContext(id, true, () => nativeExecutor.confirmRecovery(id));
     await services.refreshDirectoryRelease(id);
@@ -270,7 +275,11 @@ else {
         isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && session.engineConfig.options.connectionId === id),
       });
       connectionDiagnostics = new NativeConnectionDiagnostics(connections, { onChanged: notify });
-      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
+      mcpConnections = new NativeMcpConnectionStore(store.directory, new NativeCredentialStore(safeStorage), {
+        isConnectionActive: id => nativeExecutor?.isMcpConnectionActive(id) ?? false,
+        isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && Array.isArray(session.engineConfig.options.mcpConnections) && session.engineConfig.options.mcpConnections.includes(id)),
+      });
+      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, mcpConnections, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
       await nativeExecutor.initialize();
       services = new SessionService(store,executors,notify,()=>window,{
         history:(cwd,options)=>historySources.query(cwd,options), diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),

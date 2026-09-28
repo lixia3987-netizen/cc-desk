@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision } from '@cc-desk/agent-core';
-import { estimateContextInputTokens } from '@cc-desk/agent-core';
+import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from '../src/main/engines/native/projection';
 import { ExecutionEvents } from '../src/main/execution/events';
 import type { Session } from '../src/shared/types';
@@ -176,11 +176,12 @@ test('an empty native conversation without display evidence remains a valid new 
 test('native context projection uses durable history, latest reported input, and per-run budget across restart', async () => {
   const f = await fixture();
   try {
-    f.req.configuration = { model: 'fixture-model', modelInstructions: '规则🙂', sessionOptions: { maxInputTokens: 2048 } };
+    const definitions = [{ name: 'mcp_fixture_read', description: '工具🙂'.repeat(100), inputSchema: { type: 'object', properties: { path: { type: 'string' } } }, risk: 'command' as const }];
+    f.req.configuration = { model: 'fixture-model', modelInstructions: '规则🙂', toolDefinitions: definitions, sessionOptions: { maxInputTokens: 2048 } };
     await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
     let snapshot = f.projection.snapshot(f.id);
     assert.equal(snapshot.context?.budget?.maxInputTokens, 2048);
-    assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateContextInputTokens(f.store.loadContext()!, '规则🙂'));
+    assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateResponsesInputTokens(f.store.loadContext()!, '规则🙂', definitions));
     assert.equal(snapshot.context?.budget?.contextBytes, Buffer.byteLength(JSON.stringify(f.store.loadContext())));
     assert.equal(snapshot.context?.inputTokens, undefined); assert.equal(snapshot.context?.contextWindow, undefined);
     for (const reported of [17, 4, undefined, 0]) {
@@ -188,7 +189,7 @@ test('native context projection uses durable history, latest reported input, and
       await f.projection.hydrate(f.id, f.store);
       snapshot = f.projection.snapshot(f.id);
       assert.equal(snapshot.context?.inputTokens, reported, 'latest request is neither accumulated nor substituted when unknown');
-      assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateContextInputTokens(f.store.loadContext()!, '规则🙂'));
+      assert.equal(snapshot.context?.budget?.estimatedInputTokens, estimateResponsesInputTokens(f.store.loadContext()!, '规则🙂', definitions));
       assert.equal(snapshot.context?.contextWindow, undefined);
     }
     await f.finish(); await f.projection.hydrate(f.id, f.store);
