@@ -1,6 +1,6 @@
 # N2：检索与编辑效率
 
-日期：2026-09-28（北京时间）。本批从 `dev/native-agent@b45bd0623d2a44a2878c46d4701fa4b388c7d9be` 开发，交付范围为 **N2-01 文件定位与检索**。N2-02 多文件变更预览和 N2-03 代码定位体验尚未交付。正式运行结果统一登记到[正式运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)，总体顺序见[后续规划](NATIVE-AGENT-NEXT-PLAN.md)。
+日期：2026-09-28（北京时间）。本批从 `dev/native-agent@b45bd0623d2a44a2878c46d4701fa4b388c7d9be` 开发，交付范围为 **N2-01 文件定位与检索**。后续 [N2-02 多文件变更预览与回执](NATIVE-AGENT-N2-CHANGES.md)已单独交付，N2-03 代码定位体验尚未交付；本页保留 N2-01 的原候选和验证记录。正式运行结果统一登记到[正式运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)，总体顺序见[后续规划](NATIVE-AGENT-NEXT-PLAN.md)。
 
 **状态：N2-01 已实现并通过本地验证。** 同批 [E0-01 工程任务材料](NATIVE-AGENT-E0.md)单独登记，实际服务、界面和三平台成品仍待正式运行。
 
