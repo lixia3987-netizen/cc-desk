@@ -99,6 +99,8 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
       stepIds: item.stepIds, criterionIds: item.criterionIds, planRevision: item.planRevision, acceptanceRevision: item.acceptanceRevision,
       createdAt: item.createdAt, ...(item.toolCallId ? { toolCallId: item.toolCallId } : {}), ...(item.stale ? { stale: true } : {}),
       ...(item.reason ? { reason: item.reason } : {}), ...(item.truncated ? { truncated: true } : {}), workspaceComplete: item.workspaceComplete,
+      ...(item.location ? { location: { path: item.location.path, startLine: item.location.startLine, endLine: item.location.endLine,
+        fileHash: item.location.fileHash, fileBytes: item.location.fileBytes, excerptHash: item.location.excerptHash } } : {}),
     }));
     return { status: 'completed', output: JSON.parse(JSON.stringify({ task: {
       taskId: task.taskId, revision: task.revision, planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision,
