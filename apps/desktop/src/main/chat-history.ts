@@ -299,6 +299,7 @@ export class ChatHistory {
       snapshot.taskState = event.taskState as TaskState;
       snapshot.error = typeof event.error === 'string' ? event.error : undefined;
     } else if (event.type === 'metadata') {
+      if (event.resetUsage === true) snapshot.usage = undefined;
       snapshot.model = typeof event.model === 'string' ? event.model : undefined;
       snapshot.permissionMode = typeof event.permissionMode === 'string' ? event.permissionMode : undefined;
       if (Array.isArray(event.mcpServers)) snapshot.mcpServers = event.mcpServers.filter(item => {

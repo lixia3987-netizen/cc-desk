@@ -120,3 +120,77 @@ test('schema rejects unknown fields and pre-aborted tools never run', async t =>
   const controller = new AbortController(); controller.abort(new Error('Cancelled before prepare'));
   await assert.rejects(port.prepare(call('aborted', 'list_directory', { path: '.' }), { ...ctx, signal: controller.signal }), /Cancelled/);
 });
+test('edit_file approval binds the exact displayed fragment replacement and cannot be reused for another edit', async t => {
+  const { root, port } = await fixture(t);
+  const ctx = context();
+  await fs.writeFile(path.join(root, 'file'), 'before\nuntouched');
+  const read = await executeRead(port, ctx, 'read', 'read_file', { path: 'file', startLine: 1, endLine: 1 });
+  const input = { path: 'file', oldText: 'before', newText: 'after', expectedHash: read.output.hash };
+  const prepared = await port.prepare(call('edit', 'edit_file', input), ctx);
+  assert.deepEqual(prepared.input, input, 'approval shows the exact original edit, not a rewritten full-file replacement');
+  assert.equal(prepared.preconditions.expectedHash, read.output.hash);
+  assert.equal(prepared.requiresApproval, true);
+  assert.equal(prepared.definition.risk, 'write');
+  await assert.rejects(port.execute(prepared, ctx), /approval/);
+  const changed = structuredClone(prepared); changed.input.newText = 'unapproved';
+  await assert.rejects(port.execute(changed, ctx, approve(prepared, ctx)), /changed/);
+  const result = await port.execute(prepared, ctx, approve(prepared, ctx));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.output.hash, contentHash('after\nuntouched'));
+  assert.equal(result.effects.previousHash, read.output.hash);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'after\nuntouched');
+  const second = await port.prepare(call('edit2', 'edit_file', { ...input, oldText: 'after', newText: 'again', expectedHash: result.output.hash }), ctx);
+  await assert.rejects(port.execute(second, ctx, approve(prepared, ctx)), /approval/);
+  assert.equal((await port.execute(second, ctx, approve(second, ctx))).status, 'completed');
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'again\nuntouched');
+  // Retries report the original durable result without applying the text twice.
+  assert.deepEqual(await port.execute(prepared, ctx, approve(prepared, ctx)), result);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'again\nuntouched');
+});
+test('edit_file rejects approval-time changes outside the matched fragment and cancellation before execute', async t => {
+  const { root, port } = await fixture(t);
+  const ctx = context();
+  await fs.writeFile(path.join(root, 'file'), 'before\nuntouched');
+  const input = { path: 'file', oldText: 'before', newText: 'after', expectedHash: contentHash('before\nuntouched') };
+  const prepared = await port.prepare(call('edit', 'edit_file', input), ctx);
+  await fs.writeFile(path.join(root, 'file'), 'before\nexternal');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /changed|conflict/);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'before\nexternal');
+  const controller = new AbortController();
+  const cancelContext = { ...ctx, signal: controller.signal };
+  const cancelled = await port.prepare(call('cancel-edit', 'edit_file', { ...input, expectedHash: contentHash('before\nexternal') }), cancelContext);
+  controller.abort(new Error('Cancelled while awaiting approval'));
+  await assert.rejects(port.execute(cancelled, cancelContext, approve(cancelled, cancelContext)), /Cancelled/);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'before\nexternal');
+  assert.deepEqual(await fs.readdir(root), ['file']);
+});
+test('edit_file requires applicable file-scope instructions and changed AGENTS invalidates approval', async t => {
+  const { root, port } = await fixture(t);
+  const ctx = context();
+  await fs.mkdir(path.join(root, 'src'));
+  await fs.writeFile(path.join(root, 'AGENTS.md'), 'Root rule.');
+  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Nested rule.');
+  await fs.writeFile(path.join(root, 'src', 'file'), 'before');
+  const input = { path: 'src/file', oldText: 'before', newText: 'after', expectedHash: contentHash('before') };
+  await assert.rejects(port.prepare(call('unseen-edit', 'edit_file', input), ctx), /not been shown/);
+  const read = await executeRead(port, ctx, 'read', 'read_file', { path: input.path });
+  assert.deepEqual(read.output.instructions.sources.map(source => source.content), ['Root rule.', 'Nested rule.']);
+  const prepared = await port.prepare(call('edit', 'edit_file', input), ctx);
+  await fs.writeFile(path.join(root, 'src', 'AGENTS.md'), 'Changed rule.');
+  await assert.rejects(port.execute(prepared, ctx, approve(prepared, ctx)), /instructions changed/);
+  assert.equal(await fs.readFile(path.join(root, 'src', 'file'), 'utf8'), 'before');
+});
+test('edit_file refuses unsupported options, ambiguous matches and invalid text before requesting approval', async t => {
+  const { root, port } = await fixture(t);
+  const ctx = context();
+  await fs.writeFile(path.join(root, 'file'), 'repeat repeat');
+  const input = { path: 'file', oldText: 'repeat', newText: 'after', expectedHash: contentHash('repeat repeat') };
+  for (const extra of [{ replaceAll: true }, { edits: [] }, { content: 'whole file' }]) {
+    await assert.rejects(port.prepare(call('bad', 'edit_file', { ...input, ...extra }), ctx), /unexpected/);
+  }
+  await assert.rejects(port.prepare(call('ambiguous', 'edit_file', input), ctx), /exactly once/);
+  await assert.rejects(port.prepare(call('empty', 'edit_file', { ...input, oldText: '' }), ctx), /oldText/);
+  await assert.rejects(port.prepare(call('encoding', 'edit_file', { ...input, newText: '\ud800' }), ctx), /UTF-8/);
+  await assert.rejects(port.prepare(call('create', 'edit_file', { ...input, expectedHash: null }), ctx), /expectedHash/);
+  assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'repeat repeat');
+});

@@ -6,7 +6,9 @@ export interface EngineConfig { schemaVersion: number; options: Record<string, J
 export interface EngineConfigField {
   key: string;
   label: string;
-  type: 'text' | 'select';
+  type: 'text' | 'select' | 'number';
+  min?: number;
+  max?: number;
   options?: { value: string; label: string }[];
   placeholder?: string;
   description?: string;
@@ -62,7 +64,7 @@ export interface ExecutionDescriptor {
   history?: boolean;
 }
 
-/** Only values reported by the provider are used; no model-name based window guesses. */
+/** Provider measurements and local budgets stay separate; model windows are never guessed. */
 export interface ContextUsage {
   model?: string;
   /** Model selected when the turn starts; response routing names and report labels do not replace it. */
@@ -73,6 +75,15 @@ export interface ContextUsage {
   contextWindow?: number;
   measuredAt?: string;
   source?: 'request' | 'context-command';
+  /** Local pre-request limits. This is neither a provider measurement nor the model's window. */
+  budget?: {
+    estimatedInputTokens: number;
+    maxInputTokens: number;
+    contextBytes: number;
+    maxContextBytes: number;
+    estimator: 'utf8_bytes';
+    status: 'within_budget' | 'near_limit' | 'exceeded';
+  };
   status: 'unknown' | 'ready' | 'compacting' | 'compacted';
   lastCompaction?: { at: string; trigger?: 'manual' | 'auto'; preTokens?: number };
 }

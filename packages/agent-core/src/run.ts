@@ -3,6 +3,7 @@ import type {
   ModelResponse, PreparedTool, RunBudget, RunIdentity, RunJournalEvent,
   RunResult, RunStatus, ToolCall, ToolExecutionContext, ToolResult, Usage,
 } from './types.js'
+import { contextBudgetUsage } from './context.js'
 
 export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxModelRequests: 30,
@@ -272,7 +273,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       checkStopped()
       if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
       const estimatedTokens = model.estimateInputTokens(clone(context))
-      if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0 || estimatedTokens > budget.maxInputTokens || byteLength(context) > budget.maxContextBytes) {
+      if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0 || contextBudgetUsage(context, estimatedTokens, budget).status === 'exceeded') {
         throw new Stop('budget_exhausted', 'context_budget')
       }
       modelRequests++

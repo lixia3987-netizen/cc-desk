@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import type { EngineConfig, EngineConfigField, ExecutionDescriptor, JsonValue } from '../shared/execution';
 import type { Session, Settings } from '../shared/types';
 
@@ -38,20 +39,39 @@ interface Props {
   disabled?: boolean; prefix?: string; running?: boolean;
 }
 
+/** An empty or invalid draft never replaces the last valid persisted integer. */
+export function parseEngineConfigNumber(text: string, field: Pick<EngineConfigField, 'min' | 'max'>): number | undefined {
+  if (!text.trim()) return undefined;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || field.min !== undefined && value < field.min || field.max !== undefined && value > field.max) return undefined;
+  return value;
+}
+
+function IntegerConfigInput({ value, field, label, disabled, onChange }: { value: string; field: EngineConfigField; label: string; disabled: boolean; onChange(value: number): void }) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  const valid = parseEngineConfigNumber(draft, field) !== undefined;
+  return <input type="number" aria-label={label} min={field.min} max={field.max} step={1} value={draft} disabled={disabled}
+    aria-invalid={!valid && draft !== '' ? true : undefined}
+    onChange={event => { const text = event.target.value; setDraft(text); const next = parseEngineConfigNumber(text, field); if (next !== undefined) onChange(next); }}
+    onBlur={() => { if (!valid) setDraft(value); }} />;
+}
+
 /** Descriptions contain presentation data; providers still validate every write. */
 export function EngineConfigFields({ value, fields, onChange, disabled = false, prefix = '', running = false }: Props) {
   return <>{fields.map(field => {
     const raw = value.options[field.key];
-    const scalar = raw === undefined || typeof raw === 'string';
+    const scalar = raw === undefined || (field.type === 'number' ? typeof raw === 'number' && Number.isSafeInteger(raw) : typeof raw === 'string');
     const text = raw === undefined ? '' : typeof raw === 'string' ? raw : JSON.stringify(raw);
     const label = prefix + field.label;
     const locked = disabled || !scalar || (running && field.apply === 'stopped');
-    const change = (next: string) => onChange({ ...value, options: { ...value.options, [field.key]: next } });
+    const change = (next: string | number) => onChange({ ...value, options: { ...value.options, [field.key]: next } });
     return <div className="engine-config-field" key={field.key}>
       <label>{label}{field.type === 'select' ? <select aria-label={label} value={text} disabled={locked} onChange={event => change(event.target.value)}>
         {!field.options?.some(option => option.value === text) && <option value={text}>{text || '未设置'} · 当前保存值</option>}
         {field.options?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}
-      </select> : <input aria-label={label} value={text} placeholder={field.placeholder} disabled={locked} onChange={event => change(event.target.value)} />}</label>
+      </select> : field.type === 'number' ? <IntegerConfigInput value={text} field={field} label={label} disabled={locked} onChange={change}/>
+        : <input aria-label={label} value={text} placeholder={field.placeholder} disabled={locked} onChange={event => change(event.target.value)} />}</label>
       {field.description && <p className="hint">{field.description}</p>}
       {!scalar && <p className="hint">当前值无法使用此控件编辑，原始配置已保留。</p>}
       {running && field.apply === 'stopped' && <p className="hint">停止会话后可修改此项。</p>}

@@ -17,6 +17,7 @@ import { parseNativeConfig } from './config';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from './projection';
 import { runNativeWorker } from './worker-host';
 import { sameRun } from './worker-protocol';
+import { nativeRunError } from './run-errors';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录和进程；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -225,7 +226,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const messages = result.context.items.slice(lastUser + 1).filter(item => item && typeof item === 'object' && !Array.isArray(item) && item.type === 'message' && item.role === 'assistant');
     const last = messages.at(-1) as { content?: Array<{ type?: string; text?: string }> } | undefined;
     const summary = last?.content?.filter(item => item.type === 'output_text').map(item => item.text ?? '').join('\n') ?? '';
-    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: result.reason, interrupted: result.status === 'cancelled' } : {}) };
+    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
     this.assertActive(id, active);
@@ -253,7 +254,15 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     approval.settle(approval.request.expiresAt > Date.now() ? decision.behavior === 'allow' ? 'approved' : 'denied' : 'expired');
   }
   async prepareCommands(_id: string): Promise<never> { throw new Error('自研 agent Alpha 不支持 Claude 命令目录。'); }
-  async updateConfig(id: string, config: EngineConfig) { this.session(id); parseNativeConfig(config); if (this.has(id)) throw new Error('请停止运行后修改配置。'); }
+  async updateConfig(id: string, config: EngineConfig) {
+    const session = this.session(id), options = parseNativeConfig(config);
+    if (this.has(id)) throw new Error('请停止运行后修改配置。');
+    const current = parseNativeConfig(session.engineConfig);
+    if (session.started && (options.connectionId !== current.connectionId || options.model !== current.model)) throw new Error('已有上下文绑定原服务与模型。切换服务或模型请新建会话。');
+    // Structured session updates delegate persistence to their provider. Commit
+    // the normalized configuration before the IPC reports a successful save.
+    this.store.change(state => { state.sessions.find(item => item.id === id)!.engineConfig = { schemaVersion: config.schemaVersion, options }; });
+  }
   interrupt(id: string) { const active = this.active.get(id); active?.abort.abort(); active?.approval?.settle('denied'); }
   stop(id: string) { this.interrupt(id); return this.whenReleased(id); }
   stopAndWait(id: string) { return this.stop(id); }

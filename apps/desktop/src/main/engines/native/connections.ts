@@ -34,6 +34,8 @@ export interface NativeConnectionStoreOptions {
   platform?: string;
   /** Consult all native executors; active includes preparing and stopping runs. */
   isConnectionActive?(id: string): boolean;
+  /** A diagnostic consumes this connection until its request has fully settled. */
+  isConnectionTesting?(id: string): boolean;
   /** Include archived sessions: deleting a reference destroys their future readiness. */
   isConnectionReferenced?(id: string): boolean;
   environment?: NodeJS.ProcessEnv;
@@ -142,6 +144,7 @@ export class ConnectionStore {
     const parsed = nativeConnectionReadinessSchema.safeParse({ id: connectionId, ...(modelOverride !== undefined ? { model: modelOverride } : {}) });
     if (!parsed.success) throw new Error('请选择有效的 native 模型连接和模型。');
     const item = this.current(connectionId);
+    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在测试，请等待完成或取消测试后再使用。');
     if (!item.enabled) throw new Error('此模型连接已禁用，请在设置中启用或选择其他连接。');
     const baseURL = validateNativeBaseURL(item.baseURL, item.allowLoopbackHttp);
     let apiKey: string | undefined;
@@ -151,6 +154,16 @@ export class ConnectionStore {
     if (!apiKey) throw new Error(item.auth.mode === 'env' ? '主进程未找到此连接指定的环境变量，请设置后重启应用。' : '此连接尚无可用凭据，请重新设置（本次内存凭据不会跨重启保留）。');
     if (!nativeCredentialMutationSchema.shape.secret.safeParse(apiKey).success) throw new Error('此连接的凭据格式无效，请重新设置。');
     return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error' });
+  }
+
+  /** Synchronous revision / activity check before a diagnostic acquires its lock. */
+  resolveForDiagnostic(input: { id: string; revision: number }): ResolvedNativeConnection {
+    this.assertLoaded();
+    const parsed = nativeConnectionReferenceSchema.safeParse(input);
+    if (!parsed.success) throw new Error('连接引用无效，请刷新后重试。');
+    this.current(parsed.data.id, parsed.data.revision);
+    this.assertInactive(parsed.data.id);
+    return this.resolve(parsed.data.id);
   }
 
   private current(connectionId: string, expectedRevision?: number): StoredConnection {
@@ -169,6 +182,7 @@ export class ConnectionStore {
 
   private assertLoaded(): void { if (this.loadError) throw new Error(this.loadError); }
   private assertInactive(connectionId: string): void {
+    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在测试，请等待完成或取消测试后再修改。');
     if (this.options.isConnectionActive?.(connectionId)) throw new Error('此连接正被运行中的回合使用，请先停止相关回合并等待清理完成。');
   }
 

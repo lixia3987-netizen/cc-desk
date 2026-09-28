@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue, ModelContext, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolResult, Usage } from '@cc-desk/agent-core'
+import { estimateContextInputTokens } from '@cc-desk/agent-core'
 
 export interface ResponsesModelOptions {
   /** API base, normally https://api.openai.com/v1. /responses is appended. */
@@ -75,7 +76,7 @@ class EventStreamParser {
 function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
   let url: URL
   try { url = new URL(baseURL) } catch { return failure('configuration', 'Invalid model service URL.') }
-  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+  const loopback = url.hostname === 'localhost' || url.hostname === '[::1]' || /^127\.(\d{1,3}\.){2}\d{1,3}$/.test(url.hostname)
   if (url.username || url.password || url.search || url.hash ||
       (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback && allowLoopbackHttp))) {
     return failure('configuration', 'Model service requires HTTPS, or explicitly enabled loopback HTTP, without URL credentials or query parameters.')
@@ -244,7 +245,7 @@ export class ResponsesModel implements ModelPort {
 
   estimateInputTokens(context: ModelContext): number {
     // Conservative UTF-8 byte estimate; never represents provider-billed usage.
-    return Buffer.byteLength(JSON.stringify(context.items) + (this.#instructions ?? ''), 'utf8')
+    return estimateContextInputTokens(context, this.#instructions)
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {

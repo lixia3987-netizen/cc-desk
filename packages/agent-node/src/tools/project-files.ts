@@ -10,6 +10,7 @@ export interface FileIdentity { path: string; stat: BigIntStats }
 export interface PathSnapshot { relative: string; absolute: string; kind: 'file' | 'directory'; identities: FileIdentity[] }
 export interface TextFile { path: string; content: string; hash: string; bytes: number; mode: number; snapshot: PathSnapshot }
 export interface PatchInput { path: string; content: string; expectedHash: string | null }
+export interface EditInput { path: string; oldText: string; newText: string; expectedHash: string }
 export interface PreparedPatch { input: PatchInput; parent: PathSnapshot; previous?: TextFile }
 export interface FilePolicyOptions { projectRoot: string; excludedRoots?: readonly string[]; maxFileBytes?: number }
 
@@ -32,6 +33,9 @@ const changed = () => new Error('File or parent directory changed; read again be
 const sameObject = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.isFile() === b.isFile() && a.isDirectory() === b.isDirectory();
 const sameVersion = (a: BigIntStats, b: BigIntStats) => sameObject(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 export function throwIfAborted(signal?: AbortSignal): void { if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Operation cancelled.'); }
+function boundedUtf8(content: unknown, maximum: number): content is string {
+  return typeof content === 'string' && Buffer.byteLength(content) <= maximum && !content.includes('\0') && new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(Buffer.from(content)) === content;
+}
 
 /**
  * Secure handle reads are adapted from desktop main/files.ts, intentionally copied
@@ -132,7 +136,7 @@ export class ProjectFiles {
       await this.verify(snapshot, true);
       if (buffer.includes(0)) throw new Error('Binary files are not supported.');
       let content: string;
-      try { content = new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch { throw new Error('Only valid UTF-8 text files are supported.'); }
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer); } catch { throw new Error('Only valid UTF-8 text files are supported.'); }
       throwIfAborted(signal);
       return { path: snapshot.relative, content, hash: contentHash(buffer), bytes: buffer.length, mode: Number(before.mode & 0o777n), snapshot };
     } finally { await Promise.all(handles.map(item => item.close())); }
@@ -157,7 +161,7 @@ export class ProjectFiles {
   }
   async preparePatch(input: PatchInput, signal?: AbortSignal): Promise<PreparedPatch> {
     const relative = normalizeProjectPath(input.path);
-    if (typeof input.content !== 'string' || Buffer.byteLength(input.content) > this.maxFileBytes || input.content.includes('\0') || new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(input.content)) !== input.content) throw new Error('Patch must contain bounded UTF-8 text.');
+    if (!boundedUtf8(input.content, this.maxFileBytes)) throw new Error('Patch must contain bounded UTF-8 text.');
     if (input.expectedHash !== null && !/^[a-f0-9]{64}$/.test(input.expectedHash)) throw new Error('Update requires the complete previous SHA-256 hash; create requires null.');
     const parent = await this.snapshot(path.posix.dirname(relative), 'directory');
     throwIfAborted(signal);
@@ -169,6 +173,22 @@ export class ProjectFiles {
     const previous = await this.read(relative, signal);
     if (previous.hash !== input.expectedHash) throw new Error('File version conflict; read the complete current version before retrying.');
     return { input: { ...input, path: relative }, parent, previous };
+  }
+  async prepareEdit(input: EditInput, signal?: AbortSignal): Promise<PreparedPatch> {
+    throwIfAborted(signal);
+    const relative = normalizeProjectPath(input.path);
+    if (!boundedUtf8(input.oldText, this.maxFileBytes) || !input.oldText || !boundedUtf8(input.newText, this.maxFileBytes)) throw new Error('Edit requires nonempty oldText and bounded UTF-8 text.');
+    if (input.oldText === input.newText) throw new Error('Edit must change the matched text.');
+    if (typeof input.expectedHash !== 'string' || !/^[a-f0-9]{64}$/.test(input.expectedHash)) throw new Error('Edit requires the complete previous SHA-256 hash.');
+    const previous = await this.read(relative, signal);
+    if (previous.hash !== input.expectedHash) throw new Error('File version conflict; read the complete current version before retrying.');
+    const offset = previous.content.indexOf(input.oldText);
+    if (offset < 0) throw new Error('oldText does not exactly match the current file. Read again and include unchanged surrounding text.');
+    // Advance one code unit, not the match length: overlapping occurrences are ambiguous too.
+    if (previous.content.indexOf(input.oldText, offset + 1) !== -1) throw new Error('oldText must match exactly once. Include more unchanged surrounding text.');
+    const content = previous.content.slice(0, offset) + input.newText + previous.content.slice(offset + input.oldText.length);
+    // Reuse the same complete-file version checks and atomic publisher as apply_patch.
+    return this.preparePatch({ path: relative, content, expectedHash: input.expectedHash }, signal);
   }
   async applyPatch(prepared: PreparedPatch, signal?: AbortSignal): Promise<{ path: string; previousHash: string | null; hash: string; bytes: number; created: boolean }> {
     const { input, parent, previous } = prepared;

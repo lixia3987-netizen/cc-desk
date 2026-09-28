@@ -3,6 +3,9 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest } from '@cc-desk/agent-core';
 import { desktopRoot } from './helpers/paths';
@@ -130,4 +133,106 @@ test('native readiness is per session, preserves saved history and Claude defaul
     const requests = await page.evaluate(async () => (await window.desktop.snapshot()).state.sessions.filter(item => item.execution.providerId === 'native'));
     expect(requests.every(item => item.status !== 'running')).toBe(true);
   } finally { await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
+});
+
+test('native connection diagnostics are opt-in, private, cancellable, and aborted on settings disposal, reload and quit', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-diagnostics-ui-'));
+  const data = path.join(directory, 'data');
+  await fs.mkdir(data);
+  await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [], sessions: [], settings: {
+    claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {},
+  } }));
+  const sentinel = 'sk-native-diagnostic-ui-SECRET-DO-NOT-RETURN';
+  const privateText = 'provider-private-test-text-DO-NOT-DISPLAY';
+  let mode: 'complete' | 'unauthorized' | 'stall' = 'complete';
+  let requests = 0, disconnected = 0;
+  const bodies: Record<string, unknown>[] = [];
+  const server = createServer(async (request, response) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    requests++; bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    if (mode === 'unauthorized') { response.writeHead(401); response.end(sentinel + privateText); return; }
+    response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    if (mode === 'stall') {
+      response.on('close', () => { disconnected++; });
+      response.write(': waiting for cancellation\n\n'); return;
+    }
+    response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_ui_probe', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: privateText }] }], usage: { input_tokens: 12, output_tokens: 1, total_tokens: 13 } } })}\n\n`);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
+  let closed = false;
+  try {
+    const page = await app.firstWindow();
+    const openSettings = async () => {
+      await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+    };
+    await openSettings();
+    const region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
+    await region.getByRole('button', { name: '新增模型连接', exact: true }).click();
+    await page.getByLabel('Native 连接名称', { exact: true }).fill('手动诊断连接');
+    await page.getByLabel('Native 服务地址', { exact: true }).fill(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
+    await page.getByLabel('Native 默认模型', { exact: true }).fill('fixture-model');
+    await page.getByLabel('明确允许本地回环 HTTP', { exact: false }).check();
+    await page.getByLabel('Native 认证方式', { exact: true }).selectOption('memory');
+    await region.getByRole('button', { name: '保存模型连接', exact: true }).click();
+    await page.getByLabel('Native 新的 API Key', { exact: true }).fill(sentinel);
+    await region.getByRole('button', { name: '设置凭据并清空输入', exact: true }).click();
+    await expect(region.locator('.connection-box')).toContainText('就绪');
+    await expect(page.getByLabel('Native 新的 API Key', { exact: true })).toHaveValue('');
+    await region.getByRole('button', { name: '刷新', exact: true }).click();
+    const run = region.getByRole('button', { name: '测试连接（可能计费）', exact: true });
+    await expect(run).toBeEnabled();
+    expect(requests).toBe(0);
+    await expect(region).toContainText('不代表工具调用兼容性');
+
+    await run.click();
+    await expect(region.locator('.native-connection-test-result')).toContainText('Responses 文本流测试通过');
+    await expect(region.locator('.native-connection-test-result')).toContainText('合计 13 tokens');
+    expect(requests).toBe(1);
+    expect(bodies[0].tools).toEqual([]); expect(bodies[0].max_output_tokens).toBe(256);
+    await expect(page.locator('body')).not.toContainText(privateText);
+    await expect(page.locator('body')).not.toContainText(sentinel);
+    const snapshot = await page.evaluate(async () => ({ connections: await window.desktop.nativeConnections.list(), workspace: await window.desktop.snapshot() }));
+    expect(JSON.stringify(snapshot)).not.toContain(sentinel); expect(JSON.stringify(snapshot)).not.toContain(privateText);
+    const disk = await fs.readFile(path.join(data, 'native/connections.json'), 'utf8');
+    expect(disk).not.toContain(sentinel); expect(disk).not.toContain(privateText);
+
+    mode = 'unauthorized'; await run.click();
+    await expect(region.locator('.native-connection-test-result')).toContainText('认证失败');
+    await expect(region.locator('.native-connection-test-result')).toContainText('HTTP 401');
+    expect(requests).toBe(2);
+    await expect(page.locator('body')).not.toContainText(sentinel);
+
+    mode = 'stall'; await run.click();
+    await expect.poll(() => requests).toBe(3);
+    await expect(region.getByRole('button', { name: '删除', exact: true })).toBeDisabled();
+    await expect(region.getByRole('button', { name: '编辑', exact: true })).toBeDisabled();
+    await region.getByRole('button', { name: '取消连接测试', exact: true }).click();
+    await expect(region.locator('.native-connection-test-result')).toContainText('连接测试已取消');
+    await expect.poll(() => disconnected).toBe(1);
+    await expect(run).toBeEnabled();
+
+    await run.click(); await expect.poll(() => requests).toBe(4);
+    await page.getByRole('tab').filter({ hasNotText: '连接与终端' }).first().click();
+    await expect.poll(() => disconnected).toBe(2);
+    await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+    await expect(run).toBeEnabled();
+    await expect(region.locator('.native-connection-test-result')).toHaveCount(0);
+
+    await run.click(); await expect.poll(() => requests).toBe(5);
+    await page.reload();
+    await expect.poll(() => disconnected).toBe(3);
+    await openSettings(); await expect(run).toBeEnabled();
+    await run.click(); await expect.poll(() => requests).toBe(6);
+    await app.close(); closed = true;
+    await expect.poll(() => disconnected).toBe(4);
+    expect(requests).toBe(6);
+  } finally {
+    if (!closed) await app.close();
+    const stopped = new Promise<void>(resolve => server.close(() => resolve()));
+    server.closeAllConnections(); await stopped;
+    await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });

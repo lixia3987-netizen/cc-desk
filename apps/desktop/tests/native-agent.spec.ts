@@ -9,7 +9,7 @@ import { closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
 import type { NativeConnectionView } from '../src/shared/native-connections';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 // @ts-expect-error The same executable JS HTTP fixture is shared with agent-node tests.
-import { assistantMessage, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
+import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Fixture { baseURL: string; requests: Array<Record<string, unknown>>; errors: unknown[]; close(): Promise<void> }
 const sentinel = 'sk-native-electron-dummy-DO-NOT-PERSIST';
@@ -140,6 +140,57 @@ test('native denial does not write, and missing credentials fail before a model 
     await expect(page.locator('.chat-message.assistant').last()).toContainText('修改未执行');
     expect(fixture.errors).toEqual([]);
     expect(JSON.stringify(fixture.requests.at(-1)?.input)).toContain('denied');
+  } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
+});
+
+test('native incremental edit uses approved file identity and exposes measured usage separately from its budget', async () => {
+  const f = await workspace();
+  const original = 'before native\nkeep this line unchanged\n';
+  await fs.writeFile(path.join(f.cwd, 'fixture.txt'), original);
+  const fixture: Fixture = await startResponsesFixture({ handler: ({ body }: { body: { input: Array<Record<string, unknown>> } }) => {
+    const results = new Map(body.input.filter(item => item.type === 'function_call_output').map(item => [item.call_id, JSON.parse(String(item.output))]));
+    const read = results.get('daily_read');
+    const edited = results.get('daily_edit');
+    const output = !read ? [functionCall('daily_read', 'read_file', { path: 'fixture.txt' })]
+      : !edited ? [functionCall('daily_edit', 'edit_file', { path: 'fixture.txt', expectedHash: read.output.hash, oldText: 'before native', newText: 'after native' })]
+      : [assistantMessage('daily_complete', `增量编辑完成：${edited.status}`)];
+    return { output, usage: { input_tokens: 137, output_tokens: 19, total_tokens: 156 } };
+  } });
+  const app = await f.launch();
+  try {
+    const page = await readyWindow(app), configured = await connection(page, fixture.baseURL);
+    const session = await nativeSession(page, f.projectId, configured.id, '阶段四增量编辑');
+    const inputBudget = page.getByLabel('会话输入预算（估算 tokens）', { exact: true });
+    await expect(inputBudget).toHaveValue('64000');
+    await inputBudget.fill('1');
+    await expect(inputBudget).toHaveAttribute('aria-invalid', 'true');
+    await inputBudget.blur();
+    await expect(inputBudget).toHaveValue('64000');
+    await inputBudget.fill('64010');
+    await page.getByRole('button', { name: '保存配置', exact: true }).click();
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.maxInputTokens, session.id)).toBe(64_010);
+    const result = page.evaluate(id => window.desktop.sendChat(id, 'Replace only the unique before native phrase, preserving the other line.'), session.id);
+    await pendingTool(page, session.id, 'edit_file');
+    const approval = page.getByRole('region', { name: '工具审批' });
+    await expect(approval).toContainText('before native');
+    await expect(approval).toContainText('after native');
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe(original);
+    const pending = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
+    expect(pending.context?.budget?.maxInputTokens).toBe(64_010);
+    expect(pending.context?.budget?.estimatedInputTokens).toBeGreaterThan(0);
+    await expect(inputBudget).toBeDisabled();
+    await expect(page.locator('.context-meter')).toContainText('运行预算');
+    await page.getByRole('button', { name: '允许本次', exact: true }).click();
+    expect((await result).success).toBe(true);
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('after native\nkeep this line unchanged\n');
+    const completed = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
+    expect(completed.context?.inputTokens).toBe(137);
+    expect(completed.context?.contextWindow).toBeUndefined();
+    expect(completed.context?.budget?.maxInputTokens).toBe(64_010);
+    await expect(page.locator('.chat-message.assistant').last()).toContainText('增量编辑完成：completed');
+    expect(fixture.requests).toHaveLength(3);
+    expect(fixture.errors).toEqual([]);
+    await noSavedSecret(f.data);
   } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 

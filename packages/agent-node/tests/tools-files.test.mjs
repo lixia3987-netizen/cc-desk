@@ -120,3 +120,120 @@ test('sensitive names share the same policy for read/search/automatic context', 
   for (const name of ['.env', '.env.local', '.npmrc', '.ssh/id_ed25519', 'nested/private.key', '.aws/credentials', 'credentials.json', 'application_default_credentials.json']) assert.equal(isSensitivePath(name), true, name);
   for (const name of ['src/environment.ts', 'AGENTS.md', 'file.txt']) assert.equal(isSensitivePath(name), false, name);
 });
+test('exact edit preserves UTF-8 BOM, CRLF, surrounding bytes and permissions, and supports deletion', async t => {
+  const { root, files } = await fixture(t);
+  const original = '\uFEFF一行\r\nconst value = "旧🙂";\r\nend\r\n';
+  const target = path.join(root, 'edit.txt');
+  await fs.writeFile(target, original);
+  if (process.platform !== 'win32') await fs.chmod(target, 0o751);
+  const read = await files.read('edit.txt');
+  assert.equal(read.content, original);
+  const prepared = await files.prepareEdit({ path: 'edit.txt', oldText: '"旧🙂"', newText: '"新文本🙂"', expectedHash: read.hash });
+  assert.equal(await fs.readFile(target, 'utf8'), original, 'preparation has no side effects');
+  const result = await files.applyPatch(prepared);
+  const expected = '\uFEFF一行\r\nconst value = "新文本🙂";\r\nend\r\n';
+  assert.deepEqual(await fs.readFile(target), Buffer.from(expected));
+  assert.equal(result.created, false);
+  assert.equal(result.previousHash, read.hash);
+  assert.equal(result.hash, contentHash(expected));
+  assert.equal(result.bytes, Buffer.byteLength(expected));
+  if (process.platform !== 'win32') assert.equal((await fs.stat(target)).mode & 0o777, 0o751);
+  await files.applyPatch(await files.prepareEdit({ path: 'edit.txt', oldText: 'end\r\n', newText: '', expectedHash: result.hash }));
+  assert.equal(await fs.readFile(target, 'utf8'), expected.slice(0, -5));
+  assert.deepEqual(await fs.readdir(root), ['edit.txt']);
+});
+test('exact edit refuses duplicate, overlapping, absent, empty and unchanged matches', async t => {
+  const { root, files } = await fixture(t);
+  const original = 'same\r\nsame\r\naaa';
+  await fs.writeFile(path.join(root, 'edit.txt'), original);
+  const input = { path: 'edit.txt', oldText: 'same', newText: 'new', expectedHash: contentHash(original) };
+  await assert.rejects(files.prepareEdit(input), /exactly once/);
+  await assert.rejects(files.prepareEdit({ ...input, oldText: 'aa' }), /exactly once/);
+  await assert.rejects(files.prepareEdit({ ...input, oldText: 'same\nsame' }), /does not exactly match/);
+  await assert.rejects(files.prepareEdit({ ...input, oldText: '' }), /nonempty/);
+  await assert.rejects(files.prepareEdit({ ...input, oldText: 'aaa', newText: 'aaa' }), /must change/);
+  assert.equal(await fs.readFile(path.join(root, 'edit.txt'), 'utf8'), original);
+});
+test('exact edit requires an existing file and a complete current hash', async t => {
+  const { root, files } = await fixture(t);
+  await fs.writeFile(path.join(root, 'edit.txt'), 'before\nunchanged');
+  const input = { path: 'edit.txt', oldText: 'before', newText: 'after', expectedHash: contentHash('before\nunchanged') };
+  for (const expectedHash of [null, '', 'abc', contentHash('other')]) {
+    await assert.rejects(files.prepareEdit({ ...input, expectedHash }), /SHA-256|version conflict/);
+  }
+  await assert.rejects(files.prepareEdit({ ...input, path: 'missing' }), /ENOENT/);
+  const prepared = await files.prepareEdit(input);
+  await fs.writeFile(path.join(root, 'edit.txt'), 'before\nexternal');
+  await assert.rejects(files.applyPatch(prepared), /changed|conflict/);
+  assert.equal(await fs.readFile(path.join(root, 'edit.txt'), 'utf8'), 'before\nexternal');
+});
+test('exact edit rejects invalid UTF-8, binary, oversized input and oversized resulting files', async t => {
+  const { root } = await fixture(t);
+  const files = new ProjectFiles({ projectRoot: root, maxFileBytes: 16 });
+  const original = 'prefix-old-tail';
+  await fs.writeFile(path.join(root, 'edit.txt'), original);
+  const input = { path: 'edit.txt', oldText: 'old', newText: 'new', expectedHash: contentHash(original) };
+  for (const value of ['\ud800', '\udfff', '\0', '文'.repeat(6)]) {
+    await assert.rejects(files.prepareEdit({ ...input, oldText: value }), /UTF-8/);
+    await assert.rejects(files.prepareEdit({ ...input, newText: value }), /UTF-8/);
+  }
+  await assert.rejects(files.prepareEdit({ ...input, newText: 'longer' }), /UTF-8/);
+  assert.equal(await fs.readFile(path.join(root, 'edit.txt'), 'utf8'), original);
+  for (const bytes of [Buffer.from([0xff]), Buffer.from([0]), Buffer.from('x'.repeat(17))]) {
+    await fs.writeFile(path.join(root, 'unsupported'), bytes);
+    await assert.rejects(files.prepareEdit({ ...input, path: 'unsupported', oldText: 'x', expectedHash: contentHash(bytes) }), /UTF-8|Binary|byte limit/);
+  }
+});
+test('exact edit retains file and parent identities even if replacement bytes have the same hash', async t => {
+  const { root, files } = await fixture(t);
+  await fs.mkdir(path.join(root, 'folder'));
+  const target = path.join(root, 'folder', 'file');
+  await fs.writeFile(target, 'before');
+  const input = { path: 'folder/file', oldText: 'before', newText: 'after', expectedHash: contentHash('before') };
+  const replacedFile = await files.prepareEdit(input);
+  await fs.rename(target, path.join(root, 'saved'));
+  await fs.writeFile(target, 'before');
+  await assert.rejects(files.applyPatch(replacedFile), /changed/);
+  const replacedParent = await files.prepareEdit(input);
+  await fs.rename(path.join(root, 'folder'), path.join(root, 'moved'));
+  await fs.mkdir(path.join(root, 'folder'));
+  await fs.writeFile(target, 'before');
+  await assert.rejects(files.applyPatch(replacedParent), /changed/);
+  assert.equal(await fs.readFile(target, 'utf8'), 'before');
+  assert.equal(await fs.readFile(path.join(root, 'moved', 'file'), 'utf8'), 'before');
+});
+test('exact edit cancellation after staging and publication failure leave the original file intact', async t => {
+  const { root, files } = await fixture(t);
+  const target = path.join(root, 'edit.txt');
+  const original = 'before\nunchanged';
+  await fs.writeFile(target, original);
+  const input = { path: 'edit.txt', oldText: 'before', newText: 'after', expectedHash: contentHash(original) };
+  const prepared = await files.prepareEdit(input);
+  const controller = new AbortController();
+  const originalOpen = fs.open;
+  let staged = false;
+  fs.open = async (...args) => {
+    const handle = await originalOpen(...args);
+    if (String(args[0]).includes('.native-patch-')) {
+      const sync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        await sync();
+        assert.equal(await fs.readFile(target, 'utf8'), original);
+        staged = true;
+        controller.abort(new Error('Cancelled after staging'));
+      };
+    }
+    return handle;
+  };
+  try { await assert.rejects(files.applyPatch(prepared, controller.signal), /Cancelled after staging/); } finally { fs.open = originalOpen; }
+  assert.equal(staged, true);
+  assert.equal(await fs.readFile(target, 'utf8'), original);
+  assert.deepEqual(await fs.readdir(root), ['edit.txt']);
+  const originalRename = fs.rename;
+  fs.rename = async () => { throw Object.assign(new Error('Injected edit publication failure'), { code: 'EIO' }); };
+  try { await assert.rejects(files.applyPatch(await files.prepareEdit(input)), /publication failure/); } finally { fs.rename = originalRename; }
+  assert.equal(await fs.readFile(target, 'utf8'), original);
+  assert.deepEqual(await fs.readdir(root), ['edit.txt']);
+  const aborted = new AbortController(); aborted.abort(new Error('Cancelled before prepare'));
+  await assert.rejects(files.prepareEdit(input, aborted.signal), /Cancelled before prepare/);
+});

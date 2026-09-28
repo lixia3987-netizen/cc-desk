@@ -8,6 +8,8 @@ const api: DesktopAPI = {
     remove: input => ipcRenderer.invoke('native:connections-remove', input),
     setCredential: input => ipcRenderer.invoke('native:connections-credential', input),
     readiness: input => ipcRenderer.invoke('native:connections-readiness', input),
+    test: input => ipcRenderer.invoke('native:connections-test', input),
+    cancelTest: input => ipcRenderer.invoke('native:connections-test-cancel', input),
   },
   confirmNativeRecovery: id => ipcRenderer.invoke('native:confirm-recovery', id),
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),

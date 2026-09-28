@@ -88,10 +88,14 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
   options.onNative?.(native);
   registry.register({
     providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,
-    capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: false, liveConfig: false, attachments: false, export: true }),
+    capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: true, liveConfig: false, attachments: false, export: true }),
     configuration: () => ({ schemaVersion: 1, defaults: createNativeConfig(), fields: [
       { key: 'connectionId', label: '模型连接', type: 'select', apply: 'stopped', options: [{ value: '', label: '请先在设置中配置连接' }, ...connections.list().connections.map(item => ({ value: item.id, label: item.name + (item.ready ? '' : '（未就绪）') }))] },
       { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。每次写入和命令均需单独审批。' },
+      { key: 'maxInputTokens', label: '输入预算（估算 tokens）', type: 'number', min: 1024, max: 2_000_000, apply: 'stopped', description: '历史和项目指令的保守估算上限，不代表模型真实窗口；停止后修改，下一回合生效。' },
+      { key: 'maxOutputTokens', label: '单次输出上限（tokens）', type: 'number', min: 128, max: 64_000, apply: 'stopped', description: '提交给服务商的输出上限，仍需符合所选模型限制。' },
+      { key: 'maxModelRequests', label: '每回合模型请求上限', type: 'number', min: 1, max: 100, apply: 'stopped' },
+      { key: 'maxToolCalls', label: '每回合工具调用上限', type: 'number', min: 1, max: 200, apply: 'stopped' },
     ] }),
     validateConfig: createNativeConfig,
     validateSession: session => { parseNativeConfig(session.engineConfig); if (!session.execution.conversationId || session.execution.forkFrom || session.execution.imported) throw new Error('自研 agent Alpha 不支持导入或分叉会话。'); },

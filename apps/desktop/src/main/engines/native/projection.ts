@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import type { AgentEvent, JsonValue, RunResult } from '@cc-desk/agent-core';
+import { contextBudgetUsage, DEFAULT_RUN_BUDGET, estimateContextInputTokens, type AgentEvent, type JsonObject, type JsonValue, type RunResult } from '@cc-desk/agent-core';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, TaskState } from '../../../shared/chat';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
@@ -11,6 +11,8 @@ import type { Session } from '../../../shared/types';
 import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
 import type { ExecutionEvents } from '../../execution/events';
+import { parseNativeConfig } from './config';
+import { nativeRunError } from './run-errors';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
 
@@ -124,6 +126,9 @@ export class NativeProjection {
     let finalState: TaskState = 'idle';
     let currentIdentity: AgentEvent['identity'] | undefined;
     let currentTerminal = false;
+    let configuration: JsonObject | undefined;
+    let inputTokens: number | undefined;
+    let measuredAt: string | undefined;
     for (const record of records) {
       const event = record.event;
       if (record.identity && record.identity.sessionId !== id) throw new Error('Native 记录不属于当前会话。');
@@ -133,11 +138,17 @@ export class NativeProjection {
       if (event.type === 'run_started') {
         currentIdentity = event.request.identity;
         currentTerminal = false;
+        configuration = event.request.configuration;
+        inputTokens = undefined;
+        measuredAt = undefined;
         const model = event.request.configuration.model;
-        add({ type: 'metadata', ...(typeof model === 'string' ? { model } : {}) });
+        add({ type: 'metadata', resetUsage: true, ...(typeof model === 'string' ? { model } : {}) });
         add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', ...bounded(event.request.input), createdAt } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'model_response') {
+        const reported = event.response.usage?.inputTokens;
+        inputTokens = typeof reported === 'number' && Number.isSafeInteger(reported) && reported >= 0 ? reported : undefined;
+        measuredAt = createdAt;
         modelCounts.set(runId, (modelCounts.get(runId) ?? 0) + 1);
         event.response.outputItems.forEach((item, index) => {
           const text = outputText(item);
@@ -162,8 +173,8 @@ export class NativeProjection {
       } else if (event.type === 'run_finished') {
         currentTerminal = true;
         const result = event.result;
-        add({ type: 'result', success: result.status === 'completed', summary: '', usage: result.usage ?? {}, ...(result.status === 'completed' ? {} : { error: result.reason }) });
-        add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: result.reason }) });
+        add({ type: 'result', success: result.status === 'completed', summary: '', usage: result.usage ?? {}, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
+        add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
           const message = tools.get(messageId);
           if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true } });
@@ -179,6 +190,18 @@ export class NativeProjection {
           if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true } });
         }
       }
+    }
+    const modelContext = store.loadContext();
+    if (configuration && modelContext) {
+      const options = parseNativeConfig({ schemaVersion: 1, options: object(configuration.sessionOptions) ? configuration.sessionOptions : {} });
+      const instructions = typeof configuration.modelInstructions === 'string' ? configuration.modelInstructions : '';
+      const model = typeof configuration.model === 'string' ? configuration.model : undefined;
+      projected.push({ seq: latest.seq, event: { type: 'context', context: {
+        ...(model ? { model, requestModel: model } : {}),
+        ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(measuredAt ? { measuredAt } : {}), source: 'request', status: inputTokens === undefined ? 'unknown' : 'ready',
+        budget: contextBudgetUsage(modelContext, estimateContextInputTokens(modelContext, instructions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }),
+      } } });
     }
     const temporary = path.join(this.directory, `${id}.native-${randomUUID()}.tmp`);
     const file = path.join(this.directory, `${id}.jsonl`);
