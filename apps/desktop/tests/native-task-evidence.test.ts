@@ -162,6 +162,8 @@ test('receipt failure, cancellation, truncation and incomplete command output ca
     assert.equal(commandEvidenceReceipt(prepared, result({ cleanup: 'cleanup_failed' }, 'unknown'), options)!.status, 'unverified');
     const clipped = commandEvidenceReceipt(prepared, result({ stdout: 'x'.repeat(12000) }), options)!;
     assert.equal(clipped.status, 'unverified'); assert.equal(clipped.truncated, true); assert.ok(Buffer.byteLength(clipped.output!) <= 8192); assert.equal(clipped.outputDigest?.length, 64);
+    const unicode = commandEvidenceReceipt(prepared, result({ stdout: '字'.repeat(4000) }), options)!;
+    assert.ok(Buffer.byteLength(unicode.output!) <= 8192); assert.equal(unicode.output!.includes('\ufffd'), false);
     const unknown = commandEvidenceReceipt(prepared, { status: 'completed', output: { error: 'output exceeded budget' }, truncated: true }, options)!;
     assert.equal(unknown.exitCode, null); assert.equal(unknown.status, 'unverified');
   } finally { await f.dispose(); }

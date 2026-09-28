@@ -7,7 +7,7 @@ import { estimateNativeInputTokens, extractNativeAssistantText } from '@cc-desk/
 import { estimateNativeCost } from '../../../shared/native-cost';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetPreview, type NativeChangeSetFileEvent, type NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
-import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, TaskState } from '../../../shared/chat';
+import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, NativeCommandSnapshot, TaskState } from '../../../shared/chat';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
 import { getSessionIdentity } from '../../../shared/execution';
 import type { Session } from '../../../shared/types';
@@ -16,6 +16,7 @@ import { ChatArchive } from '../../chat-archive';
 import type { ExecutionEvents } from '../../execution/events';
 import { parseNativeConfig } from './config';
 import { nativeRunError } from './run-errors';
+import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
 
@@ -55,6 +56,7 @@ interface ProjectionEntry {
   currentIdentity?: AgentEvent['identity'];
   currentTerminal?: boolean;
   pending: ChatApproval[];
+  commands?: NativeCommandSnapshot;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string };
 }
@@ -292,7 +294,7 @@ export class NativeProjection {
     const stream = old.stream && (modelCounts.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
     this.missingContext.delete(id);
-    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, modelCounts, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream });
+    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, modelCounts, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records) });
     this.archive.forget(id);
     if (old.seq && old.conversationId === store.conversationId) for (const item of projected) if (item.seq > old.seq) this.journal(id, item.event);
     this.changed(id);
@@ -321,6 +323,11 @@ export class NativeProjection {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
+    // An active entry can remain solely to quarantine its directory after an
+    // unconfirmed cleanup or journal failure. It is not evidence of live work.
+    const terminalOverride = !!entry.override && ['completed', 'interrupted', 'error'].includes(entry.override.taskState);
+    if (entry.commands?.items.length) snapshot.nativeCommands = snapshotNativeCommands(entry.commands,
+      this.isActive(id) && !entry.currentTerminal && !terminalOverride ? entry.currentIdentity?.runId : undefined);
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
     else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';

@@ -1,6 +1,7 @@
 import type { SessionCommand, SessionStatus, ContextUsage } from './execution.js';
 import type { NativeChangeSetPreview, NativeChangeSetResult } from './native-changes.js';
 import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
+import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 export interface ChatMessage {
@@ -60,6 +61,22 @@ export interface ChatSnapshotVersion {
   hostEpoch: string; revision: number; eventSequence: number;
   conversationId?: string; runId?: string; workerGeneration?: number;
 }
+/** Read-only host ledger projection. Starting or finishing a command is not task acceptance. */
+export interface NativeCommandView {
+  commandId: string; taskId: string; runId: string; toolCallId: string;
+  command: NativeCommandDescriptor;
+  status: 'prepared' | 'running' | 'finished' | 'unknown';
+  preparedAt: string; runningAt?: string; finishedAt?: string;
+  timeoutMs: number; maxOutputBytes: number;
+  result?: NativeCommandResult;
+  /** No durable terminal receipt; never attach to a process by its old PID. */
+  missingTerminal?: boolean;
+}
+export interface NativeCommandSnapshot {
+  /** Newest 64 commands, including every command from the current run (at most 8). */
+  items: NativeCommandView[];
+  omitted: number;
+}
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
   /** Read with this snapshot, so a lost workspace event cannot leave the pane stopping forever. */
@@ -72,6 +89,7 @@ export interface ChatSnapshot {
   nativeRun?: NativeTaskIdentity;
   nativeTask?: NativeTaskView;
   nativeTaskError?: string;
+  nativeCommands?: NativeCommandSnapshot;
   version?: ChatSnapshotVersion;
   /** The current process's command catalog; never restored from disk. */
   commands?: SessionCommand[];

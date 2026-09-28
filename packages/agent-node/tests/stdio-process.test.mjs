@@ -149,8 +149,10 @@ test('stderr is drained without retention or exposure during a long lived sessio
   `, output.onStdout));
   await output.until(value => value === 'drained\n');
   const record = [...supervisor.records][0];
-  assert.equal(record.stderr.length, 0);
-  assert.equal(record.stdout.length, 0);
+  assert.equal(record.stderr.bytes, 0);
+  assert.equal(record.stdout.bytes, 0);
+  assert.equal(record.stderr.chunks.length, 0);
+  assert.equal(record.stdout.chunks.length, 0);
   assert.equal(record.capturedBytes, 0);
   const result = await handle.close();
   assert.equal(result.cleanup, 'released');

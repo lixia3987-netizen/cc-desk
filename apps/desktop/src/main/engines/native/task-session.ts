@@ -5,7 +5,7 @@ import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { PreparedTool, RunIdentity, RunJournalEvent, ToolPort, ToolResult } from '@cc-desk/agent-core';
 import { NATIVE_TASK_LIMITS, NativeTaskError } from '@cc-desk/agent-core';
 import type { NativeTaskReviewInput } from '../../../shared/native-task';
-import { captureTaskWorkspace, commandEvidenceReceipt, describeTaskChanges, type TaskWorkspace } from './task-evidence';
+import { captureTaskWorkspace, commandEvidenceReceipt, describeTaskChanges, terminalCommandEvidenceReceipt, type TaskCommandWorkspace, type TaskWorkspace } from './task-evidence';
 import { sameRun } from './worker-protocol';
 
 /** A failed metadata write may already be durable: core must stop rather than retry. */
@@ -19,6 +19,14 @@ function rethrowKnownCapacity(error: unknown): void {
 const sameWorkspaceObservation = (left: TaskWorkspace | undefined, right: TaskWorkspace) => Boolean(left &&
   left.rootFingerprint === right.rootFingerprint && left.fingerprint === right.fingerprint && left.complete === right.complete &&
   JSON.stringify(left.issues) === JSON.stringify(right.issues));
+const commandWorkspace = ({ fingerprint, rootFingerprint, complete }: TaskWorkspace): TaskCommandWorkspace => ({ fingerprint, rootFingerprint, complete });
+const COMMAND_OBSERVATIONS = 32;
+const MANAGED_COMMAND_TOOLS = new Set(['start_command', 'command_status', 'read_command_output', 'stop_command']);
+interface CommandObservation {
+  taskId: string; identity: RunIdentity; prepared: PreparedTool; before: TaskCommandWorkspace;
+  planRevision?: number; acceptanceRevision?: number; stepIds: string[]; overlap: boolean;
+  terminal?: NativeTaskEvidence;
+}
 
 /** Host-only task metadata. Run receipts and queue ACKs remain authoritative for execution. */
 export class NativeTaskSession {
@@ -29,6 +37,16 @@ export class NativeTaskSession {
   }) {}
   private baseline?: TaskWorkspace;
   private receipts = new Map<string, { prepared: PreparedTool; before: TaskWorkspace; after: TaskWorkspace; result?: ToolResult }>();
+  private commands = new Map<string, CommandObservation>();
+  private commandKey(identity: RunIdentity, callId: string): string { return `${identity.runId}:${callId}`; }
+  private markCommandOverlap(): boolean {
+    let overlap = false;
+    for (const command of this.commands.values()) {
+      if (command.terminal) continue;
+      command.overlap = true; overlap = true;
+    }
+    return overlap;
+  }
   private serial: Promise<unknown> = Promise.resolve();
   private enqueue<T>(action: () => Promise<T>): Promise<T> {
     const work = this.serial.catch(() => {}).then(action); this.serial = work; return work;
@@ -61,7 +79,74 @@ export class NativeTaskSession {
         if (evidence) await this.mutate(current, { type: 'evidence', evidence }, `receipt:${current.identity.runId}:${callId}`);
         this.receipts.delete(callId);
       }
+      for (const [key, command] of this.commands) {
+        if (!command.terminal || command.taskId !== task.taskId || !sameRun(command.identity, task.identity)) continue;
+        // The execution receipt is already durable elsewhere. Never retry an
+        // uncertain metadata publication by replaying or reattaching a command.
+        this.commands.delete(key);
+        await this.publishCommand(this.store.read(task.taskId)!, command);
+      }
     });
+  }
+  /** After approval, before durable preparation/spawn; failure still permits a safe no-start outcome. */
+  commandStarted(options: { taskId: string; identity: RunIdentity; prepared: PreparedTool; signal: AbortSignal }): Promise<void> {
+    return this.enqueue(async () => {
+      const { taskId, identity, prepared, signal } = options;
+      const task = this.store.read(taskId);
+      if (task && (!sameRun(task.identity, identity) || task.execution !== 'active')) throw new Error('命令观察所属任务运行已改变。');
+      if (prepared.call.name !== 'start_command' || prepared.definition.risk !== 'command') throw new Error('只允许观察真实长命令启动。');
+      const key = this.commandKey(identity, prepared.call.id);
+      if (this.commands.has(key)) throw new Error('命令观察已存在。');
+      if (this.commands.size >= COMMAND_OBSERVATIONS) throw new Error('待关联命令观察已达上限，请先建立任务计划。');
+      this.options.assertSafe(prepared);
+      const before = await this.capture(signal);
+      const current = this.store.read(taskId);
+      if (current && (!sameRun(current.identity, identity) || current.execution !== 'active')) throw new Error('命令观察所属任务运行已改变。');
+      this.baseline ??= before;
+      const overlap = this.markCommandOverlap();
+      this.commands.set(key, { taskId, identity: { ...identity }, prepared: structuredClone(prepared), before: commandWorkspace(before),
+        planRevision: task?.planRevision, acceptanceRevision: task?.acceptanceRevision,
+        stepIds: task?.steps.filter(step => step.status === 'in_progress').map(step => step.id) ?? [], overlap });
+    });
+  }
+  /** Called once after the host ledger has durably committed the real terminal/cleanup receipt. */
+  commandTerminated(options: { taskId: string; identity: RunIdentity; callId: string; result: ToolResult }): Promise<void> {
+    return this.enqueue(async () => {
+      const key = this.commandKey(options.identity, options.callId), command = this.commands.get(key);
+      if (!command || command.terminal || command.taskId !== options.taskId || !sameRun(command.identity, options.identity)) return;
+      const task = this.store.read(options.taskId);
+      if (task && !sameRun(task.identity, options.identity)) { this.commands.delete(key); return; }
+      // A command still running after an uncertain cleanup cannot authenticate
+      // an after snapshot, even if its currently observed bytes match.
+      const output = options.result.output;
+      const released = output !== null && typeof output === 'object' && !Array.isArray(output) && output.cleanup === 'released';
+      let after: TaskWorkspace;
+      try { after = await this.capture(); }
+      catch { after = { ...command.before, complete: false, files: [], scope: [], issues: ['命令终止后的工作区无法完整核查。'], capturedAt: new Date().toISOString() }; }
+      if (command.overlap || !released) command.before = { ...command.before, complete: false };
+      // Keep only the 8 KiB summary/digest while waiting for a plan; the full
+      // bounded logs remain in the authoritative command ledger.
+      try {
+        this.options.assertSafe(options.result);
+        command.terminal = terminalCommandEvidenceReceipt(command.prepared, options.result, {
+          task: task ?? { taskId: options.taskId, identity: options.identity, planRevision: 1, acceptanceRevision: 1 },
+          before: command.before, after: commandWorkspace(after),
+        });
+      } catch (error) { this.commands.delete(key); throw error; }
+      if (!task) return;
+      this.commands.delete(key);
+      const current = await this.workspace(task.taskId, after);
+      if (current && sameRun(current.identity, options.identity)) await this.publishCommand(current, command);
+    });
+  }
+  private async publishCommand(task: NativeTaskSnapshot, command: CommandObservation): Promise<void> {
+    if (!command.terminal || !sameRun(task.identity, command.identity)) return;
+    const samePlan = command.planRevision === task.planRevision && command.acceptanceRevision === task.acceptanceRevision;
+    const evidence = { ...command.terminal, planRevision: task.planRevision, acceptanceRevision: task.acceptanceRevision,
+      stepIds: samePlan ? command.stepIds : [] };
+    if (!samePlan) evidence.reason += ' 启动时尚无计划或计划已改变；未自动关联到当前步骤或验收条件。';
+    if (command.overlap) evidence.reason += ' 命令期间存在其他命令或文件操作，不能独立确认检查范围。';
+    await this.mutate(task, { type: 'evidence', evidence }, `receipt:${command.identity.runId}:${command.prepared.call.id}`);
   }
   /** Records a host file observation directly in the task store, independently of run-journal completion. */
   recordCodeLocation(options: {
@@ -129,7 +214,8 @@ export class NativeTaskSession {
       validate: (prepared, context) => tools.validate(prepared, context),
       execute: async (prepared, context, approval) => {
         const task = this.store.read(taskId);
-        const observed = (!task || sameRun(task.identity, identity)) && (prepared.definition.risk !== 'read');
+        const observed = (!task || sameRun(task.identity, identity)) && (prepared.definition.risk !== 'read') && !MANAGED_COMMAND_TOOLS.has(prepared.call.name);
+        if (observed) this.markCommandOverlap();
         const before = observed ? await this.capture(context.signal) : undefined;
         if (before) this.baseline ??= before;
         const result = await tools.execute(prepared, context, approval);

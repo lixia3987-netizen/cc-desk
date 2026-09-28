@@ -31,6 +31,10 @@
     "./native-changes": {
       "types": "./dist/native-changes.d.ts",
       "default": "./dist/native-changes.js"
+    },
+    "./native-commands": {
+      "types": "./dist/native-commands.d.ts",
+      "default": "./dist/native-commands.js"
     }
   },
   "scripts": {

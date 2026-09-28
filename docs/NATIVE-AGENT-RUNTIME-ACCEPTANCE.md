@@ -1,6 +1,6 @@
 # Native Agent 与桌面工作台正式运行验收清单
 
-整理日期：2026-09-28（北京时间）。整理基线：`dev/native-agent@b45bd06`（N1 / PR #45）；N2-01/02/03、E0-01/02 的实际候选需在执行前另行锁定。本文件集中 Native 能力和仍相关的 Claude/桌面共享功能正式验收，不登记新的运行结果。
+整理日期：2026-09-28（北京时间）。整理基线：`dev/native-agent@b45bd06`（N1 / PR #45）；N2-01/02/03、N3-01、E0-01/02 的实际候选需在执行前另行锁定。本文件集中 Native 能力和仍相关的 Claude/桌面共享功能正式验收，不登记新的运行结果。
 
 **下列所有正式项初始状态均为 `pending`。** 从本次整理起，正式运行的状态、候选和证据统一登记在本文件；各阶段文档继续保留实现边界、本地测试和历史候选结果。fixture、SSR、类型检查、测试收集或其他提交的 CI 通过，都不能直接将本清单改为通过。
 
@@ -46,6 +46,7 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 | RA-23 | 当前成品的桌面/IME/字体/IDE/Worktree 体验 | pending：待目标平台与安全验收副本 |
 | RA-24 | N2-02 多文件审批、部分应用及重启回执 | pending：待图形、真实任务与目标平台现场 |
 | RA-25 | N2-03 代码位置、任务关联与历史片段 | pending：待图形、真实任务与目标平台现场 |
+| RA-26 | N3-01 长命令启动、日志、收束与恢复事实 | pending：待图形、真实任务与目标平台现场 |
 
 ## 3. 真实连接、模型与编码流程
 
@@ -185,6 +186,12 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 - 预期：行号与记录时原文一致，片段明确为保存时版本；模型选择的步骤/条件关联不能自动通过验收。旧/未知快照无绿色通过提示，跨会话不串位置；不启动外部 IDE 或任意路径读取。文件/规则/任务版本冲突可见，重新读取修订后可继续，无自动重放已保存记录。真实模型能否选对代码、减少人工指路与检索调用，依据 E0 实际数据判断。
 - 证据：`R`、实际 Electron 交互与重启 trace/截图、文件完整哈希/行号/片段对照、任务修订和脱敏工具回执、冲突/取消记录、各平台差异、真实任务选行相关性的人工复核。状态：**pending**；单元、执行器 fixture、SSR 和测试收集不替代此项。
 
+### RA-26：N3-01 长命令生命周期
+
+- 前置/步骤：按 [N3-01 实现记录](NATIVE-AGENT-N3-COMMANDS.md)锁定候选，在真实 Electron 中运行 `native-long-command.spec.ts`，保留实际执行 trace。使用可丢弃项目完成精确启动审批、状态短等、stdout/stderr 分页、指定停止、拒绝、超时、用户取消和模型提前结束。实际执行一条超过 120 秒且小于约定回合预算的工程命令；期间重载/切会话，核对状态与目录占用。用受控故障分别验证启动意图后退出、终态写盘失败、清理未确认与重启后未知事实。Windows/macOS/Linux 在各自原生平台验证后代进程与句柄收束；包内行为依赖用户主动构建后再执行。
+- 预期：句柄只在本回合有效，不接管旧 PID；临时无日志、启动返回和命令结束不冒充验收通过。截断、退出非零、取消、超时和未知均明确；最终命令回执持久化与进程清理发生在回合结果/队列确认/目录释放之前。重启不重放或补造已完成；未知历史保留。日志分页保持字符边界，已知凭据不泄露；实际模型选择的命令、查询策略与结果解释须人工复核。
+- 证据：`R`、真实长命令时长与预算、审批输入/运行与命令 ID、原始生命周期回执和文件变化、分页日志与保留范围对照、清理诊断/后代进程及目录释放记录、实际 Electron 重载/重启 trace、平台差异和故障现场。状态：**pending**；本地短时实际进程 fixture、Windows 模拟或 Electron 场景收集不替代本项。
+
 ## 8. 结果模板与历史索引
 
 每次执行复制以下记录，不覆盖此前失败：
@@ -203,4 +210,4 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 
 共享工作台的历史记录见 [VALIDATION](VALIDATION.md)、[产品路线](ROADMAP.md)和[字体说明](FONTS.md)；其中旧故障修复不重新记为当前缺陷，尚需实际账号/平台确认的部分由 RA-22/RA-23 承接。历史证据按原候选保留：[P3 验收档案](NATIVE-AGENT-PHASE-3-VALIDATION.md)、[P4](NATIVE-AGENT-PHASE-4.md)、[P4b](NATIVE-AGENT-PHASE-4B.md)、[自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)、[Skills](NATIVE-AGENT-PHASE-4C-SKILLS.md)、[MCP HTTP](NATIVE-AGENT-PHASE-4C-MCP.md)、[MCP 2025 HTTP](NATIVE-AGENT-PHASE-4C-MCP-2025.md)、[MCP stdio](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)、[Chat Completions](NATIVE-AGENT-PHASE-4C-CHAT-COMPLETIONS.md)、[提问](NATIVE-AGENT-P5-QUESTIONS.md)、[PR #43 本地交付](NATIVE-AGENT-COMPLETION.md)、[N1 本地验收](NATIVE-AGENT-N1.md)。其中 N1 的 1303 项本地通过与两项图形场景仅收集/启动失败记录，不构成 RA-14 或三平台成品通过。
 
-本文件不把暂缓的多 Agent、native TUI、附件/图像、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N3/N4/N5 未交付功能列为当前已经实现能力的验收义务。新增能力交付后再增加稳定 ID；已有 ID 不复用于不同目标。
+本文件不把暂缓的多 Agent、native TUI、附件/图像、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N3-02/03、N4/N5 未交付功能列为当前已经实现能力的验收义务。新增能力交付后再增加稳定 ID；已有 ID 不复用于不同目标。

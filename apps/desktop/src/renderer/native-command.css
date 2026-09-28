@@ -1,0 +1,13 @@
+.native-command-panel{flex-shrink:0;margin:8px 18px;border:1px solid var(--border);border-radius:8px;background:var(--surface);padding:10px 14px;font-size:calc(11px * var(--ui-font-scale));line-height:1.6;min-width:0;max-height:32vh;overflow:auto;overflow-wrap:anywhere}
+.native-command-panel summary{cursor:pointer;color:var(--text-secondary);user-select:none}
+.native-command-panel summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.native-command-note{color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale))}
+.native-command-warning,.native-command-state.unknown{color:var(--warning)}
+.native-command-entry{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+.native-command-entry>summary>code,.native-command-state{margin-left:10px}
+.native-command-state{color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale))}
+.native-command-state.running{color:var(--accent)}
+.native-command-panel p{margin:6px 0}
+.native-command-panel code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.native-command-output pre{max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--input-bg);border:1px solid var(--border);padding:8px;border-radius:4px;font-size:calc(10px * var(--ui-font-scale))}
+@media(max-width:650px){.native-command-panel{margin:8px;max-height:28vh}}

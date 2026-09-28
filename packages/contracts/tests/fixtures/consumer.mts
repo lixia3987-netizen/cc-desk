@@ -24,3 +24,4 @@ export function viewState(snapshot: ChatSnapshot, approval: ChatApproval, decisi
 export type { NativeTaskSnapshot, NativeTaskUpdate } from '@cc-desk/contracts/native-task';
 
 export type { NativeChangeSetPreview, NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
+export type { NativeCommandLifecycleEvent, NativeCommandResult } from '@cc-desk/contracts/native-commands';

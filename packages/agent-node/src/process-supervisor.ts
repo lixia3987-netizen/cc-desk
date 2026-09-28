@@ -28,6 +28,27 @@ export interface CommandResult {
   error?: string;
 }
 
+export interface CommandSnapshot {
+  /** True only after the guardian reports that the actual executable spawned. */
+  started: boolean;
+  stopping: boolean;
+  /** The first containment cleanup attempt has finished, possibly unsuccessfully. */
+  settled: boolean;
+  /** A copy, including currently retained complete UTF-8 prefixes. */
+  result: CommandResult;
+}
+
+/** Host-owned finite command; no PID is exposed as control authority. */
+export interface CommandHandle {
+  /** False if the process could not start or was cancelled before startup. */
+  readonly started: Promise<boolean>;
+  /** A frozen-in-time copy after the first cleanup attempt. */
+  readonly closed: Promise<CommandResult>;
+  snapshot(): CommandSnapshot;
+  /** Stops only this command. Failed cleanup can be retried without revoking its owner. */
+  stop(): Promise<CommandResult>;
+}
+
 /** Main-process-only, explicitly approved, bidirectional process input. */
 export interface StdioProcessRequest {
   executable: string;
@@ -227,8 +248,8 @@ interface CommandRecord {
   guardianExited: boolean;
   exitSeen: boolean;
   result: CommandResult;
-  stdout: Buffer[];
-  stderr: Buffer[];
+  stdout: CapturedOutput;
+  stderr: CapturedOutput;
   capturedBytes: number;
   outputLimit: number;
   cleanupPromise?: Promise<boolean>;
@@ -239,6 +260,12 @@ interface CommandRecord {
   abort?: () => void;
   signal?: AbortSignal;
   stdio?: StdioProcessControl;
+}
+
+interface CapturedOutput { chunks: Buffer[]; bytes: number }
+interface CommandControl {
+  onRecord: (record: CommandRecord) => void;
+  onStarted: () => void;
 }
 
 interface StdioProcessControl {
@@ -277,8 +304,22 @@ function errno(error: unknown): string | undefined {
   return (error as NodeJS.ErrnoException | undefined)?.code;
 }
 
-function boundedText(chunks: Buffer[]): string {
-  const buffer = Buffer.concat(chunks);
+const CAPTURE_BLOCK_BYTES = 16 * 1_024;
+
+function appendOutput(output: CapturedOutput, data: Buffer): void {
+  let offset = 0;
+  while (offset < data.length) {
+    const used = output.bytes % CAPTURE_BLOCK_BYTES;
+    if (!used) output.chunks.push(Buffer.allocUnsafe(CAPTURE_BLOCK_BYTES));
+    const bytes = Math.min(CAPTURE_BLOCK_BYTES - used, data.length - offset);
+    data.copy(output.chunks[output.chunks.length - 1], used, offset, offset + bytes);
+    output.bytes += bytes;
+    offset += bytes;
+  }
+}
+
+function boundedText(output: CapturedOutput): string {
+  const buffer = Buffer.concat(output.chunks, output.bytes);
   // Do not turn a cut UTF-8 sequence into a replacement character beyond the
   // byte budget. Arbitrary invalid bytes can also expand when decoded to UTF-8.
   const text = new TextDecoder('utf-8').decode(buffer, { stream: true });
@@ -426,6 +467,60 @@ export class ProcessSupervisor {
     return this.runOwned(ownerId, command, signal, forbiddenValues);
   }
 
+  start(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): CommandHandle {
+    let record: CommandRecord | undefined;
+    let started = false;
+    let settled = false;
+    let terminal: CommandResult | undefined;
+    let notifyStarted!: (value: boolean) => void;
+    const whenStarted = new Promise<boolean>(resolve => { notifyStarted = resolve; });
+    const copy = (result: CommandResult): CommandResult => ({
+      ...result, ...(result.cleanupDiagnostic ? { cleanupDiagnostic: { ...result.cleanupDiagnostic } } : {}),
+    });
+    const snapshot = (): CommandSnapshot => ({
+      started, stopping: record?.cleanupRequested ?? false, settled,
+      result: record ? {
+        ...copy(record.result), stdout: boundedText(record.stdout), stderr: boundedText(record.stderr),
+      } : copy(terminal ?? {
+        exitCode: null, signal: null, stdout: '', stderr: '', outputBytes: 0,
+        truncated: false, timedOut: false, cancelled: signal?.aborted ?? false, cleanup: 'released',
+      }),
+    });
+    const closed = this.runOwned(ownerId, command, signal, forbiddenValues, undefined, {
+      onRecord: value => { record = value; },
+      onStarted: () => { started = true; notifyStarted(true); },
+    }).then(result => {
+      settled = true;
+      terminal = copy(result);
+      notifyStarted(started);
+      return copy(result);
+    }, error => {
+      settled = true;
+      terminal = {
+        exitCode: null, signal: null, stdout: '', stderr: '', outputBytes: 0,
+        truncated: false, timedOut: false, cancelled: signal?.aborted ?? false, cleanup: 'released',
+        error: 'The command request was rejected before execution.',
+      };
+      notifyStarted(false);
+      throw error;
+    });
+    // Callers commonly await startup before observing the closure promise.
+    // Keep a rejected validation result observable without an interim unhandled rejection.
+    void closed.catch(() => {});
+    return {
+      started: whenStarted, closed, snapshot,
+      stop: async () => {
+        if (!record) return closed;
+        // Preserve a natural exit that already started cleanup. A later stop
+        // still retries failed containment without rewriting the exit reason.
+        if (!record.cleanupRequested) record.result.cancelled = true;
+        await this.stopRecord(record);
+        await closed;
+        return snapshot().result;
+      },
+    };
+  }
+
   async openStdio(ownerId: string, request: StdioProcessRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): Promise<StdioProcessHandle> {
     if (!request || typeof request.onStdout !== 'function') throw new TypeError('Stdio requires an output consumer.');
     validateCommand(request);
@@ -515,7 +610,7 @@ export class ProcessSupervisor {
     };
   }
 
-  private async runOwned(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], stdio?: StdioProcessControl): Promise<CommandResult> {
+  private async runOwned(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], stdio?: StdioProcessControl, control?: CommandControl): Promise<CommandResult> {
     if (typeof ownerId !== 'string' || !ownerId || ownerId.length > 1_024) throw new TypeError('An owner ID is required.');
     if (this.disposed || this.revokedOwners.has(ownerId)) throw new Error('Command owner has been released.');
     validateCommand(command);
@@ -554,17 +649,18 @@ export class ProcessSupervisor {
       owner: ownerId, environment: launchEnvironment, child, pid: child.pid, closed: false, guardianExited: false, exitSeen: false,
       windowsHelpers: new Map(), cleanupRequested: false, commandLaunched: false,
       windowsPreparationAbort: process.platform === 'win32' ? new AbortController() : undefined,
-      result, stdout: [], stderr: [], capturedBytes: 0, outputLimit,
+      result, stdout: { chunks: [], bytes: 0 }, stderr: { chunks: [], bytes: 0 }, capturedBytes: 0, outputLimit,
       cleanupFailed: false, done, finish, signal, stdio,
     };
     this.records.add(record);
-    const capture = (chunks: Buffer[], data: Buffer) => {
+    control?.onRecord(record);
+    const capture = (output: CapturedOutput, data: Buffer) => {
       result.outputBytes = Math.min(Number.MAX_SAFE_INTEGER, result.outputBytes + data.length);
       const available = Math.max(0, outputLimit - record.capturedBytes);
       if (data.length > available) result.truncated = true;
       if (available) {
-        const retained = Buffer.from(data.subarray(0, available));
-        chunks.push(retained);
+        const retained = data.subarray(0, available);
+        appendOutput(output, retained);
         record.capturedBytes += retained.length;
       }
     };
@@ -599,6 +695,7 @@ export class ProcessSupervisor {
       const value = message as Record<string, unknown>;
       if (value.type === 'command-started' && Number.isSafeInteger(value.pid) && Number(value.pid) > 0) {
         record.commandPid = Number(value.pid);
+        control?.onStarted();
         if (stdio && !record.cleanupRequested) {
           if (record.timer) clearTimeout(record.timer);
           stdio.onStarted(record);
