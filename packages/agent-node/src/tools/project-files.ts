@@ -191,7 +191,7 @@ export class ProjectFiles {
     // Reuse the same complete-file version checks and atomic publisher as apply_patch.
     return this.preparePatch({ path: relative, content, expectedHash: input.expectedHash }, signal);
   }
-  async applyPatch(prepared: PreparedPatch, signal?: AbortSignal): Promise<{ path: string; previousHash: string | null; hash: string; bytes: number; created: boolean }> {
+  async applyPatch(prepared: PreparedPatch, signal?: AbortSignal, beforePublish?: () => void | Promise<void>): Promise<{ path: string; previousHash: string | null; hash: string; bytes: number; created: boolean }> {
     const { input, parent, previous } = prepared;
     throwIfAborted(signal);
     await this.verify(parent);
@@ -208,16 +208,22 @@ export class ProjectFiles {
       temporaryCreated = true;
       try { await handle.writeFile(input.content, 'utf8'); if (previous) await handle.chmod(previous.mode); await handle.sync(); } finally { await handle.close(); }
       throwIfAborted(signal);
+      // Batch hosts recheck approval, ownership and instructions after temporary-file IO.
+      // Revalidate directory identity and the old file after the callback's own awaits.
+      if (beforePublish) await beforePublish();
+      throwIfAborted(signal);
       await this.verify(parent);
       if (opened) await this.verifyHandle(opened.handle, parent);
       if (previous) {
         await this.verify(previous.snapshot, true);
         const latest = await this.read(input.path, signal);
         if (latest.hash !== input.expectedHash) throw changed();
+        throwIfAborted(signal);
         await fs.rename(temporary, target);
         temporaryCreated = false;
       } else {
         // Hard-link publication is atomic and refuses an existing target on every supported platform.
+        throwIfAborted(signal);
         await fs.link(temporary, target);
         await fs.unlink(temporary);
         temporaryCreated = false;
