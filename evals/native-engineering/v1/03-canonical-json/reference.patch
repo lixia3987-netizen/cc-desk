@@ -1,0 +1,100 @@
+--- /dev/null
++++ b/packages/agent-core/src/canonical-json.ts
+@@ -0,0 +1,14 @@
++import type { JsonValue } from './types.js'
++
++/** Shared exact-input representation for approvals and durable submission identity. */
++export function canonicalJson(value: JsonValue): string {
++  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value)
++  if (typeof value === 'number') {
++    if (!Number.isFinite(value)) throw new Error('Non-finite JSON number')
++    return JSON.stringify(value)
++  }
++  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
++  if (typeof value !== 'object') throw new Error('Non-JSON value')
++  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
++}
++
+--- a/packages/agent-core/src/run.ts
++++ b/packages/agent-core/src/run.ts
+@@ -16,17 +16,8 @@
+   maxOutputTokens: 16_384,
+ })
+
+-/** Shared exact-input representation for approvals and durable submission identity. */
+-export function canonicalJson(value: JsonValue): string {
+-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value)
+-  if (typeof value === 'number') {
+-    if (!Number.isFinite(value)) throw new Error('Non-finite JSON number')
+-    return JSON.stringify(value)
+-  }
+-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`
+-  if (typeof value !== 'object') throw new Error('Non-JSON value')
+-  return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`
+-}
++import { canonicalJson } from './canonical-json.js'
++export { canonicalJson } from './canonical-json.js'
+
+ export class RunAlreadyActiveError extends Error {
+   readonly code = 'run_already_active'
+--- a/packages/agent-node/src/tools/local-tools.ts
++++ b/packages/agent-node/src/tools/local-tools.ts
+@@ -1,3 +1,4 @@
++import { canonicalJson as canonical } from '@cc-desk/agent-core';
+ import type { ApprovalDecision, JsonObject, JsonValue, PreparedTool, RunIdentity, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
+ import { ProcessSupervisor } from '../process-supervisor.js';
+ import { loadProjectInstructions, projectInstructionText, type ProjectInstructions } from '../project-instructions.js';
+@@ -15,7 +16,6 @@
+   { name: 'run_command', risk: 'command', description: 'Run an executable with literal argv and project-relative cwd (shell:false). Always requires approval. Commands may affect files/network beyond cwd: this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: integer, maxOutputBytes: integer }, ['executable', 'argv', 'cwd']) },
+ ];
+ const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'release', '.next', 'coverage']);
+-const canonical = (value: JsonValue): string => value === null || typeof value !== 'object' ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+ const asJson = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
+ const identityKey = (identity: RunIdentity) => canonical(asJson(identity));
+ const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+--- a/packages/agent-node/src/mcp-tools.ts
++++ b/packages/agent-node/src/mcp-tools.ts
+@@ -1,3 +1,4 @@
++import { canonicalJson as canonical } from '@cc-desk/agent-core';
+ import { createHash } from 'node:crypto';
+ import type { ApprovalDecision, JsonValue, PreparedTool, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
+ import { McpClientError, McpHttpClient, type McpTool, type McpProtocolVersion } from './mcp-client.js';
+@@ -10,7 +11,6 @@
+ const MAX_METADATA_BYTES = 128 * 1024;
+ const MAX_INPUT_BYTES = 64 * 1024;
+ const MAX_PREPARED = 256;
+-const canonical = (value: JsonValue): string => value === null || typeof value !== 'object' ? JSON.stringify(value) : Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+ const hash = (value: string): string => createHash('sha256').update(value).digest('hex');
+ const json = (value: unknown): JsonValue => JSON.parse(JSON.stringify(value)) as JsonValue;
+ const bytes = (value: unknown): number => Buffer.byteLength(JSON.stringify(value));
+--- /dev/null
++++ b/packages/agent-core/tests/e0-canonical-json.test.mjs
+@@ -0,0 +1,10 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import {canonicalJson} from '../dist/index.js';
++import {canonicalJson as runJson} from '../dist/run.js';
++import {canonicalJson as sharedJson} from '../dist/canonical-json.js';
++test('public paths retain exact canonical JSON behavior',()=>{
++  assert.equal(canonicalJson,runJson);assert.equal(canonicalJson,sharedJson);
++  assert.equal(canonicalJson({z:[-0,'中文'],a:{b:true,a:null}}),' {"a":{"a":null,"b":true},"z":[0,"中文"]}'.trim());
++  assert.throws(()=>canonicalJson(Infinity),/Non-finite JSON number/);assert.throws(()=>canonicalJson(undefined),/Non-JSON value/);
++});
+--- /dev/null
++++ b/packages/agent-node/tests/e0-tool-digests.test.mjs
+@@ -0,0 +1,15 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import {createHash} from 'node:crypto';
++import {createLocalToolPort} from '../dist/tools/local-tools.js';
++test('local approval inputDigest remains compatible after serializer extraction',async()=>{
++ const root=await fs.mkdtemp(path.join(os.tmpdir(),'e0-digest-'));
++ try {await fs.writeFile(path.join(root,'x.txt'),'x');const tool=createLocalToolPort({projectRoot:root,ownerId:'owner',supervisor:{}});
++ const context={identity:{sessionId:'s',conversationId:'c',runId:'r',requestId:'q',workerGeneration:1},policyRevision:'policy',signal:new AbortController().signal,maxOutputBytes:65536};
++ const prepared=await tool.prepare({id:'read',name:'read_file',arguments:'{"maxBytes":20,"path":"x.txt"}'},context);
++ assert.equal(prepared.inputDigest,createHash('sha256').update('{"maxBytes":20,"path":"x.txt"}').digest('hex'));assert.equal(prepared.requiresApproval,false);
++ }finally{await fs.rm(root,{recursive:true,force:true});}
++});
