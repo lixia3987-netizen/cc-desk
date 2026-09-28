@@ -25,6 +25,7 @@ import { useSessionMemory } from './workspace/useSessionMemory';
 import { useWorkspacePreferences } from './workspace/useWorkspacePreferences';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader';
 import { WorkspaceWelcome } from './workspace/WorkspaceWelcome';
+import { sessionReadLifecycle } from './session-read-lifecycle';
 
 type Modal = 'new' | 'settings' | 'history' | 'rename' | 'palette' | null;
 
@@ -83,6 +84,7 @@ export function App() {
   const project = state?.projects.find(p => p.id === (active?.projectId ?? projectId));
   const applyState = useCallback((value: AppState) => {
     latestState.current = value; setState(value); retainSessions(value.sessions.map(session => session.id));
+    sessionReadLifecycle.retain(value.sessions.map(session => session.id));
     const id = selection.current.receive(value.selectedSessionId);
     setProjectId(current => current === 'all' || value.projects.some(project => project.id === current) ? current : 'all');
     if (id !== undefined) {
@@ -112,13 +114,13 @@ export function App() {
     const offState = window.desktop.onState(value => { stateEvents.current++; applyState(value); });
     const approvalRequests = new Map<string, number>(); let disposed = false;
     const offChat = window.desktop.onChat(id => {
-      if (id === latestActiveId.current || !approvalDrafts.current.has(id)) return;
+      if (id === latestActiveId.current || !approvalDrafts.current.has(id) || !latestState.current?.sessions.some(session => session.id === id)) return;
       const seq = (approvalRequests.get(id) ?? 0) + 1;
       approvalRequests.set(id, seq);
-      void window.desktop.chatSnapshot(id).then(value => {
-        if (!disposed && approvalRequests.get(id) === seq && id !== latestActiveId.current)
-          approvalDrafts.current.reconcile(id, value.pending);
-      }).catch(report);
+      const current = () => !disposed && approvalRequests.get(id) === seq && id !== latestActiveId.current && latestState.current?.sessions.some(session => session.id === id);
+      void sessionReadLifecycle.read(id, () => window.desktop.chatSnapshot(id)).then(value => {
+        if (value && current()) approvalDrafts.current.reconcile(id, value.pending);
+      }).catch(error => { if (current()) report(error); });
     });
     const offError = window.desktop.onError(message => report(new Error(message)));
     const offNavigate = window.desktop.onNavigate(id => {

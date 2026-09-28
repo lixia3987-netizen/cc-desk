@@ -6,6 +6,7 @@ import { SessionConfig } from '../SessionConfig';
 import { Dialog } from '../Dialog';
 import { time } from './presentation';
 import type { OpenNew, Perform, ReportError } from './types';
+import { sessionReadLifecycle } from '../session-read-lifecycle';
 
 export interface SessionContextPanelProps {
   executionCapabilities?: ExecutionCapabilities;
@@ -47,7 +48,7 @@ export function SessionContextPanel({
       await perform(async () => {
         try {
           flushDrafts();
-          await window.desktop.deleteSession(target.id, { forceWorktree: true, worktreePath: target.worktreePath });
+          await sessionReadLifecycle.remove(target.id,()=>window.desktop.deleteSession(target.id, { forceWorktree: true, worktreePath: target.worktreePath }));
           setForceTarget(undefined); setDeleteConfirm('');
           if (activeId.current === target.id) selectSession('');
         } catch (error) { setForceError(error instanceof Error ? error.message : String(error)); throw error; }
@@ -99,7 +100,7 @@ export function SessionContextPanel({
       <button className="secondary compact" disabled={busy || forceDeleting} onClick={() => setDeleteConfirm('')}>取消</button>
       <button className="secondary compact danger" disabled={deletionBlocked} onClick={() => void perform(async () => {
         flushDrafts();
-        await window.desktop.deleteSession(active.id, active.worktree ? { preserveWorktree: true } : undefined);
+        await sessionReadLifecycle.remove(active.id,()=>window.desktop.deleteSession(active.id, active.worktree ? { preserveWorktree: true } : undefined));
         selectSession('');
       })}>{active.worktree ? '仅删除会话，保留隔离目录' : '确认删除会话'}</button>
       {active.worktree && <button className="secondary compact danger" disabled={deletionBlocked} onClick={() => {
