@@ -19,45 +19,54 @@ import { Dialog } from './Dialog';
 import { isMissingTranscriptError } from '../shared/session-recovery';
 import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
+import { NativeChangeSetPreview, NativeChangeSetResult, nativeChangeSetCanApprove, nativeChangeSetResultLabel } from './NativeChangeSetPreview';
 import './native-task.css';
+import './native-change-set.css';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
-function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean}) {
+function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage,isNative}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean;isNative:boolean}) {
   const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId)),[busy,setBusy]=useState(false);
+  const changeSet=isNative&&approval.toolName==='apply_change_set';
+  const question=approval.kind==='question'&&!changeSet;
+  const changeSetPreview=approval.kind==='permission'?approval.nativeChangeSet:undefined;
+  const invalidChangeSet=changeSet&&!nativeChangeSetCanApprove(changeSetPreview);
   const {answers,reason}=value;
   const update=(patch:Partial<ApprovalDraft>)=>setValue(previous=>{const next={...previous,...patch};drafts.set(sessionId,approval.requestId,next);return next;});
   const setAnswers=(change:(answers:Record<string,string>)=>Record<string,string>)=>update({answers:change(answers)});
   const setReason=(reason:string)=>update({reason});
   const respond=async(behavior:'allow'|'deny')=>{
+    if(busy||behavior==='allow'&&invalidChangeSet)return;
     setBusy(true);
-    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:approval.kind==='question'?answers:undefined});drafts.delete(sessionId,approval.requestId);}
+    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:question?answers:undefined});drafts.delete(sessionId,approval.requestId);}
     catch(error){onError(error);} finally {setBusy(false);}
   };
   const questions=approval.questions??[];
-  return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={approval.kind==='question'?'等待回答':'工具审批'}>
-    <header><ShieldCheck size={17}/><strong>{approval.kind==='question'?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
-    {approval.kind==='question'?questions.map((q,index)=><fieldset key={index} disabled={busy}><legend>{q.question}</legend><div className="question-options">{q.options.map((option,i)=>{
+  return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={question?'等待回答':'工具审批'}>
+    <header><ShieldCheck size={17}/><strong>{question?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
+    {question?questions.map((q,index)=><fieldset key={index} disabled={busy}><legend>{q.question}</legend><div className="question-options">{q.options.map((option,i)=>{
       const selected=q.multiSelect?(answers[q.question]??'').split(', ').includes(option.label):answers[q.question]===option.label;
       return <button key={i} type="button" className={selected?'chosen':''} aria-pressed={selected} onClick={()=>setAnswers(value=>{
         const old=(value[q.question]??'').split(', ').filter(Boolean);
         return {...value,[q.question]:q.multiSelect?(selected?old.filter(p=>p!==option.label):[...old,option.label]).join(', '):option.label};
       })}><span>{selected&&<Check size={12}/>}{option.label}</span>{option.description&&<small>{option.description}</small>}</button>;
-    })}</div><input aria-label={'回答：'+q.question} placeholder="也可以填写自己的回答" value={answers[q.question]??''} onChange={e=>setAnswers(value=>({...value,[q.question]:e.target.value}))}/></fieldset>):<pre className="tool-input">{JSON.stringify(approval.input,null,2)}</pre>}
+    })}</div><input aria-label={'回答：'+q.question} placeholder="也可以填写自己的回答" value={answers[q.question]??''} onChange={e=>setAnswers(value=>({...value,[q.question]:e.target.value}))}/></fieldset>):changeSet?<NativeChangeSetPreview preview={changeSetPreview}/>:<pre className="tool-input">{JSON.stringify(approval.input,null,2)}</pre>}
     {allowMessage&&<input aria-label="审批说明" placeholder="可选：拒绝原因或补充说明" value={reason} onChange={e=>setReason(e.target.value)} disabled={busy}/>}
-    <div className="approval-actions"><button className="secondary compact" disabled={busy} onClick={()=>void respond('deny')}><X size={14}/>拒绝</button><button className="primary compact" disabled={busy||(approval.kind==='question'&&questions.some(q=>!answers[q.question]?.trim()))} onClick={()=>void respond('allow')}>{busy?<Loader2 className="spin" size={14}/>:<Check size={14}/>} {approval.kind==='question'?'提交回答':'允许本次'}</button></div>
+    <div className="approval-actions"><button className="secondary compact" disabled={busy} onClick={()=>void respond('deny')}><X size={14}/>拒绝</button><button className="primary compact" disabled={busy||invalidChangeSet||(question&&questions.some(q=>!answers[q.question]?.trim()))} onClick={()=>void respond('allow')}>{busy?<Loader2 className="spin" size={14}/>:<Check size={14}/>} {question?'提交回答':'允许本次'}</button></div>
   </section>;
 }
 
 function sameMessage(left:ChatMessage,right:ChatMessage) {
-  return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input);
+  return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input)&&left.nativeChangeSetState===right.nativeChangeSetState&&JSON.stringify(left.nativeChangeSetResult)===JSON.stringify(right.nativeChangeSetResult);
 }
-const ChatMessageRow=memo(function ChatMessageRow({message,engineName}:{message:ChatMessage;engineName:string}) {
+const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative}:{message:ChatMessage;engineName:string;isNative:boolean}) {
+  const changeSet=isNative&&message.role==='tool'&&message.toolName==='apply_change_set';
   const content=<><MessageText text={message.text}/>{message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
-  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{message.isError?'失败':'查看详情'}</span></summary>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
-},(previous,next)=>previous.engineName===next.engineName&&sameMessage(previous.message,next.message));
+  const changeSetContent=<><NativeChangeSetResult result={message.nativeChangeSetResult} state={message.nativeChangeSetState}/>{message.nativeChangeSetState==='not_executed'&&<><pre className="tool-input" aria-label="工具未执行原因">{message.text}</pre>{message.truncated&&<p className="panel-note message-truncated">未执行原因过长，展示内容已截断。可导出会话查看完整记录。</p>}</>}</>;
+  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{changeSet?changeSetContent:<>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</>}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
+},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&sameMessage(previous.message,next.message));
 
 export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,descriptor,readOnly=false,disabled=false,unavailable}:{
   descriptor?:ExecutionDescriptor;readOnly?:boolean;session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;unavailable?:string;
@@ -222,8 +231,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {!visible?.messages.length&&!snapshot?.queue?.items.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
-      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName}/>)}
-      {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'}/>)}
+      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'}/>)}
+      {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
