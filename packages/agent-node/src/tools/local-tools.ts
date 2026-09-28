@@ -1,9 +1,11 @@
 import type { ApprovalDecision, JsonObject, JsonValue, PreparedTool, RunIdentity, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
+import type { NativeChangeSetFileEvent, NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import { ProcessSupervisor } from '../process-supervisor.js';
 import { loadProjectInstructions, projectInstructionText, type ProjectInstructions } from '../project-instructions.js';
 import { assertNoModelCredential } from '../responses-model.js';
 import { contentHash, isSensitivePath, normalizeProjectPath, ProjectFiles, throwIfAborted, type FilePolicyOptions, type PathSnapshot, type PreparedPatch } from './project-files.js';
 import { ProjectSearch, type ProjectSearchInput } from './project-search.js';
+import { ProjectChangeSet, validateChangeSetInput, type PreparedChangeSet } from './change-set.js';
 
 const string = { type: 'string' };
 const integer = { type: 'integer' };
@@ -20,6 +22,7 @@ export const LOCAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'find_files', risk: 'read', description: 'Locate ordinary project files by literal basename fragment (name), restricted path glob (*, **, ?), or both. glob is relative to the searched path; ignoreDirectories adds literal directory names or project-relative directory paths, not full gitignore rules. Sensitive files, links and generated directories remain excluded. This reads metadata only, including binary/large file names: matches have hash:null and hashStatus:not_read. Use read_file to obtain a full content hash before editing. Check completeness and nextCursor; reuse unchanged filter options for later pages. Finding a nested file does not mean its deeper AGENTS.md/CLAUDE.md rules have been read: use read_file or list_directory for that scope before editing.', inputSchema: schema({ ...searchProperties, name: { type: 'string', minLength: 1, maxLength: 256 } }, ['path']) },
   { name: 'apply_patch', risk: 'write', description: 'Create or replace exactly one UTF-8 text file. expectedHash is the SHA-256 from read_file, or null to create without overwriting. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) },
   { name: 'edit_file', risk: 'write', description: 'Replace one unique exact oldText fragment in an existing UTF-8 file with newText (empty to delete). oldText must be nonempty and match exactly once, including whitespace and line endings; include surrounding text to disambiguate. No fuzzy matching or replace-all. expectedHash must be the complete SHA-256 from read_file; read again after each edit. Preserves all other text. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, oldText: string, newText: string, expectedHash: string }, ['path', 'oldText', 'newText', 'expectedHash']) },
+  { name: 'apply_change_set', risk: 'write', description: 'Apply an explicitly approved ordered group of 1–16 UTF-8 file creates/replacements, at most 256 KiB total new content. Read every applicable AGENTS.md/CLAUDE.md and selected Skill first. expectedHash is the complete previous SHA-256, or null only for a new file. Approval shows the complete changed regions, with hashes and line-ending markers; oversized previews are rejected, never silently truncated. Sensitive paths, AGENTS.md/CLAUDE.md and selected Skills cannot be edited in a group. This is not a filesystem transaction: each file is validated and durably recorded before/after its individual write, and partial results are explicit. Never automatically retry unknown results or undo external changes. Splitting or changing a group needs a fresh approval.', inputSchema: schema({ changes: { type: 'array', minItems: 1, maxItems: 16, items: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) } }, ['changes']) },
   { name: 'run_command', risk: 'command', description: 'Run an executable with literal argv and project-relative cwd (shell:false). Always requires approval. Commands may affect files/network beyond cwd: this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: integer, maxOutputBytes: integer }, ['executable', 'argv', 'cwd']) },
 ];
 const SKIP_DIRECTORIES = new Set(['node_modules', 'dist', 'release', '.next', 'coverage']);
@@ -54,6 +57,8 @@ export interface LocalToolOptions extends FilePolicyOptions {
   forbiddenValues?: readonly string[];
   maxScanEntries?: number;
   maxOperationMs?: number;
+  /** Trusted host-only durable progress. Required before any grouped file effect. */
+  recordChangeSetEvent?: (identity: RunIdentity, call: ToolCall, event: NativeChangeSetFileEvent) => Promise<void>;
 }
 interface PreparedState {
   prepared: PreparedTool;
@@ -65,12 +70,16 @@ interface PreparedState {
   result?: ToolResult;
   searchExecution?: Promise<ToolResult>;
   maxOutputBytes: number;
+  changeSet?: PreparedChangeSet;
+  changeSetInstructions?: Array<{ path: string; instructions: ProjectInstructions }>;
+  changeSetExecution?: Promise<ToolResult>;
 }
 
 export class LocalToolPort implements ToolPort {
   readonly definitions = LOCAL_TOOL_DEFINITIONS;
   private readonly files: ProjectFiles;
   private readonly searcher: ProjectSearch;
+  private readonly changeSets: ProjectChangeSet;
   private readonly prepared = new Map<string, PreparedState>();
   private readonly seenInstructions = new Set<string>();
   private readonly maxScanEntries: number;
@@ -78,6 +87,7 @@ export class LocalToolPort implements ToolPort {
   constructor(private readonly options: LocalToolOptions) {
     this.files = new ProjectFiles(options);
     this.searcher = new ProjectSearch(options);
+    this.changeSets = new ProjectChangeSet({ ...options, protectedPaths: options.projectSkills });
     this.maxScanEntries = options.maxScanEntries ?? 4000;
     this.maxOperationMs = options.maxOperationMs ?? 10000;
     if (!options.ownerId || !Number.isSafeInteger(this.maxScanEntries) || this.maxScanEntries < 1 || this.maxScanEntries > 20000 || !Number.isSafeInteger(this.maxOperationMs) || this.maxOperationMs < 1 || this.maxOperationMs > 30000) throw new Error('Invalid local tool bounds or owner.');
@@ -118,6 +128,7 @@ export class LocalToolPort implements ToolPort {
       return structuredClone(old.prepared);
     }
     if (this.prepared.size >= 256) throw new Error('Local tool call budget exhausted.');
+    if (call.name === 'apply_change_set') return this.prepareChangeSet(call, input, inputDigest, context, definition);
     let targetPath: string;
     let targetKind: 'file' | 'directory' = 'directory';
     let patch: PreparedPatch | undefined;
@@ -195,7 +206,7 @@ export class LocalToolPort implements ToolPort {
   private state(prepared: PreparedTool, context: ToolExecutionContext): PreparedState {
     const state = this.prepared.get(this.key(prepared.call, context));
     if (!state || state.identity !== identityKey(context.identity) || canonical(asJson(state.prepared)) !== canonical(asJson(prepared)) || context.policyRevision !== prepared.policyRevision) throw new Error('Prepared tool input, policy or owner changed.');
-    if ((prepared.call.name === 'search' || prepared.call.name === 'find_files') && context.maxOutputBytes !== state.maxOutputBytes) throw new Error('Search output budget changed after preparation.');
+    if (['search', 'find_files', 'apply_change_set'].includes(prepared.call.name) && context.maxOutputBytes !== state.maxOutputBytes) throw new Error('Tool output budget changed after preparation.');
     return state;
   }
   async validate(prepared: PreparedTool, context: ToolExecutionContext): Promise<void> {
@@ -204,6 +215,12 @@ export class LocalToolPort implements ToolPort {
     const state = this.state(prepared, context);
     if (state.result) return;
     if (state.executed) throw new Error('Tool has an unknown or active outcome; it cannot be replayed.');
+    if (state.changeSet) {
+      await this.assertChangeSetCurrent(prepared, state, context);
+      await this.changeSets.validate(state.changeSet, context.signal);
+      await this.assertChangeSetCurrent(prepared, state, context);
+      return;
+    }
     const targetPath = String(prepared.input[prepared.call.name === 'run_command' ? 'cwd' : 'path']);
     const targetKind = prepared.call.name === 'read_file' || prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file' ? 'file' : 'directory';
     if ((await this.instructions(targetPath, targetKind, context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed; the approval is invalid. Read the scope again.');
@@ -214,6 +231,7 @@ export class LocalToolPort implements ToolPort {
     }
   }
   async execute(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
+    if (prepared.call.name === 'apply_change_set') return this.executeChangeSet(prepared, context, approval);
     if (prepared.call.name !== 'search' && prepared.call.name !== 'find_files') return this.executePrepared(prepared, context, approval);
     const state = this.state(prepared, context);
     throwIfAborted(context.signal);
@@ -224,6 +242,94 @@ export class LocalToolPort implements ToolPort {
     // serving its cached value. Repeating a call cannot create a fresh scan.
     state.searchExecution ??= this.executePrepared(prepared, context, approval);
     return structuredClone(await state.searchExecution);
+  }
+  private async prepareChangeSet(call: ToolCall, input: JsonObject, inputDigest: string, context: ToolExecutionContext, definition: ToolDefinition): Promise<PreparedTool> {
+    exactFields(input, ['changes']);
+    this.credentials(input);
+    // Reject the entire group's sensitive/rule targets, aliases, malformed text
+    // and aggregate limits before any instruction lookup or previous-file read.
+    const { changes } = validateChangeSetInput(input, this.options.projectSkills);
+    const scopes: NonNullable<PreparedState['changeSetInstructions']> = [];
+    for (const change of changes) {
+      const instructions = await this.instructions(change.path, 'file', context.signal);
+      if (instructions.sources.some(source => !this.seenInstructions.has(`${source.path}:${source.hash}`))) throw new Error('Applicable project instructions have not been shown to the model for every change-set target. Read each target scope first.');
+      scopes.push({ path: change.path, instructions });
+    }
+    const changeSet = await this.changeSets.prepare({ changes }, context.signal);
+    if (changeSet.resultMaxBytes + 1024 > context.maxOutputBytes) throw new Error('The complete per-file change-set receipt exceeds the output budget; split the group before requesting approval.');
+    this.credentials(changeSet.preview);
+    const instructions = await this.instructions('.', 'directory', context.signal), target = await this.files.snapshot('.', 'directory');
+    const sources = [...new Map(scopes.flatMap(scope => scope.instructions.sources).map(source => [source.path, source])).values()];
+    const prepared: PreparedTool = { call: structuredClone(call), definition: structuredClone(definition), input: structuredClone(input), inputDigest,
+      policyRevision: context.policyRevision, requiresApproval: true, preconditions: {
+        instructions: asJson(sources.map(({ path: instructionPath, scope, hash }) => ({ path: instructionPath, scope, hash }))),
+        instructionDigest: contentHash(canonical(asJson(scopes.map(scope => ({ path: scope.path, digest: scope.instructions.digest }))))),
+        changeSetScopes: asJson(scopes.map(scope => ({ path: scope.path, digest: scope.instructions.digest }))),
+        ownerId: this.options.ownerId, changeSet: asJson(changeSet.preview),
+      } };
+    this.credentials(prepared.preconditions);
+    await this.options.assertOwnership?.(context.identity); throwIfAborted(context.signal);
+    const key = this.key(call, context), concurrent = this.prepared.get(key);
+    if (concurrent) {
+      if (concurrent.identity !== identityKey(context.identity) || canonical(asJson(concurrent.prepared)) !== canonical(asJson(prepared))) throw new Error('Tool call identity was reused during change-set preparation.');
+      return structuredClone(concurrent.prepared);
+    }
+    this.prepared.set(key, { prepared: structuredClone(prepared), identity: identityKey(context.identity), instructions, target,
+      executed: false, maxOutputBytes: context.maxOutputBytes, changeSet, changeSetInstructions: scopes });
+    return structuredClone(prepared);
+  }
+  /** No file-version check here: earlier items in this group may already be applied. */
+  private async assertChangeSetCurrent(prepared: PreparedTool, state: PreparedState, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<void> {
+    const check = () => {
+      throwIfAborted(context.signal); this.state(prepared, context);
+      if (approval) {
+        const binding = { ...context.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: prepared.policyRevision };
+        if (approval.decision !== 'approved' || !Number.isFinite(approval.expiresAt) || approval.expiresAt <= Date.now() || canonical(asJson(approval.binding)) !== canonical(asJson(binding))) throw new Error('Change-set approval is no longer current.');
+      }
+    };
+    check(); await this.options.assertOwnership?.(context.identity); check();
+    for (const scope of state.changeSetInstructions ?? []) {
+      const instructions = await this.instructions(scope.path, 'file', context.signal);
+      if (instructions.digest !== scope.instructions.digest) throw new Error('Project instructions changed; stop the remaining change-set files and read each scope again.');
+      check();
+    }
+    await this.files.verify(state.target); await this.options.assertOwnership?.(context.identity); check();
+  }
+  private async executeChangeSet(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
+    const state = this.state(prepared, context);
+    if (state.changeSetExecution) return structuredClone(await state.changeSetExecution);
+    state.changeSetExecution = (async (): Promise<ToolResult> => {
+      const record = this.options.recordChangeSetEvent;
+      if (!record || !state.changeSet) return { status: 'not_executed', output: { error: 'change_set_durable_recorder_unavailable' } };
+      if (!approval) return { status: 'not_executed', output: { error: 'change_set_approval_required' } };
+      try {
+        await this.validate(prepared, context);
+        await this.assertChangeSetCurrent(prepared, state, context, approval);
+        if (state.changeSet.resultMaxBytes + 1024 > context.maxOutputBytes) throw new Error('Change-set output budget changed.');
+      } catch { return { status: 'not_executed', output: { error: 'change_set_preconditions_changed' } }; }
+      state.executed = true;
+      const run = structuredClone(context.identity), call = structuredClone(prepared.call);
+      try {
+        const applied: NativeChangeSetResult = await this.changeSets.apply(state.changeSet, { signal: context.signal,
+          assertCurrent: () => this.assertChangeSetCurrent(prepared, state, context, approval),
+          // After-effect receipts must still be saved if cancellation arrives.
+          // This callback grants no permission to execute the next file.
+          record: event => record(run, call, structuredClone(event)),
+        });
+        const output = asJson(applied); this.credentials(output);
+        if (size(output) > context.maxOutputBytes) return { status: 'unknown', output: { error: 'change_set_receipt_exceeds_bound' } };
+        const result: ToolResult = { status: applied.status === 'completed' ? 'completed' : applied.status === 'partial' ? 'failed' : applied.status === 'not_applied' ? 'not_executed' : 'unknown',
+          output, effects: { changeSet: output } };
+        state.result = structuredClone(result);
+        return result;
+      } catch {
+        // Never pass through the generic lossy output fallback after grouped
+        // effects. The durable per-file receipts remain the recovery source.
+        const result: ToolResult = { status: 'unknown', output: { error: 'change_set_execution_unconfirmed' } };
+        state.result = result; return result;
+      }
+    })();
+    return structuredClone(await state.changeSetExecution);
   }
   private async executePrepared(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
     const state = this.state(prepared, context);
