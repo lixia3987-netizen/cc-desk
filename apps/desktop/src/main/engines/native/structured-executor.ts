@@ -81,6 +81,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   private taskErrors = new Map<string, string>();
   private taskReviews = new Map<string, { abort: AbortController; promise: Promise<NativeTaskSnapshot> }>();
   private taskLedgers = new Map<NativeTaskStore, string>();
+  private taskLeaseFailures = new Set<string>();
   private hydrationLedgers = new Set<NativeRunStore>();
   constructor(private store: StateStore, private connections: ConnectionStore, events: ExecutionEvents, private options: NativeExecutorOptions = {}) {
     this.supervisor = options.supervisor ?? new ProcessSupervisor();
@@ -102,11 +103,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     });
     this.publisher.publish(this.store.state.sessions.filter(item => item.execution.providerId === 'native'));
   }
-  get activeCount() { return this.active.size + this.contextOperations.size + this.taskReviews.size; }
-  has(id: string) { return this.active.has(id) || this.contextOperations.has(id) || this.taskReviews.has(id); }
+  get activeCount() { return new Set([...this.active.keys(), ...this.contextOperations.keys(), ...this.taskReviews.keys(), ...this.taskLeaseFailures]).size; }
+  has(id: string) { return this.active.has(id) || this.contextOperations.has(id) || this.taskReviews.has(id) || this.taskLeaseFailures.has(id); }
   isBusy(id: string) { return this.has(id); }
   private recoveryMessage(id: string) { return this.acknowledged.has(id) ? RECOVERY_ACK : this.projection.hasMissingContext(id) ? MISSING_NATIVE_CONTEXT_MESSAGE : this.recoveryViews.get(id)?.status === 'recoverable' ? SAFE_RECOVERY : RECOVERY; }
-  recoveryRequired(id: string) { return this.recovery.has(id) && !this.acknowledged.has(id); }
+  recoveryRequired(id: string) { return this.taskLeaseFailures.has(id) || this.recovery.has(id) && !this.acknowledged.has(id); }
   isConnectionActive(id: string) { return [...this.active.values(), ...this.contextOperations.values()].some(run => run.connectionId === id); }
   isMcpConnectionActive(id: string) { return [...this.active.values()].some(run => run.mcpConnections.includes(id)); }
   taskState(id: string) { return this.snapshot(id).taskState; }
@@ -180,7 +181,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (hadError || !prior || prior.taskId !== task.taskId || prior.revision !== task.revision) this.projection.notifyTask(id);
       } });
   }
-  private async closeTaskStore(ledger: NativeTaskStore) { await ledger.close(); this.taskLedgers.delete(ledger); }
+  private async closeTaskStore(ledger: NativeTaskStore) {
+    const owner = this.taskLedgers.get(ledger);
+    try { await ledger.close(); this.taskLedgers.delete(ledger); }
+    catch (error) { if (owner) this.taskLeaseFailures.add(owner); throw error; }
+    if (owner && ![...this.taskLedgers.values()].includes(owner)) this.taskLeaseFailures.delete(owner);
+  }
   private async refreshTaskView(id: string, ledger: NativeRunStore) {
     // The run owns its writer. Idle refreshes own a short-lived writer, serialized by hydrate().
     const active = this.active.get(id);
@@ -256,6 +262,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (attachments.length) return Promise.reject(new Error('自研 agent Alpha 尚不支持附件。'));
     if (!text.trim() || Buffer.byteLength(text) > 1024 * 1024) return Promise.reject(new Error('输入为空或超过 1 MiB。'));
     const requestId = submission?.requestId ?? randomUUID();
+    if (this.taskLeaseFailures.has(id)) return Promise.reject(new Error('任务记录仍持有写入资源，请先停止会话以重试释放。'));
     if (!requestId || requestId.length > 256 || requestId.includes('\0')) return Promise.reject(new Error('无效提交标识。'));
     const continuedTaskId = submission?.nativeTaskId;
     if (continuedTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(continuedTaskId)) return Promise.reject(new Error('无效任务标识。'));
@@ -592,7 +599,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   interruptAndWait(id: string) { return this.stop(id); }
   async whenReleased(id: string) {
     const review = this.taskReviews.get(id); if (review) await review.promise.catch(() => {});
-    const active = this.active.get(id) ?? this.contextOperations.get(id); if (!active) return;
+    await this.hydration.get(id)?.catch(() => {});
+    const active = this.active.get(id) ?? this.contextOperations.get(id);
+    if (!active) {
+      for (const [ledger, owner] of this.taskLedgers) if (owner === id) await this.closeTaskStore(ledger);
+      return;
+    }
     await active.promise.catch(() => {});
     if ('taskCleanupOnly' in active && active.taskCleanupOnly && active.tasks) {
       await this.closeTaskStore(active.tasks.store);
@@ -724,7 +736,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   setMaintenance(value: boolean) { this.maintenance = value; }
   setSessionMaintenance(ids: readonly string[], value: boolean) { for (const id of ids) value ? this.sessionMaintenance.add(id) : this.sessionMaintenance.delete(id); }
   async disconnectSessions(ids: readonly string[]) { await Promise.all(ids.map(id => this.stopAndWait(id))); }
-  disconnectAll() { return this.disconnectSessions([...this.active.keys(), ...this.contextOperations.keys(), ...this.taskReviews.keys()]); }
+  disconnectAll() { return this.disconnectSessions([...this.active.keys(), ...this.contextOperations.keys(), ...this.taskReviews.keys(), ...this.taskLeaseFailures]); }
   async shutdown() {
     this.maintenance = true;
     this.hydrationClosed = true;

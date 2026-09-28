@@ -254,3 +254,49 @@ test('a plan created after an approved edit still accounts for changes since the
     assert.deepEqual(f.executor.snapshot(f.id).nativeTask?.workspace?.changes.modified, ['feature.txt']);
   } finally { unsubscribe(); await f.dispose(); }
 });
+
+test('metadata cleanup failure preserves the execution ACK and stop retries only the retained writer release', async () => {
+  const f = await fixture(), unsubscribe = f.approve(), original = NativeTaskStore.prototype.close;
+  let injected = false;
+  try {
+    NativeTaskStore.prototype.close = async function () {
+      if (!injected) { injected = true; throw new Error('temporary task writer release failure'); }
+      return original.call(this);
+    };
+    const result = await f.executor.send(f.id, '完成后模拟任务记录锁释放失败', [], undefined, { requestId: 'metadata-close' });
+    assert.equal(injected, true); assert.equal(result.success, true, 'durable execution ACK must not become a failed queue item');
+    assert.equal(f.executor.has(f.id), true); assert.equal(f.executor.recoveryRequired(f.id), true);
+    assert.match(f.executor.snapshot(f.id).nativeTaskError!, /关闭/);
+    const count = f.server.requests.length;
+    await f.executor.stopAndWait(f.id);
+    assert.equal(f.executor.has(f.id), false); assert.equal(f.executor.recoveryRequired(f.id), false);
+    assert.equal(f.executor.snapshot(f.id).nativeTaskError, undefined);
+    assert.equal(f.executor.snapshot(f.id).nativeTask?.execution, 'ended');
+    assert.equal(f.server.requests.length, count, 'release retry must not restart the worker or its effects');
+    assert.equal((await f.executor.send(f.id, '完成后模拟任务记录锁释放失败', [], undefined, { requestId: 'metadata-close' })).success, true);
+    assert.equal(f.server.requests.length, count);
+  } finally { NativeTaskStore.prototype.close = original; unsubscribe(); await f.dispose(); }
+});
+
+test('a failed idle review writer close remains owned until an explicit stop releases it', async () => {
+  const f = await fixture(), unsubscribe = f.approve(), original = NativeTaskStore.prototype.close;
+  let injected = false;
+  try {
+    assert.equal((await f.executor.send(f.id, '复核资源释放边界')).success, true);
+    NativeTaskStore.prototype.close = async function () {
+      if (!injected) { injected = true; throw new Error('review task writer release failure'); }
+      return original.call(this);
+    };
+    await assert.rejects(f.review('passed', 'command'), /release failure/);
+    assert.equal(f.executor.has(f.id), true);
+    assert.throws(() => f.executor.forget(f.id), /资源|恢复/);
+    await assert.rejects(f.executor.send(f.id, '不得在未释放的任务记录上继续'), /写入资源/);
+    const count = f.server.requests.length;
+    await f.executor.stopAndWait(f.id);
+    assert.equal(f.executor.has(f.id), false);
+    await f.executor.hydrate(f.id);
+    assert.equal(f.executor.snapshot(f.id).nativeTaskError, undefined);
+    assert.notEqual(f.executor.snapshot(f.id).nativeTask?.verification, 'passed');
+    assert.equal(f.server.requests.length, count);
+  } finally { NativeTaskStore.prototype.close = original; unsubscribe(); await f.dispose(); }
+});
