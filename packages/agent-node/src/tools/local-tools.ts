@@ -1,15 +1,23 @@
 import type { ApprovalDecision, JsonObject, JsonValue, PreparedTool, RunIdentity, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
 import { ProcessSupervisor } from '../process-supervisor.js';
 import { loadProjectInstructions, projectInstructionText, type ProjectInstructions } from '../project-instructions.js';
+import { assertNoModelCredential } from '../responses-model.js';
 import { contentHash, isSensitivePath, normalizeProjectPath, ProjectFiles, throwIfAborted, type FilePolicyOptions, type PathSnapshot, type PreparedPatch } from './project-files.js';
+import { ProjectSearch, type ProjectSearchInput } from './project-search.js';
 
 const string = { type: 'string' };
 const integer = { type: 'integer' };
 const schema = (properties: JsonObject, required: string[]): JsonObject => ({ type: 'object', properties, required, additionalProperties: false });
+const searchProperties: JsonObject = {
+  path: string, glob: { type: 'string', maxLength: 512 },
+  ignoreDirectories: { type: 'array', maxItems: 32, items: { type: 'string', maxLength: 512 } },
+  caseSensitive: { type: 'boolean' }, pageSize: { type: 'integer', minimum: 1, maximum: 1000 }, cursor: { type: 'string', minLength: 1, maxLength: 160 },
+};
 export const LOCAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   { name: 'list_directory', risk: 'read', description: 'List an authorized project directory. Links and protected paths are omitted; depth, count and time are bounded.', inputSchema: schema({ path: string, depth: integer, maxEntries: integer }, ['path']) },
   { name: 'read_file', risk: 'read', description: 'Read bounded UTF-8 text. hash always covers the whole file, including bytes outside a requested range. Sensitive files require individual approval.', inputSchema: schema({ path: string, startLine: integer, endLine: integer, startByte: integer, maxBytes: integer }, ['path']) },
-  { name: 'search', risk: 'read', description: 'Search literal text in ordinary project files, skipping sensitive files, links and generated directories. No regex or shell syntax. Results are bounded.', inputSchema: schema({ path: string, query: string, caseSensitive: { type: 'boolean' }, maxMatches: integer }, ['path', 'query']) },
+  { name: 'search', risk: 'read', description: 'Search bounded UTF-8 project files. mode defaults to literal; regex runs with a hard time limit, one match per line, Unicode and optional case-insensitive matching. glob supports only *, ** and ? relative to the searched path; ignoreDirectories adds literal directory names or project-relative directory paths, not full gitignore rules. Sensitive files, links and generated directories stay excluded. maxMatches is the legacy pageSize alias; do not set both. Follow nextCursor with unchanged query/filter options. Check complete, scanComplete and truncationReasons before claiming no matches; an incomplete scan cannot establish absence. Matches include whole-file hashes and positions, but deeper AGENTS.md/CLAUDE.md instructions still need read_file or list_directory before editing.', inputSchema: schema({ ...searchProperties, query: { type: 'string', minLength: 1, maxLength: 512 }, mode: { type: 'string', enum: ['literal', 'regex'] }, maxMatches: { type: 'integer', minimum: 1, maximum: 1000 } }, ['path', 'query']) },
+  { name: 'find_files', risk: 'read', description: 'Locate ordinary project files by literal basename fragment (name), restricted path glob (*, **, ?), or both. glob is relative to the searched path; ignoreDirectories adds literal directory names or project-relative directory paths, not full gitignore rules. Sensitive files, links and generated directories remain excluded. This reads metadata only, including binary/large file names: matches have hash:null and hashStatus:not_read. Use read_file to obtain a full content hash before editing. Check completeness and nextCursor; reuse unchanged filter options for later pages. Finding a nested file does not mean its deeper AGENTS.md/CLAUDE.md rules have been read: use read_file or list_directory for that scope before editing.', inputSchema: schema({ ...searchProperties, name: { type: 'string', minLength: 1, maxLength: 256 } }, ['path']) },
   { name: 'apply_patch', risk: 'write', description: 'Create or replace exactly one UTF-8 text file. expectedHash is the SHA-256 from read_file, or null to create without overwriting. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, content: string, expectedHash: { type: ['string', 'null'] } }, ['path', 'content', 'expectedHash']) },
   { name: 'edit_file', risk: 'write', description: 'Replace one unique exact oldText fragment in an existing UTF-8 file with newText (empty to delete). oldText must be nonempty and match exactly once, including whitespace and line endings; include surrounding text to disambiguate. No fuzzy matching or replace-all. expectedHash must be the complete SHA-256 from read_file; read again after each edit. Preserves all other text. Read applicable AGENTS.md and CLAUDE.md rules first. Always requires approval.', inputSchema: schema({ path: string, oldText: string, newText: string, expectedHash: string }, ['path', 'oldText', 'newText', 'expectedHash']) },
   { name: 'run_command', risk: 'command', description: 'Run an executable with literal argv and project-relative cwd (shell:false). Always requires approval. Commands may affect files/network beyond cwd: this is not an OS sandbox.', inputSchema: schema({ executable: string, argv: { type: 'array', items: string }, cwd: string, timeoutMs: integer, maxOutputBytes: integer }, ['executable', 'argv', 'cwd']) },
@@ -55,17 +63,21 @@ interface PreparedState {
   patch?: PreparedPatch;
   executed: boolean;
   result?: ToolResult;
+  searchExecution?: Promise<ToolResult>;
+  maxOutputBytes: number;
 }
 
 export class LocalToolPort implements ToolPort {
   readonly definitions = LOCAL_TOOL_DEFINITIONS;
   private readonly files: ProjectFiles;
+  private readonly searcher: ProjectSearch;
   private readonly prepared = new Map<string, PreparedState>();
   private readonly seenInstructions = new Set<string>();
   private readonly maxScanEntries: number;
   private readonly maxOperationMs: number;
   constructor(private readonly options: LocalToolOptions) {
     this.files = new ProjectFiles(options);
+    this.searcher = new ProjectSearch(options);
     this.maxScanEntries = options.maxScanEntries ?? 4000;
     this.maxOperationMs = options.maxOperationMs ?? 10000;
     if (!options.ownerId || !Number.isSafeInteger(this.maxScanEntries) || this.maxScanEntries < 1 || this.maxScanEntries > 20000 || !Number.isSafeInteger(this.maxOperationMs) || this.maxOperationMs < 1 || this.maxOperationMs > 30000) throw new Error('Invalid local tool bounds or owner.');
@@ -81,6 +93,11 @@ export class LocalToolPort implements ToolPort {
     });
   }
   private key(call: ToolCall, context: ToolExecutionContext) { return `${context.identity.runId}\0${context.identity.workerGeneration}\0${call.id}`; }
+  private searchInput(input: JsonObject, name: string): ProjectSearchInput {
+    const { maxMatches, ...fields } = input;
+    return { ...fields, mode: name === 'find_files' ? 'files' : input.mode ?? 'literal', ...(maxMatches === undefined ? {} : { pageSize: maxMatches }) } as unknown as ProjectSearchInput;
+  }
+  private credentials(value: unknown): void { for (const secret of this.options.forbiddenValues ?? []) assertNoModelCredential(value, secret); }
   private async instructions(targetPath: string, targetKind: 'file' | 'directory', signal: AbortSignal) {
     return loadProjectInstructions({ projectRoot: this.options.projectRoot, excludedRoots: this.options.excludedRoots, projectSkills: this.options.projectSkills, targetPath, targetKind }, signal);
   }
@@ -113,7 +130,7 @@ export class LocalToolPort implements ToolPort {
       numberField(input, 'timeoutMs', 1, 120000);
       numberField(input, 'maxOutputBytes', 256, 1024 * 1024);
     } else {
-      targetPath = normalizeProjectPath(textField(input, 'path'), call.name === 'search' || call.name === 'list_directory');
+      targetPath = normalizeProjectPath(textField(input, 'path'), call.name === 'search' || call.name === 'find_files' || call.name === 'list_directory');
       if (call.name === 'apply_patch') {
         exactFields(input, ['path', 'content', 'expectedHash']);
         targetKind = 'file';
@@ -141,10 +158,18 @@ export class LocalToolPort implements ToolPort {
         numberField(input, 'depth', 0, 8);
         numberField(input, 'maxEntries', 1, 4000);
       } else {
-        exactFields(input, ['path', 'query'], ['caseSensitive', 'maxMatches']);
-        textField(input, 'query', 512);
+        const optional = ['caseSensitive', 'glob', 'ignoreDirectories', 'pageSize', 'cursor'];
+        if (call.name === 'find_files') exactFields(input, ['path'], [...optional, 'name']);
+        else {
+          exactFields(input, ['path', 'query'], [...optional, 'mode', 'maxMatches']); textField(input, 'query', 512);
+          if (input.mode !== undefined && input.mode !== 'literal' && input.mode !== 'regex') throw new Error('Invalid content search mode.');
+        }
         if (input.caseSensitive !== undefined && typeof input.caseSensitive !== 'boolean') throw new Error('Invalid caseSensitive.');
         numberField(input, 'maxMatches', 1, 1000);
+        numberField(input, 'pageSize', 1, 1000);
+        if (input.maxMatches !== undefined && input.pageSize !== undefined) throw new Error('Select maxMatches or pageSize, not both.');
+        this.credentials(input);
+        await this.searcher.validate(this.searchInput(input, call.name), context.signal);
       }
     }
     const instructions = await this.instructions(targetPath, targetKind, context.signal);
@@ -156,12 +181,21 @@ export class LocalToolPort implements ToolPort {
       requiresApproval: definition.risk !== 'read' || isSensitivePath(targetPath),
       preconditions: { instructions: asJson(instructions.sources.map(({ path: instructionPath, scope, hash }) => ({ path: instructionPath, scope, hash }))), instructionDigest: instructions.digest, expectedHash: patch?.input.expectedHash ?? null, ownerId: this.options.ownerId },
     };
-    this.prepared.set(key, { prepared: structuredClone(prepared), identity: identityKey(context.identity), instructions, target, patch, executed: false });
+    // Concurrent preparation must not substitute another payload for the same
+    // call while async path/instruction/regex validation is in flight.
+    const concurrent = this.prepared.get(key);
+    if (concurrent) {
+      if (concurrent.identity !== identityKey(context.identity) || canonical(asJson(concurrent.prepared)) !== canonical(asJson(prepared))) throw new Error('Tool call identity was reused during preparation.');
+      return structuredClone(concurrent.prepared);
+    }
+    throwIfAborted(context.signal);
+    this.prepared.set(key, { prepared: structuredClone(prepared), identity: identityKey(context.identity), instructions, target, patch, executed: false, maxOutputBytes: context.maxOutputBytes });
     return structuredClone(prepared);
   }
   private state(prepared: PreparedTool, context: ToolExecutionContext): PreparedState {
     const state = this.prepared.get(this.key(prepared.call, context));
     if (!state || state.identity !== identityKey(context.identity) || canonical(asJson(state.prepared)) !== canonical(asJson(prepared)) || context.policyRevision !== prepared.policyRevision) throw new Error('Prepared tool input, policy or owner changed.');
+    if ((prepared.call.name === 'search' || prepared.call.name === 'find_files') && context.maxOutputBytes !== state.maxOutputBytes) throw new Error('Search output budget changed after preparation.');
     return state;
   }
   async validate(prepared: PreparedTool, context: ToolExecutionContext): Promise<void> {
@@ -180,6 +214,17 @@ export class LocalToolPort implements ToolPort {
     }
   }
   async execute(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
+    if (prepared.call.name !== 'search' && prepared.call.name !== 'find_files') return this.executePrepared(prepared, context, approval);
+    const state = this.state(prepared, context);
+    throwIfAborted(context.signal);
+    await this.options.assertOwnership?.(context.identity);
+    throwIfAborted(context.signal);
+    // Share the in-flight read/cache receipt, and recheck ownership even when
+    // serving its cached value. Repeating a call cannot create a fresh scan.
+    state.searchExecution ??= this.executePrepared(prepared, context, approval);
+    return structuredClone(await state.searchExecution);
+  }
+  private async executePrepared(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
     const state = this.state(prepared, context);
     if (state.result) return structuredClone(state.result);
     await this.validate(prepared, context);
@@ -225,43 +270,27 @@ export class LocalToolPort implements ToolPort {
       truncated = bytes.length > maxBytes;
       content = bytes.subarray(0, maxBytes).toString('utf8');
       output = { path: file.path, content, hash: file.hash, bytes: file.bytes, truncated, instructions };
+    } else if (prepared.call.name === 'search' || prepared.call.name === 'find_files') {
+      const found = await this.searcher.search(this.searchInput(input, prepared.call.name), {
+        identity: context.identity, policyRevision: context.policyRevision, instructionDigest: state.instructions.digest,
+        signal: context.signal, maxOutputBytes: remaining,
+      });
+      throwIfAborted(context.signal);
+      await this.options.assertOwnership?.(context.identity);
+      if ((await this.instructions(String(input.path), 'directory', context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed during search; results were not delivered. Read the scope again.');
+      await this.files.verify(state.target);
+      await this.options.assertOwnership?.(context.identity);
+      throwIfAborted(context.signal);
+      truncated = found.truncated;
+      output = { ...asJson(found) as JsonObject, path: String(input.path), scannedBytes: found.scanned.bytes, instructions };
+      this.credentials(output);
     } else {
-      const walking = await this.walk(String(input.path), prepared.call.name === 'list_directory' ? Number(input.depth ?? 1) : 8, context.signal);
+      const walking = await this.walk(String(input.path), Number(input.depth ?? 1), context.signal);
       truncated = walking.truncated;
-      if (prepared.call.name === 'list_directory') {
-        const entries = walking.entries.slice(0, Number(input.maxEntries ?? 1000));
-        truncated ||= entries.length < walking.entries.length;
-        while (size(entries) > remaining && entries.length) { entries.pop(); truncated = true; }
-        output = { path: String(input.path), entries: asJson(entries), truncated, instructions };
-      } else {
-        const matches: JsonObject[] = [];
-        const query = String(input.query);
-        const caseSensitive = input.caseSensitive !== false;
-        const needle = caseSensitive ? query : query.toLocaleLowerCase();
-        const deadline = Date.now() + this.maxOperationMs;
-        let scannedBytes = 0;
-        for (const entry of walking.entries) {
-          throwIfAborted(context.signal);
-          if (entry.type !== 'file' || isSensitivePath(entry.path)) continue;
-          if (Date.now() > deadline || scannedBytes >= 8 * 1024 * 1024) { truncated = true; break; }
-          try {
-            const file = await this.files.read(entry.path, context.signal);
-            scannedBytes += file.bytes;
-            const lines = file.content.split('\n');
-            for (let index = 0; index < lines.length; index++) {
-              const line = lines[index];
-              const offset = (caseSensitive ? line : line.toLocaleLowerCase()).indexOf(needle);
-              if (offset < 0) continue;
-              const excerptStart = Math.max(0, offset - 120);
-              const match = { path: entry.path, line: index + 1, text: line.slice(excerptStart, excerptStart + 512) };
-              if (matches.length >= Number(input.maxMatches ?? 100) || size([...matches, match]) > remaining) { truncated = true; break; }
-              matches.push(match);
-            }
-          } catch (error) { if (context.signal.aborted) throw error; /* Unsupported and raced files are not context sources. */ }
-          if (matches.length >= Number(input.maxMatches ?? 100) || size(matches) > remaining - 1024) { truncated = true; break; }
-        }
-        output = { path: String(input.path), matches, scannedBytes, truncated, instructions };
-      }
+      const entries = walking.entries.slice(0, Number(input.maxEntries ?? 1000));
+      truncated ||= entries.length < walking.entries.length;
+      while (size(entries) > remaining && entries.length) { entries.pop(); truncated = true; }
+      output = { path: String(input.path), entries: asJson(entries), truncated, instructions };
     }
     if (size(output) > context.maxOutputBytes) throw new Error('Instruction and tool output exceed the configured byte budget.');
     this.markSeen(state.instructions);
