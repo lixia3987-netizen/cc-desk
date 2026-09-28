@@ -185,9 +185,8 @@ for (const mutation of ['change', 'remove', 'linked-directory']) test(`selected 
   await assert.rejects(fs.stat(path.join(root, 'command-ran')), /ENOENT/);
 });
 
-test('selected skill mutation invalidates edit_file approval and preserves the target', async t => {
+for (const skill of ['.agents/skills/review/SKILL.md', 'tools/custom/review/SKILL.md']) test(`selected skill ${skill} mutation invalidates edit_file approval and preserves the target`, async t => {
   const { root, supervisor } = await fixture(t);
-  const skill = '.agents/skills/review/SKILL.md';
   await fs.mkdir(path.dirname(path.join(root, skill)), { recursive: true });
   await fs.writeFile(path.join(root, skill), 'Original edit guide.');
   await fs.writeFile(path.join(root, 'file'), 'before');

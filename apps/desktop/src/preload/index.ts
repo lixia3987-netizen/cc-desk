@@ -10,6 +10,8 @@ const api: DesktopAPI = {
   },
   nativeSkills: {
     list: input => ipcRenderer.invoke('native:skills-list', input),
+    inspect: input => ipcRenderer.invoke('native:skills-inspect', input),
+    inspectInstructions: input => ipcRenderer.invoke('native:instructions-inspect', input),
   },
   nativeConnections: {
     list: () => ipcRenderer.invoke('native:connections-list'),

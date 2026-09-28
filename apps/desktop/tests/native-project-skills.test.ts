@@ -108,6 +108,29 @@ test('existing sessions do not automatically send discovered project Skills to t
   } finally { await f.dispose(); }
 });
 
+test('an explicitly selected custom project Skill reaches the model and persists across restart', async () => {
+  const f = await fixture();
+  try {
+    const source = 'tools/quality/review/SKILL.md';
+    await f.writeSkill(source, 'CUSTOM_PROJECT_GUIDE');
+    await f.configure([source]);
+    const first = await f.executor.send(f.id, '检查自定义项目来源');
+    assert.equal(first.success, true, JSON.stringify(first));
+    assert.match(f.server.requests[0].instructions, /CUSTOM_PROJECT_GUIDE/);
+    assert.deepEqual((await f.ledger()).runs[0].configuration.instructions, [
+      { path: 'AGENTS.md', scope: '.', hash: hash('Keep unrelated files intact.\n') },
+      { path: source, scope: '.', hash: hash('CUSTOM_PROJECT_GUIDE') },
+    ]);
+    await f.restart();
+    assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig.options.projectSkills, [source]);
+    await f.writeSkill(source, 'UPDATED_CUSTOM_GUIDE');
+    const next = await f.executor.send(f.id, '再次读取');
+    assert.equal(next.success, true, JSON.stringify(next));
+    assert.match(f.server.requests.at(-1).instructions, /UPDATED_CUSTOM_GUIDE/);
+    assert.doesNotMatch(f.server.requests.at(-1).instructions, /CUSTOM_PROJECT_GUIDE/);
+  } finally { await f.dispose(); }
+});
+
 test('selected same-name Skills from both roots persist, record source hashes, and reload new content after restart', async () => {
   const f = await fixture();
   try {
@@ -144,7 +167,7 @@ test('invalid Skill selections preserve saved config and a missing selected file
     const before = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig);
     const disk = await fs.readFile(f.store.file, 'utf8');
     for (const invalid of [
-      ['../outside/SKILL.md'], ['/tmp/SKILL.md'], ['.agents/skills/../SKILL.md'], ['.claude/skills/review/extra/SKILL.md'],
+      ['../outside/SKILL.md'], ['/tmp/SKILL.md'], ['.agents/skills/../SKILL.md'], ['.claude/skills/.env/SKILL.md'],
       [agentsSkill, agentsSkill], Array.from({ length: 17 }, (_, index) => `.agents/skills/skill-${index}/SKILL.md`),
     ]) await assert.rejects(f.configure(invalid));
     assert.deepEqual(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig, before);
