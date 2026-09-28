@@ -24,14 +24,32 @@ async function fixture(t) {
 test('skill selections normalize deterministically and reject duplicates, unsafe paths and excessive selections', () => {
   assert.deepEqual(normalizeProjectSkillPaths([claude, agents]), [agents, claude]);
   assert.deepEqual(normalizeProjectSkillPaths([]), []);
+  assert.deepEqual(normalizeProjectSkillPaths(['tools/review/SKILL.md', '.agents/skills/deep/child/SKILL.md']), ['.agents/skills/deep/child/SKILL.md', 'tools/review/SKILL.md']);
   assert.throws(() => normalizeProjectSkillPaths([agents, agents]), /Duplicate/);
   assert.throws(() => normalizeProjectSkillPaths([agents, agents.replace('/review/', '/REVIEW/')]), /Duplicate/);
   assert.throws(() => normalizeProjectSkillPaths(Array.from({ length: 17 }, (_, i) => `.agents/skills/s${i}/SKILL.md`)), /16/);
-  for (const candidate of ['SKILL.md', '.agents/skills/review/skill.md', '.claude/skills/deep/review/SKILL.md', '.agents/skills/../SKILL.md', '/tmp/secret', '~/.claude/skills/review/SKILL.md', '.agents\\skills\\review\\SKILL.md', '.agents/skills/secret/SKILL.md', '.claude/skills/.env/SKILL.md', '.agents/skills/.git/SKILL.md', '.agents/skills/review./SKILL.md', '.agents/skills/con/SKILL.md', '.agents/skills/control\nname/SKILL.md']) {
+  for (const candidate of ['SKILL.md', '.agents/skills/review/skill.md', Array(23).fill('deep').join('/') + '/SKILL.md', '.agents/skills/../SKILL.md', '/tmp/secret', '~/.claude/skills/review/SKILL.md', '.agents\\skills\\review\\SKILL.md', '.agents/skills/secret/SKILL.md', '.claude/skills/.env/SKILL.md', '.agents/skills/.git/SKILL.md', '.agents/skills/review./SKILL.md', '.agents/skills/con/SKILL.md', '.agents/skills/control\nname/SKILL.md']) {
     assert.throws(() => normalizeProjectSkillPaths([candidate]));
   }
   assert.throws(() => normalizeProjectSkillPaths('not-an-array'), /16/);
   assert.throws(() => normalizeProjectSkillPaths([null]), /project-relative/);
+});
+
+test('custom project sources remain explicit, use the leaf directory name, and bind their complete content', async t => {
+  const { root, write } = await fixture(t);
+  const custom = 'tools/quality/review/SKILL.md';
+  await write(custom, 'Custom guide.\n@include-literal\n<script>literal</script>');
+  assert.deepEqual((await discoverProjectSkills({ projectRoot: root })).entries, []);
+  assert.equal((await loadProjectInstructions({ projectRoot: root })).sources.length, 0);
+  const source = (await loadProjectSkills({ projectRoot: root, paths: [custom] })).sources[0];
+  assert.equal(source.name, 'review');
+  assert.equal(source.content, 'Custom guide.\n@include-literal\n<script>literal</script>');
+  const selected = await loadProjectInstructions({ projectRoot: root, projectSkills: [custom] });
+  assert.deepEqual(selected.sources.map(item => item.path), [custom]);
+  assert.match(selected.text, /user-selected project skill guides/);
+  await write(custom, 'Updated guide.');
+  assert.notEqual((await loadProjectInstructions({ projectRoot: root, projectSkills: [custom] })).digest, selected.digest);
+  await assert.rejects(loadProjectSkills({ projectRoot: root, paths: [custom], excludedRoots: [path.join(root, 'tools')] }), /protected/);
 });
 
 test('discovery returns bounded metadata from both roots and keeps equal names distinct', async t => {

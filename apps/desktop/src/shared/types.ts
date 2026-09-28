@@ -11,6 +11,7 @@ import type { CLIUpdateState } from './cli-update';
 import type { NativeConnectionsAPI } from './native-connections';
 import type { NativeSkillsAPI } from './native-skills';
 import type { NativeMcpConnectionsAPI } from './native-mcp';
+import type { SessionContinuationInput, SessionContinuationPreview } from './session-continuation';
 import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
 import type { ClaudeCapabilities } from '@cc-desk/engine-claude';
@@ -35,7 +36,7 @@ export interface Settings extends TypographySettings { claudePath: string; shell
 export interface AppState { version: 3; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export type Capabilities = ClaudeCapabilities;
 export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; engineConfig?: EngineConfig; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
+export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; engineConfig?: EngineConfig; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean; continuation?: SessionContinuationInput }
 export interface Attachment { path: string; name: string; bytes: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
@@ -54,6 +55,7 @@ export interface DesktopAPI {
   addProject(path: string): Promise<Project>;
   removeProject(id: string): Promise<void>;
   createSession(input: NewSession): Promise<Session>;
+  previewSessionContinuation(id: string): Promise<SessionContinuationPreview>;
   updateSession(input: { id: string; title?: string; archived?: boolean; engineConfig?: EngineConfig }): Promise<void>;
   saveDraft(id: string, text: string): Promise<void>;
   savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;

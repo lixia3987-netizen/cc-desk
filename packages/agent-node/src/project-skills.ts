@@ -15,13 +15,14 @@ const MAX_FILE_BYTES = 32 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024;
 const MAX_ROOT_ENTRIES = 64;
 
-/** Only explicit, direct project skill files are selectable; no aliases or recursive paths. */
+/** Only explicit project skill files are selectable; no HOME aliases or upward paths. */
 export function normalizeProjectSkillPaths(paths: readonly string[]): string[] {
   if (!Array.isArray(paths) || paths.length > 16) throw new Error('Select at most 16 project skills.');
   const seen = new Set<string>();
   return paths.map(value => {
     const relative = normalizeProjectPath(value);
-    if (!/^\.(?:agents|claude)\/skills\/[^/]+\/SKILL\.md$/.test(relative) || isSensitivePath(relative)) throw new Error('Only non-sensitive project .agents/skills/<name>/SKILL.md or .claude/skills/<name>/SKILL.md paths are allowed.');
+    const parts = relative.split('/');
+    if (parts.length < 2 || parts.length > 22 || parts[0] === '~' || parts.at(-1) !== 'SKILL.md' || isSensitivePath(relative)) throw new Error('Only explicit, non-sensitive project-relative <directory>/SKILL.md paths are allowed (at most 21 directories).');
     // A case-only alias can name the same file on Windows and default macOS volumes.
     const key = relative.toLowerCase();
     if (seen.has(key)) throw new Error('Duplicate project skill paths are not allowed.');
@@ -124,7 +125,7 @@ export async function loadProjectSkills(options: ProjectSkillLoadOptions, signal
       await files.verify(snapshot, true);
       bytes += source.bytes;
       if (bytes > totalLimit) throw new Error('Project skills exceed the shared instruction total byte limit.');
-      sources.push({ path: relative, name: relative.split('/')[2], hash: source.hash, bytes: source.bytes, content: source.content });
+      sources.push({ path: relative, name: relative.split('/').at(-2)!, hash: source.hash, bytes: source.bytes, content: source.content });
     } catch (error) { throwIfAborted(signal); throw safeReadError(error); }
   }
   return { sources, bytes };

@@ -15,7 +15,7 @@ const optionsSchema = z.object({
     .refine(ids => new Set(ids).size === ids.length, 'MCP 服务不能重复选择。').transform(ids => ids.sort()),
   projectSkills: z.array(z.string().max(4096)).max(16).default([]).transform((paths, context) => {
     try { return normalizeProjectSkillPaths(paths); }
-    catch { context.addIssue({ code: 'custom', message: '请选择项目 .agents/skills 或 .claude/skills 下有效且不重复的 SKILL.md，最多 16 项。' }); return z.NEVER; }
+    catch { context.addIssue({ code: 'custom', message: '请选择项目内普通目录中有效且不重复的 SKILL.md，最多 16 项。' }); return z.NEVER; }
   }),
 }).strict();
 export function parseNativeConfig(config: EngineConfig) {

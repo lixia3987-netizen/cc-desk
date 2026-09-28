@@ -80,6 +80,28 @@ test('connection diagnostics: local readiness never requests a model; explicit t
   } finally { await f.dispose(); }
 });
 
+test('connection diagnostics: selected Chat Completions protocol and model price use real returned usage', async () => {
+  const f = await fixture();
+  try {
+    const connection = f.store.upsert({ ...metadata(f.connection), protocol: 'chat-completions', pricing: { model: 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8 } });
+    const chunk = (choices: unknown[], usage: unknown = null) => `data: ${JSON.stringify({ id: 'chat_probe', object: 'chat.completion.chunk', choices, usage })}\n\n`;
+    f.handler((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.end(chunk([{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }]) + chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]) + chunk([], { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 }) + 'data: [DONE]\n\n');
+    });
+    const result = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
+    assert.equal(result.code, 'ok');
+    assert.equal(result.estimatedCostUSD, 0.000032);
+    assert.equal(f.requests[0].url, '/v1/chat/completions');
+    assert.deepEqual(f.requests[0].body.messages, [{ role: 'user', content: nativeConnectionProbe.prompt }]);
+    assert.equal(f.requests[0].body.max_completion_tokens, 256);
+    f.handler((_request, response) => { response.writeHead(401); response.end(sentinel); });
+    const failure = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
+    assert.equal(failure.code, 'authentication');
+    assert.ok(!JSON.stringify(failure).includes(sentinel));
+  } finally { await f.dispose(); }
+});
+
 test('connection diagnostics: HTTP and redirect errors are fixed classifications without bodies or locations', async () => {
   const f = await fixture();
   try {

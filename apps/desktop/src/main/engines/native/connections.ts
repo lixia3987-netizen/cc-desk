@@ -4,18 +4,20 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { NativeConnectionInput, NativeConnectionList, NativeConnectionReadiness, NativeConnectionView, NativeCredentialMutation } from '../../../shared/native-connections';
 import { NativeCredentialStore, type NativeSafeStorage } from './credentials';
+import type { NativeModelPricing } from '../../../shared/native-cost';
 
 const id = z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const text = z.string().trim().min(1).max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 const model = text;
+const pricing = z.object({ model, inputUSDPerMillion: z.number().finite().min(0).max(1_000_000), outputUSDPerMillion: z.number().finite().min(0).max(1_000_000) }).strict();
 const auth = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('env'), variable: z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/) }).strict(),
   z.object({ mode: z.literal('memory') }).strict(),
   z.object({ mode: z.literal('encrypted') }).strict(),
 ]);
 const fields = {
-  name: text, protocol: z.literal('responses'), baseURL: z.string().trim().min(1).max(2048), model,
+  name: text, protocol: z.enum(['responses', 'chat-completions']), baseURL: z.string().trim().min(1).max(2048), model, pricing: pricing.optional(),
   allowLoopbackHttp: z.boolean(), enabled: z.boolean(), auth,
 };
 export const nativeConnectionInputSchema = z.object({ id: id.optional(), revision: revision.optional(), ...fields }).strict();
@@ -44,12 +46,13 @@ export interface NativeConnectionStoreOptions {
 export interface ResolvedNativeConnection {
   readonly connectionId: string;
   readonly revision: number;
-  readonly protocol: 'responses';
+  readonly protocol: 'responses' | 'chat-completions';
   readonly baseURL: string;
   readonly model: string;
   readonly apiKey: string;
   readonly allowLoopbackHttp: boolean;
   readonly redirect: 'error';
+  readonly pricing?: Readonly<NativeModelPricing>;
 }
 
 /** Reject credentials, query tokens, fragments, non-HTTP protocols and implicit plaintext transport. */
@@ -153,7 +156,7 @@ export class ConnectionStore {
     else if (item.ciphertext) apiKey = this.credentials.decrypt(item.ciphertext);
     if (!apiKey) throw new Error(item.auth.mode === 'env' ? '主进程未找到此连接指定的环境变量，请设置后重启应用。' : '此连接尚无可用凭据，请重新设置（本次内存凭据不会跨重启保留）。');
     if (!nativeCredentialMutationSchema.shape.secret.safeParse(apiKey).success) throw new Error('此连接的凭据格式无效，请重新设置。');
-    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error' });
+    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
   }
 
   /** Synchronous revision / activity check before a diagnostic acquires its lock. */
@@ -177,7 +180,7 @@ export class ConnectionStore {
     const { ciphertext: _ciphertext, ...metadata } = item;
     const credentialConfigured = item.auth.mode === 'env' || (item.auth.mode === 'encrypted' ? Boolean(item.ciphertext) : Boolean(this.credentials.get(item.id)));
     const status = this.readiness(item.id);
-    return { ...metadata, auth: { ...metadata.auth }, credentialConfigured, ready: status.ready, ...(status.error ? { error: status.error } : {}) };
+    return { ...metadata, auth: { ...metadata.auth }, ...(metadata.pricing ? { pricing: { ...metadata.pricing } } : {}), credentialConfigured, ready: status.ready, ...(status.error ? { error: status.error } : {}) };
   }
 
   private assertLoaded(): void { if (this.loadError) throw new Error(this.loadError); }

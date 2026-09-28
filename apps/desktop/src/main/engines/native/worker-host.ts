@@ -2,7 +2,9 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
 import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
-import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from '@cc-desk/agent-node/responses-model';
+import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
+import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
+import { nativeResponseCalls } from '@cc-desk/agent-node/context-maintenance';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
@@ -27,7 +29,7 @@ export interface NativeWorkerForkOptions {
 export type NativeWorkerFork = (modulePath: string, args: string[], options: NativeWorkerForkOptions) => NativeWorkerChild | Promise<NativeWorkerChild>;
 export interface NativeWorkerOptions {
   request: Omit<AgentRunRequest, 'signal'>;
-  model: ResponsesModelOptions;
+  model: NativeModelOptions;
   /** Main-process guards, never included in worker startup data. */
   forbiddenValues?: readonly (string | undefined)[];
   tools: ToolPort;
@@ -127,6 +129,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
   const forbiddenValues = [options.model.apiKey, ...(options.forbiddenValues ?? [])];
   const definitions = clone(options.tools.definitions);
   const model = { ...clone(options.model), toolDefinitions: definitions };
+  const adapter = createNativeModel(model);
   const { apiKey: _credential, ...modelMetadata } = model;
   try { assertNoModelCredential({ run, definitions, model: modelMetadata }, forbiddenValues); }
   catch { throw new NativeWorkerError('credential', 'Native worker input contained a protected credential.'); }
@@ -287,10 +290,9 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         call(requested);
         if (calls.has(requested.id)) invalid();
       }
-      const providerCalls = response.outputItems.filter(item => isObject(item) && item.type === 'function_call').map(item => {
-        const provider = item as Record<string, JsonValue>;
-        return { id: provider.call_id, name: provider.name, arguments: provider.arguments };
-      });
+      let providerCalls: ToolCall[];
+      try { providerCalls = nativeResponseCalls(adapter.protocol, response.outputItems); } catch { return invalid(); }
+      if (adapter.protocol.id === 'openai-chat-completions' && response.continuation !== undefined) invalid();
       if (!equal(providerCalls, response.toolCalls) || new Set(response.toolCalls.map(item => item.id)).size !== response.toolCalls.length) invalid();
       return response;
     }
@@ -300,7 +302,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const item = fields(args, ['identity', 'input', 'inputDigest', 'userItems', 'protocol', 'configuration', 'policyRevision']);
         identity(item.identity, runIdentity);
         if (begun || startingRun || item.input !== run.input || !equal(item.configuration, run.configuration) || item.policyRevision !== run.policyRevision ||
-            !equal(item.protocol, { id: 'openai-responses', version: 1 }) || !equal(item.userItems, [{ role: 'user', content: run.input }])) invalid();
+            !equal(item.protocol, adapter.protocol) || !equal(item.userItems, adapter.userItems(run.input))) invalid();
         const digest = createHash('sha256').update(canonicalJson({ input: run.input, userItems: item.userItems as JsonValue, protocol: item.protocol as JsonValue, configuration: run.configuration, policyRevision: run.policyRevision })).digest('hex');
         if (item.inputDigest !== digest) invalid();
         startingRun = true;
@@ -360,7 +362,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           // worker cannot manufacture a cancellation/failure and close its ledger.
           if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
           if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
-          if (!equal(event.resultItems, [{ type: 'function_call_output', call_id: event.call.id, output: JSON.stringify(event.result) }])) invalid();
+          if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
         } else if (event.type === 'run_finished') {
           fields(event, ['type', 'result']);
           result(event.result, runIdentity);

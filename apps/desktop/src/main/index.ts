@@ -129,6 +129,7 @@ function registerIPC() {
     store.change(s => { s.projects = s.projects.filter(p => p.id !== id); }); notify();
   });
   handle('session:create',sessionInputSchema,input => sessionCreation.create(input));
+  handle('session:continuation-preview',idSchema,id => sessionCreation.previewContinuation(id));
   services.register(handle);
   handle('session:start',idSchema,id => services.start(id));
   handle('session:stop',idSchema,id => services.stop(id));

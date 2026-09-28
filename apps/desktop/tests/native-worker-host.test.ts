@@ -90,8 +90,8 @@ function harness(script: (worker: FakeWorker) => Promise<void>, overrides: Parti
   return { worker, promise, events, journal, options, get forkOptions() { return forkOptions; }, get forkPath() { return forkPath; } };
 }
 
-async function begin(worker: FakeWorker): Promise<ModelContext> {
-  const initial = { input: run.input, userItems: [{ role: 'user', content: run.input }], protocol: { id: 'openai-responses', version: 1 }, configuration: run.configuration, policyRevision: run.policyRevision };
+async function begin(worker: FakeWorker, protocol = { id: 'openai-responses', version: 1 }): Promise<ModelContext> {
+  const initial = { input: run.input, userItems: [{ role: 'user', content: run.input }], protocol, configuration: run.configuration, policyRevision: run.policyRevision };
   const request: BeginRunRequest = { ...initial, identity: run.identity, inputDigest: digest(initial) };
   const admission = await worker.rpc<{ kind: 'accepted'; context: ModelContext }>('store.beginRun', request);
   await worker.rpc('store.checkpoint', { identity: run.identity, context: admission.context });
@@ -478,4 +478,53 @@ test('missing exit proof triggers kill fallback and a cleanup barrier', async t 
   t.mock.timers.tick(10_000);
   await rejected;
   h.worker.stdout.end(); h.worker.stderr.end();
+});
+
+
+const chatProtocol = { id: 'openai-chat-completions', version: 1 };
+const chatModel = { protocol: 'chat-completions' as const, baseURL: 'http://127.0.0.1:1/v1', model: 'local', allowLoopbackHttp: true, apiKey: 'secret-key-sentinel' };
+const chatCallMessage = () => ({ role: 'assistant', content: null, tool_calls: [{ id: requestCall.id, type: 'function', function: { name: requestCall.name, arguments: requestCall.arguments } }] });
+test('chat worker host binds native messages, approvals, tool results and final context', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker, chatProtocol);
+    const response: ModelResponse = { outputItems: [chatCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    const prepared = await worker.rpc<PreparedTool>('tools.prepare', { call: requestCall, context: executionContext() });
+    const approval = await worker.rpc('approval', approvalRequest(prepared));
+    await worker.rpc('tools.validate', { prepared, context: executionContext() });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+    const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+    const resultItems = [{ role: 'tool', tool_call_id: requestCall.id, content: JSON.stringify(result) }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  }, { model: chatModel });
+  const result = await h.promise;
+  assert.equal(result.context.protocol.id, chatProtocol.id); assert.equal(result.toolCalls, 1); assert.equal(h.worker.scriptError, undefined);
+  assert.deepEqual(result.context.items.at(-1), (h.journal.at(-2) as { resultItems: unknown[] }).resultItems[0]);
+});
+
+test('chat worker cannot claim the Responses protocol selected by neither connection nor host', async () => {
+  const h = harness(async worker => { await begin(worker); }, { model: chatModel });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(h.journal.length, 0);
+});
+
+for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation', 'responses_result']) test(`chat worker rejects ${forgery} before accepting effects`, async () => {
+  const h = harness(async worker => {
+    await begin(worker, chatProtocol);
+    const response: ModelResponse = { outputItems: [chatCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
+    if (forgery === 'mismatched_calls') response.toolCalls = [{ ...requestCall, name: 'different' }];
+    if (forgery === 'hidden_reasoning') (response.outputItems[0] as Record<string, unknown>).reasoning_content = 'opaque';
+    if (forgery === 'continuation') response.continuation = { unknown: true };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    if (forgery === 'responses_result') {
+      const result = { status: 'denied', output: 'not authorized' };
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result,
+        resultItems: [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }] } });
+    }
+  }, { model: chatModel });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.length, forgery === 'responses_result' ? 1 : 0);
 });

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { NativeProjectSkillChoices, NativeProjectSkills, toggleProjectSkill } from '../src/renderer/components/NativeProjectSkills';
+import { NativeInstructionSources, NativeSourcePreview } from '../src/renderer/components/NativeInstructionInspector';
 import { SessionConfig } from '../src/renderer/SessionConfig';
 import type { Session } from '../src/shared/types';
 import type { ExecutionDescriptor } from '../src/shared/execution';
@@ -30,7 +31,7 @@ test('project Skills start with explicit discovery and preserve previously selec
   const saved = renderToStaticMarkup(createElement(NativeProjectSkills, { sessionId: 'one', selected: [agentPath], onChange: fail }));
   assert.match(saved, /已保存的选择，尚未读取项目目录/);
   assert.match(saved, /type="checkbox"[^>]*checked=""/);
-  assert.doesNotMatch(saved, /disabled=""/);
+  assert.doesNotMatch(saved, /type="checkbox"[^>]*disabled=""/);
 });
 
 test('same-named Skills remain distinct by complete path and metadata never changes the selection', () => {
@@ -51,11 +52,42 @@ test('missing, rejected, and truncated selected paths remain removable and error
   const markup = renderChoices(selected, { entries: [], issues: [{ path: rejected, message: '<script>blocked</script>' }], truncated: true });
   assert.equal((markup.match(/checked=""/g) ?? []).length, 2);
   assert.doesNotMatch(markup, /disabled=""|<script>/);
-  assert.match(markup, /当前列表中不可用，已保留选择；可取消勾选/);
+  assert.match(markup, /不在默认目录列表或当前不可用，已保留选择；可预览检查或取消勾选/);
   assert.match(markup, /&lt;script&gt;blocked&lt;\/script&gt;/);
   assert.match(markup, /目录列表已达读取上限/);
   assert.deepEqual(toggleProjectSkill(selected, rejected), [missing]);
   assert.deepEqual(selected, [missing, rejected]);
+});
+
+test('custom source and instruction inspection start only on explicit action and stay read-only', () => {
+  const markup = renderToStaticMarkup(createElement(NativeProjectSkills, { sessionId: 'one', selected: ['tools/review/SKILL.md'], onChange: fail }));
+  assert.match(markup, /其他 Skill 路径/);
+  assert.match(markup, /读取 Skill 预览/);
+  assert.match(markup, /aria-label="预览 tools\/review\/SKILL.md"/);
+  assert.match(markup, /指令目标目录/);
+  assert.match(markup, /读取适用指令/);
+  assert.match(markup, /仅按明确路径读取，不扫描其他目录或 HOME/);
+  assert.match(markup, /修改请使用编辑器/);
+  assert.doesNotMatch(markup, /<pre>/);
+  const locked = renderToStaticMarkup(createElement(NativeProjectSkills, { sessionId: 'one', selected: ['tools/review/SKILL.md'], onChange: fail, disabled: true }));
+  assert.match(locked, /disabled=""[^>]*>读取 Skill 预览/);
+  assert.match(locked, /disabled=""[^>]*>读取适用指令/);
+});
+
+test('source previews render exact literal text with escaped HTML, identity metadata and instruction order', () => {
+  const content = '<script>alert(1)</script>\n[link](https://example.invalid)\n@include';
+  const source = { path: 'tools/review/SKILL.md', name: 'review', content, hash: 'b'.repeat(64), bytes: 80 };
+  const preview = renderToStaticMarkup(createElement(NativeSourcePreview, { source }));
+  assert.match(preview, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  assert.match(preview, /\[link\]\(https:\/\/example.invalid\)/);
+  assert.doesNotMatch(preview, /<script|<a /);
+  assert.match(preview, /SHA-256：/); assert.match(preview, /80 字节/);
+  const instructionMarkup = renderToStaticMarkup(createElement(NativeInstructionSources, { result: { targetPath: 'src', digest: 'd'.repeat(64), sources: [{ ...source, path: 'CLAUDE.md', scope: '.' }, { ...source, path: 'AGENTS.md', scope: '.' }, { ...source, path: 'src/AGENTS.md', scope: 'src' }] } }));
+  assert.ok(instructionMarkup.indexOf('<summary>CLAUDE.md') < instructionMarkup.indexOf('<summary>AGENTS.md'));
+  assert.ok(instructionMarkup.indexOf('<summary>AGENTS.md') < instructionMarkup.indexOf('<summary>src/AGENTS.md'));
+  assert.match(instructionMarkup, /深层优先，同层 AGENTS.md 优先于 CLAUDE.md。用户指令优先/);
+  const empty = renderToStaticMarkup(createElement(NativeInstructionSources, { result: { targetPath: '.', digest: 'd'.repeat(64), sources: [] } }));
+  assert.match(empty, /未发现适用的 AGENTS.md 或 CLAUDE.md/);
 });
 
 test('the 16-item limit blocks new choices while allowing removals; a session lock blocks all choices', () => {
@@ -85,7 +117,8 @@ test('project Skills are scoped to native structured session settings and use th
   const idle = renderConfig();
   assert.match(idle, /aria-label="项目 Skills"/);
   assert.match(idle, /保存配置/);
-  assert.doesNotMatch(idle, /disabled=""/);
+  assert.doesNotMatch(idle, /type="checkbox"[^>]*disabled=""/);
+  assert.doesNotMatch(idle, /<button[^>]*class="secondary compact full"[^>]*disabled=""/);
   for (const provider of ['claude', 'shell', 'future-provider']) {
     assert.doesNotMatch(renderConfig(session(provider), descriptor(provider)), /aria-label="项目 Skills"/);
   }

@@ -211,6 +211,10 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .native-project-skills-heading h4{margin:0}
 .native-project-skills-heading>span{font-size:calc(10px * var(--ui-font-scale));color:var(--text-muted)}
 .native-project-skill-list{max-height:260px;overflow:auto;margin-top:10px;border:1px solid var(--line);border-radius:6px;padding:0 8px}
+.native-project-skill-row{display:flex;align-items:flex-start;gap:8px;margin:8px 0}
+.native-project-skill-row>.native-project-skill{flex:1;min-width:0;margin:0}
+.native-source-preview{margin:10px 0;overflow-wrap:anywhere}
+.native-source-preview pre{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px;font-size:calc(11px * var(--ui-font-scale))}
 .session-config .native-project-skill{flex-direction:row;align-items:flex-start;gap:8px;color:var(--text-secondary)}
 .session-config .native-project-skill input{flex:none;width:auto;margin:2px 0 0;padding:0;accent-color:var(--accent)}
 .native-project-skill>span{display:flex;flex:1;min-width:0;flex-direction:column;gap:4px;overflow-wrap:anywhere}

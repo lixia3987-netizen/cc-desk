@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { ResponsesModel, ResponsesModelError } from '@cc-desk/agent-node/responses-model';
+import { ResponsesModelError } from '@cc-desk/agent-node/responses-model';
+import { ChatCompletionsModelError } from '@cc-desk/agent-node/chat-completions-model';
+import { createNativeModel, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
+import { estimateNativeCost } from '../../../shared/native-cost';
 import type { ModelResponse, Usage } from '@cc-desk/agent-core';
 import type { NativeConnectionTestCode, NativeConnectionTestInput, NativeConnectionTestResult } from '../../../shared/native-connections';
 import type { ConnectionStore, ResolvedNativeConnection } from './connections';
@@ -38,16 +41,13 @@ function responseCode(response: ModelResponse): NativeConnectionTestCode {
   if (response.toolCalls.length || response.finishReason === 'tool_calls') return 'unexpected_tool';
   if (response.finishReason === 'refused') return 'refused';
   if (response.finishReason !== 'completed') return 'incomplete';
-  const hasText = response.outputItems.some(item => item && typeof item === 'object' && !Array.isArray(item)
-    && item.type === 'message' && Array.isArray(item.content) && item.content.some(part => part
-      && typeof part === 'object' && !Array.isArray(part) && part.type === 'output_text'
-      && typeof part.text === 'string' && Boolean(part.text.trim())));
+  const hasText = Boolean(extractNativeAssistantText(response.outputItems).trim());
   return hasText ? 'ok' : 'protocol';
 }
 
 /** Never serialize the original error, its message/cause, or any provider data. */
 function failure(error: unknown): Pick<NativeConnectionTestResult, 'code' | 'httpStatus'> {
-  if (!(error instanceof ResponsesModelError)) return { code: 'transport' };
+  if (!(error instanceof ResponsesModelError) && !(error instanceof ChatCompletionsModelError)) return { code: 'transport' };
   if (error.code === 'http') {
     const status = error.httpStatus;
     if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return { code: 'http' };
@@ -57,7 +57,7 @@ function failure(error: unknown): Pick<NativeConnectionTestResult, 'code' | 'htt
   }
   const codes: Record<string, NativeConnectionTestCode> = {
     configuration: 'configuration', credential: 'configuration', cancelled: 'cancelled', timeout: 'timeout',
-    redirect: 'redirect', schema: 'protocol', protocol: 'protocol', interrupted: 'incomplete',
+    redirect: 'redirect', schema: 'protocol', protocol: 'protocol', unsupported: 'protocol', interrupted: 'incomplete',
     incomplete: 'incomplete', provider: 'service', credential_echo: 'credential_echo',
     request_limit: 'configuration', response_limit: 'response_limit', transport: 'transport',
   };
@@ -128,8 +128,8 @@ export class NativeConnectionDiagnostics {
     const elapsed = (): number => Math.max(0, Math.round(performance.now() - started));
     const common = { requestId: entry.input.requestId };
     try {
-      const model = new ResponsesModel({
-        baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey,
+      const model = createNativeModel({
+        protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey,
         allowLoopbackHttp: connection.allowLoopbackHttp, timeoutMs: this.options.timeoutMs ?? nativeConnectionProbe.timeoutMs,
         maxRequestBytes: 4096, maxResponseBytes: 256 * 1024,
       });
@@ -140,7 +140,8 @@ export class NativeConnectionDiagnostics {
         signal: entry.controller.signal, onEvent: () => {},
       });
       const usage = safeUsage(response.usage);
-      return { ...common, code: entry.controller.signal.aborted ? 'cancelled' : responseCode(response), durationMs: elapsed(), ...(usage ? { usage } : {}) };
+      const estimatedCostUSD = estimateNativeCost(usage, connection.pricing, connection.model);
+      return { ...common, ...(estimatedCostUSD === undefined ? {} : { estimatedCostUSD }), code: entry.controller.signal.aborted ? 'cancelled' : responseCode(response), durationMs: elapsed(), ...(usage ? { usage } : {}) };
     } catch (error) {
       return { ...common, ...(entry.controller.signal.aborted ? { code: 'cancelled' as const } : failure(error)), durationMs: elapsed() };
     }

@@ -6,24 +6,24 @@ function emptyConnection(): NativeConnectionInput {
   return { name: '', protocol: 'responses', baseURL: 'https://api.openai.com/v1', model: '', allowLoopbackHttp: false, enabled: true, auth: { mode: 'env', variable: 'OPENAI_API_KEY' } };
 }
 function editable(item: NativeConnectionView): NativeConnectionInput {
-  const { id, revision, name, protocol, baseURL, model, allowLoopbackHttp, enabled, auth } = item;
-  return { id, revision, name, protocol, baseURL, model, allowLoopbackHttp, enabled, auth: { ...auth } };
+  const { id, revision, name, protocol, baseURL, model, allowLoopbackHttp, enabled, auth, pricing } = item;
+  return { id, revision, name, protocol, baseURL, model, allowLoopbackHttp, enabled, auth: { ...auth }, ...(pricing ? { pricing: { ...pricing } } : {}) };
 }
 
 const diagnosticMessages: Record<NativeConnectionTestCode, string> = {
-  ok: 'Responses 文本流测试通过；尚未验证工具调用兼容性。',
+  ok: '所选协议文本流测试通过；尚未验证工具调用兼容性。',
   configuration: '连接配置不可用、修订已变化或正在运行，请刷新并检查配置后重试。',
   busy: '已有连接测试进行中，请等待完成或取消。',
   cancelled: '连接测试已取消；服务端可能已经产生用量。',
   timeout: '连接测试在 30 秒内未完成，请检查网络或服务状态。',
   authentication: '认证失败，请检查 API Key。',
   permission: '服务拒绝访问，请检查账户与模型权限。',
-  endpoint: '服务端点不存在，请检查服务地址及 Responses 协议支持。',
+  endpoint: '服务端点不存在，请检查服务地址及 所选协议支持。',
   rate_limit: '服务限流或额度不足，请检查账户状态后手动重试。',
   service: '服务返回失败，请稍后手动重试。',
   http: '服务返回 HTTP 错误，请检查连接配置。',
   redirect: '服务要求重定向，已阻止转发凭据；请填写最终服务地址。',
-  protocol: '服务未返回完整有效的 Responses 文本流，请检查协议支持。',
+  protocol: '服务未返回完整有效的 所选协议文本流，请检查协议支持。',
   incomplete: '模型响应未完成；可能是断流或达到测试输出上限，不能据此判定连接可用。',
   refused: '模型拒绝了测试请求，本次未完成文本响应验证。',
   unexpected_tool: '模型返回了未请求的工具调用，测试未通过且没有执行工具。',
@@ -114,21 +114,22 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
   const locked = disabled || busy || Boolean(testing) || Boolean(data?.error);
   return <section className="settings-section native-connections" aria-label="Native 模型连接">
     <div className="settings-card-heading"><h4>Native Agent Alpha · 模型连接</h4><button type="button" className="secondary compact" disabled={locked || !api} onClick={() => void action(refresh)}>刷新</button></div>
-    <p className="hint">使用独立的 OpenAI Responses 文本与工具协议。填写服务地址、模型和认证后，在新建会话时选择 native；不会使用 Claude 登录。打开设置、保存和刷新都不会请求模型。</p>
-    <p className="hint">点击“测试连接（可能计费）”才会发送一次固定文本请求，输出上限 256 tokens，30 秒超时；不发送项目内容、不执行工具、不自动重试。仅验证 Responses 文本流，不代表工具调用兼容性。费用以服务商计费为准，取消不保证免计费。</p>
+    <p className="hint">使用独立的 Responses 或 Chat Completions 文本与工具协议，必须与服务实际支持的协议一致，不自动回退。填写服务地址、模型和认证后，在新建会话时选择 native；不会使用 Claude 登录。打开设置、保存和刷新都不会请求模型。</p>
+    <p className="hint">点击“测试连接（可能计费）”才会发送一次固定文本请求，输出上限 256 tokens，30 秒超时；不发送项目内容、不执行工具、不自动重试。仅验证 所选协议文本流，不代表工具调用兼容性。费用以服务商计费为准，取消不保证免计费。</p>
     {!api && <p role="status" className="hint">当前桌面版本尚未提供模型连接管理。</p>}
     {data?.storage.reason && <p className="hint">{data.storage.reason}</p>}
     {(error || data?.error) && <p className="settings-error" role="alert">{error || data?.error}</p>}
     {notice && <p role="status" className="hint">{notice}</p>}
     {data?.connections.map(item => <div className={'connection-box ' + (item.ready ? 'connected' : '')} key={item.id}>
       <div><strong>{item.name}</strong><span> · {item.enabled ? item.ready ? '就绪' : '未就绪' : '已禁用'} · 修订 {item.revision}</span></div>
-      <p>{item.model} · {item.baseURL}</p>
+      <p>{item.model} · {item.protocol} · {item.baseURL}</p>
       <small>连接 ID：{item.id}<br/>认证：{item.auth.mode === 'env' ? '环境变量 ' + item.auth.variable : item.auth.mode === 'memory' ? '仅本次内存' : '系统加密保存'}{item.credentialConfigured ? '' : ' · 尚未设置凭据'}</small>
       {item.error && <p className="hint">{item.error}</p>}
       <div className="settings-footer-actions"><button type="button" className="secondary compact" disabled={locked} onClick={() => select(editable(item))}>编辑</button><button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { const next = await api.upsert({ ...editable(item), enabled: !item.enabled }); if (draft?.id === next.id) setDraft(editable(next)); }); }}>{item.enabled ? '禁用' : '启用'}</button><button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { await api.remove({ id: item.id, revision: item.revision }); if (draft?.id === item.id) setDraft(undefined); }); }}>删除</button><button type="button" className="secondary compact" disabled={locked || !item.ready} onClick={() => testConnection(item)}>测试连接（可能计费）</button>{testing?.id === item.id && <button type="button" className="secondary compact" onClick={cancelTest}>取消连接测试</button>}</div>
-      {testing?.id === item.id && <p className="hint" role="status">正在测试 Responses 文本流…</p>}
+      {testing?.id === item.id && <p className="hint" role="status">正在测试 所选协议文本流…</p>}
       {testResults[item.id]?.revision === item.revision && <p className="hint native-connection-test-result" role="status">
         {diagnosticMessages[testResults[item.id].result.code]} 耗时 {testResults[item.id].result.durationMs} ms。
+        {testResults[item.id].result.estimatedCostUSD !== undefined && <> 按用户价格估算 ${testResults[item.id].result.estimatedCostUSD!.toFixed(6)}。</>}
         {testResults[item.id].result.httpStatus !== undefined && <> HTTP {testResults[item.id].result.httpStatus}。</>}
         {testResults[item.id].result.usage ? <> 服务报告用量：输入 {testResults[item.id].result.usage?.inputTokens ?? '未提供'}，输出 {testResults[item.id].result.usage?.outputTokens ?? '未提供'}，合计 {testResults[item.id].result.usage?.totalTokens ?? '未提供'} tokens。</> : <> 服务未提供用量。</>}
       </p>}
@@ -138,8 +139,17 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     {draft && <div className="native-connection-editor">
       <h4>{draft.id ? '编辑模型连接' : '新增模型连接'}</h4>
       <label>连接名称<input aria-label="Native 连接名称" value={draft.name} maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, name: event.target.value })}/></label>
+      <label>模型协议<select aria-label="Native 模型协议" value={draft.protocol} disabled={locked} onChange={event => setDraft({ ...draft, protocol: event.target.value as NativeConnectionInput['protocol'] })}><option value="responses">Responses</option><option value="chat-completions">Chat Completions</option></select></label>
+      <p className="hint">地址填写 API 基础路径；将追加 {draft.protocol === 'responses' ? '/responses' : '/chat/completions'}。已有对话更改模型、协议或服务地址后需新建会话。</p>
       <label>服务地址<input aria-label="Native 服务地址" type="url" autoComplete="off" spellCheck={false} value={draft.baseURL} maxLength={2048} disabled={locked} onChange={event => setDraft({ ...draft, baseURL: event.target.value })}/></label>
       <label>默认模型<input aria-label="Native 默认模型" value={draft.model} placeholder="填写服务提供的模型 ID" maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, model: event.target.value })}/></label>
+      <label className="checkbox"><input aria-label="填写模型价格" type="checkbox" checked={Boolean(draft.pricing)} disabled={locked} onChange={event => setDraft({ ...draft, pricing: event.target.checked ? { model: draft.model, inputUSDPerMillion: 0, outputUSDPerMillion: 0 } : undefined })}/><span>自行填写模型价格（可选，仅估算）</span></label>
+      {draft.pricing && <fieldset disabled={locked}>
+        <label>价格对应模型<input aria-label="价格对应模型" value={draft.pricing.model} maxLength={200} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, model: event.target.value } })}/></label>
+        <label>输入 USD / 百万 tokens<input aria-label="输入单价" type="number" min="0" max="1000000" step="any" value={draft.pricing.inputUSDPerMillion} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, inputUSDPerMillion: event.target.valueAsNumber } })}/></label>
+        <label>输出 USD / 百万 tokens<input aria-label="输出单价" type="number" min="0" max="1000000" step="any" value={draft.pricing.outputUSDPerMillion} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, outputUSDPerMillion: event.target.valueAsNumber } })}/></label>
+        <p className="hint">仅用于名称完全匹配的模型，按服务报告的输入和输出用量估算。保存每回合价格快照，不追溯修改历史；未含缓存折扣、工具或其他附加费用，压缩请求另计。请以账单为准。</p>
+      </fieldset>}
       <label className="checkbox"><input type="checkbox" checked={draft.allowLoopbackHttp} disabled={locked} onChange={event => setDraft({ ...draft, allowLoopbackHttp: event.target.checked })}/><span>明确允许本地回环 HTTP（localhost、127.0.0.1 或 ::1）</span></label>
       <label>认证方式<select aria-label="Native 认证方式" value={draft.auth.mode} disabled={locked} onChange={event => { clearSecret(); setDraft({ ...draft, auth: event.target.value === 'env' ? { mode: 'env', variable: 'OPENAI_API_KEY' } : { mode: event.target.value as 'memory' | 'encrypted' } }); }}><option value="env">环境变量名称（密钥不经过界面）</option><option value="memory">仅本次应用内存</option><option value="encrypted" disabled={!data?.storage.persistentAvailable}>系统安全存储加密保存{data?.storage.persistentAvailable ? '' : '（不可用）'}</option></select></label>
       {draft.auth.mode === 'env' ? <label>环境变量名称<input aria-label="Native 环境变量名称" autoComplete="off" spellCheck={false} value={draft.auth.variable} maxLength={128} disabled={locked} onChange={event => setDraft({ ...draft, auth: { mode: 'env', variable: event.target.value } })}/></label> : <p className="hint">先保存连接，再单独输入凭据。仅本次内存的密钥会在退出后清除；既有密钥不会回显。</p>}

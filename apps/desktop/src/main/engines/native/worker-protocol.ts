@@ -1,5 +1,5 @@
 import type { AgentRunRequest, RunIdentity, ToolDefinition } from '@cc-desk/agent-core';
-import type { ResponsesModelOptions } from '@cc-desk/agent-node/responses-model';
+import type { NativeModelOptions } from '@cc-desk/agent-node/native-model';
 
 export const WORKER_PROTOCOL = 1;
 export const MAX_WORKER_MESSAGE_BYTES = 16 * 1024 * 1024;
@@ -7,7 +7,7 @@ export const MAX_WORKER_PENDING = 32;
 export interface WorkerStart {
   type: 'start'; version: 1;
   request: Omit<AgentRunRequest, 'signal'>;
-  model: ResponsesModelOptions;
+  model: NativeModelOptions;
   definitions: ToolDefinition[];
 }
 export interface WorkerEnvelope { version: 1; identity: RunIdentity; seq: number }

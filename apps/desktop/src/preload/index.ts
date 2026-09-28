@@ -10,6 +10,8 @@ const api: DesktopAPI = {
   },
   nativeSkills: {
     list: input => ipcRenderer.invoke('native:skills-list', input),
+    inspect: input => ipcRenderer.invoke('native:skills-inspect', input),
+    inspectInstructions: input => ipcRenderer.invoke('native:instructions-inspect', input),
   },
   nativeConnections: {
     list: () => ipcRenderer.invoke('native:connections-list'),
@@ -29,6 +31,7 @@ const api: DesktopAPI = {
   addProject:path => ipcRenderer.invoke('project:add',path),
   removeProject:id => ipcRenderer.invoke('project:remove',id),
   createSession:input => ipcRenderer.invoke('session:create',input),
+  previewSessionContinuation:id => ipcRenderer.invoke('session:continuation-preview',id),
   updateSession:input => ipcRenderer.invoke('session:update',input),
   saveDraft:(id,text) => ipcRenderer.invoke('session:draft',{id,text}),
   savePanelDrafts:(id,patch) => ipcRenderer.invoke('session:panel-drafts',{id,patch}),
