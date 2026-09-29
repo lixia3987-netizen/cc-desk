@@ -56,6 +56,12 @@ export interface ModelResponse {
   finishReason: 'completed' | 'tool_calls' | 'refused' | 'incomplete'
   usage: Usage | null
 }
+/** Sanitized transport classification; never contains provider text, URLs or headers. */
+export interface ModelFailureDiagnostic {
+  category: 'authentication' | 'configuration' | 'rate_limit' | 'service_unavailable' | 'service_error' | 'protocol' | 'network' | 'timeout' | 'security' | 'unknown'
+  httpStatus?: number
+  retryable: boolean
+}
 export interface ToolResult {
   status: 'completed' | 'failed' | 'denied' | 'cancelled' | 'not_executed' | 'unknown'
   output: JsonValue
@@ -69,6 +75,8 @@ export interface ModelPort {
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[]
   estimateInputTokens(context: ModelContext): number
   generate(request: ModelRequest): Promise<ModelResponse>
+  /** Classify only trusted adapter errors; unrecognized errors must be unknown. */
+  classifyError?(error: unknown): ModelFailureDiagnostic
 }
 export interface ApprovalBinding extends RunIdentity {
   toolCallId: string
@@ -130,6 +138,8 @@ export type BeginRunResult =
   | { kind: 'accepted'; context: ModelContext }
   | { kind: 'duplicate'; identity: RunIdentity; result?: RunResult }
 export type RunJournalEvent =
+  | { type: 'model_request_started'; attempt: number }
+  | { type: 'model_request_failed'; attempt: number; failure: ModelFailureDiagnostic; partial: boolean; retryDelayMs?: number }
   | { type: 'model_response'; response: ModelResponse }
   | { type: 'tool_prepared'; prepared: PreparedTool; approval?: ApprovalDecision }
   | { type: 'tool_completed'; call: ToolCall; result: ToolResult; resultItems: JsonValue[] }
@@ -166,6 +176,8 @@ export interface RuntimeHost {
   digest(input: string): string | Promise<string>
   /** Parent cancellation and deadline cancellation must both abort the returned signal. */
   deadline(timeoutMs: number, parent: AbortSignal): Deadline
+  /** Cancellable backoff. Without this capability automatic retries stay disabled. */
+  wait?(milliseconds: number, signal: AbortSignal): Promise<void>
   emit(event: AgentEvent): void | Promise<void>
 }
 export interface AgentRunRequest {
@@ -175,6 +187,8 @@ export interface AgentRunRequest {
   policyRevision: string
   signal: AbortSignal
   budget?: Partial<RunBudget>
+  /** Default off. Retry at most two explicitly transient HTTP failures per run. */
+  modelRetry?: 'off' | 'safe_transient'
 }
 export interface ContextMaintenanceRequest {
   identity: RunIdentity
