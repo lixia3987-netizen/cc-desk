@@ -68,6 +68,9 @@ async function start(message: WorkerStart) {
       checkpoint: (run, saved) => rpc('store.checkpoint', { identity: run, context: saved }),
     },
     approvals: { request: (request, signal) => rpc('approval', request, signal) },
+    ...(message.contextMaintenance ? { contextMaintenance: {
+      maintain: (request: Parameters<NonNullable<AgentPorts['contextMaintenance']>['maintain']>[0]) => rpc<Awaited<ReturnType<NonNullable<AgentPorts['contextMaintenance']>['maintain']>>>('context.maintain', context(request), request.signal),
+    } } : {}),
     host: {
       now: () => Date.now(),
       digest: value => createHash('sha256').update(value).digest('hex'),

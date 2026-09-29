@@ -9,6 +9,7 @@ export interface WorkerStart {
   request: Omit<AgentRunRequest, 'signal'>;
   model: NativeModelOptions;
   definitions: ToolDefinition[];
+  contextMaintenance?: boolean;
 }
 export interface WorkerEnvelope { version: 1; identity: RunIdentity; seq: number }
 export interface WorkerRequest extends WorkerEnvelope { type: 'request'; requestId: string; method: string; args: unknown }

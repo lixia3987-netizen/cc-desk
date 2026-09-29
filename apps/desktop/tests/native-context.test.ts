@@ -48,8 +48,12 @@ test('native auto compaction stays off for existing configurations and requires 
   assert.equal(enabled.autoCompact, 'before_send');
   assert.equal(enabled.model, 'existing-model');
   assert.equal(enabled.maxInputTokens, 32000);
+  const inTurn = parseNativeConfig({ ...existing, options: { ...existing.options, autoCompact: 'before_send_and_during_run' } });
+  assert.equal(inTurn.autoCompact, 'before_send_and_during_run');
+  assert.equal(inTurn.maxModelRequests, enabled.maxModelRequests);
+  assert.equal(inTurn.maxActiveMs, enabled.maxActiveMs);
   assert.equal(parseNativeConfig({ schemaVersion: 1, options: { autoCompact: 'off' } }).autoCompact, 'off');
-  for (const autoCompact of [true, false, 90, null, '', 'on', 'automatic', ' before_send ']) {
+  for (const autoCompact of [true, false, 90, null, '', 'on', 'automatic', ' before_send ', 'during_run', ' before_send_and_during_run ']) {
     assert.throws(() => parseNativeConfig({ schemaVersion: 1, options: { autoCompact } }));
   }
 });

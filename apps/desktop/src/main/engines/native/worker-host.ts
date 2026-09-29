@@ -1,10 +1,10 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
-import { nativeResponseCalls } from '@cc-desk/agent-node/context-maintenance';
+import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
@@ -35,6 +35,7 @@ export interface NativeWorkerOptions {
   tools: ToolPort;
   store: RunStore;
   approvals: ApprovalPort;
+  contextMaintenance?: ContextMaintenancePort;
   onEvent(event: AgentEvent): void | Promise<void>;
   signal: AbortSignal;
   workerPath?: string;
@@ -157,6 +158,9 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let done: RunResult | undefined, committedResult: RunResult | undefined, savedContext: ModelContext | undefined;
     let duplicateResult: RunResult | undefined, begun = false, startingRun = false;
     let activeTool: string | undefined;
+    let maintenanceInFlight = false, maintenanceUncertain = false, summaryRequests = 0, modelResponses = 0;
+    let maintenanceSource: ModelContext | undefined;
+    let lastMaintenanceBoundary: ModelContext | undefined, completedToolBoundary = false, maintenanceFailed = false;
     let failure: NativeWorkerError | undefined;
     let settled = false, outputBytes = 0;
     let shutdownTimer: ReturnType<typeof setTimeout> | undefined;
@@ -315,6 +319,51 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         } finally { startingRun = false; }
       }
       if (!begun || done) invalid();
+      if (maintenanceUncertain) invalid();
+      if (maintenanceFailed && method !== 'store.checkpoint' && method !== 'store.append' && method !== 'event') invalid();
+      // A context switch is a complete boundary operation. A compromised worker
+      // cannot race it with another store mutation or tool/approval request.
+      if (maintenanceInFlight && method !== 'event') invalid();
+      if (method === 'context.maintain') {
+        const item = fields(args, ['identity', 'context', 'budget', 'modelRequests', 'toolCalls', 'remainingActiveMs']);
+        identity(item.identity, runIdentity);
+        if (!options.contextMaintenance || committedResult || pendingCalls.length || activeTool || summaryRequests || !completedToolBoundary || inFlight.size !== 1 ||
+            !equal(item.budget, budget) || !integer(item.modelRequests) || item.modelRequests !== modelResponses || item.modelRequests < 1 ||
+            budget.maxModelRequests - item.modelRequests < 2 || !integer(item.toolCalls) || item.toolCalls !== completedTools.size || item.toolCalls > budget.maxToolCalls ||
+            !integer(item.remainingActiveMs) || item.remainingActiveMs < 1 || item.remainingActiveMs > budget.maxActiveMs) invalid();
+        const source = requireContext(item.context);
+        if (lastMaintenanceBoundary && equal(source, lastMaintenanceBoundary)) invalid();
+        requireCompleteContext(source);
+        if (contextBudgetUsage(source, adapter.estimateInputTokens(source), budget).status === 'within_budget') invalid();
+        maintenanceInFlight = true; maintenanceSource = clone(source); lastMaintenanceBoundary = clone(source);
+        try {
+          const request: ContextMaintenanceRequest = { identity: runIdentity, context: source, budget: clone(budget),
+            modelRequests: item.modelRequests, toolCalls: item.toolCalls, remainingActiveMs: item.remainingActiveMs, signal };
+          const result = await options.contextMaintenance.maintain(request);
+          const value = fields(result, ['kind', 'modelRequests', 'usage'], result.kind === 'compacted' ? ['context'] : result.kind === 'failed' ? ['reason'] : []);
+          if (!['unchanged', 'compacted', 'failed'].includes(result.kind) || ![0, 1].includes(result.modelRequests) ||
+              result.kind === 'unchanged' && (result.modelRequests !== 0 || result.usage !== null) ||
+              result.kind === 'compacted' && (result.modelRequests !== 1 || !('context' in value)) ||
+              result.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful'].includes(result.reason)) invalid();
+          usage(result.usage);
+          assertNoModelCredential(result, forbiddenValues);
+          if (result.kind === 'compacted') {
+            context(result.context); requireCompleteContext(result.context);
+            if (!equal(result.context.protocol, source.protocol) || result.context.continuation !== undefined) invalid();
+            savedContext = clone(result.context);
+          }
+          summaryRequests += result.modelRequests;
+          maintenanceFailed = result.kind === 'failed';
+          maintenanceSource = undefined;
+          return clone(result);
+        } catch (error) {
+          // The ledger may already contain a replacement. Only an uncommitted
+          // recovery result with this exact old context may cross the channel.
+          maintenanceUncertain = true;
+          if (isObject(error) && error.cleanupUnconfirmed === true) stop(new NativeWorkerCleanupError());
+          throw error;
+        } finally { maintenanceInFlight = false; }
+      }
       if (method === 'store.ensureCapacity') {
         const item = fields(args, ['identity', 'bytes']);
         identity(item.identity, runIdentity);
@@ -333,6 +382,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         identity(item.identity, runIdentity);
         if (!isObject(item.event) || typeof item.event.type !== 'string' || !savedContext || committedResult) invalid();
         const event = item.event as unknown as RunJournalEvent;
+        if (maintenanceFailed && (event.type !== 'run_finished' || event.result.status === 'completed')) invalid();
         let response: ModelResponse | undefined, state: ToolState | undefined;
         if (event.type === 'model_response') {
           fields(event, ['type', 'response']);
@@ -370,6 +420,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         } else invalid();
         const receipt = await options.store.append(runIdentity, clone(event));
         if (event.type === 'model_response' && response) {
+          modelResponses++;
+          completedToolBoundary = response.toolCalls.length > 0;
           savedContext!.items.push(...clone(response.outputItems));
           if (response.continuation !== undefined) savedContext!.continuation = clone(response.continuation);
           else delete savedContext!.continuation;
@@ -476,7 +528,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (started || !integer(message.pid) || message.pid <= 0 || (child.pid !== undefined && child.pid !== message.pid)) invalid();
           started = true;
           clearTimeout(startupTimer);
-          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions });
+          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}) });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
         }
@@ -511,7 +563,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             const comparable = { ...final };
             delete comparable.projectionError;
             if (!durable || !equal(comparable, durable)) invalid();
-          } else if (final.status !== 'recovery_required' || (savedContext && !equal(final.context, savedContext))) invalid();
+          } else if (final.status !== 'recovery_required' || (savedContext && !equal(final.context, savedContext) &&
+              !(maintenanceUncertain && maintenanceSource && equal(final.context, maintenanceSource)))) invalid();
           done = clone(final);
           post({ type: 'finish', version: WORKER_PROTOCOL, identity: runIdentity });
           armShutdown();

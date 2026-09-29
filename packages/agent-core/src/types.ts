@@ -176,4 +176,33 @@ export interface AgentRunRequest {
   signal: AbortSignal
   budget?: Partial<RunBudget>
 }
-export interface AgentPorts { model: ModelPort; tools: ToolPort; store: RunStore; approvals: ApprovalPort; host: RuntimeHost }
+export interface ContextMaintenanceRequest {
+  identity: RunIdentity
+  /** Complete durable model/tool boundary; the host must verify its own journal. */
+  context: ModelContext
+  budget: RunBudget
+  /** Requests already consumed before the prospective maintenance request. */
+  modelRequests: number
+  toolCalls: number
+  remainingActiveMs: number
+  signal: AbortSignal
+}
+export type ContextMaintenanceFailureReason = 'context_maintenance_failed' | 'context_maintenance_unhelpful'
+export type ContextMaintenanceResult =
+  | { kind: 'unchanged'; modelRequests: 0; usage: null }
+  | { kind: 'compacted'; modelRequests: 1; usage: Usage | null; context: ModelContext }
+  | { kind: 'failed'; modelRequests: 0 | 1; usage: Usage | null; reason: ContextMaintenanceFailureReason }
+export interface ContextMaintenancePort {
+  /** At most one model-only request. A replacement must already be durably committed.
+   * Unchanged/failed confirm the original context remains authoritative; throw when
+   * commit or cleanup is uncertain. Never replay tools or reuse an approval. */
+  maintain(request: ContextMaintenanceRequest): Promise<ContextMaintenanceResult>
+}
+export interface AgentPorts {
+  model: ModelPort
+  tools: ToolPort
+  store: RunStore
+  approvals: ApprovalPort
+  host: RuntimeHost
+  contextMaintenance?: ContextMaintenancePort
+}

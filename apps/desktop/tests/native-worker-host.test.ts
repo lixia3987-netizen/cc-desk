@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 import { MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
 
@@ -527,4 +527,141 @@ for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation', '
   }, { model: chatModel });
   await assert.rejects(h.promise, { code: 'protocol' });
   assert.equal(h.journal.length, forgery === 'responses_result' ? 1 : 0);
+});
+
+const maintenanceBudget = { ...DEFAULT_RUN_BUDGET, maxInputTokens: 1024 };
+const maintenanceOptions = { request: { ...run, budget: maintenanceBudget }, model: {
+  baseURL: 'http://127.0.0.1:1/v1', model: 'local', allowLoopbackHttp: true, apiKey: 'secret-key-sentinel', instructions: 'rules '.repeat(2000),
+} };
+async function maintenanceBoundary(worker: FakeWorker): Promise<ModelContext> {
+  const context = await begin(worker);
+  await prepare(worker, context);
+  const denied: ToolResult = { status: 'denied', output: { executed: false } };
+  const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(denied) }];
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result: denied, resultItems } });
+  context.items.push(...resultItems);
+  await worker.rpc('store.checkpoint', { identity: run.identity, context });
+  return context;
+}
+const maintenanceRequest = (context: ModelContext) => ({ identity: run.identity, context, budget: maintenanceBudget,
+  modelRequests: 1, toolCalls: 1, remainingActiveMs: maintenanceBudget.maxActiveMs - 10 });
+
+test('context maintenance sends only capability flag and accepts a trusted no-op at a complete tool boundary', async () => {
+  let maintained = 0;
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    assert.deepEqual(await worker.rpc('context.maintain', maintenanceRequest(context)), { kind: 'unchanged', modelRequests: 0, usage: null });
+    await finish(worker, context, { toolCalls: 1 });
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain(request) {
+    maintained++; assert.ok(request.signal instanceof AbortSignal); assert.equal(request.modelRequests, 1);
+    return { kind: 'unchanged', modelRequests: 0, usage: null };
+  } } });
+  assert.equal((await h.promise).status, 'completed'); assert.equal(maintained, 1);
+  const start = h.worker.sent.find(message => message.type === 'start')!;
+  assert.equal(start.contextMaintenance, true); assert.equal(h.worker.scriptError, undefined);
+});
+
+test('context maintenance switches host mirror only after authoritative replacement and validates later checkpoints', async () => {
+  const replacement: ModelContext = { protocol: { id: 'openai-responses', version: 1 }, items: [{ role: 'user', content: run.input }, { role: 'assistant', content: 'historical summary' }] };
+  const h = harness(async worker => {
+    const previous = await maintenanceBoundary(worker);
+    const result = await worker.rpc<ContextMaintenanceResult>('context.maintain', maintenanceRequest(previous));
+    assert.equal(result.kind, 'compacted');
+    await worker.rpc('store.checkpoint', { identity: run.identity, context: replacement });
+    await finish(worker, replacement, { modelRequests: 2, toolCalls: 1 });
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { return { kind: 'compacted', modelRequests: 1, usage: { inputTokens: 10, outputTokens: 2 }, context: replacement }; } } });
+  assert.deepEqual((await h.promise).context, replacement); assert.equal(h.worker.scriptError, undefined);
+});
+
+for (const forgery of ['pending_call', 'different_context', 'different_budget', 'different_count', 'different_tools', 'repeat_boundary'] as const) test(`context maintenance rejects ${forgery} before a model-only request`, async () => {
+  let maintained = 0;
+  const h = harness(async worker => {
+    let context: ModelContext;
+    if (forgery === 'pending_call') { context = await begin(worker); await prepare(worker, context); }
+    else context = await maintenanceBoundary(worker);
+    const request = maintenanceRequest(context);
+    if (forgery === 'different_context') request.context = { ...context, items: [] };
+    if (forgery === 'different_budget') request.budget = { ...maintenanceBudget, maxModelRequests: 99 };
+    if (forgery === 'different_count') request.modelRequests = 0;
+    if (forgery === 'different_tools') request.toolCalls = 0;
+    if (forgery === 'repeat_boundary') await worker.rpc('context.maintain', request);
+    await worker.rpc('context.maintain', request);
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { maintained++; return { kind: 'unchanged', modelRequests: 0, usage: null }; } } });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(maintained, forgery === 'repeat_boundary' ? 1 : 0);
+});
+
+test('context maintenance rejects concurrent store mutations while its host operation is unresolved', async () => {
+  let release!: () => void, entered!: () => void, attacked!: () => void;
+  const pending = new Promise<void>(resolve => { release = resolve; });
+  const entering = new Promise<void>(resolve => { entered = resolve; });
+  const attacking = new Promise<void>(resolve => { attacked = resolve; });
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    void worker.rpc('context.maintain', maintenanceRequest(context));
+    await entering;
+    const attempt = worker.rpc('store.checkpoint', { identity: run.identity, context });
+    attacked(); await attempt;
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { entered(); await pending; return { kind: 'unchanged', modelRequests: 0, usage: null }; } } });
+  await attacking; await tick();
+  release(); await assert.rejects(h.promise, { code: 'protocol' });
+});
+
+test('unknown compaction acknowledgement allows only an uncommitted recovery result with exact old context', async () => {
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    await assert.rejects(worker.rpc('context.maintain', maintenanceRequest(context)), /host operation failed/);
+    worker.send({ type: 'done', result: { identity: run.identity, status: 'recovery_required', reason: 'store_context_maintenance_failed',
+      modelRequests: 2, toolCalls: 1, usage: null, context, committed: false } });
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { throw new Error('simulated acknowledgement loss'); } } });
+  const result = await h.promise;
+  assert.equal(result.status, 'recovery_required'); assert.equal(result.committed, false);
+  assert.equal(h.journal.some(item => (item as { type: string }).type === 'run_finished'), false);
+});
+
+test('worker cannot append from the old context after unknown compaction acknowledgement', async () => {
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    await assert.rejects(worker.rpc('context.maintain', maintenanceRequest(context)), /host operation failed/);
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response: {
+      outputItems: [{ role: 'assistant', content: 'forged continuation' }], toolCalls: [], finishReason: 'completed', usage: null,
+    } } });
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { throw new Error('lost acknowledgement'); } } });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.filter(item => (item as { type: string }).type === 'model_response').length, 1);
+});
+
+test('failed maintenance cannot be followed by a manufactured successful terminal', async () => {
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    await worker.rpc('context.maintain', maintenanceRequest(context));
+    await finish(worker, context, { modelRequests: 2, toolCalls: 1 });
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { return { kind: 'failed', modelRequests: 1, usage: null, reason: 'context_maintenance_failed' }; } } });
+  await assert.rejects(h.promise, { code: 'protocol' });
+});
+
+test('cancellation reaches a live maintenance RPC and still waits for its host result before cleanup', async () => {
+  const controller = new AbortController();
+  let entered!: () => void, sawAbort = false;
+  const entering = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(async worker => {
+    worker.autoCancel = false;
+    const context = await maintenanceBoundary(worker);
+    const maintained = await worker.rpc<ContextMaintenanceResult>('context.maintain', maintenanceRequest(context));
+    assert.equal(maintained.kind, 'failed');
+    await finish(worker, context, { status: 'cancelled', reason: 'cancelled', modelRequests: 2, toolCalls: 1 });
+  }, { ...maintenanceOptions, signal: controller.signal, contextMaintenance: { async maintain(request) {
+    entered();
+    await new Promise<void>(resolve => request.signal.addEventListener('abort', () => { sawAbort = true; resolve(); }, { once: true }));
+    return { kind: 'failed', modelRequests: 1, usage: null, reason: 'context_maintenance_failed' };
+  } } });
+  await entering; controller.abort();
+  assert.equal((await h.promise).status, 'cancelled'); assert.equal(sawAbort, true); assert.equal(h.worker.scriptError, undefined);
+});
+
+test('unconfirmed summary worker cleanup preserves the host resource barrier', async () => {
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    await worker.rpc('context.maintain', maintenanceRequest(context));
+  }, { ...maintenanceOptions, contextMaintenance: { async maintain() { throw new NativeWorkerCleanupError(); } } });
+  await assert.rejects(h.promise, error => error instanceof NativeWorkerCleanupError && error.cleanupUnconfirmed);
 });
