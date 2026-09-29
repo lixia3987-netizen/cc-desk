@@ -98,3 +98,51 @@ test('blocked automatic compaction gives manual recovery guidance and retains th
   assert.match(renderContext({ ...maintenance, lastCompaction: { ...result, trigger: 'manual' } }), /· 手动 · 上下文/);
   assert.match(renderContext({ ...maintenance, lastCompaction: result }), /· 手动 · 上下文/);
 });
+
+test('in-turn maintenance distinguishes the running task from a pending send and explains shared limits', () => {
+  const enabled: NativeContextMaintenance = { ...maintenance, autoCompact: { enabled: true, mode: 'before_send_and_during_run', thresholdPercent: 90 } };
+  const ready = renderContext(enabled);
+  assert.match(ready, /发送前与回合内达到本地预算 90%/);
+  assert.match(ready, /发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次/);
+  assert.match(ready, /需保留摘要与继续执行的请求额度/);
+  assert.match(ready, /长命令运行中或结果未知时暂缓。超出预算仍会停止/);
+  assert.doesNotMatch(ready, /仅发送新指令前/);
+  const busy = renderContext({ ...enabled, compacting: true, canCompact: false, compactionTrigger: 'in_turn',
+    inTurn: { runId: 'run-1', status: 'attempted', createdAt: '2026-09-29T00:00:00Z' } });
+  assert.match(busy, /正在回合内压缩上下文/);
+  assert.match(busy, /持久保存后继续当前任务；取消会停止本回合/);
+  assert.match(busy, /提交成功前保持不变，已完成工具不会重放/);
+  assert.match(busy, /回合内压缩已登记，正在等待提交结果/);
+  assert.match(busy, />取消压缩</);
+  assert.doesNotMatch(busy, /继续本次发送|已持久保存|>压缩上下文（可能计费）</);
+});
+
+test('only a committed in-turn host receipt displays saved bytes and separately reported summary cost', () => {
+  const markup = renderContext({ ...maintenance, inTurn: { runId: 'run-1', status: 'committed', createdAt: '2026-09-29T00:00:00Z',
+    beforeBytes: 30000, afterBytes: 6000, summaryUsage: { inputTokens: 1000, outputTokens: 0 }, summaryCostUSD: 0.000125 } });
+  assert.match(markup, /回合内压缩已持久保存。上下文 30,000 → 6,000 字节/);
+  assert.match(markup, /摘要调用：输入 1,000 tokens · 输出 0 tokens · 估算费用 \$0.000125/);
+  assert.match(markup, /本回合最近一次模型响应未提供输入 token 用量/);
+  assert.doesNotMatch(markup, /正在回合内压缩|尚未确认/);
+  const last = renderContext({ ...maintenance, lastCompaction: { beforeBytes: 30000, afterBytes: 6000, createdAt: '2026-09-29T00:00:00Z', trigger: 'in_turn' } });
+  assert.match(last, /· 回合内自动 · 上下文/);
+});
+
+test('unresolved and failed in-turn receipts never infer success or zero cost, even when stale byte counts exist', () => {
+  for (const status of ['attempted', 'unknown', 'failed'] as const) {
+    const markup = renderContext({ ...maintenance, inTurn: { runId: 'run-1', status, createdAt: '2026-09-29T00:00:00Z', beforeBytes: 30000, afterBytes: 6000 } });
+    assert.match(markup, status === 'failed' ? /回合内压缩未完成，本回合不再自动重试/ : /回合内压缩结果尚未确认，不能视为已完成/);
+    assert.match(markup, /输入用量未报告 · 输出用量未报告 · 费用未估算/);
+    assert.doesNotMatch(markup, /已持久保存|30,000 → 6,000|估算费用 \$0|正在等待提交/);
+  }
+  const partial = renderContext({ ...maintenance, inTurn: { runId: 'run-1', status: 'failed', createdAt: '2026-09-29T00:00:00Z', summaryUsage: { outputTokens: 42 } } });
+  assert.match(partial, /输入用量未报告 · 输出 42 tokens · 费用未估算/);
+});
+
+test('invalid summary measurements cannot become displayed costs or byte savings', () => {
+  const markup = renderContext({ ...maintenance, inTurn: { runId: 'run-1', status: 'committed', createdAt: '2026-09-29T00:00:00Z', beforeBytes: NaN, afterBytes: -1,
+    summaryUsage: { inputTokens: Infinity, outputTokens: -2 }, summaryCostUSD: NaN } });
+  assert.match(markup, /回合内压缩已持久保存。原始记录保留/);
+  assert.match(markup, /输入用量未报告 · 输出用量未报告 · 费用未估算/);
+  assert.doesNotMatch(markup, /NaN|Infinity|→|\$|tokens/);
+});

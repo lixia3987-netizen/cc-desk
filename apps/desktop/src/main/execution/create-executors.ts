@@ -94,7 +94,7 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
       { key: 'connectionId', label: '模型连接', type: 'select', apply: 'stopped', options: [{ value: '', label: '请先在设置中配置连接' }, ...connections.list().connections.map(item => ({ value: item.id, label: item.name + (item.ready ? '' : '（未就绪）') }))] },
       { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。每次写入和命令均需单独审批。' },
       { key: 'maxInputTokens', label: '输入预算（估算 tokens）', type: 'number', min: 1024, max: 2_000_000, apply: 'stopped', description: '历史、项目指令和工具定义的保守估算上限，不代表模型真实窗口；停止后修改，下一回合生效。' },
-      { key: 'autoCompact', label: '自动压缩', type: 'select', apply: 'stopped', options: [{ value: 'off', label: '关闭' }, { value: 'before_send', label: '发送前自动压缩（可能计费）' }], description: '默认关闭。开启后，仅在发送新指令前、上下文达到本地预算 90% 时尝试压缩，每次提交最多一次。摘要请求可能计费，并计入本回合模型请求次数和运行时长；摘要会省略细节，原始记录保留。' },
+      { key: 'autoCompact', label: '自动压缩', type: 'select', apply: 'stopped', options: [{ value: 'off', label: '关闭' }, { value: 'before_send', label: '发送前自动压缩（可能计费）' }, { value: 'before_send_and_during_run', label: '发送前与回合内自动压缩（可能计费）' }], description: '默认关闭。达到本地预算 90% 时尝试压缩：发送前每次提交最多一次；开启回合内压缩后，在完整模型响应与工具结果之间，本回合还可尝试一次。摘要与继续执行共用模型请求和运行时长预算；长命令运行中或结果未知时暂缓，超出预算仍停止。摘要可能计费并省略细节，原始记录保留。' },
       { key: 'maxOutputTokens', label: '单次输出上限（tokens）', type: 'number', min: 128, max: 64_000, apply: 'stopped', description: '提交给服务商的输出上限，仍需符合所选模型限制。' },
       { key: 'maxModelRequests', label: '每回合模型请求上限', type: 'number', min: 1, max: 100, apply: 'stopped' },
       { key: 'maxToolCalls', label: '每回合工具调用上限', type: 'number', min: 1, max: 200, apply: 'stopped' },

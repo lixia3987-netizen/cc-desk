@@ -182,7 +182,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const sessionStatus=snapshot?.sessionStatus??session.status;
   const nativeOwned=session.execution.providerId==='native'&&sessionStatus==='running';
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||nativeOwned||sessionStatus==='stopping'||compacting;
-  const taskLabel=syncState.error?'状态未知':compacting?(nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
+  const taskLabel=syncState.error?'状态未知':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
   const composerDisabled=disabled||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error;
   useEffect(()=>{
     // A final notification can be lost without a later sequence gap. Only an

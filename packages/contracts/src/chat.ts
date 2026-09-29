@@ -52,9 +52,17 @@ export interface NativeContextMaintenance {
   headHash: string;
   canCompact: boolean;
   compacting?: boolean;
-  compactionTrigger?: 'manual' | 'automatic';
-  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean };
-  lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' };
+  compactionTrigger?: 'manual' | 'automatic' | 'in_turn';
+  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' };
+  lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' | 'in_turn' };
+  /** Host-owned receipt. A summary response alone is not a committed compaction. */
+  inTurn?: {
+    status: 'attempted' | 'committed' | 'failed' | 'unknown';
+    runId: string; createdAt: string;
+    beforeBytes?: number; afterBytes?: number;
+    summaryUsage?: { inputTokens?: number; outputTokens?: number };
+    summaryCostUSD?: number;
+  };
 }
 /** Host lifetime and observable state ordering; independent from durable task revisions. */
 export interface ChatSnapshotVersion {
