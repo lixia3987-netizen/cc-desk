@@ -2,6 +2,13 @@
 
 当前 Native 及仍相关的 Claude 账号、桌面/平台正式验收统一见[独立运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。本页保留各版本历史证据；旧候选通过不代表当前候选通过，已修复的历史问题不重新登记为当前缺陷。
 
+## Native 与 main 独立分支集成（2026-09-30）
+
+- Native `3371bf9` 与 main `68a89e3` 在 `integration/native-main-20260930` 整合；用户本次明确授权验证后合入 main。保留 monorepo、Claude 默认、Native 图片与承接流程，以及 main 的首发创建、列表菜单、连接管理和用量刷新。
+- 本地代码候选 `0d604bc`：脚本、公共包和桌面最终覆盖 2143 通过、24 项 Windows 专属跳过。桌面全量首次的两项旧 fixture 失败已通过修改对应测试并定向重跑闭环，生产实现不变；具体计数和命令见[集成记录](NATIVE-AGENT-MAIN-INTEGRATION.md)。
+- 公共包构建、TypeScript、桌面生产 bundle、差异检查及最终独立复核通过。Playwright 105 项／26 个文件仅收集，未执行 Electron 图形或安装包验证。
+- 未触发 CI、安装包构建、Release 或真实模型调用；Windows、cc-switch／代理兼容性与真实服务验收继续保持 pending，不借用旧候选平台结果。
+
 ## 上下文用量的 message_delta 更新（2026-09-29）
 
 - 基于 `main` 的 `05cbbec` 修复，合入目标为 `main`；未触发 CI、递增版本或发布安装包。

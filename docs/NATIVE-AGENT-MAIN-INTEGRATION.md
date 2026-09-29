@@ -29,7 +29,34 @@
 
 ## 候选验证
 
-最终候选、完整本地结果及复现命令在验证完成后登记。独立复核已经识别首发预览回退并要求修复；没有以解决 Git 标记替代语义检查。
+本地代码候选为 `0d604bcb64583c22762e5dcdbb6c6f0953f5d540`，tree 为 `8e7c73c33e6fc6f28ea4f367abbb4c27bc02e478`。它包含集成提交 `6ee55a6` 及两份测试 fixture 的语义适配；之后仅登记本文及验证索引。Git Data API 发布保留双亲合并关系，远端提交身份与本地的对应表记在集成 PR，逐提交 tree 必须相同。
+
+| 验证范围 | 通过 | 按平台跳过 | 结果 |
+| --- | ---: | ---: | --- |
+| 评估与发布脚本 | 50 | 0 | 通过 |
+| contracts、agent-core、agent-node | 825 | 12 | 通过 |
+| engine-claude | 28 | 7 | 通过 |
+| desktop（全量加修复文件定向重跑） | 1240 | 5 | 通过 |
+| 合计 | 2143 | 24 | 无未解决失败；跳过项均为 Windows 专属 |
+
+桌面首次完整执行为 1244 项：1237 通过、5 跳过、2 失败。两项均是合并后过时的测试假设：上下文场景由 4 增至 5，旧宿主 fixture 仍假定同步从首条文本命名且缺少隔离命名 flags。只改两份测试后分别重跑 7/7 和 3/3 通过；新增 1 项旧 CLI 能力不足时不启动命名子进程的验证，因此最终覆盖为 1245 项。命名测试通过真实 fixture 子进程与显式释放门证明前台先完成、命名随后持久化且不污染聊天记录，未将 `auto` 断言简单改成默认标题。生产代码在这些重跑期间未变。
+
+公共包构建、最终 TypeScript 检查和桌面生产 bundle 均通过；Vite 仍报告既有大 chunk 提示。Playwright 最终成功收集 105 项／26 个文件，未执行图形场景。独立复核识别并闭环首发预览回退和 Native 自动命名误导文案，最后复核无阻断项；`git diff --check` 通过。
+
+主要复现命令（默认在仓库根目录，desktop 测试例外）：
+
+```sh
+npm run build:packages
+node --test --test-reporter=tap --test-concurrency=1 scripts/tests/*.test.mjs
+node --test --test-reporter=tap --test-concurrency=1 packages/contracts/tests/*.test.mjs packages/agent-core/tests/*.test.mjs packages/agent-node/tests/*.test.mjs
+node --test --test-reporter=tap --test-concurrency=1 packages/engine-claude/tests/*.test.mjs
+npm run typecheck --workspace claude-workbench
+npm run build --workspace claude-workbench
+cd apps/desktop
+node --import tsx --test --test-reporter=tap --test-concurrency=1 tests/*.test.ts
+node --import tsx --test --test-concurrency=1 tests/desktop-launch.test.ts tests/engine-host-integration.test.ts
+node ../../node_modules/@playwright/test/cli.js test --list
+```
 
 本地运行环境为 Linux、Node.js 24.19.0，无 X11/Wayland 或 Xvfb。Windows 专属测试按平台条件跳过，Playwright 场景收集不等于 Electron 图形执行。真实 CLI、服务识图和当前平台成品仍按 [正式运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)登记；本次合入 main 不把 pending 改成通过。
 
