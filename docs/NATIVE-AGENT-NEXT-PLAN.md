@@ -2,11 +2,11 @@
 
 日期：2026-09-28（北京时间）。规划代码基线：`dev/native-agent@59172f8`（[PR #43](https://github.com/lixia3987-netizen/cc-desk/pull/43) 已合入）。
 
-**当前状态：N1 四个交付单元已实现，见 [N1 记录](NATIVE-AGENT-N1.md)；[N2-01 文件定位与检索](NATIVE-AGENT-N2.md)、[N2-02 多文件变更预览与回执](NATIVE-AGENT-N2-CHANGES.md)、[N2-03 代码位置证据](NATIVE-AGENT-N2-LOCATIONS.md)、[E0-01 固定工程任务准备](NATIVE-AGENT-E0.md)、[E0-02 版本化评估报告](NATIVE-AGENT-E0-REPORTS.md)已实现并完成各自本地验证。[N3-01 长命令生命周期](NATIVE-AGENT-N3-COMMANDS.md)、[N3-02 回合内上下文维护](NATIVE-AGENT-N3-CONTEXT.md)与 [N3-03 错误诊断及有限恢复](NATIVE-AGENT-N3-RECOVERY.md)已实现，本地验证结果分别在对应记录登记，正式运行 RA-26、RA-27、RA-28 待执行。** 2026-09-29 用户要求兼容性确认后移，已交付 [N5-01 显式图片输入](NATIVE-AGENT-N5-IMAGES.md)，[N5-02 图片预览](NATIVE-AGENT-N5-PREVIEW.md)已于 PR #64 合入；[N5-03 含图会话的纯文本前缀压缩](NATIVE-AGENT-N5-CONTEXT.md)已于 PR #65 合入，[N5-04 压缩范围预览](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)已实现并通过本地验证；E0-03 真实工程评估和相关正式验收保持待执行。symbol/reference 或 LSP 须先取得实际检索瓶颈证据。需要正式运行确认的内容统一登记到[正式运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。使用 N 系列表示增量能力，不把它命名为已通过 P5 之后的阶段；P3/P4/P5 的真实模型、当前候选图形及目标平台成品验收保持待执行。
+**当前状态：N1 四个交付单元已实现，见 [N1 记录](NATIVE-AGENT-N1.md)；[N2-01 文件定位与检索](NATIVE-AGENT-N2.md)、[N2-02 多文件变更预览与回执](NATIVE-AGENT-N2-CHANGES.md)、[N2-03 代码位置证据](NATIVE-AGENT-N2-LOCATIONS.md)、[E0-01 固定工程任务准备](NATIVE-AGENT-E0.md)、[E0-02 版本化评估报告](NATIVE-AGENT-E0-REPORTS.md)已实现并完成各自本地验证。[N3-01 长命令生命周期](NATIVE-AGENT-N3-COMMANDS.md)、[N3-02 回合内上下文维护](NATIVE-AGENT-N3-CONTEXT.md)与 [N3-03 错误诊断及有限恢复](NATIVE-AGENT-N3-RECOVERY.md)已实现，本地验证结果分别在对应记录登记，正式运行 RA-26、RA-27、RA-28 待执行。** 2026-09-29 用户要求兼容性确认后移，已交付 [N5-01 显式图片输入](NATIVE-AGENT-N5-IMAGES.md)，[N5-02 图片预览](NATIVE-AGENT-N5-PREVIEW.md)已于 PR #64 合入；[N5-03 含图会话的纯文本前缀压缩](NATIVE-AGENT-N5-CONTEXT.md)已于 PR #65 合入，[N5-04 压缩范围预览](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)已于 PR #66 合入；[N5-05 显式粘贴图片](NATIVE-AGENT-N5-PASTE.md)已实现并通过本地验证；E0-03 真实工程评估和相关正式验收保持待执行。symbol/reference 或 LSP 须先取得实际检索瓶颈证据。需要正式运行确认的内容统一登记到[正式运行验收清单](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。使用 N 系列表示增量能力，不把它命名为已通过 P5 之后的阶段；P3/P4/P5 的真实模型、当前候选图形及目标平台成品验收保持待执行。
 
 ## 1. 决策与范围
 
-2026-09-29 用户调整顺序：**跳过当前配置兼容性确认，继续功能开发，实际兼容问题后续处理**。E0-03 和指定服务确认后移，不再阻塞后续实现。[N5-01 显式 PNG/JPEG 输入](NATIVE-AGENT-N5-IMAGES.md)已覆盖受控附件、双协议、精确提交身份及历史恢复，[N5-02 图片预览](NATIVE-AGENT-N5-PREVIEW.md)已合入，[N5-03 纯文本前缀压缩](NATIVE-AGENT-N5-CONTEXT.md)已合入，本批补充 [N5-04 压缩范围预览](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)；真实识图和预览的图形行为分别列为 RA-29/30，不要求先提供 cc-switch 配置。正式评估环境以用户后续更正的 Windows 为准，使用 cc-switch 转发配置或代理服务，用户不设预算上限；具体连接细节以后续实际调用时为准。原 Mac 执行单保留为历史准备材料。
+2026-09-29 用户调整顺序：**跳过当前配置兼容性确认，继续功能开发，实际兼容问题后续处理**。E0-03 和指定服务确认后移，不再阻塞后续实现。[N5-01 显式 PNG/JPEG 输入](NATIVE-AGENT-N5-IMAGES.md)已覆盖受控附件、双协议、精确提交身份及历史恢复，[N5-02 图片预览](NATIVE-AGENT-N5-PREVIEW.md)已合入，[N5-03 纯文本前缀压缩](NATIVE-AGENT-N5-CONTEXT.md)已合入，[N5-04 压缩范围预览](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)已合入，本批补充 [N5-05 显式粘贴图片](NATIVE-AGENT-N5-PASTE.md)；真实识图和预览的图形行为分别列为 RA-29/30，不要求先提供 cc-switch 配置。正式评估环境以用户后续更正的 Windows 为准，使用 cc-switch 转发配置或代理服务，用户不设预算上限；具体连接细节以后续实际调用时为准。原 Mac 执行单保留为历史准备材料。
 
 2026-09-29 的[状态与预算稳固记录](NATIVE-AGENT-STATE-BUDGET-FIX.md)补充了两项复现缺陷的修复：历史回执不覆盖较新运行状态，准备/worker 启动/运行接纳共用提交时长预算。该本地修复不改变 E0 及正式运行的待执行状态。
 
@@ -42,7 +42,7 @@
 | N2：检索与编辑效率 | N2-01/02/03 已实现、本地验证 | 文件定位、有界正则/分页、跨文件变更审阅、代码位置证据 | 项目边界不放宽，截断可见；编辑版本冲突与部分失败可解释 |
 | N3：长任务连续性 | N3-01/02/03 已实现，本地结果见对应记录；RA-26/27/28 待运行 | 长命令生命周期、回合内压缩、错误分类和有限恢复 | 取消/退出/崩溃不泄漏进程或重放未知副作用；任务证据不丢失 |
 | N4：指定模型服务适配 | 按用户要求后移 | 经过验证的服务能力档案，按需本地免密连接 | 出现具体兼容性问题再处理；不阻塞 N5 开发，无静默协议/引擎回退 |
-| N5：按任务需求扩展 | N5-01/02/03 已合入；N5-04 压缩范围预览已实现并本地验证，其它项另行拆分 | PNG/JPEG 附件、历史预览、保图文本压缩与范围说明 | 见 N5-01/02/03/04 记录；真实服务和图形/平台效果由 RA-29/30/31/32 验收 |
+| N5：按任务需求扩展 | N5-01/02/03/04 已合入；N5-05 显式粘贴图片已实现并本地验证，其它项另行拆分 | PNG/JPEG 附件与粘贴、历史预览、保图文本压缩与范围说明 | 见 N5-01/02/03/04/05 记录；真实服务和图形/平台效果由 RA-29/30/31/32/33 验收 |
 
 默认顺序为 **N1 → N2 → N3**，E0 从开始并行准备，N4 在服务接入成为评估阻塞时提前。不为所有模型预建通用兼容层。N5 不作为一个大包启动，也不阻塞前三项。
 
@@ -115,7 +115,7 @@ N3-02 已复用 N3-01 的回合身份、取消、预算和终局事实边界；p
 
 ### N5：需求驱动的独立扩展
 
-用户已明确继续后续开发，[N5-01](NATIVE-AGENT-N5-IMAGES.md)显式图片输入与 [N5-02](NATIVE-AGENT-N5-PREVIEW.md)本地预览已合入 PR #64。[N5-03](NATIVE-AGENT-N5-CONTEXT.md)已于 PR #65 合入，只压缩首个含图完整回合之前的纯文本前缀，首图回合及之后的连续后缀全部原样保留；首轮含图仍不可压缩。不自动截图，不生成视觉摘要；模型实际识图能力保持未验证。本批 [N5-04](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)补充已有快照中的压缩范围和不可用原因，只展示元数据，不调用模型或预测净节省。项目记忆和授权效率仍需具体任务依据，分别立项。
+用户已明确继续后续开发，[N5-01](NATIVE-AGENT-N5-IMAGES.md)显式图片输入与 [N5-02](NATIVE-AGENT-N5-PREVIEW.md)本地预览已合入 PR #64。[N5-03](NATIVE-AGENT-N5-CONTEXT.md)已于 PR #65 合入，只压缩首个含图完整回合之前的纯文本前缀，首图回合及之后的连续后缀全部原样保留；首轮含图仍不可压缩。不自动截图，不生成视觉摘要；模型实际识图能力保持未验证。[N5-04](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)已于 PR #66 合入，补充已有快照中的压缩范围和不可用原因，只展示元数据，不调用模型或预测净节省。本批 [N5-05](NATIVE-AGENT-N5-PASTE.md)支持 Native 输入框显式粘贴 PNG/JPEG，沿用原有限额、预览和发送流程；不读取全局剪贴板，不自动缩放或发送。项目记忆和授权效率仍需具体任务依据，分别立项。
 
 | 方向 | 启动条件 | 最小范围及边界 |
 | --- | --- | --- |
