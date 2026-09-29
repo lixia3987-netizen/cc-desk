@@ -5,10 +5,9 @@ import { createHash } from 'node:crypto';
 import type { UserImage } from '@cc-desk/agent-core';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import { parseStagedAttachmentManifest } from './attachments';
-import type { NativeImagePreview } from '../shared/native-images';
+import { NATIVE_IMAGE_MAX_COUNT, NATIVE_IMAGE_MAX_BYTES, type NativeImagePreview } from '../shared/native-images';
 
-export const NATIVE_IMAGE_MAX_COUNT = 4;
-export const NATIVE_IMAGE_MAX_BYTES = 1024 * 1024;
+export { NATIVE_IMAGE_MAX_COUNT, NATIVE_IMAGE_MAX_BYTES } from '../shared/native-images';
 const MAX_MANIFEST_BYTES = 8 * 1024 * 1024;
 const MAX_EDGE = 4096;
 const MAX_PIXELS = 16 * 1024 * 1024;
@@ -141,6 +140,27 @@ function validateImage(bytes:Buffer,mimeType:ImageMime) {
   if(mimeType==='image/png')validatePNG(bytes);else validateJPEG(bytes);
 }
 
+function decodeImage(dataUrl:unknown,mimeType:ImageMime):Buffer {
+  const prefix=`data:${mimeType};base64,`;
+  if(typeof dataUrl!=='string'||!dataUrl.startsWith(prefix)||dataUrl.length>prefix.length+4*Math.ceil(NATIVE_IMAGE_MAX_BYTES/3))throw invalid();
+  const encoded=dataUrl.slice(prefix.length),bytes=Buffer.from(encoded,'base64');
+  if(bytes.toString('base64')!==encoded)throw invalid();
+  validateImage(bytes,mimeType);
+  return bytes;
+}
+
+/** Explicit paste-event bytes only; callers generate all storage paths and names. */
+export function decodeNativePastedImages(images:unknown):{mimeType:ImageMime;bytes:Buffer}[] {
+  if(!Array.isArray(images)||!images.length||images.length>NATIVE_IMAGE_MAX_COUNT)throw invalid();
+  let total=0;
+  return images.map(image=>{
+    if(!image||!['image/png','image/jpeg'].includes(image.mimeType))throw invalid();
+    const bytes=decodeImage(image.dataUrl,image.mimeType);
+    total+=bytes.length;if(total>NATIVE_IMAGE_MAX_BYTES)throw invalid();
+    return {mimeType:image.mimeType,bytes};
+  });
+}
+
 /** Verify a transported immutable snapshot without reopening user-controlled paths. */
 export function verifyNativeImageAttachments(images:unknown,metadata:unknown):void {
   if(!Array.isArray(images)||!Array.isArray(metadata)||images.length!==metadata.length||images.length>NATIVE_IMAGE_MAX_COUNT||
@@ -151,12 +171,9 @@ export function verifyNativeImageAttachments(images:unknown,metadata:unknown):vo
     if(!image||!item||!['image/png','image/jpeg'].includes(image.mimeType)||image.mimeType!==item.mimeType||
       typeof item.name!=='string'||item.name.length>1024||!Number.isSafeInteger(item.bytes)||item.bytes<1||item.bytes>NATIVE_IMAGE_MAX_BYTES||
       typeof item.sha256!=='string'||!/^[0-9a-f]{64}$/.test(item.sha256)||typeof image.dataUrl!=='string')throw invalid();
-    const prefix=`data:${image.mimeType};base64,`;
-    if(!image.dataUrl.startsWith(prefix)||image.dataUrl.length>prefix.length+4*Math.ceil(NATIVE_IMAGE_MAX_BYTES/3))throw invalid();
-    const encoded=image.dataUrl.slice(prefix.length),bytes=Buffer.from(encoded,'base64');
-    if(bytes.toString('base64')!==encoded||bytes.length!==item.bytes||createHash('sha256').update(bytes).digest('hex')!==item.sha256)throw invalid();
+    const bytes=decodeImage(image.dataUrl,image.mimeType);
+    if(bytes.length!==item.bytes||createHash('sha256').update(bytes).digest('hex')!==item.sha256)throw invalid();
     total+=bytes.length;if(total>NATIVE_IMAGE_MAX_BYTES)throw invalid();
-    validateImage(bytes,image.mimeType);
   }
 }
 

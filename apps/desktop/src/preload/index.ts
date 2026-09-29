@@ -52,6 +52,7 @@ const api: DesktopAPI = {
   resumeChatQueue:id => ipcRenderer.invoke('chat:queue-resume',id),
   respondChat:(id,requestId,decision) => ipcRenderer.invoke('chat:respond',{id,requestId,decision}),
   pickAttachments:id => ipcRenderer.invoke('files:pick',id),
+  addPastedNativeImages:(id,images) => ipcRenderer.invoke('files:add-pasted-native-images',{id,images}),
   addDroppedAttachments:async(id,files) => {
     if(!Array.isArray(files)||!files.length)throw new Error('请拖入本机文件。');
     if(files.length>8)throw new Error('一次最多添加 8 个附件。');

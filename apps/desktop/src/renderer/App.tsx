@@ -27,6 +27,7 @@ import { useWorkspacePreferences } from './workspace/useWorkspacePreferences';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader';
 import { WorkspaceWelcome } from './workspace/WorkspaceWelcome';
 import { useNativeConnectionReadiness } from './useNativeConnectionReadiness';
+import { importNativePastedImages, nativePasteTargetAvailable, withAttachmentImport } from './native-image-paste';
 
 type Modal = 'new' | 'settings' | 'history' | 'rename' | 'palette' | null;
 
@@ -34,6 +35,7 @@ type Modal = 'new' | 'settings' | 'history' | 'rename' | 'palette' | null;
 export function App() {
   const [state, setState] = useState<AppState>();
   const [executors, setExecutors] = useState<ExecutionDescriptor[]>([]);
+  const latestExecutors = useRef(executors); latestExecutors.current = executors;
   const [cap, setCap] = useState<Capabilities>({ available: false, executable: '', version: '', flags: [], efforts: ['default'] });
   const [cliUpdate, setCLIUpdate] = useState<CLIUpdateState>({ phase: 'idle', message: '等待检查 Claude Code 更新。', showBanner: false });
   const cliUpdateEvents = useRef(0), executorEvents = useRef(0);
@@ -105,12 +107,12 @@ export function App() {
     const snapshot = await window.desktop.snapshot();
     if (revision === stateEvents.current) applyState(snapshot.state);
     if (updateRevision === cliUpdateEvents.current) setCLIUpdate(snapshot.cliUpdate);
-    setCap(snapshot.capabilities); if (executorRevision === executorEvents.current) setExecutors(snapshot.executors);
+    setCap(snapshot.capabilities); if (executorRevision === executorEvents.current) { latestExecutors.current = snapshot.executors; setExecutors(snapshot.executors); }
     setDataPath(snapshot.dataPath); setPlatform(snapshot.platform);
   }, [applyState]);
   const perform = useCallback(async (action: () => Promise<unknown>) => {
-    setError(''); setBusy(true);
-    try { await action(); } catch (error) { report(error); } finally { setBusy(false); }
+    setError(''); latestBusy.current = true; setBusy(true);
+    try { await action(); } catch (error) { report(error); } finally { latestBusy.current = false; setBusy(false); }
   }, [report]);
   const preferences = useWorkspacePreferences({ settings: state?.settings, open: modal === 'settings', refresh, perform, report, notify: setNotice });
   const { themeId, value: draftSettings } = preferences;
@@ -137,7 +139,7 @@ export function App() {
       setProjectId('all'); setArchived(selected.archived); setSearch(''); expandGroup(selected.projectId);
     });
     const offCapabilities = window.desktop.onCapabilities(value => { setCap(value); void refresh().catch(report); });
-    const offExecutors = window.desktop.onExecutors(value => { executorEvents.current++; setExecutors(value); });
+    const offExecutors = window.desktop.onExecutors(value => { executorEvents.current++; latestExecutors.current = value; setExecutors(value); });
     const offCLIUpdate = window.desktop.onCLIUpdate(value => { cliUpdateEvents.current++; setCLIUpdate(value); });
     return () => { disposed = true; offState(); offCapabilities(); offExecutors(); offCLIUpdate(); offChat(); offError(); offNavigate(); };
   }, [refresh, report, applyState, expandGroup]);
@@ -219,14 +221,13 @@ export function App() {
   </main>;
   const addAttachments = async (id: string, choose: () => Promise<Attachment[]>) => {
     const session = latestState.current?.sessions.find(session => session.id === id);
-    const engine = executors.find(item => item.providerId === session?.execution.providerId && item.mode === session?.execution.mode);
+    const engine = latestExecutors.current.find(item => item.providerId === session?.execution.providerId && item.mode === session?.execution.mode);
     if (latestBusy.current || pendingAttachmentImports.current.has(id) || !session || session.archived || session.execution.mode !== 'structured' || !engine?.capabilities.attachments || executionUnavailable(engine, session)) return;
-    // Reserve before invoking the picker/preload so Enter cannot race a copy,
-    // even before React renders the pending indicator.
-    pendingAttachmentImports.current.add(id); setAttachmentImports(new Set(pendingAttachmentImports.current));
-    attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
-    setError(''); let failed = false;
-    try {
+    // Reserve before the picker/preload or clipboard byte read, so Enter and
+    // repeated paste cannot race even before React renders the indicator.
+    await withAttachmentImport(pendingAttachmentImports.current, id, setAttachmentImports, async () => {
+      attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
+      setError(''); let failed = false;
       try {
         const files = await choose();
         if (files.length && latestState.current?.sessions.some(session => session.id === id)) {
@@ -242,9 +243,7 @@ export function App() {
           if (revision === (attachmentRevisions.current.get(id) ?? 0) && latestState.current?.sessions.some(session => session.id === id)) changeAttachments(id, () => files);
         } catch (error) { if (!failed) report(error); }
       }
-    } finally {
-      pendingAttachmentImports.current.delete(id); setAttachmentImports(new Set(pendingAttachmentImports.current));
-    }
+    });
   };
   const appendReview = (text: string) => active ? appendDraft(active.id, text) : false;
   const activePanels = active ? (panelDrafts.current.get(active.id) ?? active.panelDrafts ?? {}) : {};
@@ -278,6 +277,15 @@ export function App() {
               onDraft={value => saveDraftFor(active.id, value)} onSent={expected => clearSentDraft(active.id, expected)}
               onError={report} attachments={attachments[active.id] ?? []} onAttach={() => void addAttachments(active.id, () => window.desktop.pickAttachments(active.id))} onProjectFiles={() => setFilePicker(active.id)}
               onDropFiles={files => void addAttachments(active.id, () => window.desktop.addDroppedAttachments(active.id, files))}
+              onPasteImages={(files, canContinue) => {
+                const origin = { id: active.id, execution: { ...active.execution } };
+                const existing = attachments[origin.id] ?? [];
+                void addAttachments(origin.id, () => importNativePastedImages(files, existing, () => {
+                  const current = latestState.current?.sessions.find(session => session.id === origin.id);
+                  const engine = latestExecutors.current.find(item => item.providerId === current?.execution.providerId && item.mode === current?.execution.mode);
+                  return canContinue() && nativePasteTargetAvailable(origin, current, engine, latestBusy.current);
+                }, images => window.desktop.addPastedNativeImages(origin.id, images)));
+              }}
               attachmentBusy={attachmentImports.has(active.id)} attachmentDisabled={busy} isAttachmentImporting={() => pendingAttachmentImports.current.has(active.id)}
               approvalDrafts={approvalDrafts.current} readingPositions={readingPositions.current}
               attentionTarget={attentionTarget?.sessionId === active.id ? attentionTarget : undefined} onAttentionHandled={() => setAttentionTarget(undefined)}

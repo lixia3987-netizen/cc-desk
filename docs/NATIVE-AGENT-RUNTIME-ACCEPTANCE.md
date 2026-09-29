@@ -53,6 +53,7 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 | RA-30 | N5-02 本地图片预览与历史版本查看 | pending：待 Windows 图片解码、键盘与会话切换实际体验 |
 | RA-31 | N5-03 含图会话纯文本前缀压缩 | pending：待 Windows 交互及真实模型压缩后图片连续性 |
 | RA-32 | N5-04 压缩范围预览与不可用原因 | pending：待 Windows 展示、状态切换与无额外请求验证 |
+| RA-33 | N5-05 Native 输入框显式粘贴图片 | pending：待 Windows 截图粘贴、混合文本与异步交互验证 |
 
 ## 3. 真实连接、模型与编码流程
 
@@ -238,6 +239,12 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 - 预期：范围只包含本地字节统计、图片数量和保留规则，不展示正文、图片编码或内部错误；两组大小不被解释为净节省或服务用量。忙碌/恢复时不展示旧可用数字，旧快照缺字段和暂不可用原因清楚；展开不新增模型请求、摘要预留或账本事件。实际压缩继续核对 headHash 与预算。
 - 证据：`R`、显示截图和对应快照、大小/图片计数对照、状态切换时间线、跨会话检查、展开前后请求与账本事件比较；窄窗口和大字号可读性。状态：**pending**；SSR、本地执行器 fixture 和构建不能替代图形验收。
 
+### RA-33：N5-05 输入框显式粘贴图片
+
+- 前置/步骤：按 [N5-05](NATIVE-AGENT-N5-PASTE.md)锁定候选，在 Windows Electron Native 会话用系统截图工具复制图片，在提示词输入框按 Ctrl+V。检查 PNG/JPEG、纯文本、图片与文本混合、未知格式、大图及超过剩余额度；记录源程序、实际 MIME/尺寸/大小，不用合成事件替代真实剪贴板证据。导入时立即按 Enter、重复粘贴、切换会话、归档、删除或开始维护；检查失败后的草稿与已有队列附件。再显式预览、发送或入队，重启核对草稿及历史图片；回归 Claude 和终端的原有文本粘贴。
+- 预期：只有编辑器粘贴事件内的受支持图片加入当前源会话草稿，图片与普通文字互不吞掉；导入期间不能发送半成品，切换后不串会话。格式/限额/状态失效均无部分成功；若发生清单恢复故障，应显示失败并保守保留文件，单独登记现场。粘贴和预览不调用模型、不发送消息；用户明确发送后沿用既有图片提交版本与历史。超限不自动压缩或重试，未粘贴时不读取剪贴板。
+- 证据：`R`、Windows/截图工具版本、实际图片字节哈希与大小、输入框/附件/错误截图、混合文本对照、导入与发送时间线、会话切换/重启记录、请求次数和原队列文件对照。状态：**pending**；单元、fixture、静态组件与生产构建不替代本项。
+
 ## 8. 结果模板与历史索引
 
 每次执行复制以下记录，不覆盖此前失败：
@@ -256,4 +263,4 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 
 共享工作台的历史记录见 [VALIDATION](VALIDATION.md)、[产品路线](ROADMAP.md)和[字体说明](FONTS.md)；其中旧故障修复不重新记为当前缺陷，尚需实际账号/平台确认的部分由 RA-22/RA-23 承接。历史证据按原候选保留：[P3 验收档案](NATIVE-AGENT-PHASE-3-VALIDATION.md)、[P4](NATIVE-AGENT-PHASE-4.md)、[P4b](NATIVE-AGENT-PHASE-4B.md)、[自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)、[Skills](NATIVE-AGENT-PHASE-4C-SKILLS.md)、[MCP HTTP](NATIVE-AGENT-PHASE-4C-MCP.md)、[MCP 2025 HTTP](NATIVE-AGENT-PHASE-4C-MCP-2025.md)、[MCP stdio](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)、[Chat Completions](NATIVE-AGENT-PHASE-4C-CHAT-COMPLETIONS.md)、[提问](NATIVE-AGENT-P5-QUESTIONS.md)、[PR #43 本地交付](NATIVE-AGENT-COMPLETION.md)、[N1 本地验收](NATIVE-AGENT-N1.md)。其中 N1 的 1303 项本地通过与两项图形场景仅收集/启动失败记录，不构成 RA-14 或三平台成品通过。
 
-本文件不把暂缓的多 Agent、native TUI、自动截图/屏幕控制、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N4/N5 其它未交付功能列为当前已经实现能力的验收义务。N5-01 显式图片输入由 RA-29 承接，N5-02 图片预览由 RA-30 承接，N5-03 纯文本前缀压缩由 RA-31 承接，N5-04 压缩范围预览由 RA-32 承接；新增能力交付后再增加稳定 ID，已有 ID 不复用于不同目标。
+本文件不把暂缓的多 Agent、native TUI、自动截图/屏幕控制、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N4/N5 其它未交付功能列为当前已经实现能力的验收义务。N5-01 显式图片输入由 RA-29 承接，N5-02 图片预览由 RA-30 承接，N5-03 纯文本前缀压缩由 RA-31 承接，N5-04 压缩范围预览由 RA-32 承接，N5-05 显式粘贴图片由 RA-33 承接；新增能力交付后再增加稳定 ID，已有 ID 不复用于不同目标。

@@ -2,11 +2,13 @@ import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { composerKeyAction, insertComposerNewline } from './composer-keyboard';
 import type { SessionCommand } from '../shared/execution';
 import { insertCommand, matchingCommands, slashQuery } from '../shared/session-commands';
+import { capturePastedFiles } from './native-image-paste';
 
-export function PromptEditor({ value, onChange, onSend, placeholder, disabled, commands, loadCommands, commandOwner = '会话' }: {
+export function PromptEditor({ value, onChange, onSend, onPasteFiles, placeholder, disabled, commands, loadCommands, commandOwner = '会话' }: {
   value: string; onChange: (value: string) => void; onSend: () => void;
   placeholder: string; disabled?: boolean;
   commandOwner?: string; commands?: SessionCommand[]; loadCommands?: () => Promise<void>;
+  onPasteFiles?: (files: File[]) => void;
 }) {
   const composing = useRef(false);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -68,6 +70,7 @@ export function PromptEditor({ value, onChange, onSend, placeholder, disabled, c
     onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
     onSelect={event => setSelection({ start: event.currentTarget.selectionStart, end: event.currentTarget.selectionEnd })}
     onChange={event => { pendingSelection.current = undefined; setDismissed(false); setSelection({ start: event.target.selectionStart, end: event.target.selectionEnd }); onChange(event.target.value); }}
+    onPaste={onPasteFiles ? event => { capturePastedFiles(event.clipboardData, onPasteFiles); } : undefined}
     onCompositionStart={() => { composing.current = true; }}
     onCompositionEnd={() => { composing.current = false; }}
     onKeyDown={event => {
