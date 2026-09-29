@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import type { ChatQueueSnapshot, ChatSendOptions, ChatSubmission, ChatTurnResult, QueuedChatMessage } from '../shared/chat';
 import { ChatQueueStorage, type StoredChatQueue } from './chat-queue-storage';
 
@@ -7,6 +8,8 @@ interface QueueOptions {
   /** Captures host admission generations before a queue operation starts waiting. */
   captureAdmission?(id: string): () => void;
   blocked(id: string): boolean;
+  /** Bind Native images to the explicit submission before acknowledging queue ownership. */
+  attachmentMetadata?(id: string, files: string[]): Promise<NativeImageAttachment[] | undefined>;
   acceptAttachments(id: string, files: string[], commit: (attachmentNames?: string[]) => void): Promise<void>;
   run(id: string, item: QueuedChatMessage): Promise<ChatTurnResult>;
   /** Returns only after the old turn and its process resources have settled. */
@@ -71,7 +74,10 @@ export class ChatQueue {
       assertAdmission();
       if ((!text.trim() && !attachments.length) || text.length > 128 * 1024) throw new Error('消息为空或超过 128 KiB 上限。');
       if (attachments.length > 8 || new Set(attachments).size !== attachments.length) throw new Error('最多发送 8 个不同附件。');
-      const digest = createHash('sha256').update(JSON.stringify({ text, attachments, ...(nativeTaskId ? { nativeTaskId } : {}) })).digest('hex');
+      const nativeImageAttachments = await this.options.attachmentMetadata?.(id, [...attachments]);
+      assertAdmission();
+      if (nativeImageAttachments !== undefined && (!isNativeImageAttachments(nativeImageAttachments) || nativeImageAttachments.length !== attachments.length)) throw new Error('图片提交快照无效，请重新选择。');
+      const digest = createHash('sha256').update(JSON.stringify({ text, attachments, ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments } : {}) })).digest('hex');
       const state = this.state(id), receipt = state.receipts.find(item => item.requestId === requestId);
       if (receipt) {
         if (receipt.digest !== digest) throw new Error('同一消息提交标识不能用于不同内容。');
@@ -79,7 +85,7 @@ export class ChatQueue {
       }
       if (state.items.length >= 100) throw new Error('最多保留 100 条排队消息，请先移除部分消息。');
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
-      const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}) };
+      const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments: structuredClone(nativeImageAttachments) } : {}) };
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
         assertAdmission();
         item.attachmentNames = attachmentNames;
@@ -99,6 +105,10 @@ export class ChatQueue {
   hasActive(id: string) { return this.active.has(id) || this.priorities.has(id) || this.failedAcks.has(id); }
   isPrioritizing(id: string) { return this.priorities.has(id); }
   references(id: string, file: string) { return this.state(id).items.some(item => item.attachments.includes(file)); }
+  /** Preview checks must not restore, normalize, cache or persist a cold queue. */
+  referencesReadOnly(id: string, file: string) {
+    return (this.states.get(id) ?? this.storage.load(id)).items.some(item => item.attachments.includes(file));
+  }
   removeAttachment(id: string, file: string, remove: () => Promise<void>) {
     return this.serial(id, async () => {
       if (this.references(id, file)) throw new Error('附件正在被排队或执行中的消息使用，请先移除该排队消息。');

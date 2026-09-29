@@ -89,7 +89,7 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
   options.onNative?.(native);
   registry.register({
     providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,
-    capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: true, compactContext: true, liveConfig: false, attachments: false, export: true }),
+    capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: true, compactContext: true, liveConfig: false, attachments: true, export: true }),
     configuration: () => ({ schemaVersion: 1, defaults: createNativeConfig(), fields: [
       { key: 'connectionId', label: '模型连接', type: 'select', apply: 'stopped', options: [{ value: '', label: '请先在设置中配置连接' }, ...connections.list().connections.map(item => ({ value: item.id, label: item.name + (item.ready ? '' : '（未就绪）') }))] },
       { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。每次写入和命令均需单独审批。' },

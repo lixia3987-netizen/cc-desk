@@ -135,7 +135,7 @@ export class ChatArchive {
       for(;position>=0;position--){
         const message=await this.message(file,index,ids[position],fallback);
         incomplete ||= !!message.truncated;
-        const text=[message.text,message.toolName??'',message.input?JSON.stringify(message.input):''].join('\n');
+        const text=[message.text,message.toolName??'',message.input?JSON.stringify(message.input):'',...(message.nativeImageAttachments?.map(image=>image.name)??[])].join('\n');
         if(text.toLowerCase().includes(needle))hits.push({id:message.id,role:message.role,toolName:message.toolName,createdAt:message.createdAt,excerpt:excerpt(text,needle,Math.max(240,needle.length+60))});
         // Limit scan work as well as results. The continuation is explicit even when this segment has no matches.
         if(hits.length>=50||cursor-position>=1000)break;

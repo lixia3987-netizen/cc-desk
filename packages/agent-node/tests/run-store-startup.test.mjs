@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { canonicalJson } from '@cc-desk/agent-core';
-import { NativeRunStore } from '../dist/run-store.js';
+import { NativeRunStore, nativeSubmissionInputDigest } from '../dist/run-store.js';
 
 const sha = value => createHash('sha256').update(value).digest('hex');
 function runRequest(conversationId) {
@@ -213,4 +213,25 @@ test('live host startup permits pre-model automatic compaction; abandoned startu
   await f.reopen();
   assert.equal(f.store.getRecoveryReport().classification, 'unknown_effects');
   assert.throws(() => f.store.getCompactionSource(), { code: 'conversation_busy' });
+});
+
+
+test('image startup submission binds exact attachment hashes and legacy text startup still replays', async t => {
+  const f = await fixture(t), req = runRequest(f.conversationId);
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+  const imageAttachments = [{ name: 'picture.png', mimeType: 'image/png', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }];
+  req.configuration.imageAttachments = imageAttachments;
+  req.userItems = [{ role: 'user', content: [{ type: 'input_text', text: req.input }, { type: 'input_image', image_url: `data:image/png;base64,${bytes.toString('base64')}`, detail: 'auto' }] }];
+  const launch = startup(req, { inputDigest: nativeSubmissionInputDigest(req.input, imageAttachments) });
+  assert.notEqual(launch.inputDigest, sha(req.input));
+  await f.store.prepareStartup(launch);
+  await assert.rejects(f.store.beginRun({ ...req, configuration: { ...req.configuration, imageAttachments: [{ ...imageAttachments[0], sha256: 'a'.repeat(64) }] } }), { code: 'payload_mismatch' });
+  await assert.rejects(f.store.beginRun({ ...req, configuration: { ...req.configuration, imageAttachments: [] } }), { code: 'payload_mismatch' });
+  assert.equal((await f.store.beginRun(req)).kind, 'accepted');
+  const result = await finish(f.store, req);
+  await f.store.closeStartup(req.identity, launch.startupId);
+  await f.reopen();
+  assert.equal(f.store.lookupStartup(req.identity.requestId).inputDigest, launch.inputDigest);
+  assert.deepEqual((await f.store.beginRun(req)).result, result);
+  assert.throws(() => f.store.getCompactionSource(), { code: 'image_context_compaction_unsupported' });
 });

@@ -899,3 +899,41 @@ test('model response boundary rejects a concurrent stream while its prior tail p
   release(); await rejected;
   assert.deepEqual(projected, ['tail']);
 });
+
+const imageBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC', 'base64');
+const imageInput = { mimeType: 'image/png' as const, dataUrl: `data:image/png;base64,${imageBytes.toString('base64')}` };
+const imageMetadata = { name: 'picture.png', mimeType: 'image/png', bytes: imageBytes.length, sha256: createHash('sha256').update(imageBytes).digest('hex') };
+for (const forgery of ['missing', 'hash', 'bytes', 'content']) test(`image host rejects ${forgery} metadata before starting a worker`, async () => {
+  const request = clone({ ...run, images: [imageInput], configuration: { ...run.configuration, imageAttachments: [imageMetadata] } });
+  if (forgery === 'missing') request.configuration.imageAttachments = [];
+  if (forgery === 'hash') request.configuration.imageAttachments[0].sha256 = 'a'.repeat(64);
+  if (forgery === 'bytes') request.configuration.imageAttachments[0].bytes++;
+  if (forgery === 'content') request.images[0].dataUrl = 'data:image/png;base64,AA==';
+  const h = harness(async () => assert.fail('invalid image must not start'), { request });
+  await assert.rejects(h.promise, { code: 'configuration' }); assert.equal(h.forkOptions, undefined); assert.equal(h.journal.length, 0);
+});
+
+for (const protocol of ['responses', 'chat-completions'] as const) for (const forgery of ['drop', 'replace'] as const) test(`${protocol}: worker cannot ${forgery} selected image in beginRun`, async () => {
+  const request = clone({ ...run, images: [imageInput], configuration: { ...run.configuration, imageAttachments: [imageMetadata] } });
+  const h = harness(async worker => {
+    const image = protocol === 'responses' ? { type: 'input_image', image_url: imageInput.dataUrl, detail: 'auto' }
+      : { type: 'image_url', image_url: { url: imageInput.dataUrl, detail: 'auto' } };
+    const content: unknown[] = [protocol === 'responses' ? { type: 'input_text', text: run.input } : { type: 'text', text: run.input }];
+    if (forgery === 'replace') content.push(protocol === 'responses' ? { ...image, image_url: 'data:image/png;base64,AA==' }
+      : { ...image, image_url: { url: 'data:image/png;base64,AA==', detail: 'auto' } });
+    const initial = { input: request.input, userItems: [{ role: 'user', content }], protocol: { id: protocol === 'responses' ? 'openai-responses' : 'openai-chat-completions', version: 1 }, configuration: request.configuration, policyRevision: request.policyRevision };
+    await worker.rpc('store.beginRun', { ...initial, identity: request.identity, inputDigest: digest(initial) });
+  }, { request, model: { protocol, baseURL: 'http://127.0.0.1:1/v1', model: 'local', allowLoopbackHttp: true, apiKey: 'secret-key-sentinel' } });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(h.journal.length, 0);
+});
+
+test('worker cannot introduce unselected image input through a model response', async () => {
+  const h = harness(async worker => {
+    await begin(worker); await startAttempt(worker);
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response: {
+      outputItems: [{ type: 'message', role: 'user', content: [{ type: 'input_image', image_url: imageInput.dataUrl, detail: 'auto' }] }],
+      toolCalls: [], finishReason: 'completed', usage: null,
+    } } });
+  });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(h.journal.length, 1); assert.equal(h.events.length, 0);
+});

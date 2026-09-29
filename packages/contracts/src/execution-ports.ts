@@ -1,4 +1,4 @@
-import type { ChatAttention, ChatDecision, ChatPage, ChatPageOptions, ChatSearchPage, ChatSnapshot, ChatTurnResult, TaskState } from './chat.js';
+import type { NativeImageAttachment, ChatAttention, ChatDecision, ChatPage, ChatPageOptions, ChatSearchPage, ChatSnapshot, ChatTurnResult, TaskState } from './chat.js';
 import type { EngineConfig, SessionStatus, TerminalChunk } from './execution.js';
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
 
@@ -36,6 +36,8 @@ export interface ExecutionSubmission {
   requestId: string;
   /** Explicit user selection; never inferred from model text or queue position. */
   nativeTaskId?: string;
+  /** Host-bound image selection captured when the queued request was accepted. */
+  imageAttachments?: NativeImageAttachment[];
   source?: 'direct' | 'queue' | 'workflow';
   workflowRunId?: string;
   stageId?: string;

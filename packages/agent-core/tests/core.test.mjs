@@ -881,3 +881,42 @@ test('retry and compaction both consume the run budget while ordinary attempts k
   assert.deepEqual(attempts(f).map(event => event.attempt), [1, 2, 3])
   assert.equal(f.maintenance.length, 1)
 })
+
+test('image bytes enter the existing exact-input digest while text-only submissions stay byte compatible', async () => {
+  const submissions = []
+  for (const dataUrl of [undefined, 'data:image/png;base64,YQ==', 'data:image/png;base64,Yg==']) {
+    const f = fixture()
+    if (dataUrl) f.request.images = [{ mimeType: 'image/png', dataUrl }]
+    f.ports.model.userItems = (input, images) => {
+      if (!images?.length) return [{ role: 'user', content: input }]
+      const items = [{ role: 'user', content: [{ type: 'input_text', text: input }, { type: 'input_image', image_url: images[0].dataUrl, detail: 'auto' }] }]
+      images[0].dataUrl = 'data:image/png;base64,ZA==' // Adapter cannot mutate caller-owned attachment data.
+      return items
+    }
+    f.hooks.begin = begin => { submissions.push(copy(begin)) }
+    assert.equal((await f.run()).status, 'completed')
+    if (dataUrl) assert.equal(f.request.images[0].dataUrl, dataUrl)
+  }
+  assert.equal(new Set(submissions.map(begin => begin.inputDigest)).size, 3)
+  for (const begin of submissions) assert.equal(begin.inputDigest, digest(canonicalJson({ input: begin.input, userItems: begin.userItems, protocol: begin.protocol, configuration: begin.configuration, policyRevision: begin.policyRevision })))
+  assert.deepEqual(submissions[0].userItems, [{ role: 'user', content: 'do the task' }])
+})
+
+test('invalid image submissions fail before admission or any model work', async () => {
+  for (const images of [null, [{ mimeType: 'image/png', dataUrl: 'https://unapproved.invalid/image.png' }]]) {
+    const f = fixture()
+    f.request.images = images
+    await assert.rejects(f.run(), /Invalid user images/)
+    assert.deepEqual(f.order, [])
+  }
+})
+
+test('image maintenance refusal stops without an extra model request or a persistence recovery barrier', async () => {
+  const f = maintenanceFixture()
+  f.hooks.maintain = () => ({ kind: 'failed', reason: 'context_maintenance_images_unsupported', modelRequests: 0, usage: null })
+  const result = await f.run()
+  assert.equal(result.status, 'failed')
+  assert.equal(result.reason, 'context_maintenance_images_unsupported')
+  assert.equal(result.modelRequests, 1)
+  assert.equal(result.committed, true)
+})

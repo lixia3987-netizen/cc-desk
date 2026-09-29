@@ -5,6 +5,7 @@ import type {
 } from './types.js'
 import { contextBudgetUsage } from './context.js'
 import { validateModelFailureDiagnostic } from './recovery.js'
+import { validateUserImages } from './images.js'
 
 export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxModelRequests: 30,
@@ -65,7 +66,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   checkBudget(budget)
   if (request.modelRetry !== undefined && !['off', 'safe_transient'].includes(request.modelRetry)) throw new Error('Invalid model retry policy')
   const identity = clone(request.identity)
-  const userItems = clone(model.userItems(request.input))
+  validateUserImages(request.images === undefined ? [] : request.images)
+  const userItems = clone(model.userItems(request.input, request.images === undefined ? undefined : clone(request.images)))
   const configuration = clone(request.configuration)
   const inputDigest = await host.digest(canonicalJson({
     input: request.input, userItems, protocol: { ...model.protocol }, configuration, policyRevision: request.policyRevision,
@@ -193,7 +195,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
         !Array.isArray(maintained.context.items) || byteLength(maintained.context) >= byteLength(context))) {
         throw new Error('Invalid compacted context')
       }
-      if (maintained.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful'].includes(maintained.reason)) {
+      if (maintained.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful', 'context_maintenance_images_unsupported'].includes(maintained.reason)) {
         throw new Error('Invalid context maintenance failure')
       }
     } catch (error) {

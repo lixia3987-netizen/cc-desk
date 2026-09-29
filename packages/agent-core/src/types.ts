@@ -69,9 +69,11 @@ export interface ToolResult {
   /** Actual changes/exit status; stored with the bounded model output. */
   effects?: JsonValue
 }
+/** Host-validated local image; remote URLs and file references are not accepted. */
+export interface UserImage { mimeType: 'image/png' | 'image/jpeg'; dataUrl: string }
 export interface ModelPort {
   readonly protocol: ProtocolVersion
-  userItems(input: string): JsonValue[]
+  userItems(input: string, images?: UserImage[]): JsonValue[]
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[]
   estimateInputTokens(context: ModelContext): number
   generate(request: ModelRequest): Promise<ModelResponse>
@@ -183,6 +185,7 @@ export interface RuntimeHost {
 export interface AgentRunRequest {
   identity: RunIdentity
   input: string
+  images?: UserImage[]
   configuration: JsonObject
   policyRevision: string
   signal: AbortSignal
@@ -201,7 +204,7 @@ export interface ContextMaintenanceRequest {
   remainingActiveMs: number
   signal: AbortSignal
 }
-export type ContextMaintenanceFailureReason = 'context_maintenance_failed' | 'context_maintenance_unhelpful'
+export type ContextMaintenanceFailureReason = 'context_maintenance_failed' | 'context_maintenance_unhelpful' | 'context_maintenance_images_unsupported'
 export type ContextMaintenanceResult =
   | { kind: 'unchanged'; modelRequests: 0; usage: null }
   | { kind: 'compacted'; modelRequests: 1; usage: Usage | null; context: ModelContext }

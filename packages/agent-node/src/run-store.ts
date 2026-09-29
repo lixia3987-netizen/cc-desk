@@ -6,14 +6,21 @@ import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
-import { validateModelFailureDiagnostic } from '@cc-desk/agent-core';
+import { contextHasUserImages, validateModelFailureDiagnostic } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
+import { readStoreSnapshot } from './store-read.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
+
+/** Keep pre-image request identities byte-for-byte compatible with existing journals. */
+export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue): string {
+  const value = Array.isArray(imageAttachments) && imageAttachments.length ? canonical({ input, imageAttachments }) : input;
+  return createHash('sha256').update(value).digest('hex');
+}
 
 export interface RunStoreLimits {
   maxJournalBytes: number;
@@ -359,6 +366,21 @@ export class NativeRunStore implements RunStore {
     } catch (error) { await release().catch(() => undefined); throw error; }
   }
 
+  /** Read immutable submission bytes without acquiring writer ownership or recovering runs. */
+  static async readSubmission(options: Pick<NativeRunStoreOptions, 'rootDirectory' | 'conversationId' | 'limits'>, runId: string): Promise<BeginRunRequest | undefined> {
+    assertUuid(options.conversationId, 'conversationId');
+    assertUuid(runId, 'runId');
+    const directory = path.join(path.resolve(options.rootDirectory), options.conversationId);
+    const snapshot = new NativeRunStore(options, directory, async () => {});
+    return readStoreSnapshot(directory, snapshot.limits, (journal, checkpoint) => {
+      snapshot.replaySnapshot(journal, checkpoint);
+      const run = snapshot.runs.get(runId);
+      if (!run) return undefined;
+      const started = snapshot.records[run.startedSeq - 1];
+      return started?.event.type === 'run_started' ? clone(started.event.request) : undefined;
+    });
+  }
+
   private exclusive<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.tail.then(operation);
     this.tail = result.catch(() => undefined);
@@ -401,6 +423,26 @@ export class NativeRunStore implements RunStore {
     }
     const journal = await readRegularFile(path.join(this.directory, 'journal.jsonl'), this.limits.maxJournalBytes);
     const rawCheckpoint = await readRegularFile(path.join(this.directory, 'checkpoint.json'), this.limits.maxCheckpointBytes);
+    if (journal !== undefined) {
+      const journalStat = await lstat(path.join(this.directory, 'journal.jsonl'));
+      this.journalIdentity = { dev: journalStat.dev, ino: journalStat.ino };
+    }
+    if (!this.replaySnapshot(journal, rawCheckpoint)) {
+      await this.commit(undefined, { type: 'conversation_created' });
+      return;
+    }
+    // Even a model-only interrupted run may have owned external resources in the
+    // old main process. The host must verify cleanup before opening a new attempt.
+    for (const run of this.runs.values()) {
+      if (run.status === 'active') await this.commit(undefined, { type: 'run_recovered', runId: run.identity.runId, reason: 'Previous host stopped before committing a terminal run; resources and prepared effects require verification' });
+    }
+    for (const [requestId, startups] of this.startups) {
+      if ([...startups.values()].some(startup => startup.closedSeq === undefined)) this.recoveredStartupRequests.add(requestId);
+    }
+  }
+
+  /** Shared pure replay: both writer startup and read-only retrieval use every transition check. */
+  private replaySnapshot(journal: string | undefined, rawCheckpoint: string | undefined): boolean {
     let checkpoint: Checkpoint | undefined;
     if (rawCheckpoint !== undefined) {
       try { checkpoint = JSON.parse(rawCheckpoint) as Checkpoint; } catch { fail('corrupt_store', 'Checkpoint is not valid JSON'); }
@@ -411,13 +453,10 @@ export class NativeRunStore implements RunStore {
     }
     if (journal === undefined) {
       if (checkpoint) fail('corrupt_store', 'Checkpoint has no journal');
-      await this.commit(undefined, { type: 'conversation_created' });
-      return;
+      return false;
     }
     if (!journal.length || !journal.endsWith('\n')) fail('corrupt_store', 'Journal is empty or has an uncommitted/truncated tail');
     this.journalBytes = Buffer.byteLength(journal);
-    const journalStat = await lstat(path.join(this.directory, 'journal.jsonl'));
-    this.journalIdentity = { dev: journalStat.dev, ino: journalStat.ino };
     const lines = journal.slice(0, -1).split('\n');
     if (lines.length > this.limits.maxRecords) fail('limit_exceeded', 'Journal record count exceeds configured limit');
     for (const line of lines) {
@@ -434,14 +473,7 @@ export class NativeRunStore implements RunStore {
       if (checkpoint?.seq === record.seq && (checkpoint.journalHash !== record.hash || !equal(checkpoint.context, this.context))) fail('corrupt_store', 'Checkpoint does not match its committed journal sequence');
     }
     if (this.records[0]?.event.type !== 'conversation_created' || (checkpoint && checkpoint.seq > this.records.length)) fail('corrupt_store', 'Journal/checkpoint sequence is incomplete');
-    // Even a model-only interrupted run may have owned external resources in the
-    // old main process. The host must verify cleanup before opening a new attempt.
-    for (const run of this.runs.values()) {
-      if (run.status === 'active') await this.commit(undefined, { type: 'run_recovered', runId: run.identity.runId, reason: 'Previous host stopped before committing a terminal run; resources and prepared effects require verification' });
-    }
-    for (const [requestId, startups] of this.startups) {
-      if ([...startups.values()].some(startup => startup.closedSeq === undefined)) this.recoveredStartupRequests.add(requestId);
-    }
+    return true;
   }
 
   private validateEvent(identity: RunIdentity | undefined, event: StoreEvent): void {
@@ -496,7 +528,7 @@ export class NativeRunStore implements RunStore {
           if (requestId === identity.requestId) {
             if (!equal(startup.identity, identity)) fail('stale_owner', 'Only the startup owner may begin its associated run');
             if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot begin a new run');
-            if (startup.inputDigest !== createHash('sha256').update(request.input).digest('hex') || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
+            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments) || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
           } else if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
         }
       }
@@ -1132,6 +1164,7 @@ export class NativeRunStore implements RunStore {
   /** Complete durable model/tool boundary. The execution worker cannot invoke this host API. */
   getRunCompactionSource(identity: RunIdentity, expectedContext?: ModelContext): RunCompactionSource {
     this.writable();
+    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (expectedContext !== undefined && !equal(expectedContext, this.context)) fail('context_mismatch', 'Worker context differs from the durable run context');
     const { boundary, goals } = this.runCompactionBoundary(identity);
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
@@ -1207,6 +1240,7 @@ export class NativeRunStore implements RunStore {
   }
 
   private compactionBoundary(keepRecentTurns: number): number {
+    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (!Number.isSafeInteger(keepRecentTurns) || keepRecentTurns < 1 || keepRecentTurns > 10_000) fail('invalid_limits', 'At least one complete recent turn must be retained');
     if (this.recoveryRequired || [...this.runs.values()].some(run => run.status === 'active')) fail('conversation_busy', 'Context maintenance requires an idle conversation without recovery barriers');
     if (!this.context || this.contextTurns.length <= keepRecentTurns) fail('nothing_to_compact', 'At least one older and one retained complete turn are required');

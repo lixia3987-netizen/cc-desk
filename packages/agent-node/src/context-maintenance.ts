@@ -1,4 +1,5 @@
 import type { JsonObject, JsonValue, ModelContext, ProtocolVersion, ToolCall, ToolResult } from '@cc-desk/agent-core';
+import { validateUserImages } from '@cc-desk/agent-core';
 import { RunStoreError } from './store-files.js';
 
 export const MAX_CONTEXT_SUMMARY_BYTES = 32 * 1024;
@@ -6,6 +7,42 @@ export const MAX_RUN_CONTINUITY_BYTES = 32 * 1024;
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const invalid = (): never => { throw new RunStoreError('unsupported_protocol', 'Context maintenance requires complete supported native protocol items'); };
+
+/** Only the host's bounded inline image representation is accepted in user messages. */
+function validateUserContent(content: JsonValue, chat: boolean): void {
+  if (typeof content === 'string') return;
+  if (!Array.isArray(content) || !content.length) return invalid();
+  const images = [];
+  for (const part of content) {
+    if (!object(part)) return invalid();
+    if (part.type === (chat ? 'text' : 'input_text')) {
+      if (Object.keys(part).some(key => !['type', 'text'].includes(key)) || typeof part.text !== 'string') return invalid();
+    } else if (part.type === (chat ? 'image_url' : 'input_image')) {
+      if (Object.keys(part).some(key => !(chat ? ['type', 'image_url'] : ['type', 'image_url', 'detail']).includes(key))) return invalid();
+      const reference = chat ? part.image_url : part;
+      if (!object(reference) || chat && Object.keys(reference).some(key => !['url', 'detail'].includes(key)) || reference.detail !== 'auto') return invalid();
+      const dataUrl = chat ? reference.url : reference.image_url;
+      if (typeof dataUrl !== 'string') return invalid();
+      const mimeType = dataUrl.startsWith('data:image/png;base64,') ? 'image/png' : dataUrl.startsWith('data:image/jpeg;base64,') ? 'image/jpeg' : '';
+      images.push({ mimeType, dataUrl });
+    } else return invalid();
+  }
+  try { validateUserImages(images); } catch { return invalid(); }
+}
+
+/** Preserve passive Responses extensions while rejecting unapproved image references. */
+export function validateResponsesImageInputs(context: ModelContext): void {
+  for (const item of context.items) {
+    if (!object(item)) continue;
+    if (['input_image', 'output_image', 'image_url'].includes(item.type as string)) return invalid();
+    if (item.role === 'user') {
+      if (item.type !== undefined && item.type !== 'message') return invalid();
+      validateUserContent(item.content!, false);
+    }
+    else if (Array.isArray(item.content) && item.content.some(part => object(part) &&
+      ['input_image', 'output_image', 'image_url'].includes(part.type as string))) return invalid();
+  }
+}
 
 /** Validate protocol structure without projecting away reasoning or tool fields. */
 export function responsesPendingCalls(context: ModelContext): ToolCall[] {
@@ -22,7 +59,8 @@ export function responsesPendingCalls(context: ModelContext): ToolCall[] {
       // Provider reasoning, encrypted content and extensions stay byte-for-byte JSON values.
     } else if (item.type === 'message' || item.type === undefined && item.role !== undefined) {
       if (pending.size || !['user', 'assistant'].includes(item.role as string)) return invalid();
-      if (typeof item.content !== 'string') {
+      if (item.role === 'user') validateUserContent(item.content!, false);
+      else if (typeof item.content !== 'string') {
         if (!Array.isArray(item.content) || !item.content.every(part => object(part) &&
           (['input_text', 'output_text'].includes(part.type as string) && typeof part.text === 'string' || part.type === 'refusal' && typeof part.refusal === 'string'))) return invalid();
       }
@@ -68,7 +106,8 @@ export function chatCompletionsPendingCalls(context: ModelContext): ToolCall[] {
     if (item.role === 'tool') {
       if (Object.keys(item).some(key => !['role', 'tool_call_id', 'content'].includes(key)) || !nonempty(item.tool_call_id) || typeof item.content !== 'string' || !pending.delete(item.tool_call_id)) return invalid();
     } else if (item.role === 'user') {
-      if (Object.keys(item).some(key => !['role', 'content'].includes(key)) || pending.size || typeof item.content !== 'string') return invalid();
+      if (Object.keys(item).some(key => !['role', 'content'].includes(key)) || pending.size) return invalid();
+      validateUserContent(item.content!, true);
     } else if (item.role === 'assistant') {
       if (Object.keys(item).some(key => !['role', 'content', 'refusal', 'tool_calls'].includes(key)) || pending.size || item.content !== null && typeof item.content !== 'string' ||
           item.refusal !== undefined && item.refusal !== null && typeof item.refusal !== 'string') return invalid();
@@ -104,6 +143,15 @@ export function nativeResponseCalls(protocol: ProtocolVersion, items: JsonValue[
     return chatCompletionsPendingCalls({ protocol, items });
   }
   if (protocol.id !== 'openai-responses' || protocol.version !== 1) return invalid();
+  // Worker output cannot introduce a new user attachment or turn model image
+  // output into previously approved input. Keep unrelated passive extensions.
+  for (const item of items) {
+    if (!object(item) || item.role !== undefined && item.role !== 'assistant' ||
+        item.type === 'message' && item.role !== 'assistant' ||
+        ['input_image', 'output_image', 'image_url'].includes(item.type as string) ||
+        Array.isArray(item.content) && item.content.some(part => object(part) &&
+          ['input_image', 'output_image', 'image_url'].includes(part.type as string))) return invalid();
+  }
   return items.filter(item => object(item) && item.type === 'function_call').map(item => {
     const call = item as JsonObject;
     if (!nonempty(call.call_id) || !nonempty(call.name) || typeof call.arguments !== 'string') return invalid();

@@ -16,7 +16,7 @@ interface ChatPorts {
   runtime: Pick<TerminalExecutions, 'has'>;
   workflows: Pick<WorkflowEngine, 'isSessionBusy'>;
   queue: ChatQueue;
-  attachments: Pick<Attachments, 'validate' | 'add' | 'list' | 'removeFile'>;
+  attachments: Pick<Attachments, 'validate' | 'add' | 'addNative' | 'list' | 'removeFile'>;
   structured(id: string): Session;
   assertUnlocked(session: Session): void;
   captureAdmission(id: string): () => void;
@@ -61,6 +61,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     const session = ports.structured(id);
     if (session.archived) throw new Error('请先取消会话归档，再添加附件。');
     ports.assertUnlocked(session);
+    return session;
   };
   handle('chat:snapshot', idSchema, async id => {
     ports.structured(id);
@@ -127,22 +128,23 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   });
   handle('files:pick', idSchema, async id => {
     const checkAdmission = ports.captureAdmission(id);
-    assertCanStageAttachments(id);
+    const session = assertCanStageAttachments(id);
+    const native = session.execution.providerId === 'native';
     const result = await dialog.showOpenDialog(ports.getWindow()!, {
-      title: '添加上下文附件', properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '文本、图片与 PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'py', 'yaml', 'yml', 'html', 'css', 'xml', 'log'] }],
+      title: native ? '添加图片（最多 4 张，合计 1 MiB）' : '添加上下文附件', properties: ['openFile', 'multiSelections'],
+      filters: native ? [{ name: 'PNG / JPEG 图片', extensions: ['png', 'jpg', 'jpeg'] }] : [{ name: '文本、图片与 PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'py', 'yaml', 'yml', 'html', 'css', 'xml', 'log'] }],
     });
     if (result.canceled) return [];
     checkAdmission();
     // A native picker may outlive deletion, archiving or maintenance of its source session.
-    assertCanStageAttachments(id);
-    return ports.attachments.add(id, result.filePaths);
+    const current = assertCanStageAttachments(id);
+    return current.execution.providerId === 'native' ? ports.attachments.addNative(id, result.filePaths) : ports.attachments.add(id, result.filePaths);
   });
   handle('files:add-dropped', droppedFilesSchema, ({ id, paths }) => {
-    assertCanStageAttachments(id);
+    const session = assertCanStageAttachments(id);
     // Only stage private copies. Model execution and content interpretation stay
     // in the existing explicit send/queue flow, even while another turn is running.
-    return ports.attachments.add(id, paths);
+    return session.execution.providerId === 'native' ? ports.attachments.addNative(id, paths) : ports.attachments.add(id, paths);
   });
   handle('files:attachments', idSchema, async id => {
     ports.structured(id);

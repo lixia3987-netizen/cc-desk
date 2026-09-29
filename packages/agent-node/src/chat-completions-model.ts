@@ -1,5 +1,5 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
-import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { chatCompletionsPendingCalls } from './context-maintenance.js'
 import { classifyNativeModelFailure } from './model-failure.js'
@@ -142,7 +142,12 @@ export class ChatCompletionsModel implements ModelPort {
     this.#maxRequestBytes = positive(options.maxRequestBytes, 8 * 1024 * 1024, 64 * 1024 * 1024)
   }
 
-  userItems(input: string): JsonValue[] { return [{ role: 'user', content: input }] }
+  userItems(input: string, images: UserImage[] = []): JsonValue[] {
+    validateUserImages(images)
+    return [{ role: 'user', content: images.length
+      ? [{ type: 'text', text: input }, ...images.map(image => ({ type: 'image_url', image_url: { url: image.dataUrl, detail: 'auto' } }))]
+      : input }]
+  }
 
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[] {
     return [{ role: 'tool', tool_call_id: call.id, content: JSON.stringify(result) }]

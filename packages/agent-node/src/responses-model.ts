@@ -1,6 +1,7 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
-import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { classifyNativeModelFailure } from './model-failure.js'
+import { validateResponsesImageInputs } from './context-maintenance.js'
 
 export interface ResponsesModelOptions {
   /** API base, normally https://api.openai.com/v1. /responses is appended. */
@@ -206,6 +207,7 @@ function completeResponse(response: JsonObject): ModelResponse {
   let refused = false
   for (const item of response.output) {
     if (!object(item) || !nonempty(item.type)) return failure('schema', 'Invalid model output item.')
+    if (['input_image', 'output_image', 'image_url'].includes(item.type)) return failure('schema', 'Model image output is not supported.')
     if (item.status !== undefined && item.status !== 'completed') return failure('incomplete', 'The model returned an incomplete output item.')
     if (item.type === 'function_call') {
       if (!nonempty(item.call_id) || !nonempty(item.name) || typeof item.arguments !== 'string' || ids.has(item.call_id)) {
@@ -220,6 +222,7 @@ function completeResponse(response: JsonObject): ModelResponse {
       if (item.role !== 'assistant' || !Array.isArray(item.content)) return failure('schema', 'Invalid model message.')
       for (const part of item.content) {
         if (!object(part) || !nonempty(part.type)) return failure('schema', 'Invalid model message content.')
+        if (['input_image', 'output_image', 'image_url'].includes(part.type)) return failure('schema', 'Model image output is not supported.')
         if (part.type === 'refusal') {
           if (typeof part.refusal !== 'string') return failure('schema', 'Invalid model refusal.')
           refused = true
@@ -268,7 +271,12 @@ export class ResponsesModel implements ModelPort {
     this.#maxRequestBytes = positive(options.maxRequestBytes, 8 * 1024 * 1024, 64 * 1024 * 1024)
   }
 
-  userItems(input: string): JsonValue[] { return [{ role: 'user', content: input }] }
+  userItems(input: string, images: UserImage[] = []): JsonValue[] {
+    validateUserImages(images)
+    return [{ role: 'user', content: images.length
+      ? [{ type: 'input_text', text: input }, ...images.map(image => ({ type: 'input_image', image_url: image.dataUrl, detail: 'auto' }))]
+      : input }]
+  }
 
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[] {
     return [{ type: 'function_call_output', call_id: call.id, output: JSON.stringify(result) }]
@@ -289,6 +297,9 @@ export class ResponsesModel implements ModelPort {
   async generate(request: ModelRequest): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
+    }
+    try { validateResponsesImageInputs(request.context) } catch {
+      return failure('protocol', 'The saved conversation contains unsupported image inputs.')
     }
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(responsesTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')

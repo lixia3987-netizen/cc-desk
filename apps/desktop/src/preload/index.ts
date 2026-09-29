@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { ChatSnapshotVersion, TaskState } from '../shared/chat';
 const api: DesktopAPI = {
+  previewNativeImage: input => ipcRenderer.invoke('native:image-preview', input),
   nativeMcp: {
     list: () => ipcRenderer.invoke('native:mcp-connections-list'),
     upsert: input => ipcRenderer.invoke('native:mcp-connections-upsert', input),
