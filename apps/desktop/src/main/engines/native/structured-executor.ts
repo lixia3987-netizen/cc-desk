@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJson, type ApprovalDecision, type ApprovalRequest, type UserImage, type RunIdentity, type RunResult, type RunStore, type ToolPort } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type ApprovalDecision, type ApprovalRequest, type UserImage, type RunIdentity, type RunResult, type RunStore, type ToolPort } from '@cc-desk/agent-core';
 import { NativeRunStore, nativeSubmissionInputDigest } from '@cc-desk/agent-node/run-store';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { isNativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
@@ -14,7 +14,8 @@ import { createLocalToolPort } from '@cc-desk/agent-node/tools';
 import { ProcessSupervisor } from '@cc-desk/agent-node/process-supervisor';
 import { loadProjectInstructions } from '@cc-desk/agent-node/project-instructions';
 import { composeToolPorts, createMcpToolPort, type ManagedMcpToolPort } from '@cc-desk/agent-node/mcp-tools';
-import { extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
+import { createNativeModel, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
+import { contextSummaryItem } from '@cc-desk/agent-node/context-maintenance';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import type { ExecutionSubmission } from '@cc-desk/contracts/execution-ports';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
@@ -645,7 +646,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active_time_budget: '本次执行时长预算已耗尽，未发起后续模型请求；请调整预算或缩小任务后重新发送。',
       nothing_to_compact: '暂无可压缩的完整旧回合；至少需要保留一个最近完整回合。',
       compaction_not_smaller: '模型摘要未能缩小上下文，本次未替换历史；摘要请求仍可能产生费用。',
-      image_context_compaction_unsupported: '含图片的上下文暂不支持压缩，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。',
+      image_context_compaction_unsupported: '仅可压缩首张图片所在轮次之前的完整纯文本历史，当前没有这样的历史，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。',
       unsupported_protocol: '记录包含暂不支持压缩或恢复的协议内容，原始记录保持不变。',
       stale_context: '上下文记录已改变，请刷新后重试。',
       limit_exceeded: '本地记录达到容量限制，请检查数据目录；压缩不会删除原始记录或释放账本空间。',
@@ -834,6 +835,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
       const previous = ledger.listRuns().at(-1)?.configuration;
       if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
+      const model = { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
+      // Manual maintenance has no current task/tool catalog. Check the retained
+      // context itself here; sending rechecks the complete request with its rules.
+      const minimum = { ...source.retainedContext, items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] };
+      if (contextBudgetUsage(minimum, createNativeModel(model).estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
+        throw new Error('必须保留的上下文已超过运行预算，未调用摘要模型；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
+      }
       await ledger.close(); operation.store = undefined;
       ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: this.session(id).execution.conversationId!, forbiddenValues: [connection.apiKey] });
       operation.store = ledger;
@@ -842,7 +850,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const identity: RunIdentity = { sessionId: id, conversationId: ledger.conversationId, runId: randomUUID(), requestId: `compact:${expectedHead}`, workerGeneration: Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1 };
       operation.identity = identity;
       const result = await summarizeNativeContext({ identity, context: source.context,
-        model: { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
+        model,
         maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, maxActiveMs: config.maxActiveMs,
         signal: operation.abort.signal, worker: this.options.worker });
       this.assertContextOperation(id, operation);

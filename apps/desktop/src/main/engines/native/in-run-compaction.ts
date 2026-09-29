@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { contextHasUserImages, contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type RunIdentity, type Usage } from '@cc-desk/agent-core';
+import { contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type RunIdentity, type Usage } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
@@ -27,7 +27,6 @@ export function createInRunCompaction(options: {
     if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
     if (request.modelRequests < 1 || request.budget.maxModelRequests - request.modelRequests < 2 ||
         contextBudgetUsage(request.context, model.estimateInputTokens(request.context), request.budget).status === 'within_budget') return unchanged();
-    if (contextHasUserImages(request.context)) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_images_unsupported' };
     maintaining = true;
     let phaseStarted = false;
     try {
@@ -37,6 +36,7 @@ export function createInRunCompaction(options: {
       let source;
       try { source = options.ledger.getRunCompactionSource(options.identity, request.context); }
       catch (error) {
+        if (errorCode(error) === 'image_context_compaction_unsupported') return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_images_unsupported' };
         if (['nothing_to_compact', 'commands_active'].includes(errorCode(error) ?? '')) return unchanged();
         throw error;
       }

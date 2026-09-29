@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { canonicalJson, contextHasUserImages, contextBudgetUsage, DEFAULT_RUN_BUDGET, type JsonValue, type ModelContext, type RunIdentity, type UserImage } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type JsonValue, type ModelContext, type RunIdentity, type UserImage } from '@cc-desk/agent-core';
 import { nativeSubmissionInputDigest, type NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
+import { contextSummaryItem } from '@cc-desk/agent-node/context-maintenance';
 import type { NativeImageAttachment } from '@cc-desk/contracts/chat';
 import type { parseNativeConfig } from './config';
-import { summarizeNativeContext } from './context-summary';
+import { prepareNativeContextSummary, summarizeNativeContext } from './context-summary';
 import type { runNativeWorker } from './worker-host';
 
 type Config = ReturnType<typeof parseNativeConfig>;
@@ -49,7 +50,6 @@ export async function autoCompactBeforeSend(options: {
   const estimator = createNativeModel({ ...model, instructions: options.instructions });
   const usage = contextBudgetUsage(pending, estimator.estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'within_budget') return { compacted: false, remainingRequests };
-  if (contextHasUserImages(pending)) throw new Error('含图片的上下文暂不支持自动压缩，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。');
   // A large new message/instruction set cannot be fixed by summarizing old history.
   const minimum = pendingNativeContext({ protocol: context.protocol, items: [] }, input, model, images);
   if (contextBudgetUsage(minimum, estimator.estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
@@ -62,6 +62,14 @@ export async function autoCompactBeforeSend(options: {
     throw error;
   }
   if (previous || ledger.getAutoCompactionForCurrentContext()) throw blocked();
+  // Images pin the entire suffix from their first turn. Even the shortest
+  // summary must fit alongside that suffix, this input, instructions and tools.
+  const retainedMinimum = pendingNativeContext({ ...source.retainedContext,
+    items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] }, input, model, images);
+  if (contextBudgetUsage(retainedMinimum, estimator.estimateInputTokens(retainedMinimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
+    throw new Error('必须保留的上下文、本次输入、项目指令与工具定义已超过运行预算，未调用自动摘要；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
+  }
+  prepareNativeContextSummary({ context: source.context, model, maxInputTokens: config.maxInputTokens, forbiddenValues: options.forbiddenValues });
   if (config.maxModelRequests < 2) throw new Error('自动压缩需要为摘要和本次任务各保留一次请求；请提高模型请求次数上限，或关闭自动压缩后重新发送。');
   const remainingMs = Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
   if (remainingMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');

@@ -94,6 +94,8 @@ export interface ContextCompactionSource {
   sourceSeq: number;
   /** Only the older prefix is sent for summarization; retained turns are excluded. */
   context: ModelContext;
+  /** Exact goals and complete suffix that a summary cannot remove. */
+  retainedContext: ModelContext;
   beforeBytes: number;
   scope: 'prefix';
 }
@@ -136,8 +138,6 @@ export interface AutoCompactionAttempt extends AutoCompactionRequest {
 }
 export interface RunCompactionSource extends ContextCompactionSource {
   contextHash: string;
-  /** Irreducible exact goals and latest complete model/tool batch. */
-  retainedContext: ModelContext;
 }
 export interface RunCompactionRequest { requestId: string; contextHash: string }
 export interface RunCompactionAttempt extends RunCompactionRequest {
@@ -1143,7 +1143,16 @@ export class NativeRunStore implements RunStore {
     });
   }
 
-  private runCompactionBoundary(identity: RunIdentity): { boundary: number; goals: JsonValue[]; currentStart: number } {
+  /** Images pin their entire original turn and every following item. */
+  private firstImageTurnStart(): number | undefined {
+    if (!this.context || !contextHasUserImages(this.context)) return undefined;
+    const imageIndex = this.context.items.findIndex(item => contextHasUserImages({ protocol: this.context!.protocol, items: [item] }));
+    const turn = this.contextTurns.filter(item => item.start <= imageIndex).at(-1);
+    if (!turn || turn.start === 0) fail('image_context_compaction_unsupported', 'No complete text-only prefix precedes the first image turn');
+    return turn.start;
+  }
+
+  private runCompactionBoundary(identity: RunIdentity): { boundary: number; goals: JsonValue[]; currentStart: number; imageSuffix?: true } {
     const run = this.activeOwner(identity);
     if (this.recoveryRequired) fail('recovery_required', 'Context maintenance cannot cross a recovery barrier');
     const model = this.modelRequests.get(identity.runId)?.at(-1);
@@ -1152,19 +1161,22 @@ export class NativeRunStore implements RunStore {
     if ([...run.tools.values()].some(tool => uncertainCommand(tool))) fail('commands_active', 'In-turn compaction waits for all command handles to finish');
     if (!this.context) fail('nothing_to_compact', 'No model context is available');
     requireCompleteContext(this.context);
+    const imageStart = this.firstImageTurnStart();
     const batch = this.contextBatches.filter(item => item.runId === identity.runId).at(-1);
     if (!batch || !this.contextBatches.some(item => item.start < batch.start)) fail('nothing_to_compact', 'An older complete batch and a retained current batch are required');
     const start = this.records[run.startedSeq - 1].event;
     if (start.type !== 'run_started') fail('corrupt_store', 'Current run has no original input');
     const firstRun = this.runs.values().next().value!;
     const sameOriginal = firstRun.identity.runId === identity.runId;
+    // The whole current turn is already in this suffix, so do not copy its
+    // input ahead of the summary or lose the earlier retained turns/batches.
+    if (imageStart !== undefined) return { boundary: imageStart, goals: clone(this.originalUserItems!), currentStart: 0, imageSuffix: true };
     return { boundary: batch.start, goals: [...clone(this.originalUserItems!), ...(sameOriginal ? [] : clone(start.request.userItems))], currentStart: sameOriginal ? 0 : this.originalUserItems!.length };
   }
 
   /** Complete durable model/tool boundary. The execution worker cannot invoke this host API. */
   getRunCompactionSource(identity: RunIdentity, expectedContext?: ModelContext): RunCompactionSource {
     this.writable();
-    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (expectedContext !== undefined && !equal(expectedContext, this.context)) fail('context_mismatch', 'Worker context differs from the durable run context');
     const { boundary, goals } = this.runCompactionBoundary(identity);
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
@@ -1194,7 +1206,7 @@ export class NativeRunStore implements RunStore {
     if (!attempt || attempt.requestId !== input.requestId || attempt.contextHash !== input.contextHash || attempt.status !== 'attempted') fail('compaction_unavailable', 'In-turn compaction requires an unused durable reservation');
     const source = this.getRunCompactionSource(identity);
     if (source.contextHash !== input.contextHash) fail('stale_context', 'Run context changed while producing the summary');
-    const { boundary, goals, currentStart } = this.runCompactionBoundary(identity);
+    const { boundary, goals, currentStart, imageSuffix } = this.runCompactionBoundary(identity);
     const prefix = [...goals, contextSummaryItem(input.summary, this.context!.protocol), runContinuityItem(input.continuity, this.context!.protocol)];
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
     requireCompleteContext(context);
@@ -1202,7 +1214,10 @@ export class NativeRunStore implements RunStore {
     if (afterBytes >= source.beforeBytes) fail('compaction_not_smaller', 'In-turn summary would not reduce the model context');
     if (Buffer.byteLength(canonical({ schemaVersion: 1, conversationId: this.conversationId, seq: this.records.length + 1, journalHash: ZERO_HASH, context, hash: ZERO_HASH })) > this.limits.maxCheckpointBytes) fail('limit_exceeded', 'Compacted context exceeds checkpoint limit');
     return { requestId: input.requestId, contextHash: input.contextHash, summary: input.summary, continuity: input.continuity, usage: clone(input.usage), beforeBytes: source.beforeBytes, afterBytes, context,
-      retainedTurns: [{ runId: identity.runId, start: currentStart }], retainedBatches: [{ runId: identity.runId, start: prefix.length }] };
+      retainedTurns: imageSuffix ? this.contextTurns.filter(turn => turn.start >= boundary).map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length }))
+        : [{ runId: identity.runId, start: currentStart }],
+      retainedBatches: imageSuffix ? this.contextBatches.filter(batch => batch.start >= boundary).map(batch => ({ runId: batch.runId, start: batch.start - boundary + prefix.length }))
+        : [{ runId: identity.runId, start: prefix.length }] };
   }
 
   /** Construct and publish the complete replacement in one serialized append+fsync. */
@@ -1240,12 +1255,12 @@ export class NativeRunStore implements RunStore {
   }
 
   private compactionBoundary(keepRecentTurns: number): number {
-    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (!Number.isSafeInteger(keepRecentTurns) || keepRecentTurns < 1 || keepRecentTurns > 10_000) fail('invalid_limits', 'At least one complete recent turn must be retained');
     if (this.recoveryRequired || [...this.runs.values()].some(run => run.status === 'active')) fail('conversation_busy', 'Context maintenance requires an idle conversation without recovery barriers');
+    const imageStart = this.firstImageTurnStart();
     if (!this.context || this.contextTurns.length <= keepRecentTurns) fail('nothing_to_compact', 'At least one older and one retained complete turn are required');
     requireCompleteContext(this.context);
-    return this.contextTurns[this.contextTurns.length - keepRecentTurns].start;
+    return Math.min(this.contextTurns[this.contextTurns.length - keepRecentTurns].start, imageStart ?? Infinity);
   }
 
   getCompactionSource(options: { keepRecentTurns?: number } = {}): ContextCompactionSource {
@@ -1254,7 +1269,8 @@ export class NativeRunStore implements RunStore {
     const latest = this.records.at(-1)!;
     const context = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
     requireCompleteContext(context);
-    return { expectedHash: latest.hash, sourceSeq: latest.seq, context, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), scope: 'prefix' };
+    return { expectedHash: latest.hash, sourceSeq: latest.seq, context, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), scope: 'prefix',
+      retainedContext: { protocol: clone(this.context!.protocol), items: [...clone(this.originalUserItems!), ...clone(this.context!.items.slice(boundary))] } };
   }
 
   /** Reserve before contacting a model. An uncertain append must be inspected after reopening. */
@@ -1314,7 +1330,8 @@ export class NativeRunStore implements RunStore {
       beforeBytes: source.beforeBytes, afterBytes, context,
       ...(options.usage === undefined ? {} : { usage: clone(options.usage) }),
       ...(options.automaticRequestId === undefined ? {} : { automaticRequestId: options.automaticRequestId }),
-      retainedTurns: this.contextTurns.slice(-keepRecentTurns).map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length })) };
+      retainedTurns: (contextHasUserImages(this.context!) ? this.contextTurns.filter(turn => turn.start >= boundary) : this.contextTurns.slice(-keepRecentTurns))
+        .map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length })) };
   }
 
   /** One append-and-fsync event publishes the new context; all raw records stay intact. */
