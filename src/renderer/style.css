@@ -168,6 +168,9 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .connection-box small{font-size:calc(10px * var(--ui-font-scale));color:var(--text-muted)}
 .data-path{color:var(--text-muted);overflow-wrap:anywhere;font-size:calc(10px * var(--ui-font-scale));padding:10px;background:var(--input-bg);border-radius:5px}
 .modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:23px}
+.session-confirmation .modal-actions,.session-confirmation .panel-actions{flex-wrap:wrap}
+.session-confirmation button{min-width:0;white-space:normal;overflow-wrap:anywhere}
+.session-delete-choices{display:grid;gap:10px;margin-top:18px}
 .history-list{max-height:250px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:4px;margin-bottom:20px}
 .history-list>p{font-size:calc(11px * var(--ui-font-scale));padding:12px;color:var(--text-muted);line-height:1.8}
 .history-list button{width:100%;justify-content:space-between;padding:12px 9px;text-align:left;border-bottom:1px solid var(--border)}

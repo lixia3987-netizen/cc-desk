@@ -16,11 +16,9 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     const rendererErrors:string[]=[];page.on('pageerror',error=>rendererErrors.push(error.message));
     await expect(page.getByRole('heading',{name:/让每个想法/})).toBeVisible();
     await page.screenshot({path:'docs/screenshots/workspace.png'});
-    await page.evaluate(p=>window.desktop.addProject(p),project);
-    await page.getByRole('button',{name:/新建会话/}).click();
-    await page.getByLabel('会话名称',{exact:true}).fill('终端验证');
-    await page.getByRole('button',{name:'Shell 终端',exact:true}).click();
-    await page.getByRole('button',{name:'创建会话',exact:true}).click();
+    // Existing Shell sessions remain supported after the new-session UI becomes structured-only.
+    await page.evaluate(async p=>{const project=await window.desktop.addProject(p);const session=await window.desktop.createSession({projectId:project.id,title:'终端验证',kind:'shell',providerId:'shell',mode:'terminal',model:'',effort:'default',isolated:false});await window.desktop.setSelection(session.id);},project);
+    await expect(page.getByRole('heading',{name:'终端验证',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'启动会话',exact:true}).click();
     await expect(page.locator('.status-tag')).toContainText('运行中');
     await page.locator('.terminal-host').click();
@@ -36,9 +34,13 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     await page.getByRole('button',{name:'停止',exact:true}).click();
     await expect(page.locator('.status-tag')).toContainText('已停止');
     await page.getByRole('button',{name:'归档会话',exact:true}).click();
+    await page.getByRole('dialog',{name:'归档会话',exact:true}).getByRole('button',{name:'确认归档',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'归档会话',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'查看归档',exact:true}).click();
     await page.getByRole('button',{name:/已验证的项目终端.*已停止/}).click();
     await page.getByRole('button',{name:'取消归档',exact:true}).click();
+    await page.getByRole('dialog',{name:'取消归档',exact:true}).getByRole('button',{name:'确认取消归档',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'取消归档',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.locator('#root')).toHaveJSProperty('inert',true);
