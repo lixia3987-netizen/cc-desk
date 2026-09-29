@@ -60,6 +60,7 @@ function sameBinding(a: ApprovalBinding, b: ApprovalBinding): boolean {
 /** Sequential, framework-free loop. Host promises own durable storage and resource release. */
 export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Promise<RunResult> {
   const { model, tools, store, approvals, host } = ports
+  const startedAt = host.now()
   const budget: RunBudget = { ...DEFAULT_RUN_BUDGET, ...request.budget }
   checkBudget(budget)
   if (request.modelRetry !== undefined && !['off', 'safe_transient'].includes(request.modelRetry)) throw new Error('Invalid model retry policy')
@@ -87,7 +88,6 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   let usageUnknown = false
   let maintenanceAttempted = false
   let pausedMs = 0
-  const startedAt = host.now()
   let pending: ToolCall[] = []
   let uncommittedSideEffect = false
   let projectionFailure = false

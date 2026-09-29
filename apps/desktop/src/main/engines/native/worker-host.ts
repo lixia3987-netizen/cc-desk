@@ -125,6 +125,7 @@ interface ToolState {
 
 /** Host-owned stores, approvals and tools remain authoritative across worker loss. */
 export async function runNativeWorker(options: NativeWorkerOptions): Promise<RunResult> {
+  const startedAt = performance.now();
   if (options.signal.aborted) throw new NativeWorkerError('cancelled', 'Native worker start cancelled.');
   const run = clone(options.request);
   const modelRetry = run.modelRetry ?? 'off';
@@ -569,6 +570,15 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (started || !integer(message.pid) || message.pid <= 0 || (child.pid !== undefined && child.pid !== message.pid)) invalid();
           started = true;
           clearTimeout(startupTimer);
+          if (failure || abort.signal.aborted) return;
+          // Worker-local timing begins only after startup. Charge host preparation,
+          // fork and readiness to this same run before passing on its remainder.
+          budget.maxActiveMs = Math.floor(budget.maxActiveMs - (performance.now() - startedAt));
+          if (budget.maxActiveMs < 1) {
+            stop(new NativeWorkerError('active_time_budget', 'Native worker startup exhausted the active time budget.'));
+            return;
+          }
+          run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
           post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}) });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
