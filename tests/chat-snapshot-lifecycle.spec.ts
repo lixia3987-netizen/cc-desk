@@ -124,7 +124,7 @@ async function beginDeletion(app: ElectronApplication, page: Page) {
   const context = page.getByRole('region', { name: '上下文面板', exact: true });
   if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
   await context.getByRole('button', { name: '删除会话', exact: true }).click();
-  await context.getByRole('button', { name: '确认删除会话', exact: true }).click();
+  await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '确认删除会话', exact: true }).click();
   await expect.poll(() => app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.deleteEntered())).toBe(true);
 }
 
@@ -165,7 +165,7 @@ for (const timing of ['during deletion', 'after deletion'] as const) {
         await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseRead('会话不存在。'));
         await settle(f.page);
         expect((await f.page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === a.id)).toBe(true);
-        await expect(f.page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();
+        await expect(f.page.locator('.session-header')).toContainText(a.title);
         await expect(f.page.locator('.error-banner')).toHaveCount(0);
       }
       await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseDelete());
@@ -181,6 +181,25 @@ for (const timing of ['during deletion', 'after deletion'] as const) {
   });
 }
 
+test('snapshot lifecycle: a pending confirmation cannot clear a session selected through notification navigation', async () => {
+  const f = await workspace();
+  try {
+    const [a, b] = f.sessions;
+    await beginDeletion(f.app, f.page);
+    await f.page.evaluate(id => window.desktop.setSelection(id), b.id);
+    await f.app.evaluate(({ BrowserWindow }, id) => BrowserWindow.getAllWindows()[0].webContents.send('session:navigate', id), b.id);
+    await expect(f.page.getByRole('heading', { name: b.title, exact: true })).toBeVisible();
+    await expect.poll(async () => (await f.page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId).toBe(b.id);
+    await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseDelete());
+    await expect.poll(async () => (await f.page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === a.id)).toBe(false);
+    await settle(f.page);
+    await expect(f.page.getByRole('heading', { name: b.title, exact: true })).toBeVisible();
+    expect((await f.page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId).toBe(b.id);
+    await expect(f.page.getByRole('dialog')).toHaveCount(0);
+    await expect(f.page.locator('.error-banner')).toHaveCount(0);
+  } finally { await f.close(); }
+});
+
 test('snapshot lifecycle: failed deletion resumes reads and current-session failures remain visible', async () => {
   const f = await workspace();
   try {
@@ -188,10 +207,18 @@ test('snapshot lifecycle: failed deletion resumes reads and current-session fail
     await holdSnapshot(f.app, a.id);
     const before = await f.app.evaluate((_, id) => (globalThis as FixtureGlobal).sessionReadFixture.readCount(id), a.id);
     await beginDeletion(f.app, f.page);
+    const deletionDialog = f.page.getByRole('dialog', { name: '删除会话', exact: true });
+    await expect(deletionDialog.getByRole('button', { name: '取消', exact: true })).toBeDisabled();
+    await expect(deletionDialog.getByRole('button', { name: '正在删除…', exact: true })).toBeDisabled();
+    await f.page.keyboard.press('Escape');
+    await f.page.locator('.modal-backdrop').click({ position: { x: 2, y: 2 } });
+    await expect(deletionDialog).toBeVisible();
     await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseRead('删除开始前发出的旧请求失败'));
     await settle(f.page);
     await expect(f.page.locator('.error-banner')).toHaveCount(0);
     await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseDelete('模拟删除失败，记录仍保留'));
+    await expect(deletionDialog.getByRole('alert')).toContainText('模拟删除失败，记录仍保留');
+    await deletionDialog.getByRole('button', { name: '取消', exact: true }).click();
     await expect(f.page.locator('.error-banner')).toContainText('模拟删除失败，记录仍保留');
     await expect.poll(() => f.app.evaluate((_, id) => (globalThis as FixtureGlobal).sessionReadFixture.readCount(id), a.id)).toBeGreaterThan(before);
     await expect(f.page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();

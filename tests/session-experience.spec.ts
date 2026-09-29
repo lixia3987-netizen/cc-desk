@@ -139,11 +139,24 @@ async function close(app: ElectronApplication) {
 }
 
 async function create(page: Page, title = '', adapter: 'structured' | 'terminal' = 'structured', projectId?: string) {
+  if (adapter === 'terminal') {
+    // Native sessions are legacy-compatible IPC fixtures; new UI sessions always use structured mode.
+    const session = await page.evaluate(async ({ title, projectId }) => {
+      const state = (await window.desktop.snapshot()).state;
+      const selectedProject = projectId ?? state.sessions.find(value => value.id === state.selectedSessionId)?.projectId ?? state.projects[0].id;
+      const session = await window.desktop.createSession({ projectId: selectedProject, title, kind: 'agent', providerId: 'claude', mode: 'terminal', model: '', effort: 'default', isolated: false });
+      await window.desktop.setSelection(session.id);
+      return session;
+    }, { title, projectId });
+    await expect(page.getByRole('heading', { name: session.title, exact: true })).toBeVisible();
+    return session;
+  }
   await page.getByRole('button', { name: /新建会话/ }).click();
   const form = page.getByRole('dialog', { name: '新建会话', exact: true });
   if (projectId) await form.getByLabel('项目', { exact: true }).selectOption(projectId);
   await form.getByLabel('会话名称', { exact: true }).fill(title);
-  await form.getByLabel('交互方式', { exact: true }).selectOption(adapter);
+  await expect(form.getByLabel('交互方式', { exact: true })).toHaveCount(0);
+  await expect(form.getByRole('button', { name: 'Shell 终端', exact: true })).toHaveCount(0);
   await form.getByRole('button', { name: '创建会话', exact: true }).click();
   await expect(form).toHaveCount(0);
   return page.evaluate(async () => { const state = (await window.desktop.snapshot()).state; return state.sessions.find(session => session.id === state.selectedSessionId)!; });

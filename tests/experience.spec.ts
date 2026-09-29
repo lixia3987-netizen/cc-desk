@@ -286,6 +286,90 @@ test('experience: delayed terminal activation cannot steal composer input or los
 });
 
 
+test('experience: delete and archive use dismissible modals and change the session only after confirmation',async()=>{
+  const f=await workspace(2),app=await f.launch();
+  try{
+    const page=await app.firstWindow(),target=f.sessions[0];
+    await expect(page.getByRole('heading',{name:target.title,exact:true})).toBeVisible();
+    await openPanel(page,'上下文');
+    const context=page.getByRole('region',{name:'上下文面板',exact:true});
+    const deleteButton=context.getByRole('button',{name:'删除会话',exact:true});
+    const persisted=async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.sessions.find(session=>session.id===target.id);
+    for(const dismissal of ['取消','Escape','backdrop'] as const){
+      await deleteButton.click();
+      const dialog=page.getByRole('dialog',{name:'删除会话',exact:true});
+      await expect(dialog).toBeVisible();await expect(dialog).toHaveAttribute('aria-modal','true');
+      await expect(page.getByRole('dialog')).toHaveCount(1);await expect(page.locator('#root')).toHaveJSProperty('inert',true);
+      expect(await persisted()).toMatchObject({id:target.id,archived:false});
+      if(dismissal==='取消')await dialog.getByRole('button',{name:'取消',exact:true}).click();
+      else if(dismissal==='Escape')await page.keyboard.press('Escape');
+      else await page.locator('.modal-backdrop').click({position:{x:2,y:2}});
+      await expect(page.getByRole('dialog')).toHaveCount(0);await expect(page.locator('#root')).toHaveJSProperty('inert',false);
+      await expect(deleteButton).toBeFocused();
+      expect(await persisted()).toMatchObject({id:target.id,archived:false});
+    }
+    await context.getByRole('button',{name:'归档会话',exact:true}).click();
+    const archive=page.getByRole('dialog',{name:'归档会话',exact:true});
+    await expect(archive).toBeVisible();expect((await persisted())?.archived).toBe(false);
+    await archive.getByRole('button',{name:'取消',exact:true}).click();
+    expect((await persisted())?.archived).toBe(false);
+    await context.getByRole('button',{name:'归档会话',exact:true}).click();
+    await archive.getByRole('button',{name:'确认归档',exact:true}).click();
+    await expect(archive).toHaveCount(0);await expect.poll(async()=>(await persisted())?.archived).toBe(true);
+    await page.getByRole('button',{name:'查看归档',exact:true}).click();await select(page,target.title);
+    await context.getByRole('button',{name:'取消归档',exact:true}).click();
+    const restore=page.getByRole('dialog',{name:'取消归档',exact:true});
+    await expect(restore).toBeVisible();expect((await persisted())?.archived).toBe(true);
+    await page.keyboard.press('Escape');await expect(restore).toHaveCount(0);expect((await persisted())?.archived).toBe(true);
+    await context.getByRole('button',{name:'取消归档',exact:true}).click();
+    await restore.getByRole('button',{name:'确认取消归档',exact:true}).click();
+    await expect(restore).toHaveCount(0);await expect.poll(async()=>(await persisted())?.archived).toBe(false);
+    await page.getByRole('button',{name:'查看活跃会话',exact:true}).click();await select(page,target.title);
+    await deleteButton.click();
+    await page.getByRole('dialog',{name:'删除会话',exact:true}).getByRole('button',{name:'确认删除会话',exact:true}).click();
+    await expect(page.getByRole('dialog')).toHaveCount(0);await expect.poll(persisted).toBeUndefined();
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.sessions.map(session=>session.id)).toEqual(f.sessions.slice(1).map(session=>session.id));
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  }finally{await app.close();await f.dispose();}
+});
+
+test('experience: the new-session form creates structured agents, including forks of existing native sessions',async()=>{
+  const f=await workspace(2),probe=await cliProbe(f.directory,'structured-form-fixture');
+  const file=path.join(f.data,'workspace.json'),state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
+  state.settings.claudePath=probe.cli;state.sessions[2].started=true;state.sessions[2].permissionMode='plan';
+  await fs.writeFile(file,JSON.stringify(state));const app=await f.launch();
+  try{
+    const page=await app.firstWindow();
+    await page.getByRole('button',{name:/新建会话/}).click();
+    const form=page.getByRole('dialog',{name:'新建会话',exact:true});
+    const expectStructuredForm=async()=>{
+      await expect(form.getByRole('button',{name:'Shell 终端',exact:true})).toHaveCount(0);
+      await expect(form.getByRole('button',{name:'Claude Code',exact:true})).toHaveCount(0);
+      await expect(form.getByLabel('交互方式',{exact:true})).toHaveCount(0);
+      await expect(form.getByLabel('模型',{exact:true})).toBeVisible();
+      await expect(form.getByLabel('推理强度',{exact:true})).toBeVisible();
+      await expect(form.getByLabel('权限模式',{exact:true})).toBeVisible();
+    };
+    await expectStructuredForm();await form.getByLabel('会话名称',{exact:true}).fill('始终使用结构化对话');
+    await form.getByRole('button',{name:'创建会话',exact:true}).click();await expect(form).toHaveCount(0);
+    const fresh=(await page.evaluate(()=>window.desktop.snapshot())).state.sessions.find(session=>session.title==='始终使用结构化对话')!;
+    expect(fresh.kind).toBe('agent');expect(fresh.execution).toMatchObject({providerId:'claude',mode:'structured'});
+    await select(page,'CLI 终端 B');await openPanel(page,'上下文');
+    await page.getByRole('button',{name:'从此会话创建分支',exact:true}).click();
+    await expectStructuredForm();await expect(form.getByLabel('权限模式',{exact:true})).toHaveValue('plan');
+    await form.getByLabel('会话名称',{exact:true}).fill('原生会话的结构化分支');
+    await form.getByRole('button',{name:'创建会话',exact:true}).click();await expect(form).toHaveCount(0);
+    await expect(page.getByRole('heading',{name:'原生会话的结构化分支',exact:true})).toBeVisible();
+    const sessions=(await page.evaluate(()=>window.desktop.snapshot())).state.sessions;
+    const fork=sessions.find(session=>session.title==='原生会话的结构化分支')!;
+    expect(fork.kind).toBe('agent');expect(fork.execution).toMatchObject({providerId:'claude',mode:'structured',forkFrom:f.sessions[2].execution.conversationId});
+    expect(fork.permissionMode).toBe('plan');expect(fork.execution.conversationId).not.toBe(f.sessions[2].execution.conversationId);
+    expect(sessions.find(session=>session.id===f.sessions[2].id)?.execution).toEqual(f.sessions[2].execution);
+    expect(sessions.find(session=>session.id===f.sessions[3].id)?.execution).toEqual(f.sessions[3].execution);
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  }finally{await app.close();await f.dispose();}
+});
+
 test('experience: permission defaults persist while sessions, forks and import overrides keep their own modes',async()=>{
   const f=await workspace(2),probe=await cliProbe(f.directory,'permission-fixture');
   const file=path.join(f.data,'workspace.json'),initial=JSON.parse(await fs.readFile(file,'utf8')) as AppState;

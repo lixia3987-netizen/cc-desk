@@ -164,15 +164,15 @@ export function App() {
     }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
   }, [activeId, structured, report]);
-  const openNew = (kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string) => {
+  const openNew = (fork?: Session, targetProjectId?: string) => {
     const candidates = fork ? [fork.projectId] : [targetProjectId, projectId, active?.projectId, state?.projects[0]?.id];
     const selected = candidates.find(id => state?.projects.some(project => project.id === id)) ?? '';
     setDraft({
-      projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind,
-      providerId: kind === 'shell' ? 'shell' : fork?.execution.providerId ?? 'claude',
+      projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind: 'agent',
+      providerId: fork?.execution.providerId ?? 'claude',
       model: fork?.model ?? '', effort: fork?.effort ?? 'default',
-      permissionMode: fork?.permissionMode ?? (kind === 'agent' ? state?.settings.defaultPermissionMode ?? 'default' : 'default'),
-      isolated: false, worktreeName: '', mode: kind === 'shell' ? 'terminal' : fork?.execution.mode ?? 'structured',
+      permissionMode: fork?.permissionMode ?? state?.settings.defaultPermissionMode ?? 'default',
+      isolated: false, worktreeName: '', mode: 'structured',
       conversationId: fork?.execution.conversationId, fork: !!fork
     });
     setModal('new');

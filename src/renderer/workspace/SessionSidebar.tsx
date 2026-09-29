@@ -62,7 +62,7 @@ export function SessionSidebar({ state, cap, activeId, projectId, archived, sear
               <Folder size={14} />
               <span>{name}</span>
               <small>{group.sessions.length}</small>
-            </button>{group.project && <button className="icon-button group-create" aria-label={'在「' + name + '」中创建会话'} title="在此项目创建会话" onClick={() => openNew('agent', undefined, group.id)}>
+            </button>{group.project && <button className="icon-button group-create" aria-label={'在「' + name + '」中创建会话'} title="在此项目创建会话" onClick={() => openNew(undefined, group.id)}>
               <Plus size={14} />
             </button>}</div>
           <div id={'sessions-' + group.id} className="project-sessions" hidden={!expanded}>
