@@ -69,7 +69,7 @@ async function fixture(protocol: Protocol, scenario: Scenario, options: { modelR
       },
       wait: async (ms, signal) => {
         waits.push(ms); enteredWait();
-        if (options.holdWait) await new Promise<void>((resolve, reject) => {
+        if (options.holdWait) await new Promise<void>((_resolve, reject) => {
           const cancel = () => { signal.removeEventListener('abort', cancel); reject(new Error('cancelled')); };
           signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel();
         });
