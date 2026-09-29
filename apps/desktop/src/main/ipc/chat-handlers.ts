@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { Session } from '../../shared/types';
 import type { ChatSnapshot, ChatTurnResult } from '../../shared/chat';
 import { idSchema } from '../../shared/schema';
+import { NATIVE_IMAGE_MAX_BYTES, NATIVE_IMAGE_MAX_COUNT } from '../../shared/native-images';
 import type { StructuredExecutions, TerminalExecutions } from '../execution/routers';
 import type { Attachments } from '../attachments';
 import type { WorkflowEngine } from '../workflows';
@@ -16,7 +17,7 @@ interface ChatPorts {
   runtime: Pick<TerminalExecutions, 'has'>;
   workflows: Pick<WorkflowEngine, 'isSessionBusy'>;
   queue: ChatQueue;
-  attachments: Pick<Attachments, 'validate' | 'add' | 'addNative' | 'list' | 'removeFile'>;
+  attachments: Pick<Attachments, 'validate' | 'add' | 'addNative' | 'addNativePastedImages' | 'list' | 'removeFile'>;
   structured(id: string): Session;
   assertUnlocked(session: Session): void;
   captureAdmission(id: string): () => void;
@@ -48,6 +49,18 @@ const droppedFilesSchema = z.object({
   paths: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value), '附件必须来自有效的本机绝对路径。'))
     .min(1, '请拖入本机文件。').max(8, '一次最多添加 8 个附件。'),
 }).strict();
+const pastedImageEncodedLimit = 4 * Math.ceil(NATIVE_IMAGE_MAX_BYTES / 3);
+const pastedImagesSchema = z.object({
+  id: idSchema,
+  images: z.array(z.object({
+    mimeType: z.enum(['image/png', 'image/jpeg']),
+    dataUrl: z.string().min(1).max(pastedImageEncodedLimit + 23),
+  }).strict()).min(1).max(NATIVE_IMAGE_MAX_COUNT),
+}).strict().refine(({ images }) =>
+  // Bound IPC input before storage decodes and validates the actual combined bytes.
+  // Each file adds a MIME prefix and may have its own base64 padding.
+  images.reduce((total, image) => total + image.dataUrl.length, 0) <= pastedImageEncodedLimit + images.length * 27,
+  '粘贴图片合计不能超过 1 MiB。');
 const responseSchema = z.object({
   id: idSchema, requestId: shortId,
   decision: z.object({
@@ -145,6 +158,20 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     // Only stage private copies. Model execution and content interpretation stay
     // in the existing explicit send/queue flow, even while another turn is running.
     return session.execution.providerId === 'native' ? ports.attachments.addNative(id, paths) : ports.attachments.add(id, paths);
+  });
+  handle('files:add-pasted-native-images', pastedImagesSchema, ({ id, images }) => {
+    const checkAdmission = ports.captureAdmission(id);
+    const assertCanPaste = () => {
+      checkAdmission();
+      const session = assertCanStageAttachments(id);
+      if (session.execution.providerId !== 'native' || session.execution.mode !== 'structured') {
+        throw new Error('只有自研 Agent 会话支持粘贴图片。');
+      }
+    };
+    assertCanPaste();
+    // Storage repeats the admission check inside its serial operation so an import
+    // queued before deletion, archiving or maintenance cannot recreate a draft.
+    return ports.attachments.addNativePastedImages(id, images, assertCanPaste);
   });
   handle('files:attachments', idSchema, async id => {
     ports.structured(id);

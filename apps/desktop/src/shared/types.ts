@@ -13,7 +13,7 @@ import type { CLIUpdateState } from './cli-update';
 import type { NativeConnectionsAPI } from './native-connections';
 import type { NativeSkillsAPI } from './native-skills';
 import type { NativeMcpConnectionsAPI } from './native-mcp';
-import type { NativeImagePreviewRequest, NativeImagePreview } from './native-images';
+import type { NativeImagePreviewRequest, NativeImagePreview, NativePastedImage } from './native-images';
 import type { SessionContinuationInput, SessionContinuationPreview } from './session-continuation';
 import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
@@ -79,6 +79,7 @@ export interface DesktopAPI {
   resumeChatQueue(id: string): Promise<void>;
   respondChat(id: string, requestId: string, decision: ChatDecision): Promise<void>;
   pickAttachments(id: string): Promise<Attachment[]>;
+  addPastedNativeImages(id: string, images: NativePastedImage[]): Promise<Attachment[]>;
   addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { Attachment } from '../shared/types';
+import { NATIVE_IMAGE_MAX_COUNT, NATIVE_IMAGE_MAX_BYTES, type NativePastedImage } from '../shared/native-images';
 
 const MAX_FILE = 8 * 1024 * 1024;
 const MAX_TOTAL = 16 * 1024 * 1024;
@@ -18,7 +19,7 @@ export function parseStagedAttachmentManifest(value:unknown):ReadonlyArray<Item>
   return manifestSchema.parse(value).items;
 }
 
-/** Only native-picker/drop copies recorded in the private manifest can be sent. */
+/** Only explicitly imported bytes recorded in the private manifest can be sent. */
 export class Attachments {
   private entries = new Map<string, Item[]>();
   private operations = new Map<string, Promise<unknown>>();
@@ -63,6 +64,41 @@ export class Attachments {
   add(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected);}
   /** Native staging is atomic with draft validation; Claude retains its existing limits. */
   addNative(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected,true);}
+  /** Stage one explicit paste atomically, preserving all existing draft and sent ownership. */
+  addNativePastedImages(id:string,images:NativePastedImage[],checkAdmission?:()=>void):Promise<Attachment[]> {
+    return this.serial(id,async()=>{
+      checkAdmission?.();
+      const {decodeNativePastedImages,readNativeImageAttachments}=await import('./native-image-attachments');
+      checkAdmission?.();
+      const decoded=decodeNativePastedImages(images),items=await this.load(id),drafts=items.filter(item=>item.draft);
+      checkAdmission?.();
+      if(drafts.length+decoded.length>NATIVE_IMAGE_MAX_COUNT)throw new Error('Native 图片附件最多 4 张，请先移除草稿中的图片。');
+      if(drafts.reduce((total,item)=>total+item.bytes,0)+decoded.reduce((total,image)=>total+image.bytes.length,0)>NATIVE_IMAGE_MAX_BYTES)throw new Error('Native 图片附件合计不能超过 1 MiB。');
+      const folder=this.folder(id),added:Item[]=[];let saved=false;
+      await fs.mkdir(folder,{recursive:true,mode:0o700});
+      try {
+        for(const image of decoded) {
+          checkAdmission?.();
+          const identifier=randomUUID(),ext=image.mimeType==='image/png'?'.png':'.jpg';
+          const item:Item={file:`.staged-${identifier}${ext}`,name:`粘贴图片-${identifier}${ext}`,bytes:image.bytes.length,retained:false,draft:true};
+          const handle=await fs.open(path.join(folder,item.file),'wx',0o600);
+          added.push(item);
+          try {await handle.writeFile(image.bytes);await handle.sync();} finally {await handle.close();}
+        }
+        checkAdmission?.();
+        await this.save(id,[...items,...added]);saved=true;
+        checkAdmission?.();
+        await readNativeImageAttachments(this.directory,id,[...drafts,...added].map(item=>this.attachment(id,item).path));
+        checkAdmission?.();
+        return added.map(item=>this.attachment(id,item));
+      } catch(error) {
+        // If restoration fails, keep bytes rather than leave a manifest with missing references.
+        if(saved)await this.save(id,items);
+        await Promise.all(added.map(item=>fs.rm(path.join(folder,item.file),{force:true})));
+        throw error;
+      }
+    });
+  }
   private async addFiles(id: string, selected: string[], native=false): Promise<Attachment[]> {
     return this.serial(id,async()=>{
       if (selected.length > 8) throw new Error('一次最多选择 8 个附件。');
