@@ -43,7 +43,7 @@ export async function autoCompactBeforeSend(options: {
   const remainingRequests = config.maxModelRequests - (previous ? 1 : 0);
   if (previous?.status === 'committed') return { compacted: true, remainingRequests };
   const context = ledger.loadContext();
-  if (config.autoCompact !== 'before_send' || !context) return { compacted: false, remainingRequests };
+  if (config.autoCompact === 'off' || !context) return { compacted: false, remainingRequests };
   const pending = pendingNativeContext(context, input, model);
   const estimator = createNativeModel({ ...model, instructions: options.instructions });
   const usage = contextBudgetUsage(pending, estimator.estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });

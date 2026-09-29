@@ -34,6 +34,9 @@ import { assertNativeInputBudget, autoCompactBeforeSend } from './automatic-comp
 import { mcpConnectionMetadata, mcpStartupMetadata } from './mcp-startup';
 import { createQuestionTool, type NativeQuestionTool } from './question-tool';
 import { createCommandTools, type NativeCommandTools } from './command-tools';
+import { createInRunCompaction } from './in-run-compaction';
+import { buildNativeContextContinuity } from './context-continuity';
+import { estimateNativeCost } from '../../../shared/native-cost';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -45,7 +48,7 @@ interface ActiveRun {
   requestId: string; input: string; options: string; connectionId: string; mcpConnections: string[];
   abort: AbortController; promise: Promise<ChatTurnResult>; identity?: RunIdentity;
   store?: NativeRunStore; cleanupUnconfirmed: boolean; released: boolean;
-  phase?: 'compacting';
+  phase?: 'compacting' | 'compacting_in_turn';
   questions?: NativeQuestionTool;
   taskId: string; continuedTaskId?: string; tasks?: NativeTaskSession;
   taskCleanupOnly?: boolean;
@@ -166,7 +169,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const last = ledger.getLastCompaction();
     if (ledger.getAutoCompactionForCurrentContext()?.status === 'attempted') this.autoCompactionBlocked.add(id);
     else this.autoCompactionBlocked.delete(id);
-    this.contextViews.set(id, { headHash, canCompact, ...(last ? { lastCompaction: { beforeBytes: last.beforeBytes, afterBytes: last.afterBytes, createdAt: last.createdAt, trigger: last.automaticRequestId ? 'automatic' : 'manual' } } : {}) });
+    const runs = ledger.listRuns();
+    const recentAttempt = runs.toReversed().map(run => ({ run, attempt: ledger.lookupRunCompaction(run.identity.runId) })).find(item => item.attempt);
+    const attempt = recentAttempt?.attempt;
+    const active = this.active.get(id);
+    const summaryCostUSD = attempt?.usage ? estimateNativeCost(attempt.usage, recentAttempt?.run.configuration.pricing, recentAttempt?.run.configuration.model) : undefined;
+    const inTurn = attempt ? { runId: attempt.runId, createdAt: attempt.createdAt,
+      status: attempt.status === 'attempted' && (!active?.identity || !sameRun(active.identity, recentAttempt!.run.identity) || active.phase !== 'compacting_in_turn') ? 'unknown' as const : attempt.status,
+      beforeBytes: attempt.beforeBytes, ...(attempt.afterBytes === undefined ? {} : { afterBytes: attempt.afterBytes }),
+      ...(attempt.usage ? { summaryUsage: { ...(attempt.usage.inputTokens === undefined ? {} : { inputTokens: attempt.usage.inputTokens }), ...(attempt.usage.outputTokens === undefined ? {} : { outputTokens: attempt.usage.outputTokens }) } } : {}),
+      ...(summaryCostUSD === undefined ? {} : { summaryCostUSD }) } : undefined;
+    this.contextViews.set(id, { headHash, canCompact, ...(last ? { lastCompaction: { beforeBytes: last.beforeBytes, afterBytes: last.afterBytes, createdAt: last.createdAt, trigger: last.automaticRequestId ? 'automatic' : 'manual' } } : {}), ...(inTurn ? { inTurn } : {}) });
     await this.projection.hydrate(id, ledger);
   }
   private async openTaskSession(id: string, forbiddenValues: string[] = []) {
@@ -246,11 +259,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const view = this.contextViews.get(id), recovery = this.recoveryViews.get(id);
     if (this.recovery.has(id)) snapshot.nativeRecovery = { ...(recovery ?? { status: 'blocked', headHash: view?.headHash ?? '', tools: { completed: 0, notExecuted: 0, unknown: 0 } }), ...(this.acknowledged.has(id) ? { status: 'acknowledged' as const } : {}), reason: this.recoveryMessage(id) };
     if (view) snapshot.nativeContextMaintenance = { ...view, canCompact: view.canCompact && !this.has(id) && !this.recovery.has(id),
-      compacting: operation?.kind === 'compact' || active?.phase === 'compacting',
-      ...(active?.phase === 'compacting' ? { compactionTrigger: 'automatic' as const } : operation?.kind === 'compact' ? { compactionTrigger: 'manual' as const } : {}),
-      autoCompact: { enabled: parseNativeConfig(this.session(id).engineConfig).autoCompact === 'before_send', thresholdPercent: 90, ...(this.autoCompactionBlocked.has(id) && active?.phase !== 'compacting' ? { blocked: true } : {}) } };
+      compacting: operation?.kind === 'compact' || active?.phase === 'compacting' || active?.phase === 'compacting_in_turn',
+      ...(active?.phase === 'compacting' ? { compactionTrigger: 'automatic' as const } : active?.phase === 'compacting_in_turn' ? { compactionTrigger: 'in_turn' as const } : operation?.kind === 'compact' ? { compactionTrigger: 'manual' as const } : {}),
+      autoCompact: { enabled: parseNativeConfig(this.session(id).engineConfig).autoCompact !== 'off', mode: parseNativeConfig(this.session(id).engineConfig).autoCompact, thresholdPercent: 90, ...(this.autoCompactionBlocked.has(id) && active?.phase !== 'compacting' ? { blocked: true } : {}) } };
     if (operation && !operation.abort.signal.aborted) snapshot.taskState = operation.kind === 'compact' ? 'thinking' : 'starting';
-    if (active?.phase === 'compacting') { snapshot.taskState = active.abort.signal.aborted ? 'interrupted' : 'thinking'; snapshot.error = undefined; }
+    if (active?.phase === 'compacting' || active?.phase === 'compacting_in_turn') { snapshot.taskState = active.abort.signal.aborted ? 'interrupted' : 'thinking'; snapshot.error = undefined; }
     const task = this.taskViews.get(id);
     if (task && (!active || active.taskId === task.taskId)) snapshot.nativeTask = toNativeTaskView(task);
     if (this.taskErrors.has(id)) { delete snapshot.nativeTask; snapshot.nativeTaskError = this.taskErrors.get(id); }
@@ -505,6 +518,21 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           try { return await this.approve(id, active, request, signal); }
           finally { startedAt += performance.now() - waitingAt; }
         } }, signal: active.abort.signal,
+        ...(config.autoCompact === 'before_send_and_during_run' ? { contextMaintenance: createInRunCompaction({ ledger, identity,
+          model: { ...model, instructions: modelInstructions }, forbiddenValues, signal: active.abort.signal,
+          remainingMs: () => config.maxActiveMs - (performance.now() - startedAt), assertOwnership,
+          assertInstructions: async signal => {
+            await assertOwnership();
+            const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, signal);
+            if (current.digest !== instructions.digest) throw new Error('项目指令或 Skills 已改变，请结束当前回合后重新发送。');
+            await assertOwnership();
+          }, continuity: async () => {
+            await active.tasks!.settled();
+            return buildNativeContextContinuity({ identity, taskId: active.taskId, task: active.tasks!.store.read(active.taskId),
+              run: ledger.listRuns().find(item => sameRun(item.identity, identity)), issues: this.taskErrors.has(id) ? [this.taskErrors.get(id)!] : [] });
+          }, onCompacting: async () => { active.phase = 'compacting_in_turn'; this.changed(id, 'thinking'); await this.refreshProjection(id, ledger); },
+          onSettled: async () => { active.phase = undefined; await this.refreshProjection(id, ledger); }, worker: this.options.worker,
+        }) } : {}),
         onEvent: event => this.projection.event(id, event),
       });
       if (run.status === 'recovery_required' || !run.committed) { this.recovery.add(id); this.acknowledged.delete(id); }

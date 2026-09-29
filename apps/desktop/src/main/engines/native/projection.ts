@@ -125,6 +125,7 @@ export class NativeProjection {
     if (!records.some(record => record.event.type === 'run_started') && await this.preserveMissingContext(id, old)) return;
     const session = this.getSession(id);
     const modelCounts = new Map<string, number>();
+    const summaryCounts = new Map<string, number>();
     const tools = new Map<string, ChatMessage>();
     const preparedTools = new Set<string>();
     const changeSets = new Map<string, { preview: NativeChangeSetPreview; receipts: NativeChangeSetFileEvent[] }>();
@@ -202,7 +203,7 @@ export class NativeProjection {
         const result = event.result;
         // A failed request can consume service tokens without yielding a durable response.
         // Earlier reported usage is then partial and cannot price the complete run.
-        const costUSD = result.modelRequests === (modelCounts.get(runId) ?? 0)
+        const costUSD = result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
           ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
         add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
@@ -220,6 +221,17 @@ export class NativeProjection {
         }
         add({ type: 'message', message: { id: `recovery:${record.seq}`, turnId: runId, role: 'system', text: '已恢复为可继续状态。请发送新指令继续；已完成的操作保留原结果，未执行的操作不会自动重放。', createdAt } });
         add({ type: 'state', taskState: 'interrupted' });
+      } else if (event.type === 'run_context_compaction_attempted') {
+        summaryCounts.set(runId, (summaryCounts.get(runId) ?? 0) + 1);
+        add({ type: 'message', message: { id: `run-compaction-attempt:${record.seq}`, turnId: runId, role: 'system', text: '本回合尝试压缩完整的旧模型与工具记录。原始回执继续保留；摘要计入本轮请求和用量，不会重复尝试或重放工具。', createdAt } });
+        add({ type: 'state', taskState: 'thinking' });
+      } else if (event.type === 'run_context_compacted') {
+        inputTokens = undefined; measuredAt = undefined;
+        add({ type: 'message', message: { id: `run-compaction:${record.seq}`, turnId: runId, role: 'system', text: '回合内上下文已压缩并持久保存。用户请求、最新完整工具结果和任务证据引用已保留；当前回合继续执行。', createdAt } });
+        add({ type: 'state', taskState: 'thinking' });
+      } else if (event.type === 'run_context_compaction_failed') {
+        add({ type: 'message', message: { id: `run-compaction-failure:${record.seq}`, turnId: runId, role: 'system', text: nativeRunError(event.failure.reason), isError: true, createdAt } });
+        add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'context_compaction_attempted') {
         const attempt = store.lookupAutoCompaction(event.requestId);
         if (attempt?.status === 'attempted') {
