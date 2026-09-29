@@ -1,7 +1,8 @@
-import type { JsonObject, JsonValue, ModelContext, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
 import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { chatCompletionsPendingCalls } from './context-maintenance.js'
+import { classifyNativeModelFailure } from './model-failure.js'
 
 /** API base excludes /chat/completions. Limits and credential policy match Responses. */
 export type ChatCompletionsModelOptions = ResponsesModelOptions
@@ -13,6 +14,8 @@ export class ChatCompletionsModelError extends Error {
     this.name = code === 'cancelled' ? 'AbortError' : 'ChatCompletionsModelError'
   }
 }
+
+const rejectedHttpRequests = new WeakMap<ChatCompletionsModelError, number>()
 
 const failure = (code: string, message: string): never => { throw new ChatCompletionsModelError(code, message) }
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -147,6 +150,13 @@ export class ChatCompletionsModel implements ModelPort {
 
   estimateInputTokens(context: ModelContext): number { return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson) }
 
+  classifyError(error: unknown): ModelFailureDiagnostic {
+    if (!(error instanceof ChatCompletionsModelError)) return { category: 'unknown', retryable: false }
+    const status = rejectedHttpRequests.get(error)
+    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus)
+      : classifyNativeModelFailure('http', status, true)
+  }
+
   async generate(request: ModelRequest): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
@@ -180,7 +190,9 @@ export class ChatCompletionsModel implements ModelPort {
       const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
       if (!response.ok) {
         await response.body?.cancel()
-        throw new ChatCompletionsModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
+        const error = new ChatCompletionsModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
+        rejectedHttpRequests.set(error, response.status)
+        throw error
       }
       if (!response.body || !/^text\/event-stream(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel()
@@ -197,7 +209,9 @@ export class ChatCompletionsModel implements ModelPort {
       let usage: Usage | null = null
       let seenUsage = false
       const calls = new Map<number, StreamingCall>()
-      const deltas = new SafeModelDeltas(this.#apiKey, request.onEvent)
+      const deltas = new SafeModelDeltas(this.#apiKey, event => {
+        try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
+      })
       const parser = new EventStreamParser((data, eventName) => {
         if (done) failure('schema', 'Model sent data after the completed stream.')
         if (data === '[DONE]') {
