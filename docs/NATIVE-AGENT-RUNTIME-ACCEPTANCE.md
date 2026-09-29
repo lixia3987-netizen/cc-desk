@@ -41,7 +41,7 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 | RA-18 | macOS arm64 成品 | pending：待主动构建及 Apple silicon 环境 |
 | RA-19 | Linux x64 成品 | pending：待主动构建及显示环境 |
 | RA-20 | N2-01 检索实际项目/成品确认 | pending：实现及本地回归通过，待正式运行 |
-| RA-21 | E0 真实 cc-desk 工程任务评估 | pending：E0-01 材料、E0-02 报告不等于真实执行 |
+| RA-21 | E0 真实 cc-desk 工程任务评估 | pending：E0-01 材料、E0-02 报告及 E0-03 只读准备检查不等于真实执行 |
 | RA-22 | 真实 Claude 账号/CLI 与组织策略 | pending：待实际账号、CLI 版本、配置及调用预算 |
 | RA-23 | 当前成品的桌面/IME/字体/IDE/Worktree 体验 | pending：待目标平台与安全验收副本 |
 | RA-24 | N2-02 多文件审批、部分应用及重启回执 | pending：待图形、真实任务与目标平台现场 |
