@@ -122,6 +122,8 @@ test('only a committed in-turn host receipt displays saved bytes and separately 
     beforeBytes: 30000, afterBytes: 6000, summaryUsage: { inputTokens: 1000, outputTokens: 0 }, summaryCostUSD: 0.000125 } });
   assert.match(markup, /回合内压缩已持久保存。上下文 30,000 → 6,000 字节/);
   assert.match(markup, /摘要调用：输入 1,000 tokens · 输出 0 tokens · 估算费用 \$0.000125/);
+  assert.match(markup, /已计入所属回合汇总，不需重复相加/);
+  assert.match(markup, /发送前及手动压缩另计/);
   assert.match(markup, /本回合最近一次模型响应未提供输入 token 用量/);
   assert.doesNotMatch(markup, /正在回合内压缩|尚未确认/);
   const last = renderContext({ ...maintenance, lastCompaction: { beforeBytes: 30000, afterBytes: 6000, createdAt: '2026-09-29T00:00:00Z', trigger: 'in_turn' } });
@@ -145,4 +147,13 @@ test('invalid summary measurements cannot become displayed costs or byte savings
   assert.match(markup, /回合内压缩已持久保存。原始记录保留/);
   assert.match(markup, /输入用量未报告 · 输出用量未报告 · 费用未估算/);
   assert.doesNotMatch(markup, /NaN|Infinity|→|\$|tokens/);
+});
+
+
+test('a historical receipt identifies its own turn and cannot be mistaken for current-turn billing', () => {
+  const markup = renderToStaticMarkup(createElement(ContextMeter, { native: true, currentRunId: 'current-run',
+    maintenance: { ...maintenance, inTurn: { status: 'committed', runId: 'prior-run', createdAt: '2026-09-29T00:00:00Z', summaryUsage: { inputTokens: 10, outputTokens: 5 }, summaryCostUSD: 0.01 } } }));
+  assert.match(markup, /历史回合压缩回执/);
+  assert.match(markup, /已计入所属回合汇总，不需重复相加/);
+  assert.doesNotMatch(markup, /此项已计入本回合汇总/);
 });

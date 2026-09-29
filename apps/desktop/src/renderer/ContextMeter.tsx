@@ -6,6 +6,7 @@ interface ContextMeterProps {
   context?: ContextUsage;
   native?: boolean;
   maintenance?: NativeContextMaintenance;
+  currentRunId?: string;
   compactDisabled?: boolean;
   onCompact?: () => void;
   onCancelCompact?: () => void;
@@ -39,7 +40,7 @@ export function ContextMeter({ context, native = false, ...actions }: ContextMet
   </details>;
 }
 
-function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, onCancelCompact }: Omit<ContextMeterProps, 'native'>) {
+function NativeContextMeter({ context, maintenance, currentRunId, compactDisabled, onCompact, onCancelCompact }: Omit<ContextMeterProps, 'native'>) {
   const budget = context?.budget;
   const ratio = budget ? Math.max(budget.estimatedInputTokens / budget.maxInputTokens, budget.contextBytes / budget.maxContextBytes) : undefined;
   const percentage = ratio === undefined ? undefined : ratio * 100;
@@ -71,7 +72,7 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
           : <button type="button" className="secondary compact" disabled={compactDisabled || !maintenance?.canCompact} onClick={onCompact}>压缩上下文（可能计费）</button>}
       </>}
       {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · {maintenance.lastCompaction.trigger === 'in_turn' ? '回合内自动' : maintenance.lastCompaction.trigger === 'automatic' ? '自动' : '手动'} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
-      {maintenance?.inTurn && <InTurnReceipt receipt={maintenance.inTurn} compacting={!!compacting && inTurn}/>}
+      {maintenance?.inTurn && <InTurnReceipt receipt={maintenance.inTurn} compacting={!!compacting && inTurn} historical={!!currentRunId && currentRunId !== maintenance.inTurn.runId}/>}
       <span>这是本地运行预算，不是模型的真实上下文窗口或计费用量。预算按输入估算与上下文字节两项中较高的占比显示。</span>
       <span>按已保存历史、项目指令和工具定义的 UTF-8 字节保守估算，不等于服务端实际 token 计数。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}
@@ -80,20 +81,21 @@ function NativeContextMeter({ context, maintenance, compactDisabled, onCompact, 
       <span>{context?.inputTokens === undefined ? '本回合最近一次模型响应未提供输入 token 用量。' : `服务返回的最近一次请求输入：${count(context.inputTokens)} tokens（非累计）。`}</span>
       {(context?.requestModel || context?.model) && <span>请求模型：{context.requestModel ?? context.model}</span>}
       {context?.measuredAt && <span>服务响应时间：{new Date(context.measuredAt).toLocaleString()}</span>}
-      <span>可在模型连接中填写价格；本回合费用仅在全部请求提供完整输入和输出用量、价格模型一致时估算，压缩等其他调用另计。请以服务商账单为准。</span>
+      <span>可在模型连接中填写价格；本回合费用包含回合内摘要，仅在全部请求提供完整输入和输出用量、价格模型一致时估算。发送前及手动压缩另计，请以服务商账单为准。</span>
     </div>
   </details>;
 }
 
-function InTurnReceipt({ receipt, compacting }: { receipt: NonNullable<NativeContextMaintenance['inTurn']>; compacting: boolean }) {
+function InTurnReceipt({ receipt, compacting, historical }: { receipt: NonNullable<NativeContextMaintenance['inTurn']>; compacting: boolean; historical: boolean }) {
   const known = (value: number | undefined): value is number => value !== undefined && Number.isFinite(value) && value >= 0;
   const status = receipt.status === 'committed' ? '回合内压缩已持久保存'
     : receipt.status === 'failed' ? '回合内压缩未完成，本回合不再自动重试'
     : receipt.status === 'attempted' && compacting ? '回合内压缩已登记，正在等待提交结果'
     : '回合内压缩结果尚未确认，不能视为已完成';
   return <div className="context-compaction-receipt" role="status">
+    {historical && <span>历史回合压缩回执</span>}
     <span>{status}。{receipt.status === 'committed' && known(receipt.beforeBytes) && known(receipt.afterBytes)
       ? `上下文 ${count(receipt.beforeBytes)} → ${count(receipt.afterBytes)} 字节。` : ''}原始记录保留。</span>
-    <span>摘要调用：{known(receipt.summaryUsage?.inputTokens) ? `输入 ${count(receipt.summaryUsage.inputTokens)} tokens` : '输入用量未报告'} · {known(receipt.summaryUsage?.outputTokens) ? `输出 ${count(receipt.summaryUsage.outputTokens)} tokens` : '输出用量未报告'} · {known(receipt.summaryCostUSD) ? `估算费用 $${receipt.summaryCostUSD.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '费用未估算'}。请以服务商账单为准。</span>
+    <span>摘要调用：{known(receipt.summaryUsage?.inputTokens) ? `输入 ${count(receipt.summaryUsage.inputTokens)} tokens` : '输入用量未报告'} · {known(receipt.summaryUsage?.outputTokens) ? `输出 ${count(receipt.summaryUsage.outputTokens)} tokens` : '输出用量未报告'} · {known(receipt.summaryCostUSD) ? `估算费用 $${receipt.summaryCostUSD.toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '费用未估算'}。此项已计入所属回合汇总，不需重复相加；请以服务商账单为准。</span>
   </div>;
 }
