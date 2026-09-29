@@ -1,6 +1,7 @@
 import { createHash, randomUUID, type Hash } from 'node:crypto';
 import type { ChatMessage } from '@cc-desk/contracts/chat';
 import { object, string, type WireObject } from './chat-protocol.js';
+import type { ContextObservationSource } from './entry.js';
 
 interface TextBlock { id: string; index: number; length: number; digest: string; hash?: Hash; finalized?: boolean; envelopeId?: string }
 interface AssistantGroup { id: string; sourceId: string; parent?: string; blocks: Map<number, TextBlock>; completed: boolean; stopped?: boolean }
@@ -8,7 +9,7 @@ interface AssistantOutput {
   turnId(): string | undefined;
   getMessage(id: string): ChatMessage | undefined;
   message(message: ChatMessage, delta?: string): void;
-  context(payload: WireObject): void;
+  context(payload: WireObject, source: ContextObservationSource): void;
   model(model: string): void;
 }
 const now = () => new Date().toISOString();
@@ -21,6 +22,8 @@ export class AssistantStream {
   constructor(private output: AssistantOutput) {}
   reset() { this.streams.clear(); this.assistants.clear(); this.latestRoot = undefined; }
   private groupId(sourceId: string, parent?: string) { return JSON.stringify([this.output.turnId(), parent ?? null, sourceId]); }
+  hasMessage(sourceId: string) { return this.assistants.has(this.groupId(sourceId)); }
+  currentMessageId() { return this.assistants.get(this.streams.get(JSON.stringify(null)) ?? '')?.sourceId; }
   private group(sourceId: string, parent?: string): AssistantGroup {
     const id = this.groupId(sourceId, parent);
     let group = this.assistants.get(id);
@@ -92,14 +95,19 @@ export class AssistantStream {
     if (!this.output.turnId()) return;
     const key = JSON.stringify(parent ?? null);
     if (event.type === 'message_start') {
-      if (!parent) this.output.context(object(event.message));
       const message = object(event.message); const group = this.group(string(message.id) || randomUUID(), parent);
       this.streams.set(key, group.id);
+      if (!parent) this.output.context({ ...message, id: group.sourceId }, 'message_start');
       if (!parent) { this.latestRoot = group; if (typeof message.model === 'string') { this.output.model(message.model); } }
       return;
     }
     const index = typeof event.index === 'number' ? event.index : 0;
     const group = this.assistants.get(this.streams.get(key) ?? ''); if (!group) return;
+    if (event.type === 'message_delta') {
+      // Deltas carry cumulative usage for this API message, but no message ID.
+      if (!parent && !group.stopped) this.output.context({ id: group.sourceId, usage: event.usage }, 'message_delta');
+      return;
+    }
     if (event.type === 'message_stop') { group.stopped = true; for (const block of group.blocks.values()) block.hash = undefined; return; }
     if (event.type === 'content_block_stop') { const block = group.blocks.get(index); if (block) block.hash = undefined; return; }
     const content = object(event.content_block); const delta = object(event.delta);

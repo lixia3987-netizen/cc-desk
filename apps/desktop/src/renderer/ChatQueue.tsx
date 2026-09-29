@@ -22,11 +22,11 @@ export function ChatQueue({ sessionId, queue, disabled, onError, refresh }: {
   };
   if (!queue) return null;
   const waiting = queue.items.filter(item => item.status === 'queued');
-  const sending = queue.items.some(item => item.status === 'sending');
-  if (!waiting.length && !sending && !queue.error) return null;
+  // Accepted messages already appear in the conversation. Execution progress is
+  // rendered by ChatPane; this section only represents work still in the queue.
+  if (!waiting.length && !queue.error) return null;
   const unavailable = disabled || !!pending;
   return <section className="chat-queue" aria-label="待发送消息">
-    {sending && <div className="queued-chat-progress" role="status"><Loader2 size={13} className="spin" />消息已接收，正在执行</div>}
     {waiting.length > 0 && <header className="chat-queue-heading"><ListOrdered size={15} /><strong>待发送 · {waiting.length}</strong>
       <span role="status">{queue.paused ? '队列已暂停' : '当前任务结束后按顺序发送'}</span>
       {queue.paused && waiting.length > 0 && <button className="secondary compact" disabled={unavailable}

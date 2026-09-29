@@ -19,6 +19,7 @@ import { ChatQueue } from './ChatQueue';
 import { useChatSubmission } from './useChatSubmission';
 import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
+import { sessionReadLifecycle } from './session-read-lifecycle';
 import { isMissingTranscriptError } from '../shared/session-recovery';
 import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
@@ -94,6 +95,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const [compactingNativeContext,setCompactingNativeContext]=useState(false),[nativeNotice,setNativeNotice]=useState('');
   const nativeOperation=useRef(false);
   const mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
+  useLayoutEffect(()=>{
+    mounted.current=true;
+    return()=>{mounted.current=false;pageRequest.current++;snapshotSync.current?.dispose();};
+  },[session.id]);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
   const initialReading=useRef(readingPositions.get(session.id));
@@ -105,8 +110,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const openPage=useCallback(async(options:ChatPageOptions,saved?:ChatReadingPosition)=>{
     const seq=++pageRequest.current;setPaging(true);
     try{
-      const page=await window.desktop.chatPage(session.id,options);
-      if(!mounted.current||seq!==pageRequest.current)return;
+      const page=await sessionReadLifecycle.read(session.id,()=>window.desktop.chatPage(session.id,options));
+      if(!page||!mounted.current||seq!==pageRequest.current)return;
       if(!page.messages.length){
         if(options.before)setExhaustedBefore(options.before);
         setHistoryNotice(options.after?'已到本地保留记录的末尾。':page.incomplete?'没有更早的本地记录；部分原始内容需导出查看。':'已到本地保留记录的开头。');
@@ -138,13 +143,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     return pending;
   },[session.id,load,disabled,readOnly,descriptor?.capabilities.commands]);
   useEffect(()=>{
-    mounted.current=true;let timer:ReturnType<typeof setTimeout>|undefined;
+    let timer:ReturnType<typeof setTimeout>|undefined;
     const sync=new ChatSnapshotSync(session.id,{
-      read:()=>window.desktop.chatSnapshot(session.id),
+      read:()=>sessionReadLifecycle.read(session.id,()=>window.desktop.chatSnapshot(session.id)),
       apply:value=>{approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);},
       state:setSyncState,
     });
     snapshotSync.current=sync;
+    const resume=sessionReadLifecycle.subscribe(session.id,()=>{if(mounted.current)void sync.refresh();});
     // Subscribe before the first read. Every event only requests host state;
     // neither a late task label nor stream text can finish an engineering task.
     const off=window.desktop.onChat((id,_state,version)=>{
@@ -153,7 +159,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     const recover=()=>{if(document.visibilityState!=='hidden')void sync.refresh();};
     window.addEventListener('focus',recover);window.addEventListener('online',recover);document.addEventListener('visibilitychange',recover);
     void sync.refresh();
-    return ()=>{mounted.current=false;pageRequest.current++;clearTimeout(timer);sync.dispose();if(snapshotSync.current===sync)snapshotSync.current=undefined;off();window.removeEventListener('focus',recover);window.removeEventListener('online',recover);document.removeEventListener('visibilitychange',recover);};
+    return ()=>{mounted.current=false;pageRequest.current++;clearTimeout(timer);sync.dispose();if(snapshotSync.current===sync)snapshotSync.current=undefined;off();resume();window.removeEventListener('focus',recover);window.removeEventListener('online',recover);document.removeEventListener('visibilitychange',recover);};
   },[approvalDrafts,session.id]);
   const handled=useRef(onAttentionHandled);handled.current=onAttentionHandled;
   const [focusRequest,setFocusRequest]=useState('');
@@ -163,15 +169,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     let cancelled=false;
     // Obtain a fresh snapshot before deciding whether a navigation target expired.
     pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setShowSearch(false);
-    void load().then(()=>{
-      if(cancelled||!mounted.current)return;
+    void sessionReadLifecycle.read(session.id,async()=>{await load();return snapshotSync.current?.snapshot;}).then(value=>{
+      if(!value||cancelled||!mounted.current)return;
       if(snapshotSync.current?.error)throw new Error('状态读取失败，请重新同步后查看待处理请求。');
-      const value=snapshotSync.current?.snapshot;
       if(value?.pending.some(item=>item.requestId===attentionTarget.requestId)){
         jumpToItem(attentionTarget.requestId,'request');setFocusRequest(attentionTarget.requestId);
       }else onError(new Error('这项请求已处理或已失效。'));
       handled.current();
-    }).catch(error=>{if(!cancelled){onError(error);handled.current();}});
+    }).catch(error=>{if(!cancelled&&mounted.current){onError(error);handled.current();}});
     return()=>{cancelled=true;};
   },[attentionTarget?.nonce,session.id,jumpToItem,onError,readOnly,descriptor?.maintenance,load]);
   useLayoutEffect(()=>{

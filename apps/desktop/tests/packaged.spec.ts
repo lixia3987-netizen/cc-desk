@@ -288,11 +288,14 @@ for (const target of targets) {
       expect(listPackage(archivePath,{isPack:false}).filter(file => /@fontsource-variable|font-licenses|noto-(?:sans|serif)-sc|jetbrains-mono/.test(file))).toEqual([]);
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
       // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
-      await page.evaluate(p => window.desktop.addProject(p), project);
-      await page.getByRole('button', { name: /新建会话/ }).click();
-      await page.getByLabel('会话名称', { exact: true }).fill('打包程序终端验证');
-      await page.getByRole('button', { name: 'Shell 终端', exact: true }).click();
-      await page.getByRole('button', { name: '创建会话', exact: true }).click();
+      // Existing Shell sessions remain supported through validated IPC after the
+      // first-send page restricts new tasks to structured agent engines.
+      await page.evaluate(async p => {
+        const project = await window.desktop.addProject(p);
+        const session = await window.desktop.createSession({ projectId: project.id, title: '打包程序终端验证', kind: 'shell', providerId: 'shell', mode: 'terminal', engineConfig: { schemaVersion: 1, options: {} }, isolated: false });
+        await window.desktop.setSelection(session.id);
+      }, project);
+      await expect(page.getByRole('heading', { name: '打包程序终端验证', exact: true })).toBeVisible();
       await page.getByRole('button', { name: '启动会话', exact: true }).click();
       await expect(page.locator('.status-tag').first()).toContainText('运行中');
       const suffix = randomUUID().replaceAll('-', '');
@@ -327,7 +330,7 @@ for (const target of targets) {
       persisted.settings.defaultPermissionMode = 'default';
       persisted.version = 1;
       for (const session of persisted.sessions) {
-        // This fixture was created through the real Shell UI. A v1 Shell still
+        // This fixture was created through validated Shell IPC. A v1 Shell still
         // required the old generic fields, although it never used Claude options.
         expect(session.kind).toBe('shell');
         expect(session.engineConfig).toEqual({ schemaVersion: 1, options: {} });

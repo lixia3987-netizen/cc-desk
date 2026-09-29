@@ -15,7 +15,7 @@ export class ChatSnapshotSync {
   private failures = 0;
   private lastError?: string;
   constructor(private sessionId: string, private ports: {
-    read(): Promise<ChatSnapshot>;
+    read(): Promise<ChatSnapshot | undefined>;
     apply(snapshot: ChatSnapshot): void;
     state(state: ChatSyncState): void;
   }) {}
@@ -78,6 +78,12 @@ export class ChatSnapshotSync {
         const requestGeneration = this.notificationGeneration;
         const value = await this.ports.read();
         if (this.disposed) return;
+        // A deleting/removed session deliberately suppresses passive reads.
+        // Do not count that invalidation as a failed snapshot or retry it.
+        if (!value) {
+          this.ports.state({ loading: false, failures: this.failures, ...(this.lastError ? { error: this.lastError } : {}) });
+          return;
+        }
         if (!this.accept(value, requestGeneration)) {
           this.requested = true;
           if (attempt === 1) throw new Error('会话状态仍在变化，请重试同步。');

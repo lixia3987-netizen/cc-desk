@@ -1,5 +1,5 @@
 import type { ClaudeHost } from '@cc-desk/engine-claude';
-import { automaticSessionTitlePatch } from '../../../shared/session-title';
+import { SessionTitles, type SessionTitleGenerator } from '../../session-titles';
 import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
 import { SubtaskTracker } from '../../subtask-tracker';
@@ -12,8 +12,10 @@ import { claudeSessionPatch, projectClaudeSession } from './session';
 const observe = (callback: () => void) => { try { callback(); } catch { /* Observers cannot change execution or persistence outcomes. */ } };
 
 /** The only structured Claude adapter with access to application persistence and display policies. */
-export function createClaudeHost(store: StateStore, onState: () => void, onConversation: (id: string) => void): ClaudeHost {
+export function createClaudeHost(store: StateStore, onState: () => void, onConversation: (id: string) => void, titleGenerator?: SessionTitleGenerator): ClaudeHost {
+  const titles = new SessionTitles(store, () => observe(onState), titleGenerator);
   return {
+    metadata: titles,
     sessions: {
       get(id) {
         const session = store.state.sessions.find(item => item.id === id);
@@ -43,16 +45,6 @@ export function createClaudeHost(store: StateStore, onState: () => void, onConve
     signalProcessGroup: signalPosixGroup,
     onState: () => observe(onState),
     onConversation: id => observe(() => onConversation(id)),
-    onAcceptedPrompt(id, text) {
-      const session = store.state.sessions.find(item => item.id === id);
-      if (!session) return;
-      const title = automaticSessionTitlePatch(session, text);
-      if (!title) return;
-      store.change(state => {
-        const current = state.sessions.find(item => item.id === id);
-        if (current) Object.assign(current, automaticSessionTitlePatch(current, text), { updatedAt: new Date().toISOString() });
-      });
-      observe(onState);
-    },
+    onAcceptedPrompt(id, text, capabilities) { titles.request(id, text, capabilities); },
   };
 }

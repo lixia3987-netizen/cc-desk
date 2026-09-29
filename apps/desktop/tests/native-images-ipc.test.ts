@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import type { OpenDialogOptions, OpenDialogReturnValue } from 'electron';
 import { Attachments } from '../src/main/attachments';
-import type { Attachment, DesktopAPI, Session } from '../src/shared/types';
+import type { Attachment, DesktopAPI, DraftAttachment, Session } from '../src/shared/types';
 import { NATIVE_IMAGE_MAX_BYTES, NATIVE_IMAGE_MAX_COUNT, type NativePastedImage } from '../src/shared/native-images';
 
 const require = createRequire(import.meta.url), electronPath = require.resolve('electron'), previousElectron = require.cache[electronPath];
@@ -214,4 +214,68 @@ test('preload forwards only explicit paste bytes through the dedicated IPC chann
   assert.deepEqual(ipcInvocations, []);
   await exposedDesktop.addPastedNativeImages('explicit-session', images);
   assert.deepEqual(ipcInvocations, [['files:add-pasted-native-images', { id: 'explicit-session', images }]]);
+});
+
+
+test('first-send draft staging uses Native image validation and keeps Claude generic attachments', async () => {
+  for (const provider of ['native', 'claude']) {
+    const f = await fixture(provider);
+    try {
+      const selected = await f.call<DraftAttachment[]>('files:add-dropped-draft', [f.source]);
+      const staged = await f.call<Attachment[]>('files:stage-draft', { id: f.id, files: selected });
+      assert.equal(staged.length, 1);
+      assert.notEqual(staged[0].path, f.source);
+      const text = path.join(f.root, 'first-message.txt'); await fs.writeFile(text, 'Text attachment');
+      const textSelection = await f.call<DraftAttachment[]>('files:add-dropped-draft', [text]);
+      if (provider === 'native') {
+        await assert.rejects(f.call('files:stage-draft', { id: f.id, files: textSelection }), /PNG|JPEG/);
+        assert.deepEqual(await f.attachments.list(f.id), staged);
+        await f.call('files:stage-draft', { id: f.id, files: [...selected, ...selected, ...selected] });
+        const before = await f.attachments.list(f.id);
+        await assert.rejects(f.call('files:stage-draft', { id: f.id, files: selected }), /Native 图片附件/);
+        assert.deepEqual(await f.attachments.list(f.id), before);
+      } else {
+        const textCopy = await f.call<Attachment[]>('files:stage-draft', { id: f.id, files: textSelection });
+        assert.equal(await fs.readFile(textCopy[0].path, 'utf8'), 'Text attachment');
+      }
+      assert.deepEqual(f.sent, [], 'staging never starts a model turn');
+    } finally { await f.dispose(); }
+  }
+});
+
+test('first-send draft staging rechecks captured admission after asynchronous source verification', async () => {
+  const f = await fixture();
+  try {
+    const selected = await f.call<DraftAttachment[]>('files:add-dropped-draft', [f.source]);
+    const pending = f.call('files:stage-draft', { id: f.id, files: selected });
+    f.admission.generation++;
+    await assert.rejects(pending, /操作已失效/);
+    assert.deepEqual(await f.attachments.list(f.id), []);
+    assert.deepEqual(f.sent, []);
+  } finally { await f.dispose(); }
+});
+
+
+test('pre-session preview IPC requires an inspected selection and never stages or sends', async () => {
+  const f = await fixture();
+  try {
+    const [selected] = await f.call<DraftAttachment[]>('files:add-dropped-draft', [f.source]);
+    const selection = { selectionId: selected.selectionId, path: selected.path };
+    const preview = await f.call<import('../src/shared/native-images').NativeImagePreview>('files:preview-draft-native-image', selection);
+    assert.equal(preview.image.name, selected.name);
+    assert.equal(preview.dataUrl, f.pastedImage.dataUrl);
+    for (const input of [{ ...selection, selectionId: randomUUID() }, { ...selection, path: path.join(f.root, 'other.png') },
+      { ...selection, sessionId: f.id }, { ...selection, url: 'https://example.invalid/image.png' }]) {
+      await assert.rejects(f.call('files:preview-draft-native-image', input));
+    }
+    assert.deepEqual(f.sent, []);
+    await assert.rejects(fs.stat(path.join(f.root, 'data')), { code: 'ENOENT' });
+  } finally { await f.dispose(); }
+});
+
+test('preload exposes selected pre-session image preview only through its narrow read-only IPC', async () => {
+  await import('../src/preload/index');
+  const before = ipcInvocations.length, selection = { selectionId: randomUUID(), path: '/selected/image.png' };
+  await exposedDesktop!.previewDraftNativeImage(selection);
+  assert.deepEqual(ipcInvocations.slice(before), [['files:preview-draft-native-image', selection]]);
 });

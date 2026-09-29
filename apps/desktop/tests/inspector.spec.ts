@@ -379,7 +379,9 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
         const region = panel(page, name);
         expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
-        await close.scrollIntoViewIfNeeded();
+        // Center explicitly: Chromium's conditional scrolling can retain a
+        // fractional clipped edge in the narrow, large-font scrolling grid.
+        await close.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
         await expect(close).toBeInViewport({ ratio: 1 });
         await expectOpenPanels(page, panelNames);
         const regionBox = (await region.boundingBox())!, terminalBox = (await page.locator('.terminal-host').boundingBox())!;
@@ -394,7 +396,7 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
     for (let index = panelNames.length - 1; index >= 0; index--) {
       const name = panelNames[index];
       const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
-      await close.scrollIntoViewIfNeeded();
+      await close.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
       await expect(close).toBeInViewport({ ratio: 1 });
       await close.click();
       await expectOpenPanels(page, panelNames.slice(0, index));

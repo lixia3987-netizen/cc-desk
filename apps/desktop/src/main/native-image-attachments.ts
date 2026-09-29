@@ -135,7 +135,7 @@ function validateJPEG(bytes:Buffer) {
 }
 
 /** Header/chunk validation without decompressing untrusted image pixels. */
-function validateImage(bytes:Buffer,mimeType:ImageMime) {
+export function validateNativeImageBytes(bytes:Buffer,mimeType:ImageMime) {
   if(!bytes.length||bytes.length>NATIVE_IMAGE_MAX_BYTES)throw invalid();
   if(mimeType==='image/png')validatePNG(bytes);else validateJPEG(bytes);
 }
@@ -145,7 +145,7 @@ function decodeImage(dataUrl:unknown,mimeType:ImageMime):Buffer {
   if(typeof dataUrl!=='string'||!dataUrl.startsWith(prefix)||dataUrl.length>prefix.length+4*Math.ceil(NATIVE_IMAGE_MAX_BYTES/3))throw invalid();
   const encoded=dataUrl.slice(prefix.length),bytes=Buffer.from(encoded,'base64');
   if(bytes.toString('base64')!==encoded)throw invalid();
-  validateImage(bytes,mimeType);
+  validateNativeImageBytes(bytes,mimeType);
   return bytes;
 }
 
@@ -212,7 +212,7 @@ async function readNativeImages(directory:string,sessionId:string,paths:string[]
         (nameExt==='.png')!==(ext==='.png'))throw invalid();
       total+=item.bytes;if(item.bytes<1||item.bytes>NATIVE_IMAGE_MAX_BYTES||total>NATIVE_IMAGE_MAX_BYTES)throw invalid();
       const bytes=await readStable(file,NATIVE_IMAGE_MAX_BYTES,directories,item.bytes);
-      validateImage(bytes,mimeType);
+      validateNativeImageBytes(bytes,mimeType);
       images.push({mimeType,dataUrl:`data:${mimeType};base64,${bytes.toString('base64')}`});
       metadata.push({name:item.name,mimeType,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
     }

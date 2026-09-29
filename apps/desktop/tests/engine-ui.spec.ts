@@ -1,3 +1,4 @@
+import { sessionAction, sessionRow, submitNewSession } from './helpers/session-ui';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { build } from 'esbuild';
 import fs from 'node:fs/promises';
@@ -77,11 +78,14 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
     await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('模型', { exact: true })).toHaveCount(0);
-    await expect(page.getByLabel('交互方式').locator('option')).toHaveCount(1);
+    await expect(page.getByLabel('交互方式')).toHaveCount(0);
     await page.getByLabel('会话名称').fill('异构引擎会话');
     await page.getByLabel('路由', { exact: true }).fill('project-route');
     await page.getByLabel('回复风格', { exact: true }).selectOption('expanded');
-    await page.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
+    await page.getByLabel('提示词编辑器', { exact: true }).fill('hello');
+    await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
+    await submitNewSession(page, 'hello');
     const first = await active(page);
     expect(first.execution.providerId).toBe('test.native');
     expect(first.execution.conversationId).toMatch(/^native\//);
@@ -89,9 +93,6 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     expect(first).not.toHaveProperty('permissionMode');
     await expect(page.getByRole('button', { name: '添加附件', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
-    await page.getByLabel('提示词编辑器', { exact: true }).fill('hello');
-    await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
-    await send(page, 'hello');
     await expect(page.locator('.chat-message.assistant')).toContainText('测试引擎完成：hello');
     await send(page, 'approve');
     await expect(page.getByRole('region', { name: '工具审批' })).toBeVisible();
@@ -161,7 +162,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
     await expect(page.getByLabel('路由', { exact: true })).toHaveValue('new-default');
-    await page.keyboard.press('Escape');
+    await sessionRow(page, '异构引擎会话').click();
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await stopAndClose(app); await f.dispose(); }
 });
@@ -214,14 +215,16 @@ test('engine history ignores stale source results and unknown configurations ret
     expect(rejectedPreferences.fontSize).toBe(16);
     expect(rejectedPreferences.engineDefaults.claude).toEqual(workspace.settings.engineDefaults.claude);
     await expect(page.locator('.approval-card')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: '删除会话', exact: true })).toBeDisabled();
+    await sessionRow(page, '缺失引擎记录').click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: '删除会话', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
     await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
     await page.getByRole('button', { name: '继续输入', exact: true }).click();
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeFocused();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('/retained draft');
     await expect(page.locator('.slash-menu')).toHaveCount(0);
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
-    await page.getByRole('button', { name: '重命名', exact: true }).click();
+    await sessionAction(page, '缺失引擎记录', '重命名会话');
     await page.getByLabel('新的会话名称', { exact: true }).fill('保留未知引擎');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     expect((await active(page)).engineConfig).toEqual(workspace.sessions[0].engineConfig);
@@ -269,7 +272,8 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
     await page.getByLabel('会话名称').fill('维护期间独立运行');
-    await page.getByRole('button', { name: '创建会话', exact: true }).click();
+    await submitNewSession(page, 'prepare maintenance session');
+    await expect(page.locator('.chat-message.assistant')).toContainText('测试引擎完成：prepare maintenance session');
     await expect(page.getByRole('heading', { name: '维护期间独立运行', exact: true })).toBeVisible();
     await page.evaluate(projectId => window.desktop.createSession({ projectId, title: '等待维护的 Claude', kind: 'agent', providerId: 'claude', mode: 'structured', isolated: false }).then(session => session.id), f.projectId);
     await app.evaluate(({ dialog }) => { dialog.showMessageBox = (async () => ({ response: 1, checkboxChecked: false })) as typeof dialog.showMessageBox; });
@@ -286,10 +290,10 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     await page.getByLabel('提示词编辑器', { exact: true }).fill('维护时保存的草稿');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
-    await expect(page.getByRole('button', { name: '创建会话', exact: true })).toBeDisabled();
+    await page.getByLabel('提示词编辑器', { exact: true }).fill('maintenance readiness');
+    await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
-    await expect(page.getByRole('button', { name: '创建会话', exact: true })).toBeEnabled();
-    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
     await page.locator('.session-row').filter({ hasText: '维护期间独立运行' }).click();
     await expect(page.locator('.engine-unavailable')).toHaveCount(0);
     await send(page, 'still available');

@@ -5,9 +5,10 @@ import { z } from 'zod';
 import type { Attachment } from '../shared/types';
 import { NATIVE_IMAGE_MAX_COUNT, NATIVE_IMAGE_MAX_BYTES, type NativePastedImage } from '../shared/native-images';
 
-const MAX_FILE = 8 * 1024 * 1024;
-const MAX_TOTAL = 16 * 1024 * 1024;
-const EXTENSIONS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.pdf','.txt','.md','.json','.csv','.ts','.tsx','.js','.py','.yaml','.yml','.html','.css','.xml','.log']);
+export const MAX_ATTACHMENT_COUNT = 8;
+export const MAX_FILE = 8 * 1024 * 1024;
+export const MAX_TOTAL = 16 * 1024 * 1024;
+export const EXTENSIONS = new Set(['.png','.jpg','.jpeg','.gif','.webp','.pdf','.txt','.md','.json','.csv','.ts','.tsx','.js','.py','.yaml','.yml','.html','.css','.xml','.log']);
 const stagedName = /^\.staged-[0-9a-f-]{36}\.[a-z]+$/;
 const manifestSchema = z.object({ version:z.literal(1), items:z.array(z.object({
   file:z.string().regex(stagedName), name:z.string().max(1024), bytes:z.number().int().min(0).max(MAX_FILE), retained:z.boolean(), draft:z.boolean().default(true)
@@ -101,7 +102,7 @@ export class Attachments {
   }
   private async addFiles(id: string, selected: string[], native=false): Promise<Attachment[]> {
     return this.serial(id,async()=>{
-      if (selected.length > 8) throw new Error('一次最多选择 8 个附件。');
+      if (selected.length > MAX_ATTACHMENT_COUNT) throw new Error('一次最多选择 8 个附件。');
       const items=await this.load(id); const added:Item[]=[];
       const folder=this.folder(id); await fs.mkdir(folder,{recursive:true,mode:0o700});
       let total=0,saved=false;
@@ -133,7 +134,7 @@ export class Attachments {
     });
   }
   private async validateFiles(id:string,files:string[]):Promise<string[]> {
-    if(files.length>8)throw new Error('最多发送 8 个附件。');
+    if(files.length>MAX_ATTACHMENT_COUNT)throw new Error('最多发送 8 个附件。');
     const items=await this.load(id); let size=0;
     for(const file of files) {
       const item=items.find(item=>path.join(this.folder(id),item.file)===file);

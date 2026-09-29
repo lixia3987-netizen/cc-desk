@@ -1,3 +1,4 @@
+import { sessionAction } from './helpers/session-ui';
 import { test, expect, _electron as electron } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -31,7 +32,7 @@ test('visible conversation transfer previews selections and creates an unsent na
   try {
     const page = await app.firstWindow();
     await expect(page.locator('main.workspace')).toBeVisible();
-    await page.getByRole('button', { name: '带入内容到新会话', exact: true }).click();
+    await sessionAction(page, 'Source conversation', '带入内容到新会话');
     await page.getByRole('button', { name: '自研 Agent · Alpha', exact: true }).click();
     await expect(page.getByRole('button', { name: '创建会话', exact: true })).toBeDisabled();
     await page.getByRole('button', { name: '读取可见消息', exact: true }).click();

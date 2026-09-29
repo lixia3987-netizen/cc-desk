@@ -1,7 +1,7 @@
 import type { ChatSnapshot, ChatSnapshotVersion, ChatSendOptions, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
 import type { NativeTaskView } from '@cc-desk/contracts/native-task';
 import type { NativeTaskReviewInput } from './native-task';
-import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult } from './git';
+import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult, WorktreeBranch } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow } from './workflows';
 import type { ThemeId } from './theme';
@@ -39,8 +39,9 @@ export interface Settings extends TypographySettings { claudePath: string; shell
 export interface AppState { version: 3; projects: Project[]; sessions: Session[]; settings: Settings; selectedSessionId?: string }
 export type Capabilities = ClaudeCapabilities;
 export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
-export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; engineConfig?: EngineConfig; isolated: boolean; worktreeName?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean; continuation?: SessionContinuationInput }
+export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; engineConfig?: EngineConfig; isolated: boolean; worktreeName?: string; worktreeBaseRef?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean; continuation?: SessionContinuationInput }
 export interface Attachment { path: string; name: string; bytes: number }
+export interface DraftAttachment extends Attachment { selectionId: string }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
 export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
@@ -62,6 +63,7 @@ export interface DesktopAPI {
   createSession(input: NewSession): Promise<Session>;
   previewSessionContinuation(id: string): Promise<SessionContinuationPreview>;
   updateSession(input: { id: string; title?: string; archived?: boolean; engineConfig?: EngineConfig }): Promise<void>;
+  listWorktreeBranches(projectId: string, refresh?: boolean): Promise<WorktreeBranch[]>;
   saveDraft(id: string, text: string): Promise<void>;
   savePanelDrafts(id: string, patch: PanelDrafts): Promise<void>;
   setSelection(id: string): Promise<void>;
@@ -81,6 +83,12 @@ export interface DesktopAPI {
   pickAttachments(id: string): Promise<Attachment[]>;
   addPastedNativeImages(id: string, images: NativePastedImage[]): Promise<Attachment[]>;
   addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
+  /** Metadata for original files; call stageDraftAttachments before submitting. */
+  chooseDraftAttachments(): Promise<DraftAttachment[]>;
+  previewDraftNativeImage(selection: Pick<DraftAttachment, 'selectionId' | 'path'>): Promise<NativeImagePreview>;
+  addDroppedDraftAttachments(files: File[]): Promise<DraftAttachment[]>;
+  /** Returns private session-owned paths, which are the only paths accepted for submission. */
+  stageDraftAttachments(id: string, files: DraftAttachment[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
   onChat(callback: (sessionId: string, taskState?: TaskState, version?: ChatSnapshotVersion) => void): () => void;

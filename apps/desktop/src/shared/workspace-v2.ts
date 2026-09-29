@@ -36,6 +36,7 @@ export const sessionInputSchema = z.object({
   model: z.string().trim().max(200).refine(s => !/[\x00-\x1f]/.test(s)),
   effort: z.enum(['default','low','medium','high','xhigh','max','ultracode']),
   permissionMode: permissionModeSchema.optional(), isolated: z.boolean(),
+  worktreeBaseRef: z.string().min(1).max(1024).regex(/^refs\/(heads|remotes)\//, '请选择本地或远程分支。').refine(value => !/[\x00-\x20\x7f~^:?*\[\\]/.test(value) && !value.includes('..') && !value.includes('@{'), '无效的起始分支。').optional(),
   worktreeName: z.string().max(80).refine(s => !/[/\\\x00-\x1f\x7f]/.test(s) && !s.includes('..'), 'Worktree 名称不能包含路径分隔符、控制字符或 ..。').trim().optional(),
   providerId: providerIdSchema.optional(), conversationId: conversationIdSchema.optional(), fork: z.boolean().optional(),
   mode: z.enum(['terminal','structured']).optional()

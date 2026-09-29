@@ -1,4 +1,6 @@
 import { desktopRoot, documentationPath } from './helpers/paths';
+import { createSessionFixture, sessionAction } from './helpers/session-ui';
+import { selectProjectFilter } from './helpers/project-filter';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron } from '@playwright/test';
 import fs from 'node:fs/promises';
@@ -16,29 +18,31 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     const rendererErrors:string[]=[];page.on('pageerror',error=>rendererErrors.push(error.message));
     await expect(page.getByRole('heading',{name:/让每个想法/})).toBeVisible();
     await page.screenshot({path:documentationPath('screenshots', 'workspace.png')});
-    await page.evaluate(p=>window.desktop.addProject(p),project);
-    await page.getByRole('button',{name:/新建会话/}).click();
-    await page.getByLabel('会话名称',{exact:true}).fill('终端验证');
-    await page.getByRole('button',{name:'Shell 终端',exact:true}).click();
-    await page.getByRole('button',{name:'创建会话',exact:true}).click();
+    // Existing Shell sessions remain supported after the new-session UI becomes structured-only.
+    await page.evaluate(async p=>{const project=await window.desktop.addProject(p);const session=await window.desktop.createSession({projectId:project.id,title:'终端验证',kind:'shell',providerId:'shell',mode:'terminal',engineConfig:{schemaVersion:1,options:{}},isolated:false});await window.desktop.setSelection(session.id);},project);
+    await expect(page.getByRole('heading',{name:'终端验证',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'启动会话',exact:true}).click();
     await expect(page.locator('.status-tag')).toContainText('运行中');
     await page.locator('.terminal-host').click();
     await page.keyboard.type(process.platform==='win32'?"Write-Output 'DESKTOP_PTY_OK'":"printf '\\nDESKTOP_PTY_OK\\n'");await page.keyboard.press('Enter');
     await expect.poll(()=>page.evaluate(async()=>{const s=await window.desktop.snapshot();return (await window.desktop.terminalSnapshot(s.state.sessions[0].id)).chunks.map(x=>x.data).join('');})).toContain('DESKTOP_PTY_OK');
-    await page.getByRole('button',{name:'重命名',exact:true}).click();
+    await sessionAction(page,'终端验证','重命名会话');
     await page.getByLabel('新的会话名称').fill('已验证的项目终端');await page.getByRole('button',{name:'保存',exact:true}).click();
     await expect(page.getByRole('heading',{name:'已验证的项目终端'})).toBeVisible();
-    await page.getByRole('button',{name:/新建会话/}).click();await page.getByLabel('会话名称',{exact:true}).fill('功能开发');await page.getByRole('button',{name:'创建会话',exact:true}).click();
+    await createSessionFixture(page,{title:'功能开发'});
     await page.getByRole('button',{name:/已验证的项目终端.*运行中/}).click();
     await expect(page.locator('.status-tag')).toContainText('运行中');
     await page.screenshot({path:documentationPath('screenshots', 'terminal.png')});
     await page.getByRole('button',{name:'停止',exact:true}).click();
     await expect(page.locator('.status-tag')).toContainText('已停止');
-    await page.getByRole('button',{name:'归档会话',exact:true}).click();
+    await sessionAction(page,'已验证的项目终端','归档会话');
+    await page.getByRole('dialog',{name:'归档会话',exact:true}).getByRole('button',{name:'确认归档',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'归档会话',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'查看归档',exact:true}).click();
     await page.getByRole('button',{name:/已验证的项目终端.*已停止/}).click();
-    await page.getByRole('button',{name:'取消归档',exact:true}).click();
+    await sessionAction(page,'已验证的项目终端','取消归档');
+    await page.getByRole('dialog',{name:'取消归档',exact:true}).getByRole('button',{name:'确认取消归档',exact:true}).click();
+    await expect(page.getByRole('dialog',{name:'取消归档',exact:true})).toHaveCount(0);
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await expect(page.getByRole('dialog')).toBeVisible();
     await expect(page.locator('#root')).toHaveJSProperty('inert',true);
@@ -100,7 +104,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.getByRole('heading',{name:/让每个想法/})).toBeVisible();
     await page.evaluate(p=>window.desktop.addProject(p),project);
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'连接与终端',exact:true}).click();await page.getByLabel('Claude Code 路径').fill(fixture);await page.getByRole('button',{name:'保存设置',exact:true}).click();await expect(page.getByText('设置已保存',{exact:true})).toBeVisible();await page.getByRole('button',{name:'关闭弹窗'}).click();
-    const create=async(title:string)=>{await page.getByRole('button',{name:/新建会话/}).click();await page.getByLabel('会话名称',{exact:true}).fill(title);await page.getByRole('button',{name:'创建会话',exact:true}).click();await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible().catch(async error=>{console.error(await page.locator('body').innerText());throw error;});};
+    const create=(title:string)=>createSessionFixture(page,{title});
     await create('会话 A');await page.getByLabel('提示词编辑器').fill('A 的独立草稿');
     await create('会话 B');await expect(page.getByLabel('提示词编辑器')).toHaveValue('');await page.getByLabel('提示词编辑器').fill('B 的独立草稿');
     await page.locator('.session-row').filter({hasText:'会话 A'}).click();await expect(page.getByLabel('提示词编辑器')).toHaveValue('A 的独立草稿');
@@ -121,12 +125,12 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     const attentionSession=await page.evaluate(async folder=>{const project=await window.desktop.addProject(folder);const session=await window.desktop.createSession({projectId:project.id,title:'跨项目提问 C',kind:'agent',engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}},isolated:false,mode:'structured'});await window.desktop.setSelection(session.id);return session.id;},attentionProject);
     await expect(page.getByRole('heading',{name:'跨项目提问 C',exact:true})).toBeVisible();
     await page.getByLabel('提示词编辑器').fill('question');await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.getByLabel('回答：使用哪个数据库？')).toBeVisible();
-    await page.locator('.session-row').filter({hasText:'会话 B'}).click();await page.getByLabel('工作空间筛选').selectOption({label:'审批项目'});await page.getByLabel('搜索会话').fill('隐藏所有会话');
+    await page.locator('.session-row').filter({hasText:'会话 B'}).click();await selectProjectFilter(page,'审批项目');await page.getByLabel('搜索会话').fill('隐藏所有会话');
     await expect(page.locator('.attention-button')).toContainText('2');await page.locator('.attention-button').click();
     await expect(page.locator('.attention-list>button')).toHaveCount(2);await page.screenshot({path:documentationPath('screenshots', 'attention-center.png')});
     await page.locator('.attention-list>button').filter({hasText:'会话 A'}).click();
     await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByRole('region',{name:'工具审批'})).toBeFocused();
-    await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveValue('all');
+    await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveText('全部项目');
     await page.locator('.session-row').filter({hasText:'会话 A'}).click();await expect(page.getByLabel('审批说明')).toHaveValue('只允许这一次，保留我的说明');await page.getByLabel('提示词编辑器').fill('审批期间写的新草稿');await page.screenshot({path:documentationPath('screenshots', 'approval.png')});await page.getByRole('button',{name:'允许本次',exact:true}).click();await expect(page.locator('.chat-message.assistant')).toContainText('已批准');await expect(page.getByLabel('提示词编辑器')).toHaveValue('审批期间写的新草稿');
     await expect(page.locator('.attention-button')).toContainText('1');await page.locator('.attention-button').click();
     await page.locator('.attention-list>button').filter({hasText:'跨项目提问 C'}).click();await expect(page.getByRole('region',{name:'等待回答'})).toBeFocused();
@@ -165,11 +169,11 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     // Notification clicks use this same main-process selection/state path, across all filters.
     const archivedSessionId=await page.evaluate(async()=>{const snapshot=await window.desktop.snapshot();const session=snapshot.state.sessions.find(item=>item.title==='会话 A')!;await window.desktop.stopSession(session.id);return session.id;});
     await expect.poll(()=>page.evaluate(async id=>(await window.desktop.snapshot()).state.sessions.find(session=>session.id===id)?.status,archivedSessionId)).toBe('stopped');await page.evaluate(id=>window.desktop.updateSession({id,archived:true}),archivedSessionId);
-    const otherProject=path.join(directory,'另一个项目');await fs.mkdir(otherProject);await page.evaluate(folder=>window.desktop.addProject(folder),otherProject);await page.getByLabel('工作空间筛选').selectOption({label:'另一个项目'});await page.getByLabel('搜索会话').fill('没有匹配的名称');
+    const otherProject=path.join(directory,'另一个项目');await fs.mkdir(otherProject);await page.evaluate(folder=>window.desktop.addProject(folder),otherProject);await selectProjectFilter(page,'另一个项目');await page.getByLabel('搜索会话').fill('没有匹配的名称');
     await page.evaluate(async()=>{const snapshot=await window.desktop.snapshot();await window.desktop.setSelection(snapshot.state.sessions.find(item=>item.title==='会话 A')!.id);});
-    await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveValue('all');await expect(page.locator('.session-row.active')).toContainText('会话 A');await expect(page.getByRole('button',{name:'查看活跃会话',exact:true})).toBeVisible();
+    await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveText('全部项目');await expect(page.locator('.session-row.active')).toContainText('会话 A');await expect(page.getByRole('button',{name:'查看活跃会话',exact:true})).toBeVisible();
     // Clicking another notification for the already-selected session still reveals it.
-    await page.getByLabel('工作空间筛选').selectOption({label:'另一个项目'});await page.getByLabel('搜索会话').fill('再次隐藏当前会话');await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},archivedSessionId);await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveValue('all');await expect(page.locator('.session-row.active')).toContainText('会话 A');
+    await selectProjectFilter(page,'另一个项目');await page.getByLabel('搜索会话').fill('再次隐藏当前会话');await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},archivedSessionId);await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveText('全部项目');await expect(page.locator('.session-row.active')).toContainText('会话 A');
     expect(rendererErrors).toEqual([]);
   }finally{
     const page=await app.firstWindow().catch(()=>null);if(page){await page.evaluate(async()=>{for(const session of (await window.desktop.snapshot()).state.sessions)await window.desktop.stopSession(session.id);}).catch(()=>{});await expect.poll(()=>page.evaluate(async()=>(await window.desktop.snapshot()).state.sessions.filter(session=>['running','stopping'].includes(session.status)).length)).toBe(0);}

@@ -1,5 +1,6 @@
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
+import { sessionAction, sessionRow } from './helpers/session-ui';
 import { test, expect, _electron as electron, type ElectronApplication } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -103,8 +104,7 @@ test('ide: open the current worktree as one literal argument, preserve folder op
     await expect(page.getByRole('heading', { name: 'IDE 工作树会话', exact: true })).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     const ide = page.getByRole('button', { name: '在 IDE 中打开', exact: true });
-    const folder = page.getByRole('button', { name: '打开工作目录', exact: true });
-    for (const button of [ide, folder]) {
+    for (const button of [ide]) {
       await expect(button).toBeVisible();
       const bounds = (await button.boundingBox())!;
       expect(bounds.x).toBeGreaterThanOrEqual(0);
@@ -122,7 +122,14 @@ test('ide: open the current worktree as one literal argument, preserve folder op
       state.__ideFolderCalls = [];
       shell.openPath = async value => { state.__ideFolderCalls.push(value); return ''; };
     });
-    await folder.click();
+    await sessionRow(page, f.session.title).click({ button: 'right' });
+    const folder = page.getByRole('menuitem', { name: '打开工作目录', exact: true });
+    await expect(folder).toBeVisible();
+    const folderBounds = (await folder.boundingBox())!;
+    expect(folderBounds.x).toBeGreaterThanOrEqual(0);
+    expect(folderBounds.x + folderBounds.width).toBeLessThanOrEqual(await page.evaluate(() => innerWidth));
+    await page.keyboard.press('Escape');
+    await sessionAction(page, f.session.title, '打开工作目录');
     await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { __ideFolderCalls: string[] }).__ideFolderCalls)).toEqual([f.session.cwd]);
 
     await fs.unlink(f.executable);

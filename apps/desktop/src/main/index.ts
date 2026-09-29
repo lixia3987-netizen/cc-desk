@@ -1,9 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme, net, safeStorage } from 'electron';
-import fs from 'node:fs/promises';
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { StateStore } from './store';
 import { createExecutors } from './execution/create-executors';
@@ -19,16 +17,17 @@ import { registerNativeTaskHandlers } from './ipc/native-task-handlers';
 import type { ExecutionRegistry } from './execution/registry';
 import { SessionCreation } from './session-creation';
 import { SessionService } from './session-service';
+import { ProjectDirectoryRegistry } from './project-directory-registry';
 import { detectCLI } from './commands';
 import { CLIUpdater } from './cli-updater';
 import { CLIUpdateService } from './cli-update-service';
 import { openIde } from './ide';
-import { gitInfo } from './git';
+import { gitInfo, listWorktreeBranches } from './git';
 import { diagnoseEnvironment } from './diagnostics';
 import { queryHistory } from './history';
 import { HistorySources } from './execution/history-sources';
 import { idSchema, providerIdSchema, sessionInputSchema, settingsSchema } from '../shared/schema';
-import type { Capabilities, Project } from '../shared/types';
+import type { Capabilities } from '../shared/types';
 import { normalizeThemeId, THEME_APPEARANCE } from '../shared/theme';
 import { FontLibrary } from './font-library';
 import { IMPORTED_FONT_ID } from '../shared/fonts';
@@ -46,6 +45,7 @@ let connections: ConnectionStore;
 let mcpConnections: NativeMcpConnectionStore;
 let connectionDiagnostics: NativeConnectionDiagnostics;
 let sessionCreation: SessionCreation;
+let projectDirectories: ProjectDirectoryRegistry;
 let services: SessionService;
 const historySources = new HistorySources();
 historySources.register('claude', queryHistory);
@@ -86,15 +86,6 @@ function assertSender(event: Electron.IpcMainInvokeEvent) {
 function handle<T>(name: string, schema: z.ZodType<T>, action: (data: T) => unknown) {
   ipcMain.handle(name, (event, input) => { assertSender(event); return action(schema.parse(input)); });
 }
-async function addProject(value: string): Promise<Project> {
-  if (!path.isAbsolute(value)) throw new Error('请选择绝对路径。');
-  const canonical = await fs.realpath(value);
-  if (!(await fs.stat(canonical)).isDirectory()) throw new Error('请选择文件夹。');
-  const existing = store.state.projects.find(p => process.platform === 'win32' ? p.path.toLowerCase() === canonical.toLowerCase() : p.path === canonical);
-  if (existing) return existing;
-  const project: Project = { id: randomUUID(), name: path.basename(canonical) || canonical, path: canonical, createdAt: new Date().toISOString() };
-  store.change(s => s.projects.push(project)); notify(); return project;
-}
 function registerIPC() {
   registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
   registerNativeSkillHandlers(handle, store);
@@ -121,10 +112,10 @@ function registerIPC() {
   // Explicit write-only bridge; browser clipboard permissions remain denied.
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
-    const result = await dialog.showOpenDialog(window!,{ properties:['openDirectory'],title:'添加项目文件夹' });
-    return result.canceled ? null : addProject(result.filePaths[0]);
+    const result = await dialog.showOpenDialog(window!,{ properties:['openDirectory'],title:'选择工作空间目录' });
+    return result.canceled || !result.filePaths[0] ? null : projectDirectories.add(result.filePaths[0]);
   });
-  handle('project:add',z.string().min(1).max(4096),addProject);
+  handle('project:add',z.string().min(1).max(4096),directory => projectDirectories.add(directory));
   handle('project:remove',idSchema,id => {
     if(sessionCreation.pending(id))throw new Error('项目正在创建会话，请稍后重试。');
     if (store.state.sessions.some(s => s.projectId === id)) throw new Error('项目包含会话，请保留项目以便恢复历史。');
@@ -132,6 +123,12 @@ function registerIPC() {
   });
   handle('session:create',sessionInputSchema,input => sessionCreation.create(input));
   handle('session:continuation-preview',idSchema,id => sessionCreation.previewContinuation(id));
+  handle('worktree:branches',z.object({projectId:idSchema,refresh:z.boolean().optional()}).strict(),({projectId,refresh}) => {
+    const project = store.state.projects.find(item => item.id === projectId);
+    if (!project) throw new Error('项目不存在。');
+    if (closing) throw new Error('工作台正在退出。');
+    return listWorktreeBranches(project.path,refresh);
+  });
   services.register(handle);
   handle('session:start',idSchema,id => services.start(id));
   handle('session:stop',idSchema,id => services.stop(id));
@@ -271,6 +268,7 @@ else {
   app.whenReady().then(async () => {
     try {
       store = new StateStore(app.getPath('userData'),{onError:reportPersistenceError});
+      projectDirectories = new ProjectDirectoryRegistry(store,notify);
       fonts = new FontLibrary(store.directory);
       connections = new ConnectionStore(store.directory, { safeStorage, platform: process.platform,
         isConnectionActive: id => nativeExecutor?.isConnectionActive(id) ?? false,

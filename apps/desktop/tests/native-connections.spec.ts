@@ -1,3 +1,4 @@
+import { sessionRow, stubChatSubmission, submitNewSession } from './helpers/session-ui';
 import { test, expect, _electron as electron } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -313,8 +314,10 @@ test('native readiness is per session, preserves saved history and Claude defaul
     await expect(page.locator('.chat-composer .engine-unavailable')).toContainText('连接不存在');
     await page.getByLabel('提示词编辑器', { exact: true }).fill('保留草稿，不发送');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
-    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: '从此会话创建分支', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '添加附件', exact: true })).toBeDisabled();
+    await sessionRow(page, '缺失连接的历史').click({ button: 'right' });
+    await expect(page.getByRole('menuitem', { name: '从此会话创建分支', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
     await page.getByLabel('提示词编辑器', { exact: true }).fill('/');
     await expect(page.locator('.slash-menu')).toHaveCount(0);
     const connection = await page.evaluate(async () => {
@@ -331,7 +334,8 @@ test('native readiness is per session, preserves saved history and Claude defaul
     const connectionField = descriptor.configuration!.fields.find(field => field.key === 'connectionId')!;
     if (connectionField.type === 'select') await page.getByLabel(connectionField.label, { exact: true }).selectOption(connection.id);
     else await page.getByLabel(connectionField.label, { exact: true }).fill(connection.id);
-    await page.getByRole('button', { name: '创建会话', exact: true }).click();
+    await stubChatSubmission(app);
+    await submitNewSession(page, '只检查 UI 就绪状态');
     await expect(page.getByRole('heading', { name: '有可用连接的 Native', exact: true })).toBeVisible();
     await expect(page.getByLabel('会话模型连接', { exact: true })).toHaveValue(connection.id);
     await expect(page.locator('.chat-composer .engine-unavailable')).toHaveCount(0);

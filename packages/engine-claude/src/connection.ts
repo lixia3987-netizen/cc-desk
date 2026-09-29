@@ -10,6 +10,7 @@ interface ConnectionEvents {
   frame(value: WireObject): void;
   error(message: string): void;
   close(code: number | null, signal: NodeJS.Signals | null): void;
+  outputLimit?(): void;
 }
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 const execFileAsync = promisify(execFile);
@@ -257,17 +258,28 @@ export class ClaudeConnection {
   killTimer?: NodeJS.Timeout;
   termination?: Promise<boolean>;
   private rootExited = false;
+  private outputDiscarded = false;
   private readonly spawnStartedAt: number;
   private readonly spawnCompletedAt: number;
   constructor(invocation: { file: string; args: string[] }, cwd: string, env: NodeJS.ProcessEnv,
     private events: ConnectionEvents, private controlTimeoutMs = 15_000,
-    private signalProcessGroup: (pid: number, signal: NodeJS.Signals) => Promise<void>) {
+    private signalProcessGroup: (pid: number, signal: NodeJS.Signals) => Promise<void>, outputLimitBytes?: number) {
     this.spawnStartedAt = Date.now();
     const child = this.child = spawn(invocation.file, invocation.args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, detached: process.platform !== 'win32', shell: false });
     this.spawnCompletedAt = Date.now();
     this.decoder = new JsonLineDecoder(value => events.frame(value));
     child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk: string) => { if (this.ending) return; try { this.decoder.push(chunk); } catch (error) { events.error(messageOf(error)); } });
+    let outputBytes = 0;
+    child.stdout.on('data', (chunk: string) => {
+      if (this.ending || this.outputDiscarded) return;
+      if (outputLimitBytes !== undefined && (outputBytes += Buffer.byteLength(chunk)) > outputLimitBytes) {
+        this.outputDiscarded = true;
+        events.outputLimit?.();
+        return;
+      }
+      try { this.decoder.push(chunk); }
+      catch (error) { this.outputDiscarded = true; events.error(messageOf(error)); }
+    });
     child.stderr.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-8000); });
     child.on('error', error => events.error(messageOf(error)));
     child.stdin.on('error', error => { if (!this.ending && !this.rootExited) events.error('CLI 输入连接已关闭：' + error.message); });
@@ -288,7 +300,7 @@ export class ClaudeConnection {
     for (const waiter of this.controls.values()) { clearTimeout(waiter.timer); waiter.reject(new Error(error)); }
     this.controls.clear();
   }
-  finish() { if (!this.ending) { try { this.decoder.finish(); } catch (error) { this.events.error(messageOf(error)); } } }
+  finish() { if (!this.ending && !this.outputDiscarded) { try { this.decoder.finish(); } catch (error) { this.events.error(messageOf(error)); } } }
   write(value: WireObject) {
     if (this.ending || this.child.stdin.destroyed || !this.child.stdin.writable) throw new Error('CLI 输入连接已关闭。');
     // Only one user turn is outstanding; control traffic is bounded separately.

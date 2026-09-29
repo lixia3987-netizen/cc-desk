@@ -79,6 +79,10 @@ test('chat queue: accepted messages clear immediately, Enter is deduplicated, FI
     await expect.poll(() => f.prompts(session)).toEqual(['第一项保持运行']);
     expect((await f.records()).filter(value => value.event === 'result')).toHaveLength(0);
     await expect(editor(page)).toBeEnabled();
+    await expect(page.locator('.chat-message.user').filter({ hasText: '第一项保持运行' })).toBeVisible();
+    await expect(page.locator('.thinking-indicator')).toBeVisible();
+    await expect(page.getByLabel('待发送消息', { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/消息已(?:发送|接收)/)).toHaveCount(0);
 
     await submit(page, '第二项顺序执行');
     await app.evaluate(({ dialog }, file) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [file] }); }, f.attachment);
@@ -89,6 +93,9 @@ test('chat queue: accepted messages clear immediately, Enter is deduplicated, FI
     await expect.poll(() => queueTexts(page, session.id)).toEqual(['第二项顺序执行', '第三项带附件']);
     expect((await snapshot(page, session.id)).queue?.items.find(item => item.text === '第三项带附件')?.attachments).toHaveLength(1);
     expect(await f.prompts(session)).toEqual(['第一项保持运行']);
+    await expect(page.getByLabel('待发送消息', { exact: true })).toContainText('待发送 · 2');
+    await expect(page.getByText('当前任务结束后按顺序发送', { exact: true })).toBeVisible();
+    await expect(page.getByText(/消息已(?:发送|接收)/)).toHaveCount(0);
     await queued(page, '第三项带附件').hover();
     await expect(queued(page, '第三项带附件').locator('.queued-chat-actions')).toHaveCSS('opacity', '1');
     await expect(editor(page)).toBeInViewport({ ratio: 1 });
@@ -108,6 +115,7 @@ test('chat queue: accepted messages clear immediately, Enter is deduplicated, FI
     await f.signal(session, 'complete');
     await expect.poll(async () => (await snapshot(page, session.id)).queue?.items ?? []).toEqual([]);
     await expect(editor(page)).toHaveValue('还未提交的下一条草稿');
+    await expect(page.getByLabel('待发送消息', { exact: true })).toHaveCount(0);
     expect((await snapshot(page, session.id)).messages.filter(value => value.role === 'user')).toHaveLength(3);
     expect((await f.records()).filter(value => value.event === 'violation')).toEqual([]);
   } finally { await closeQueueApp(app); await f.dispose(); }

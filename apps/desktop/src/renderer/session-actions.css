@@ -1,0 +1,39 @@
+.session-context-menu {
+  z-index: 30;
+  width: 258px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--elevated);
+  color: var(--text);
+  box-shadow: 0 10px 36px #0005;
+}
+.session-context-menu-title {
+  padding: 8px 10px;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: calc(11px * var(--ui-font-scale));
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-context-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  gap: 9px;
+  border-radius: 5px;
+  text-align: left;
+  font-size: calc(12px * var(--ui-font-scale));
+}
+.session-context-menu-item > span:first-child { display: inline-flex; flex-shrink: 0; }
+.session-context-menu-item:not(:disabled):hover,
+.session-context-menu-item:not(:disabled):focus { background: var(--hover); }
+.session-context-menu-item:focus-visible { outline-offset: -2px; }
+.session-context-menu-item.is-danger,
+.session-context-menu-item.is-danger:not(:disabled):hover,
+.session-context-menu-item.is-danger:not(:disabled):focus { color: var(--danger); }
+.session-context-menu-item.has-separator { margin-top: 6px; border-top: 1px solid var(--border); border-top-left-radius: 0; border-top-right-radius: 0; }
+.session-action-target { overflow-wrap: anywhere; }

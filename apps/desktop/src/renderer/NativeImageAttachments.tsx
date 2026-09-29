@@ -21,13 +21,13 @@ export function NativeImageAttachments({ images, onPreview }: { images: NativeIm
   </section>;
 }
 
-export function ChatAttachmentChips({ attachments, isNative, disabled, onRemove, onPreview }: {
-  attachments: Attachment[]; isNative: boolean; disabled: boolean; onRemove: (path: string) => void; onPreview?: (file: Attachment) => void;
+export function ChatAttachmentChips({ attachments, isNative, disabled, onRemove, onPreview, previewTitle = '本地预览当前暂存版本' }: {
+  attachments: Attachment[]; isNative: boolean; disabled: boolean; onRemove: (path: string) => void; onPreview?: (file: Attachment) => void; previewTitle?: string;
 }) {
   if (!attachments.length) return null;
   return <div className="attachment-chips">{attachments.map(file => <span key={file.path} title={isNative ? file.name : file.path}>
     <Paperclip size={12}/>{file.name}{isNative && ` · ${selectedType(file.name)} · ${size(file.bytes)}`}
-    {isNative && onPreview && <button className="icon-button" aria-label={'预览待发送图片 ' + file.name} title="本地预览当前暂存版本" disabled={disabled} onClick={() => onPreview(file)}><Image size={13}/></button>}
+    {isNative && onPreview && <button className="icon-button" aria-label={'预览待发送图片 ' + file.name} title={previewTitle} disabled={disabled} onClick={() => onPreview(file)}><Image size={13}/></button>}
     <button className="icon-button" aria-label={'移除附件 ' + file.name} disabled={disabled} onClick={() => onRemove(file.path)}><X size={12}/></button>
   </span>)}</div>;
 }

@@ -1,6 +1,6 @@
 import type { ChatMessage, ChatPage, ChatPageOptions, ChatSearchPage, ChatSnapshot } from '@cc-desk/contracts/chat';
 import type { ChatJournalEvent } from '@cc-desk/contracts/execution-events';
-import type { ClaudeSession, ClaudeSessionPatch, Subtask, SubtaskObservation } from './types.js';
+import type { ClaudeCapabilities, ClaudeSession, ClaudeSessionPatch, Subtask, SubtaskObservation } from './types.js';
 
 export interface ClaudeSessions {
   get(id: string): ClaudeSession | undefined;
@@ -34,7 +34,17 @@ export interface ClaudeLaunchHost {
   environment(): Record<string, string>;
   invocation(env: Record<string, string>): { file: string; prefix: string[] };
 }
+/** Host-owned auxiliary jobs may hold the session directory after a foreground turn. */
+export interface ClaudeMetadata {
+  readonly ids: readonly string[];
+  has(id: string): boolean;
+  assertReleased(id?: string): void;
+  /** Resolve only after cleanup settles; retain failures for assertReleased. */
+  cancel(id: string): Promise<void>;
+  cancelAll(): Promise<void>;
+}
 export interface ClaudeHost {
+  metadata?: ClaudeMetadata;
   sessions: ClaudeSessions;
   /** Delayed projection writes report errors back into the runtime; the host must not merely log them. */
   conversations(callbacks: { isActive(id: string): boolean; onError(id: string, error: Error): void }): { history: ClaudeHistory; archive: ClaudeArchive };
@@ -45,5 +55,5 @@ export interface ClaudeHost {
   onState(): void;
   onConversation(id: string): void;
   /** Called only after a non-command prompt has been accepted by the CLI input pipe. */
-  onAcceptedPrompt(id: string, text: string): void;
+  onAcceptedPrompt(id: string, text: string, capabilities: ClaudeCapabilities): void;
 }

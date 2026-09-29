@@ -58,6 +58,12 @@ test('IPC validators reject path injection and invalid IDs; Claude validates its
   const input={projectId:randomUUID(),title:'test',kind:'agent',engineConfig:createClaudeConfig(),isolated:false};
   assert.equal(sessionInputSchema.safeParse({...input,engineConfig:createClaudeConfig({permissionMode:'bypassPermissions'})}).success,true);
   assert.equal(sessionInputSchema.safeParse(input).success,true);
+  for (const worktreeBaseRef of ['refs/heads/main', 'refs/remotes/origin/feature/topic']) {
+    assert.equal(sessionInputSchema.safeParse({ ...input, isolated: true, worktreeBaseRef }).success, true);
+  }
+  for (const worktreeBaseRef of ['--upload-pack=evil', 'HEAD~1', 'refs/tags/v1', 'refs/heads/main^{commit}', 'refs/remotes/origin/main\nother', 'refs/heads/a..b']) {
+    assert.equal(sessionInputSchema.safeParse({ ...input, isolated: true, worktreeBaseRef }).success, false);
+  }
   for(const permissionMode of ['auto','unknown','bypassPermissions --model injected']) {
     const config={schemaVersion:1,options:{model:'',effort:'default',permissionMode}};
     // The workspace only validates bounded provider JSON; Claude owns these semantics.

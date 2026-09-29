@@ -189,9 +189,35 @@ function lifecycleFixture(shellPath = '') {
   const claude = new ClaudeTerminalLauncher(store, () => capabilities);
   const shell = new ShellTerminalLauncher(store);
   const launcher: TerminalLauncher = { prepare: (session, callbacks) => (session.execution.providerId === 'claude' ? claude : shell).prepare(session, callbacks) };
-  const runtime = new Runtime(store, () => {}, () => {}, launcher, { onError: error => errors.push(error) });
+  const runtime = new Runtime(store, () => {}, () => {}, launcher, { onError: error => errors.push(error), titleGenerator: async () => '界面与接口审查' });
   return { root, store, session, runtime, errors, setCapabilities: (next: Capabilities) => { capabilities = next; } };
 }
+
+test('a naturally exited terminal restarts while cancelled title cleanup is still pending', { timeout: 10000 }, async () => {
+  const f = lifecycleFixture();
+  const callbacks: TerminalLaunchCallbacks[] = [];
+  let launches = 0; let aborted = false;
+  let release!: () => void;
+  f.store.change(state => { state.settings.maxSessions = 1; state.sessions[0].kind = 'agent'; state.sessions[0].titleSource = 'default';
+    state.sessions[0].execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() }; });
+  const runtime = new Runtime(f.store, () => {}, () => {}, {
+    async prepare(_session, callback) {
+      callbacks.push(callback); launches++;
+      return { file: process.execPath, args: ['-e', launches === 1 ? 'setTimeout(() => process.exit(0), 100)' : 'setInterval(() => {}, 1000)'], env: environment() };
+    },
+  }, { titleGenerator: request => new Promise(done => {
+    release = () => done(undefined);
+    request.signal.addEventListener('abort', () => { aborted = true; }, { once: true });
+  }) });
+  try {
+    await runtime.start(f.session.id); callbacks[0].prompt('检查自动命名');
+    await until(() => aborted && f.store.state.sessions[0].status === 'stopped', 'natural title cancellation');
+    assert.equal(runtime.has(f.session.id), true);
+    await runtime.start(f.session.id);
+    release();
+    assert.equal(launches, 2); assert.equal(f.store.state.sessions[0].status, 'running');
+  } finally { release?.(); await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true }); }
+});
 
 test('terminal runtime accepts another provider and isolates identity observations to the current launch', { timeout: 12000 }, async () => {
   const f = lifecycleFixture();
@@ -211,7 +237,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
         resource: { async close() { resourcesClosed++; } }, terminalSync: 'waiting' };
     }
   };
-  const runtime = new Runtime(f.store, () => {}, () => {}, launcher);
+  const runtime = new Runtime(f.store, () => {}, () => {}, launcher, { titleGenerator: async () => '原生会话接入验证' });
   const current = () => f.store.state.sessions[0];
   try {
     await runtime.start(f.session.id);
@@ -235,7 +261,7 @@ test('terminal runtime accepts another provider and isolates identity observatio
     assert.deepEqual(current().engineConfig, { schemaVersion: 1, options: { variant: 'confirmed-current-run' } });
     f.store.flush();
     assert.deepEqual(new StateStore(f.store.directory).state.sessions[0].engineConfig, current().engineConfig);
-    assert.equal(current().title, '新的会话标题');
+    await until(() => current().title === '原生会话接入验证', 'generated title');
   } catch (error) { failures.push(error); }
   finally { await finishFixture(f.root, [runtime, f.runtime], failures); }
   assert.equal(resourcesClosed, 2);
@@ -839,7 +865,7 @@ const send = async (hook_event_name, fields = {}) => {
       await until(() => session().taskState === 'completed' && session().subtasks?.tasks.length === 2,
         `hooked children (${ending})`, () => f.runtime.exportLogs(f.session.id));
       assert.equal(session().engineConfig.options.permissionMode, 'default', 'child modes never overwrite main launch settings');
-      assert.equal(session().title, ending === 'stop' ? '检查界面与接口' : 'cleanup fixture');
+      assert.equal(session().title, ending === 'stop' ? '界面与接口审查' : 'cleanup fixture');
       assert.equal(session().titleSource, ending === 'stop' ? 'auto' : 'manual');
       assert.deepEqual(session().subtasks?.tasks.map(task => task.status), ['completed', 'running']);
       if (ending === 'crash') {
@@ -859,5 +885,46 @@ const send = async (hook_event_name, fields = {}) => {
       assert.equal(session().subtasks?.tasks[0].status, 'completed', 'settling active tasks preserves confirmed completion');
       assert.equal(session().subtasks?.tasks[0].summary, '已检查');
     } finally { await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+  }
+});
+
+
+test('selected terminal maintenance waits for its naming job without cancelling another session title', { timeout: 15000 }, async () => {
+  const f = lifecycleFixture();
+  const callbacks = new Map<string, TerminalLaunchCallbacks>();
+  const jobs = new Map<string, { signal: AbortSignal; release(): void }>();
+  f.store.change(state => {
+    const first = state.sessions[0];
+    first.kind = 'agent'; first.titleSource = 'default';
+    first.execution = { providerId: 'claude', mode: 'terminal', conversationId: randomUUID() };
+    state.sessions.push({ ...first, id: randomUUID(), execution: { ...first.execution, conversationId: randomUUID() } });
+    state.settings.maxSessions = 2;
+  });
+  const [first, other] = f.store.state.sessions;
+  const runtime = new Runtime(f.store, () => {}, () => {}, { async prepare(session, callback) {
+    callbacks.set(session.id, callback);
+    return { file: process.execPath, args: ['-e', 'setInterval(() => {}, 1000)'], env: environment() };
+  } }, { titleGenerator: request => new Promise(resolve => {
+    jobs.set(request.session.id, { signal: request.signal, release: () => resolve(undefined) });
+  }) });
+  let disconnect: Promise<void> | undefined;
+  try {
+    await runtime.start(first.id); await runtime.start(other.id);
+    callbacks.get(first.id)!.prompt('目标会话'); callbacks.get(other.id)!.prompt('另一会话');
+    await until(() => jobs.size === 2, 'both title jobs');
+    runtime.setSessionMaintenance([first.id], true);
+    let settled = false;
+    disconnect = runtime.disconnectSessions([first.id]).then(() => { settled = true; });
+    await until(() => jobs.get(first.id)!.signal.aborted, 'selected title cancellation');
+    assert.equal(jobs.get(other.id)!.signal.aborted, false);
+    assert.equal(settled, false, 'pending title cleanup must hold the selected directory');
+    jobs.get(first.id)!.release(); await disconnect;
+    assert.equal(runtime.has(first.id), false);
+    assert.equal(runtime.has(other.id), true);
+    assert.equal(jobs.get(other.id)!.signal.aborted, false);
+  } finally {
+    for (const job of jobs.values()) job.release();
+    await disconnect?.catch(() => {});
+    await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
   }
 });

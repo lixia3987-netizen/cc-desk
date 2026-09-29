@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { DesktopAPI } from '../shared/types';
 import type { ChatSnapshotVersion, TaskState } from '../shared/chat';
+const droppedPaths = (files: File[]): string[] => {
+  if (!Array.isArray(files) || !files.length) throw new Error('请拖入本机文件。');
+  if (files.length > 8) throw new Error('一次最多添加 8 个附件。');
+  return files.map(file => {
+    let path: string;
+    try { path = webUtils.getPathForFile(file); }
+    catch { throw new Error('仅支持从本机拖入的文件，请先将文件保存到磁盘。'); }
+    if (!path) throw new Error('无法读取拖入文件的本机路径，请先将文件保存到磁盘。');
+    return path;
+  });
+};
 const api: DesktopAPI = {
   previewNativeImage: input => ipcRenderer.invoke('native:image-preview', input),
   nativeMcp: {
@@ -34,6 +45,7 @@ const api: DesktopAPI = {
   removeProject:id => ipcRenderer.invoke('project:remove',id),
   createSession:input => ipcRenderer.invoke('session:create',input),
   previewSessionContinuation:id => ipcRenderer.invoke('session:continuation-preview',id),
+  listWorktreeBranches:(projectId,refresh) => ipcRenderer.invoke('worktree:branches',{projectId,refresh}),
   updateSession:input => ipcRenderer.invoke('session:update',input),
   saveDraft:(id,text) => ipcRenderer.invoke('session:draft',{id,text}),
   savePanelDrafts:(id,patch) => ipcRenderer.invoke('session:panel-drafts',{id,patch}),
@@ -53,17 +65,11 @@ const api: DesktopAPI = {
   respondChat:(id,requestId,decision) => ipcRenderer.invoke('chat:respond',{id,requestId,decision}),
   pickAttachments:id => ipcRenderer.invoke('files:pick',id),
   addPastedNativeImages:(id,images) => ipcRenderer.invoke('files:add-pasted-native-images',{id,images}),
-  addDroppedAttachments:async(id,files) => {
-    if(!Array.isArray(files)||!files.length)throw new Error('请拖入本机文件。');
-    if(files.length>8)throw new Error('一次最多添加 8 个附件。');
-    const paths=files.map(file=>{
-      let path:string;
-      try {path=webUtils.getPathForFile(file);}catch {throw new Error('仅支持从本机拖入的文件，请先将文件保存到磁盘。');}
-      if(!path)throw new Error('无法读取拖入文件的本机路径，请先将文件保存到磁盘。');
-      return path;
-    });
-    return ipcRenderer.invoke('files:add-dropped',{id,paths});
-  },
+  addDroppedAttachments:async(id,files) => ipcRenderer.invoke('files:add-dropped',{id,paths:droppedPaths(files)}),
+  chooseDraftAttachments:() => ipcRenderer.invoke('files:choose-draft'),
+  previewDraftNativeImage:selection => ipcRenderer.invoke('files:preview-draft-native-image',selection),
+  addDroppedDraftAttachments:async files => ipcRenderer.invoke('files:add-dropped-draft',droppedPaths(files)),
+  stageDraftAttachments:(id,files) => ipcRenderer.invoke('files:stage-draft',{id,files}),
   listAttachments:id => ipcRenderer.invoke('files:attachments',id),
   removeAttachment:(id,path) => ipcRenderer.invoke('files:remove-attachment',{id,path}),
   queryHistory:(projectId,options) => ipcRenderer.invoke('history:query',{projectId,...options}),

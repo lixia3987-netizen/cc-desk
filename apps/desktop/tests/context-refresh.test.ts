@@ -42,6 +42,72 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     output({type:'assistant',message:{model:'summarization-model',usage:{input_tokens:190000},content:[]}});
     output({type:'system',subtype:'compact_boundary',compact_metadata:{trigger:'manual',pre_tokens:30000}}); done(); return;
   }
+  if (text.startsWith('delta-')) {
+    const first = 'delta-' + (++turn), second = first + '-next';
+    const stream = (event, parent) => output({type:'stream_event',parent_tool_use_id:parent,event});
+    const start = (id, usage, parent) => stream({type:'message_start',message:{id,model,usage}}, parent);
+    const delta = (usage, parent) => stream({type:'message_delta',usage,delta:{stop_reason:'end_turn'}}, parent);
+    const assistant = (id, usage, content = [], parent) => output({type:'assistant',parent_tool_use_id:parent,message:{id,model,usage,content}});
+    const placeholder = {input_tokens:0,output_tokens:0};
+    start(first, placeholder);
+    if (text === 'delta-tool-roundtrip') {
+      assistant(first, placeholder, [{type:'tool_use',id:'delta-tool',name:'Read',input:{file_path:'README.md'}}]);
+      // A child uses the same API message id, but must never replace the root's usage or stream binding.
+      start(first, {input_tokens:800000}, 'child');
+      delta({input_tokens:900000,cache_read_input_tokens:10000,output_tokens:100}, 'child');
+      assistant(first, {input_tokens:900000}, [], 'child');
+      stream({type:'message_stop'}, 'child');
+      delta({input_tokens:7179,cache_read_input_tokens:19968,output_tokens:53});
+      delta({input_tokens:7179,cache_read_input_tokens:19968,output_tokens:53});
+      stream({type:'message_stop'});
+      assistant(first, placeholder);
+      output({type:'user',message:{content:[{type:'tool_result',tool_use_id:'delta-tool',content:'file contents'}]}});
+      start(second, placeholder);
+      assistant(first, placeholder);
+      assistant(second, placeholder, [{type:'text',text:'done'}]);
+      delta({input_tokens:1259,cache_read_input_tokens:27136,output_tokens:16});
+      stream({type:'message_stop'});
+      assistant(second, placeholder);
+      output({type:'result',subtype:'success',result:'done',num_turns:2,usage:{input_tokens:8438,cache_read_input_tokens:47104,output_tokens:69},modelUsage:{[alias]:{inputTokens:8438,cacheReadInputTokens:47104,contextWindow:1000000}}});
+      return;
+    }
+    if (text === 'delta-envelope-supplement') {
+      delta({input_tokens:10});
+      assistant(first, {input_tokens:999,cache_read_input_tokens:20});
+      assistant(undefined, {cache_creation_input_tokens:5});
+      stream({type:'message_stop'});
+      assistant(first, {input_tokens:10});
+      assistant(undefined, {input_tokens:40});
+      assistant(second, {input_tokens:50});
+      assistant(first, {input_tokens:999,cache_read_input_tokens:999});
+    } else if (text === 'delta-partial-boundary') {
+      delta({cache_read_input_tokens:100});
+      delta({input_tokens:10});
+      delta({input_tokens:-1});
+      delta({input_tokens:NaN}); // JSON serializes non-finite numbers as null, also invalid usage.
+      delta({cache_creation_input_tokens:5});
+      output({type:'system',subtype:'compact_boundary',compact_metadata:{trigger:'auto',pre_tokens:115}});
+      delta({input_tokens:999,cache_read_input_tokens:999});
+      start(second, placeholder);
+      delta({input_tokens:70});
+    } else if (text === 'delta-partial-cache') {
+      delta({input_tokens:1000,cache_read_input_tokens:9000,cache_creation_input_tokens:100});
+      delta({input_tokens:1200});
+      delta({output_tokens:50});
+      stream({type:'message_stop'});
+      start(second, placeholder);
+      delta({input_tokens:2000,output_tokens:10});
+      assistant(second, placeholder);
+    } else if (text === 'delta-cached-zero') {
+      start(second, {input_tokens:0,output_tokens:0,cache_read_input_tokens:30000});
+      assistant(second, {input_tokens:0,output_tokens:0,cache_read_input_tokens:30000});
+      delta({output_tokens:20});
+    } else if (text === 'delta-authoritative-zero') {
+      delta({input_tokens:0,output_tokens:0,cache_read_input_tokens:0,cache_creation_input_tokens:0});
+      assistant(first, placeholder);
+    }
+    stream({type:'message_stop'}); done(); return;
+  }
   const id = 'message-' + (++turn);
   const usage = text.includes('no-usage') ? undefined : text === 'real-zero' ? {input_tokens:0} : {input_tokens:2000,cache_read_input_tokens:9000,cache_creation_input_tokens:1000};
   if (text.startsWith('switch-api')) model = 'another-api-model';
@@ -85,16 +151,85 @@ function setup(configuredModel = '', restoredContext?: ContextUsage) {
     history.append(session.id, { type: 'context', context: restoredContext }); history.flush();
   }
   let initialModel = '', initialAlias = '';
+  const contexts: ContextUsage[] = [];
   const runtime = new ChatRuntime(store, () => {}, () => {}, {
     invocation: () => ({ file: process.execPath, args: [script, initialModel, initialAlias] }), transcriptExists: async () => true,
+    onEvent: (_id, event) => { if (event.type === 'context') contexts.push(event.context); },
   });
-  return { runtime, directory, session, store, send: async (text: string) => {
+  return { runtime, directory, session, store, contexts, send: async (text: string) => {
       const result = await runtime.send(session.id, text, capabilities); assert.equal(result.success, true, result.error); return result;
     },
     context: () => runtime.snapshot(session.id).context,
     nextProcess: (model: string, alias = '') => { initialModel = model; initialAlias = alias; },
     cleanup: async () => { await runtime.shutdown(); store.flush(); fs.rmSync(directory, { recursive: true, force: true }); } };
 }
+
+test('message delta usage updates each root request without zero flashes, child usage or turn totals', async () => {
+  const s = setup();
+  try {
+    await s.send('delta-tool-roundtrip');
+    const measured = s.contexts.map(context => context.inputTokens).filter(value => value !== undefined);
+    assert.deepEqual([...new Set(measured)], [27147, 28395]);
+    assert.ok(measured.indexOf(28395) > measured.indexOf(27147));
+    assert.equal(s.context()?.inputTokens, 28395);
+    assert.equal(s.context()?.contextWindow, 1000000);
+    assert.equal(s.context()?.requestModel, 'sonnet');
+    assert.equal(s.runtime.snapshot(s.session.id).usage?.inputTokens, 8438);
+    const saved = new ChatHistory(s.directory, () => false);
+    assert.equal(saved.get(s.session.id).context?.inputTokens, 28395); saved.flush();
+  } finally { await s.cleanup(); }
+});
+
+test('partial delta usage merges within a message but never inherits cache tokens from another request', async () => {
+  const s = setup();
+  try {
+    await s.send('/context'); s.contexts.length = 0;
+    await s.send('delta-partial-cache');
+    const measured = s.contexts.map(context => context.inputTokens).filter(value => value !== undefined);
+    assert.deepEqual([...new Set(measured)], [10100, 10300, 2000]);
+    assert.equal(s.context()?.inputTokens, 2000);
+    assert.equal(s.context()?.contextWindow, 200000);
+  } finally { await s.cleanup(); }
+});
+
+test('cache-only measurements and an authoritative zero delta remain valid after a context report', async () => {
+  const s = setup();
+  try {
+    await s.send('/context'); s.contexts.length = 0;
+    await s.send('delta-cached-zero');
+    assert.equal(s.context()?.inputTokens, 30000);
+    assert.ok(s.contexts.every(context => context.inputTokens === 30000));
+    s.contexts.length = 0;
+    await s.send('delta-authoritative-zero');
+    assert.equal(s.context()?.inputTokens, 0);
+    assert.equal(s.context()?.contextWindow, 200000);
+    assert.ok(s.contexts.some(context => context.inputTokens === 0));
+  } finally { await s.cleanup(); }
+});
+
+test('assistant envelopes supplement missing delta fields, then a new request supersedes an old stream', async () => {
+  const s = setup();
+  try {
+    await s.send('delta-envelope-supplement');
+    const measured = s.contexts.map(context => context.inputTokens).filter(value => value !== undefined);
+    assert.deepEqual([...new Set(measured)], [10, 30, 35, 40, 50]);
+    assert.equal(s.context()?.inputTokens, 50);
+  } finally { await s.cleanup(); }
+});
+
+test('partial delta input waits for a baseline and ignores invalid usage and pre-compaction deltas', async () => {
+  const s = setup();
+  try {
+    await s.send('delta-partial-boundary');
+    const measured = s.contexts.map(context => context.inputTokens).filter(value => value !== undefined);
+    assert.deepEqual([...new Set(measured)], [110, 115, 70]);
+    const compacted = s.contexts.findIndex(context => context.status === 'compacted');
+    assert.ok(compacted >= 0);
+    assert.equal(s.contexts[compacted].inputTokens, undefined);
+    assert.deepEqual([...new Set(s.contexts.slice(compacted + 1).map(context => context.inputTokens).filter(value => value !== undefined))], [70]);
+    assert.equal(s.context()?.inputTokens, 70);
+  } finally { await s.cleanup(); }
+});
 
 test('reported capacity binds to the starting selection across routed aliases, missing metadata and repeated reports', async () => {
   const s = setup();

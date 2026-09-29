@@ -10,6 +10,8 @@ import { SessionService } from '../src/main/session-service';
 import { StateStore } from '../src/main/store';
 import { ExecutionRegistry } from '../src/main/execution/registry';
 import { validateClaudeSession } from '../src/main/engines/claude/capabilities';
+import { execFileAsync } from '../src/main/commands';
+import { worktreeInfo } from '../src/main/git';
 import type { TerminalExecutor } from '../src/main/execution/ports';
 import type { NewSession, Session } from '../src/shared/types';
 
@@ -127,5 +129,59 @@ test('Shell rejects import, fork and structured requests through either kind or 
     const shell = await f.creation.create(f.input({ kind: 'shell' }));
     assert.deepEqual(shell.execution, { providerId: 'shell', mode: 'terminal' });
     assert.equal(shell.kind, 'shell'); assert.equal(f.store.state.sessions.length, 1);
+  } finally { await f.dispose(); }
+});
+
+test('isolated session creation forwards the selected ref and keeps an empty worktree name independent from the title', async () => {
+  const f = fixture();
+  const git = async (...args: string[]) => (await execFileAsync('git', args, { cwd: f.projectPath })).stdout.trim();
+  try {
+    await git('init', '-b', 'main');
+    // Keep fixture checkout bytes stable when Windows enables autocrlf globally.
+    await git('config', 'core.autocrlf', 'false');
+    await git('config', 'user.name', 'Workbench Tests'); await git('config', 'user.email', 'tests@example.invalid');
+    fs.writeFileSync(path.join(f.projectPath, 'file.txt'), 'initial\n');
+    await git('add', '.'); await git('commit', '-m', 'Initial');
+    const initial = await git('rev-parse', 'HEAD');
+    await git('switch', '-c', 'feature'); fs.writeFileSync(path.join(f.projectPath, 'file.txt'), 'feature\n');
+    await git('commit', '-am', 'Feature'); const feature = await git('rev-parse', 'HEAD'); await git('switch', 'main');
+    const session = await f.creation.create(f.input({ title: '不应用作目录名的会话标题', isolated: true, worktreeName: '   ', worktreeBaseRef: 'refs/heads/feature' }));
+    assert.equal(path.basename(session.worktree!), session.id.slice(0, 8));
+    assert.equal(fs.readFileSync(path.join(session.cwd, 'file.txt'), 'utf8'), 'feature\n');
+    assert.equal(await git('rev-parse', 'HEAD'), initial);
+    const info = await worktreeInfo(f.projectPath, session.worktree!, session.id);
+    assert.equal(info.sourceRef, 'refs/heads/feature'); assert.equal(info.sourceCommit, feature); assert.equal(info.baseBranch, 'main');
+    assert.equal(f.creation.pending(f.projectId), false);
+  } finally { await f.dispose(); }
+});
+
+
+test('session creation preserves the terminal API default and accepts an explicit structured first-send session', async () => {
+  const f = fixture();
+  try {
+    const services = {
+      captureEngineAdmission: () => () => {},
+      execution: {
+        createIdentity: (providerId: string, mode: 'structured' | 'terminal') => ({ providerId, mode, conversationId: randomUUID() }),
+        defaultConfig: () => createClaudeConfig(), validateSession: () => {},
+      },
+      withSessionCreation: async (_cwd: string, _isolated: boolean, action: () => Promise<Session>) => action(),
+    } as unknown as SessionService;
+    const creation = new SessionCreation(f.store, services, () => {}, 'claude');
+    const initial = await creation.create(f.input({ mode: 'structured' }));
+    assert.equal(initial.execution.providerId, 'claude');
+    assert.equal(initial.execution.mode, 'structured');
+    assert.equal(initial.draft, '');
+    assert.equal(initial.started, false);
+    assert.equal(initial.status, 'idle');
+    assert.equal('model' in initial, false);
+    const defaultSession = await creation.create(f.input({ mode: undefined }));
+    assert.equal(defaultSession.execution.mode, 'terminal');
+    const terminal = await creation.create(f.input({ mode: 'terminal' }));
+    assert.equal(terminal.execution.mode, 'terminal');
+    const reloaded = new StateStore(f.store.directory);
+    assert.equal(reloaded.state.sessions.find(session => session.id === initial.id)!.execution.mode, 'structured');
+    assert.equal(reloaded.state.sessions.find(session => session.id === terminal.id)!.execution.mode, 'terminal');
+    assert.equal(reloaded.state.sessions.find(session => session.id === defaultSession.id)!.execution.mode, 'terminal');
   } finally { await f.dispose(); }
 });

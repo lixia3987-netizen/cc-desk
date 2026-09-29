@@ -10,7 +10,7 @@ import path from 'node:path';
 const capabilities = { available: true, executable: process.execPath, version: 'fixture', flags: [], efforts: ['default'] };
 
 /** No Electron, desktop imports, StateStore or application state shape are required. */
-function setup(count = 1, { throwObservers = false, invocation } = {}) {
+function setup(count = 1, { throwObservers = false, invocation, metadata } = {}) {
   const sessions = new Map(Array.from({ length: count }, () => {
     const id = randomUUID();
     return [id, { id, kind: 'agent', execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() },
@@ -37,6 +37,7 @@ function setup(count = 1, { throwObservers = false, invocation } = {}) {
     changed() {}, flush() { flushes++; }, delete(id) { snapshots.delete(id); }, exportPath() { throw new Error('unused'); },
   };
   const host = {
+    metadata,
     sessions: {
       get: id => sessions.get(id),
       update(id, patch) {
@@ -179,4 +180,46 @@ test('whenReleased rejects a known failed tree cleanup even while inherited stre
     throw cleanup;
   }
   if (failure) throw failure;
+});
+
+for (const operation of ['stopAndWait', 'whenReleased', 'disconnectAll', 'shutdown']) {
+  test(`host metadata holds the directory release barrier during ${operation}`, async () => {
+    let owner, active = true, cancelled = false, release;
+    const completion = new Promise(resolve => { release = resolve; });
+    const metadata = {
+      get ids() { return active ? [owner] : []; },
+      has(id) { return active && id === owner; },
+      assertReleased() {},
+      async cancel(id) { assert.equal(id, owner); cancelled = true; await completion; active = false; },
+      async cancelAll() { await this.cancel(owner); },
+    };
+    const { runtime, ids: [id] } = setup(1, { metadata }); owner = id;
+    try {
+      runtime.setMaintenance(true);
+      assert.equal(runtime.activeCount, 0, 'auxiliary work never occupies a foreground slot');
+      assert.equal(runtime.has(id), true, 'auxiliary work still owns session resources');
+      let settled = false;
+      const pending = (operation === 'disconnectAll' || operation === 'shutdown' ? runtime[operation]() : runtime[operation](id)).then(() => { settled = true; });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.equal(cancelled, true); assert.equal(settled, false, 'release waits for physical metadata cleanup');
+      assert.equal(runtime.has(id), true);
+      release(); await pending;
+      assert.equal(runtime.has(id), false);
+    } finally { release(); await runtime.shutdown(); }
+  });
+}
+
+test('failed metadata cleanup prevents restart and every directory release path', async () => {
+  const metadata = {
+    ids: [], has() { return true; },
+    assertReleased() { throw new Error('metadata cleanup unconfirmed'); },
+    async cancel() {}, async cancelAll() {},
+  };
+  const { runtime, ids: [id] } = setup(1, { metadata }); metadata.ids = [id];
+  await assert.rejects(runtime.prepareCommands(id, capabilities), /metadata cleanup unconfirmed/);
+  await assert.rejects(runtime.stopAndWait(id), /metadata cleanup unconfirmed/);
+  await assert.rejects(runtime.whenReleased(id), /metadata cleanup unconfirmed/);
+  runtime.setMaintenance(true);
+  await assert.rejects(runtime.disconnectAll(), /无法确认全部聊天进程/);
+  await assert.rejects(runtime.shutdown(), /metadata cleanup unconfirmed/);
 });

@@ -34,51 +34,30 @@ function shortenTitle(text: string): string {
   return title.trimEnd() ? title.trimEnd() + '…' : '';
 }
 
-/** Derive a display label locally, without changing a prompt or making another model request. */
-export function titleFromPrompt(prompt: string): string | undefined {
-  // Bound work for HTTP hooks too. Scan lines so a pasted code block is never used as the title.
-  const text = prompt.slice(0, 128 * 1024)
+/** Validate a model-generated label only; never derive a label from the user's message. */
+export function normalizeGeneratedSessionTitle(output: string): string | undefined {
+  let title = output.slice(0, 4096)
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '')
-    .replace(/\r\n?/g, '\n').normalize('NFC');
-  let fence: { character: string; length: number } | undefined;
-  for (const raw of text.split('\n')) {
-    let line = raw.trim();
-    const delimiter = line.match(/^(`{3,}|~{3,})/);
-    if (delimiter) {
-      if (!fence) fence = { character: delimiter[1][0], length: delimiter[1].length };
-      else if (delimiter[1][0] === fence.character && delimiter[1].length >= fence.length) fence = undefined;
-      continue;
-    }
-    if (fence || !line || /^(?:<\/?pasted_content\b|<\/?[\w-]+(?:\s[^>]*)?>\s*$)/i.test(line)) continue;
-    // Preserve prose around pasted context; strip common Markdown presentation, not its content.
-    line = line.replace(/^(?:>\s*)+/, '').replace(/^#{1,6}\s+/, '')
-      .replace(/^(?:[-+*]|\d+[.)、])\s+(?:\[[ xX]\]\s*)?/, '')
-      .replace(/!\[[^\]]*\]\([^)]*\)/g, '')
-      .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-      .replace(/(`+)(.*?)\1/g, '$2')
-      .replace(/(\*\*|__|~~)(.*?)\1/g, '$2').replace(/\s+/g, ' ').trim();
-    if (!line || !/[\p{L}\p{N}]/u.test(line)) continue;
-    if (/^(?:\/\S+|https?:\/\/\S+|[A-Za-z]:[\\/].*|\.{0,2}[\\/]\S+)\s*$/i.test(line)) continue;
-    // Slash commands and shell commands are not the topic of a new conversation.
-    if (/^[!/][\w:.-]+(?:\s|$)/.test(line) || /^(?:\$|PS>)\s/.test(line)) continue;
-    // Obvious pasted source, JSON fields and stack frames should not become sidebar labels.
-    if (/^(?:[{}[\]]|["'][^"']+["']\s*:|(?:const|let|var|import|export|function|class|def|from|return|package|public|private)\b.*[=;{}():]|at\s+\S+\s*\(|Traceback\b|File\s+["'])/.test(line)) continue;
-    if (/^(?:背景|需求|任务|问题|代码|日志|说明|context|request|task|code|logs?|hello|hi|你好|请帮我)[：:！!。.]?$/i.test(line)) continue;
-    const sentence = line.match(/^(.+?)(?:[。！？!?]|\.(?:\s|$))/)?.[1]?.trim();
-    if (sentence && sentence.length >= 8) line = sentence;
-    const title = shortenTitle(line);
-    if (title) return title;
-  }
-  return undefined;
+    .normalize('NFC').trim();
+  // Explanations, fenced blocks and multi-line responses are not session labels.
+  if (!title || /[\r\n]/.test(title) || title.startsWith('```')) return undefined;
+  title = title.replace(/^(?:标题|会话名称|title)\s*[:：]\s*/i, '').trim()
+    .replace(/^["“「『](.*)["”」』]$/u, '$1').replace(/\s+/g, ' ').trim();
+  if (!/[\p{L}\p{N}]/u.test(title)) return undefined;
+  return shortenTitle(title) || undefined;
 }
 
-/** Apply beside the accepted user message, using the current session to respect a concurrent rename. */
+export function canAutomaticallyNameSession(session: Pick<Session, 'kind' | 'titleSource' | 'execution'>): boolean {
+  return session.kind === 'agent' && session.titleSource === 'default' && !session.execution.imported && !session.execution.forkFrom;
+}
+
+/** Apply a generated label against current state to respect concurrent manual renames. */
 export function automaticSessionTitlePatch(
   session: Pick<Session, 'kind' | 'titleSource' | 'execution'>,
-  prompt: string
+  generatedTitle: string
 ): { title: string; titleSource: 'auto' } | undefined {
-  if (session.kind !== 'agent' || session.titleSource !== 'default' || session.execution.imported || session.execution.forkFrom) return undefined;
-  const title = titleFromPrompt(prompt);
+  if (!canAutomaticallyNameSession(session)) return undefined;
+  const title = normalizeGeneratedSessionTitle(generatedTitle);
   return title ? { title, titleSource: 'auto' } : undefined;
 }

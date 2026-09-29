@@ -1,4 +1,5 @@
 import { desktopRoot } from './helpers/paths';
+import { sessionAction, stubChatSubmission, submitNewSession } from './helpers/session-ui';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
@@ -27,10 +28,10 @@ async function workspace() {
     settings: { claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
   };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
-  const launch = () => electron.launch({
+  const launch = async () => { const app = await electron.launch({
     args: electronLaunchArgs(), cwd: desktopRoot,
     env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data },
-  });
+  }); await stubChatSubmission(app); return app; };
   return { directory, data, project, customRoot, git, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
@@ -190,16 +191,18 @@ test('worktree location: UI creates named trees in both locations and preserves 
     page.on('pageerror', error => errors.push(error.message));
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
-    let form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    let form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByLabel('会话名称', { exact: true }).fill('title-derived');
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveCount(0);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveValue('');
-    await expect(form.locator('#worktree-location-hint')).toContainText('.claude/worktrees');
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await expect(form.locator('#new-worktree-location-hint')).toContainText('.claude/worktrees');
+    await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'title-derived', exact: true })).toBeVisible();
     const original = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'title-derived')!;
-    expect(original.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', `title-derived-${original.id.slice(0, 8)}`));
+    expect(original.cwd).toBe(path.join(f.project.path, '.claude', 'worktrees', original.id.slice(0, 8)));
+    expect(path.basename(original.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(path.basename(original.cwd)).not.toContain(original.title);
     expect(original.worktree).toBe(original.cwd);
     expect(await fs.readFile(path.join(original.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
     expect(f.git('status', '--porcelain')).toBe('');
@@ -230,16 +233,16 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(await fs.stat(root).then(() => true, () => false)).toBe(false);
 
     await page.getByRole('button', { name: /新建会话/ }).click();
-    form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByLabel('会话名称', { exact: true }).fill('Custom display title');
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
-    await expect(form.locator('#worktree-location-hint')).toContainText(root);
+    await expect(form.locator('#new-worktree-location-hint')).toContainText(root);
     await form.getByLabel('Worktree 名称', { exact: true }).fill('named-tree');
-    await form.locator('.worktree-session-options').scrollIntoViewIfNeeded();
+    await form.locator('.new-session-worktree-options').scrollIntoViewIfNeeded();
     expect(await form.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('worktree-session.png') });
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'Custom display title', exact: true })).toBeVisible();
     const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Custom display title')!;
     expect(path.dirname(path.dirname(created.cwd))).toBe(root);
@@ -253,10 +256,10 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(worktrees).toContain(`worktree ${original.cwd.replaceAll('\\', '/')}`);
 
     await page.getByRole('button', { name: /新建会话/ }).click();
-    form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveValue('');
-    await form.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await page.locator('.session-row').filter({ hasText: 'Custom display title' }).click();
 
     await page.getByRole('button', { name: '变更', exact: true }).click();
     await expect(page.getByRole('button', { name: '清理隔离目录', exact: true })).toBeEnabled();
@@ -275,6 +278,139 @@ test('worktree location: UI creates named trees in both locations and preserves 
   } finally { await app.close(); await f.dispose(); }
 });
 
+test('worktree branches: UI selects local or remote starts, refreshes remote refs, and preserves the dirty main checkout', async () => {
+  const f = await workspace();
+  let app: ElectronApplication | undefined;
+  try {
+    const remotePath = path.join(f.directory, 'local remote.git'), publisherPath = path.join(f.directory, 'remote publisher');
+    execFileSync('git', ['init', '--bare', remotePath], { stdio: 'pipe' });
+    f.git('remote', 'add', 'origin', remotePath);
+    f.git('push', '-u', 'origin', 'main');
+    // Apply before clone's first checkout: configuring afterward would leave
+    // CRLF bytes that a later `git add .` could commit as an unrelated change.
+    execFileSync('git', ['-c', 'core.autocrlf=false', 'clone', '-b', 'main', remotePath, publisherPath], { stdio: 'pipe' });
+    const publishGit = (...args: string[]) => execFileSync('git', args, { cwd: publisherPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+    publishGit('config', 'core.autocrlf', 'false');
+    publishGit('config', 'user.name', 'Workbench Tests');
+    publishGit('config', 'user.email', 'tests@example.invalid');
+    publishGit('checkout', '-b', 'feature/base');
+    await fs.writeFile(path.join(publisherPath, 'remote-base.txt'), 'Remote branch content\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Remote branch start');
+    publishGit('push', '-u', 'origin', 'feature/base');
+    f.git('fetch', 'origin');
+    f.git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+
+    f.git('checkout', '-b', 'feature/base');
+    await fs.writeFile(path.join(f.project.path, 'local-base.txt'), 'Local branch content\n');
+    f.git('add', '.'); f.git('commit', '-m', 'Local branch start');
+    const localHead = f.git('rev-parse', 'HEAD');
+    f.git('checkout', 'main');
+    const mainHead = f.git('rev-parse', 'HEAD');
+    await fs.writeFile(path.join(f.project.path, 'README.md'), 'Keep uncommitted main changes\n');
+    await fs.writeFile(path.join(f.project.path, 'untracked-main.txt'), 'Keep untracked main content\n');
+    const mainStatus = f.git('status', '--porcelain=v1');
+
+    app = await f.launch();
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    let form = page.getByRole('region', { name: '新建会话', exact: true });
+    await form.getByLabel('会话名称', { exact: true }).fill('Start from local branch');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    let branches = form.getByLabel('起始分支', { exact: true });
+    await expect(branches).toBeEnabled();
+    await expect(branches).toHaveValue('');
+    await expect(branches.locator('optgroup[label="本地分支"] option[value="refs/heads/feature/base"]')).toHaveText('feature/base');
+    await expect(branches.locator('optgroup[label="远程分支"] option[value="refs/remotes/origin/feature/base"]')).toHaveText('origin/feature/base');
+    await expect(branches.locator('option[value="refs/remotes/origin/HEAD"]')).toHaveCount(0);
+    await branches.selectOption('refs/heads/feature/base');
+    await submitNewSession(page);
+    await expect(page.getByRole('heading', { name: 'Start from local branch', exact: true })).toBeVisible();
+    const local = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Start from local branch')!;
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: local.cwd, encoding: 'utf8' }).trim()).toBe(localHead);
+    expect(await fs.readFile(path.join(local.cwd, 'local-base.txt'), 'utf8')).toBe('Local branch content\n');
+    expect(await fs.readFile(path.join(local.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
+    expect(path.basename(local.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(f.git('branch', '--show-current')).toBe('main');
+    expect(f.git('rev-parse', 'HEAD')).toBe(mainHead);
+    expect(f.git('status', '--porcelain=v1')).toBe(mainStatus);
+
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    form = page.getByRole('region', { name: '新建会话', exact: true });
+    await form.getByLabel('会话名称', { exact: true }).fill('Start from newly published remote branch');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    branches = form.getByLabel('起始分支', { exact: true });
+    await expect(branches).toBeEnabled();
+    publishGit('checkout', '-b', 'feature/remote-new');
+    await fs.writeFile(path.join(publisherPath, 'remote-new.txt'), 'Published after the dialog opened\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Publish a new remote branch');
+    publishGit('push', '-u', 'origin', 'feature/remote-new');
+    const firstRemoteHead = publishGit('rev-parse', 'HEAD');
+    await expect(branches.locator('option[value="refs/remotes/origin/feature/remote-new"]')).toHaveCount(0);
+    await form.getByRole('button', { name: '刷新远程分支', exact: true }).click();
+    await expect(branches.locator('option[value="refs/remotes/origin/feature/remote-new"]')).toHaveText('origin/feature/remote-new');
+    await branches.selectOption('refs/remotes/origin/feature/remote-new');
+    expect(f.git('rev-parse', 'refs/remotes/origin/feature/remote-new')).toBe(firstRemoteHead);
+
+    // Creating from a remote branch must fetch its latest commit, even if the
+    // picker was populated before another collaborator published an update.
+    await fs.writeFile(path.join(publisherPath, 'remote-new.txt'), 'Latest remote commit at creation time\n');
+    publishGit('add', '.'); publishGit('commit', '-m', 'Advance the selected remote branch');
+    publishGit('push');
+    const latestRemoteHead = publishGit('rev-parse', 'HEAD');
+    expect(latestRemoteHead).not.toBe(firstRemoteHead);
+    await submitNewSession(page);
+    await expect(page.getByRole('heading', { name: 'Start from newly published remote branch', exact: true })).toBeVisible();
+    const remote = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Start from newly published remote branch')!;
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remote.cwd, encoding: 'utf8' }).trim()).toBe(latestRemoteHead);
+    expect(await fs.readFile(path.join(remote.cwd, 'remote-new.txt'), 'utf8')).toBe('Latest remote commit at creation time\n');
+    expect(await fs.readFile(path.join(remote.cwd, 'remote-base.txt'), 'utf8')).toBe('Remote branch content\n');
+    expect(await fs.readFile(path.join(remote.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
+    expect(path.basename(remote.cwd)).toMatch(/^[a-f0-9]{8}$/);
+    expect(remote.cwd).not.toBe(local.cwd);
+    expect(f.git('branch', '--show-current')).toBe('main');
+    expect(f.git('rev-parse', 'HEAD')).toBe(mainHead);
+    expect(f.git('status', '--porcelain=v1')).toBe(mainStatus);
+    expect(await fs.readFile(path.join(f.project.path, 'README.md'), 'utf8')).toBe('Keep uncommitted main changes\n');
+    expect(await fs.readFile(path.join(f.project.path, 'untracked-main.txt'), 'utf8')).toBe('Keep untracked main content\n');
+    expect(() => f.git('rev-parse', '--verify', 'refs/heads/feature/remote-new')).toThrow();
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally { await app?.close(); await f.dispose(); }
+});
+
+test('worktree branches: changing projects resets the selected start branch before creation', async () => {
+  const f = await workspace();
+  let app: ElectronApplication | undefined;
+  try {
+    f.git('branch', 'feature/only-first-project');
+    const otherPath = path.join(f.directory, 'other project');
+    execFileSync('git', ['clone', '-b', 'main', f.project.path, otherPath], { stdio: 'pipe' });
+    const otherHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: otherPath, encoding: 'utf8' }).trim();
+    app = await f.launch();
+    const page = await app.firstWindow();
+    await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
+    const other = await page.evaluate(projectPath => window.desktop.addProject(projectPath), otherPath);
+    await page.getByRole('button', { name: /新建会话/ }).click();
+    const form = page.getByRole('region', { name: '新建会话', exact: true });
+    await form.getByLabel('工作空间', { exact: true }).selectOption(f.project.id);
+    await form.getByLabel('会话名称', { exact: true }).fill('Create in the second project');
+    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
+    const branches = form.getByLabel('起始分支', { exact: true });
+    await branches.selectOption('refs/heads/feature/only-first-project');
+    await form.getByLabel('工作空间', { exact: true }).selectOption(other.id);
+    await expect(branches).toBeEnabled();
+    await expect(branches).toHaveValue('');
+    await expect(branches.locator('option[value="refs/heads/feature/only-first-project"]')).toHaveCount(0);
+    await expect(branches.locator('option[value="refs/heads/main"]')).toHaveText('main');
+    await submitNewSession(page);
+    await expect(page.getByRole('heading', { name: 'Create in the second project', exact: true })).toBeVisible();
+    const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Create in the second project')!;
+    expect(created.projectId).toBe(other.id);
+    expect(created.worktreeBase).toBe(otherPath);
+    expect(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: created.cwd, encoding: 'utf8' }).trim()).toBe(otherHead);
+    await expect(page.locator('.error-banner')).toHaveText([]);
+  } finally { await app?.close(); await f.dispose(); }
+});
+
 test('worktree location: blocked cleanup explains why and record-only deletion preserves all files and the branch', async () => {
   const f = await workspace(), app = await f.launch();
   try {
@@ -282,10 +418,10 @@ test('worktree location: blocked cleanup explains why and record-only deletion p
     await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
-    const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    const form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByLabel('会话名称', { exact: true }).fill('Retain my worktree');
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'Retain my worktree', exact: true })).toBeVisible();
     const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Retain my worktree')!;
     const git = (...args: string[]) => execFileSync('git', args, { cwd: created.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -305,17 +441,18 @@ test('worktree location: blocked cleanup explains why and record-only deletion p
     await expect(changes).toContainText('未提交或未跟踪文件');
     await expect(changes.getByRole('button', { name: '打开隔离目录', exact: true })).toBeEnabled();
     await page.screenshot({ path: test.info().outputPath('worktree-cleanup-reasons.png') });
-    const context = page.getByRole('region', { name: '上下文面板', exact: true });
-    if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
-    await context.getByRole('button', { name: '删除会话', exact: true }).click();
-    await expect(context).toContainText('包括未提交、未合并及被忽略的文件');
-    await expect(context).toContainText(created.cwd);
+    await sessionAction(page, created.title, '删除会话');
+    const deletion = page.getByRole('dialog', { name: '删除会话', exact: true });
+    await expect(deletion).toContainText('包括未提交、未合并及被忽略的文件');
+    await expect(deletion).toContainText(created.cwd);
+    expect(await deletion.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: test.info().outputPath('preserve-worktree-confirmation.png') });
-    await context.getByRole('button', { name: '取消', exact: true }).click();
+    await deletion.getByRole('button', { name: '取消', exact: true }).click();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(s => s.id === created.id)).toBe(true);
     expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
-    await context.getByRole('button', { name: '删除会话', exact: true }).click();
-    await context.getByRole('button', { name: '仅删除会话，保留隔离目录', exact: true }).click();
+    await sessionAction(page, created.title, '删除会话');
+    await deletion.getByRole('button', { name: '仅删除会话，保留隔离目录', exact: true }).click();
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(s => s.id === created.id)).toBe(false);
     expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
     expect(git('rev-parse', `refs/heads/workbench/${created.id.slice(0, 8)}`)).toBe(head);
@@ -336,10 +473,10 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await expect(page.getByRole('button', { name: '设置与连接', exact: true })).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
-    const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+    const form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByLabel('会话名称', { exact: true }).fill('Force delete temporary tree');
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
+    await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'Force delete temporary tree', exact: true })).toBeVisible();
     const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === 'Force delete temporary tree')!;
     const git = (...args: string[]) => execFileSync('git', args, { cwd: created.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
@@ -351,24 +488,40 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Untracked data\n');
     await fs.writeFile(path.join(created.cwd, 'ignored.txt'), 'Ignored data\n');
     const status = git('status', '--porcelain=v1', '--ignored');
-    const context = page.getByRole('region', { name: '上下文面板', exact: true });
-    if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
-    await context.getByRole('button', { name: '删除会话', exact: true }).click();
-    const forceOption = context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true });
+    await sessionAction(page, created.title, '删除会话');
+    const deletion = page.getByRole('dialog', { name: '删除会话', exact: true });
+    const forceOption = deletion.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true });
     await forceOption.click();
     const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
     const typed = dialog.getByLabel('输入“删除”以确认', { exact: true }), confirm = dialog.getByRole('button', { name: '确认强制删除', exact: true });
     await expect(dialog).toContainText(created.cwd);
     await expect(dialog).toContainText('未提交修改、未跟踪文件和被忽略的文件都会丢失');
     await expect(dialog).toContainText('Git 分支和其中已经提交的内容会保留');
+    expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await expect(page.locator('#root')).toHaveJSProperty('inert', true);
     await expect(confirm).toBeDisabled();
     await typed.fill('delete'); await expect(confirm).toBeDisabled();
     await typed.fill('删除'); await expect(confirm).toBeEnabled();
     await dialog.getByRole('button', { name: '取消', exact: true }).click();
-    await expect(dialog).toHaveCount(0);
+    await expect(page.getByRole('dialog')).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(true);
     expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
     expect(await fs.readFile(path.join(created.cwd, 'ignored.txt'), 'utf8')).toBe('Ignored data\n');
+    await sessionAction(page, created.title, '删除会话');
+    await forceOption.click();
+    await expect(typed).toHaveValue('');
+    await typed.fill('删除');
+    await dialog.getByRole('button', { name: '返回', exact: true }).click();
+    await expect(deletion).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(1);
+    await forceOption.click();
+    await expect(typed).toHaveValue('');
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(true);
+    expect(git('status', '--porcelain=v1', '--ignored')).toBe(status);
+    await sessionAction(page, created.title, '删除会话');
     await forceOption.click();
     await expect(typed).toHaveValue(''); await expect(confirm).toBeDisabled();
     await typed.fill('删除');
@@ -399,11 +552,11 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
       await expect(settings.getByRole('button', { name: '保存设置', exact: true })).toBeEnabled();
       await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
       await page.getByRole('button', { name: /新建会话/ }).click();
-      const form = page.getByRole('dialog', { name: '新建会话', exact: true });
+      const form = page.getByRole('region', { name: '新建会话', exact: true });
       const title = 'Damaged external tree ' + damage;
       await form.getByLabel('会话名称', { exact: true }).fill(title);
       await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
-      await form.getByRole('button', { name: '创建会话', exact: true }).click();
+      await submitNewSession(page);
       await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
       const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.title === title)!;
       expect(path.dirname(path.dirname(created.cwd))).toBe(f.customRoot);
@@ -422,10 +575,8 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
         await fs.rm(created.cwd, { recursive: true });
       }
       expect(f.git('worktree', 'list', '--porcelain')).toContain(created.cwd.replaceAll('\\', '/'));
-      const context = page.getByRole('region', { name: '上下文面板', exact: true });
-      if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
-      await context.getByRole('button', { name: '删除会话', exact: true }).click();
-      await context.getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true }).click();
+      await sessionAction(page, created.title, '删除会话');
+      await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '删除会话并强制删除隔离目录', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: '强制删除隔离目录', exact: true });
       await expect(dialog).toContainText(created.cwd);
       await dialog.getByLabel('输入“删除”以确认', { exact: true }).fill('删除');
@@ -461,9 +612,8 @@ test('session deletion: stale snapshot failures do not replace the workspace, wh
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.restore());
 
     await gateSnapshotRead(app, created.id);
-    const context = page.getByRole('region', { name: '上下文面板', exact: true });
-    await context.getByRole('button', { name: '删除会话', exact: true }).click();
-    await context.getByRole('button', { name: '确认删除会话', exact: true }).click();
+    await sessionAction(page, created.title, '删除会话');
+    await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '确认删除会话', exact: true }).click();
     await expect(page.getByRole('heading', { name: created.title, exact: true })).toHaveCount(0);
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
@@ -493,9 +643,8 @@ test('session deletion: a committed deletion invalidates reads before its delaye
     await expect(heading).toBeVisible();
     await gateSnapshotRead(app, created.id);
     await gateDeletionNotification(app, created.id);
-    const context = page.getByRole('region', { name: '上下文面板', exact: true });
-    await context.getByRole('button', { name: '删除会话', exact: true }).click();
-    await context.getByRole('button', { name: '确认删除会话', exact: true }).click();
+    await sessionAction(page, created.title, '删除会话');
+    await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '确认删除会话', exact: true }).click();
     await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.deleted)).toBe(true);
     await expect(heading).toBeVisible();
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());

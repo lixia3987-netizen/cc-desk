@@ -9,6 +9,7 @@ import { ChatHistory } from '../src/main/chat-history';
 import { readTranscriptPreview } from '../src/main/chat-import';
 import { chatArguments, JsonLineDecoder, userContent } from '../src/main/chat-protocol';
 import { StateStore } from '../src/main/store';
+import type { SessionTitleGenerator } from '../src/main/session-titles';
 import type { Capabilities, Session } from '../src/shared/types';
 
 const capabilities: Capabilities = { available: true, executable: 'claude', version: 'fixture', flags: ['--session-id', '--resume', '--fork-session', '--permission-mode', '--model', '--effort', '--print', '--input-format', '--output-format', '--verbose', '--permission-prompt-tool', '--include-partial-messages'], efforts: ['default', 'high', 'max'] };
@@ -326,7 +327,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
  }
 });
 `;
-function setup(options: { initialFailure?: boolean; noTranscript?: boolean; honorIdentity?: boolean } = {}) {
+function setup(options: { initialFailure?: boolean; noTranscript?: boolean; honorIdentity?: boolean; titleGenerator?: SessionTitleGenerator } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-chat-'));
   const store = new StateStore(directory);
   const session: Session = { execution: { providerId: 'claude', mode: 'structured', conversationId: randomUUID() }, id: randomUUID(), projectId: randomUUID(), title: 'chat', kind: 'agent',  cwd: directory,  started: false, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
@@ -334,7 +335,7 @@ function setup(options: { initialFailure?: boolean; noTranscript?: boolean; hono
   const script = path.join(directory, 'fixture.cjs'); fs.writeFileSync(script, fixture);
   const record = path.join(directory, 'stdin.jsonl');
   const observedId = randomUUID(); const starts: boolean[] = [], launches: string[][] = [];
-  const runtime = new ChatRuntime(store, () => {}, () => {}, { initializationTimeoutMs: 1500, controlTimeoutMs: 150, backgroundResultTimeoutMs: 80, transcriptExists: async () => !options.noTranscript && starts.length > 0, invocation: (session, caps, resumed) => { launches.push(chatArguments(session, caps, resumed)); starts.push(resumed); return { file: process.execPath, args: [script, options.honorIdentity ? session.execution.conversationId! : observedId, record, options.initialFailure && starts.length === 1 ? 'fail-init' : '', session.permissionMode] }; } });
+  const runtime = new ChatRuntime(store, () => {}, () => {}, { titleGenerator: options.titleGenerator, initializationTimeoutMs: 1500, controlTimeoutMs: 150, backgroundResultTimeoutMs: 80, transcriptExists: async () => !options.noTranscript && starts.length > 0, invocation: (session, caps, resumed) => { launches.push(chatArguments(session, caps, resumed)); starts.push(resumed); return { file: process.execPath, args: [script, options.honorIdentity ? session.execution.conversationId! : observedId, record, options.initialFailure && starts.length === 1 ? 'fail-init' : '', session.permissionMode] }; } });
   const sent = () => fs.readFileSync(record, 'utf8').trim().split('\n').map(line => JSON.parse(line));
   const releaseAndWait = async <T>(name: string, result: Promise<T>): Promise<T> => {
     let timer: NodeJS.Timeout | undefined;
@@ -395,19 +396,67 @@ test('idle release rejects foreground, approval, and background turns without in
   }finally{await s.cleanup();}
 });
 
-test('accepted first prompts name default conversations once and never replace manual titles',async()=>{
-  const s=setup();try{
+test('accepted first prompts use a separate summarizer and never replace manual titles',async()=>{
+  const requested: string[] = [];
+  const s=setup({ titleGenerator: async request => { requested.push(request.prompt); return '会话完成状态修复'; } });try{
     s.store.change(state=>{state.sessions[0].titleSource='default';state.sessions[0].title='新会话';});
     await s.runtime.send(s.session.id,'内部工作流模板：完成计划阶段',capabilities,[],'修复会话结束后的按钮状态');
-    assert.equal(s.store.state.sessions[0].title,'修复会话结束后的按钮状态');
+    assert.equal(s.store.state.sessions[0].title,'会话完成状态修复');
     assert.equal(s.store.state.sessions[0].titleSource,'auto');
+    assert.deepEqual(requested, ['修复会话结束后的按钮状态']);
     assert.equal(s.sent().find(message=>message.type==='user').message.content[0].text,'内部工作流模板：完成计划阶段');
     await s.runtime.send(s.session.id,'换一个话题',capabilities);
-    assert.equal(s.store.state.sessions[0].title,'修复会话结束后的按钮状态');
+    assert.equal(s.store.state.sessions[0].title,'会话完成状态修复');
     s.store.change(state=>{state.sessions[0].title='自定义标题';state.sessions[0].titleSource='manual';});
     await s.runtime.send(s.session.id,'再修改另一项',capabilities);
     assert.equal(s.store.state.sessions[0].title,'自定义标题');
   }finally{await s.cleanup();}
+});
+
+test('slow naming does not block a foreground turn or add title text to chat history',async()=>{
+  let resolve!: (title: string) => void;
+  const s=setup({ titleGenerator: () => new Promise(done => { resolve = done; }) });
+  try {
+    s.store.change(state=>{state.sessions[0].titleSource='default';state.sessions[0].title='新的开发会话';});
+    const result = await s.runtime.send(s.session.id, '检查登录错误', capabilities);
+    assert.equal(result.success, true);
+    assert.equal(s.store.state.sessions[0].title, '新的开发会话');
+    assert.equal(s.runtime.isBusy(s.session.id), false);
+    resolve('认证故障排查');
+    await until(() => s.store.state.sessions[0].title === '认证故障排查');
+    assert.ok(!s.runtime.snapshot(s.session.id).messages.some(message => message.text.includes('认证故障排查')));
+    assert.equal(s.sent().filter(message => message.type === 'user').length, 1);
+  } finally { resolve?.('忽略'); await s.cleanup(); }
+});
+
+test('releasing idle chat cancels pending title work before releasing the directory',async()=>{
+  let aborted = false;
+  const s=setup({ titleGenerator: request => new Promise(done => {
+    request.signal.addEventListener('abort', () => { aborted = true; done('不应生效的名称'); }, {once:true});
+  }) });
+  try {
+    s.store.change(state=>{state.sessions[0].titleSource='default';state.sessions[0].title='新的开发会话';});
+    await s.runtime.send(s.session.id, '检查退出流程', capabilities);
+    await s.runtime.stopIdle(s.session.id);
+    assert.equal(aborted, true); assert.equal(s.runtime.has(s.session.id), false);
+    assert.equal(s.store.state.sessions[0].titleSource, 'default');
+  } finally { await s.cleanup(); }
+});
+
+test('a crashed chat can restart while an aborted title request is still cleaning up',async()=>{
+  let began = false; let aborted = false; let release!: () => void;
+  const s=setup({ titleGenerator: request => new Promise(done => {
+    began = true; release = () => done(undefined);
+    request.signal.addEventListener('abort', () => { aborted = true; }, {once:true});
+  }) });
+  try {
+    s.store.change(state=>{state.settings.maxSessions=1;state.sessions[0].titleSource='default';state.sessions[0].title='新的开发会话';});
+    assert.equal((await s.runtime.send(s.session.id, 'crash', capabilities)).success, false);
+    await until(() => began && aborted && s.runtime.activeCount === 0);
+    assert.equal(s.runtime.has(s.session.id), true, 'cleanup still owns the working directory');
+    assert.equal((await s.runtime.send(s.session.id, '重新检查错误', capabilities)).success, true);
+    assert.equal(s.starts.length, 2);
+  } finally { release?.(); await s.cleanup(); }
 });
 
 test('stream framing handles split/coalesced records, blank lines, UTF8 and rejects malformed/oversized frames', () => {

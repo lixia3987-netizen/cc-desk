@@ -30,13 +30,17 @@ const object = (value: unknown): value is Record<string, unknown> => !!value && 
 
 /** Only bounded image bytes from the local preview IPC can become an image source. */
 export async function validateNativeImagePreview(value: unknown, selection: NativeImagePreviewSelection): Promise<NativeImagePreview> {
+  if (selection.request.source.kind === 'history' && selection.expected.sha256 !== undefined && selection.expected.sha256 !== selection.request.source.sha256) throw invalid();
+  return validateNativeImagePreviewReceipt(value, { ...selection.expected, ...(selection.request.source.kind === 'history' ? { sha256: selection.request.source.sha256 } : {}) });
+}
+
+export async function validateNativeImagePreviewReceipt(value: unknown, expected: NativeImagePreviewSelection['expected']): Promise<NativeImagePreview> {
   if (!object(value) || Object.keys(value).some(key => !['image', 'dataUrl'].includes(key))
     || !isNativeImageAttachments([value.image]) || typeof value.dataUrl !== 'string') throw invalid();
-  const image = value.image as unknown as NativeImageAttachment, expected = selection.expected;
+  const image = value.image as unknown as NativeImageAttachment;
   if (image.name !== expected.name || image.bytes !== expected.bytes
     || expected.mimeType !== undefined && image.mimeType !== expected.mimeType
-    || expected.sha256 !== undefined && image.sha256 !== expected.sha256
-    || selection.request.source.kind === 'history' && image.sha256 !== selection.request.source.sha256) throw invalid();
+    || expected.sha256 !== undefined && image.sha256 !== expected.sha256) throw invalid();
   const prefix = `data:${image.mimeType};base64,`;
   if (!value.dataUrl.startsWith(prefix) || value.dataUrl.length > prefix.length + 4 * Math.ceil(1024 * 1024 / 3)) throw invalid();
   const encoded = value.dataUrl.slice(prefix.length);

@@ -82,7 +82,7 @@ export class ClaudeRuntime {
   private publishState() { try { this.host.onState(); } catch { /* Observers do not own persistence or execution. */ } }
   private publishConversation(id: string) { try { this.host.onConversation(id); } catch { /* Observers cannot interrupt cleanup. */ } }
   get activeCount() { return new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting]).size; }
-  has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id); }
+  has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id) || Boolean(this.host.metadata?.has(id)); }
   isBusy(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     return this.busy.has(id) || this.starting.has(id) || Boolean(entry &&
@@ -97,6 +97,8 @@ export class ClaudeRuntime {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     if (entry) this.releasing.set(id, entry);
     this.stop(id);
+    await this.host.metadata?.cancel(id);
+    this.host.metadata?.assertReleased(id);
     if (!entry) { await this.whenReleased(id); return; }
     // A root process may exit before its MCP/tool descendants. Wait for the
     // process-group escalation as well, rather than treating root exit as a
@@ -116,6 +118,8 @@ export class ClaudeRuntime {
   }
   /** Wait for the physical CLI/tree/stream/history barrier, never outer queue ACKs. */
   async whenReleased(id: string): Promise<void> {
+    await this.host.metadata?.cancel(id);
+    this.host.metadata?.assertReleased(id);
     let streamDeadline: number | undefined;
     while (this.entries.has(id) || this.starting.has(id) || this.busy.has(id)) {
       const connection = this.entries.get(id)?.connection;
@@ -299,6 +303,7 @@ export class ClaudeRuntime {
   delete(id: string) { this.forget(id); }
   forget(id: string) {
     if (this.has(id) || this.busy.has(id)) throw new Error('请先停止会话。');
+    void this.host.metadata?.cancel(id);
     const timer = this.notifications.get(id); if (timer) clearTimeout(timer);
     this.notifications.delete(id); this.hydrator.forget(id); this.history.delete(id); this.archive.forget(id);
   }
@@ -339,7 +344,7 @@ export class ClaudeRuntime {
         // Built-in command parsing expects a prompt string; ordinary multimodal
         // messages continue to use content blocks.
         entry.connection.write({ type: 'user', uuid: userId, message: { role: 'user', content: command ? text.trimStart() : content }, parent_tool_use_id: null, session_id: this.session(id).execution.conversationId });
-        if (!command) this.host.onAcceptedPrompt(id, titlePrompt);
+        if (!command) this.host.onAcceptedPrompt(id, titlePrompt, capabilities);
       } catch (error) { this.fail(id, entry, messageOf(error)); }
       return await result;
     } catch (error) {
@@ -351,7 +356,10 @@ export class ClaudeRuntime {
 
   private async start(id: string, capabilities: Capabilities): Promise<Entry> {
     if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
-    if (this.has(id)) throw new Error('会话正在启动。');
+    this.host.metadata?.assertReleased(id);
+    if (this.entries.has(id) || this.releasing.has(id) || this.starting.has(id)) throw new Error('会话正在启动。');
+    // Metadata cleanup does not consume a foreground conversation slot.
+    void this.host.metadata?.cancel(id);
     if (this.releaseErrors.has(id)) throw new Error('上一轮资源释放失败，请重启工作台后重试。');
     this.releaseCompletions.delete(id);
     if (this.activeCount >= this.host.maxSessions()) throw new Error('已达到并发会话上限。');
@@ -374,7 +382,7 @@ export class ClaudeRuntime {
       const current = entry;
       current.assistant = new AssistantStream({
         turnId: () => current.turn?.id, getMessage: key => this.history.getMessage(id, key),
-        message: (message, delta) => this.message(id, message, delta), context: payload => this.events.context.observe(id, current, payload),
+        message: (message, delta) => this.message(id, message, delta), context: (payload, source) => this.events.context.observe(id, current, payload, undefined, source),
         model: model => { this.history.get(id).model = model; this.notify(id); },
       });
       current.connection = new ClaudeConnection(invocation, session.cwd, env, {
@@ -383,6 +391,7 @@ export class ClaudeRuntime {
           try { this.closed(id, current, code, signal); }
           catch (error) {
             this.entries.delete(id); this.starting.delete(id);
+            void this.host.metadata?.cancel(id);
             this.releaseErrors.set(id, error);
             this.trackRelease(id, current);
             const message = '记录进程退出状态失败：' + messageOf(error);
@@ -526,6 +535,7 @@ export class ClaudeRuntime {
     } finally { this.terminate(entry); }
   }
   stop(id: string) {
+    void this.host.metadata?.cancel(id);
     if (this.busy.has(id)) this.cancelled.add(id);
     this.starting.delete(id);
     const entry = this.entries.get(id); if (!entry || entry.connection.ending) return;
@@ -557,6 +567,7 @@ export class ClaudeRuntime {
     });
     entry.connection.finish();
     this.entries.delete(id); this.starting.delete(id);
+    void this.host.metadata?.cancel(id);
     const error = 'CLI 进程已退出（' + (code ?? signal ?? '未知') + '）。' + (entry.connection.stderr ? '\n' + entry.connection.stderr.trim() : '');
     entry.connection.closeControls(error);
     if (entry.interruptTimer) clearTimeout(entry.interruptTimer);
@@ -568,6 +579,7 @@ export class ClaudeRuntime {
   }
   async shutdown() {
     this.shuttingDown = true;
+    const metadataStopped = this.host.metadata?.cancelAll();
     for (const id of this.starting) this.starting.delete(id);
     const errors: unknown[] = [];
     for (const id of this.entries.keys()) { try { this.stop(id); } catch (error) { errors.push(error); } }
@@ -586,6 +598,8 @@ export class ClaudeRuntime {
         errors.push(new Error('无法确认全部聊天子进程已停止，请关闭残留进程后重试退出。'));
       }
     } finally { if (terminationDeadline) clearTimeout(terminationDeadline); }
+    await metadataStopped;
+    try { this.host.metadata?.assertReleased(); } catch (error) { errors.push(error); }
     for (const timer of this.notifications.values()) clearTimeout(timer);
     this.notifications.clear();
     try { this.history.flush(); } catch (error) { errors.push(error); }
@@ -594,7 +608,7 @@ export class ClaudeRuntime {
   setMaintenance(value: boolean) { this.maintenance = value; }
   async disconnectAll() {
     if (!this.maintenance) throw new Error('断开聊天前必须暂停新会话。');
-    const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy]);
+    const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy, ...(this.host.metadata?.ids ?? [])]);
     const results = await Promise.allSettled([...ids].map(id => this.stopAndWait(id)));
     // Pending hydration / attachment reads must settle while starts remain blocked.
     const deadline = Date.now() + 10_000;
