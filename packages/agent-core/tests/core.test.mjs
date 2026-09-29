@@ -218,6 +218,33 @@ test('cancellation after a completed tool preserves it and produces valid result
   assert.equal(result.context.items.filter((item) => item.type === 'function_call_output').length, 3)
 })
 
+test('input digest and durable admission consume the same active budget as model requests', async (t) => {
+  for (const phase of ['digest', 'admission']) await t.test(phase, async () => {
+    const f = fixture()
+    f.request.budget = { maxActiveMs: 10 }
+    if (phase === 'digest') f.ports.host.digest = async value => { f.setNow(10); return digest(value) }
+    else f.hooks.begin = async () => { f.setNow(10) }
+    const result = await f.run()
+    assert.equal(result.status, 'budget_exhausted')
+    assert.equal(result.reason, 'active_time_budget')
+    assert.equal(result.committed, true)
+    assert.equal(result.modelRequests, 0)
+    assert.equal(f.modelInputs.length, 0)
+    assert.deepEqual(f.events.map(event => event.type), ['run_finished'])
+  })
+  await t.test('remaining budget reaches model deadline', async () => {
+    const f = fixture()
+    f.request.budget = { maxActiveMs: 10 }
+    f.ports.host.digest = async value => { f.setNow(3); return digest(value) }
+    f.hooks.begin = async () => { f.setNow(7) }
+    const deadline = f.ports.host.deadline
+    const deadlines = []
+    f.ports.host.deadline = (ms, parent) => { deadlines.push(ms); return deadline(ms, parent) }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(deadlines, [3])
+  })
+})
+
 test('cancellation during approval never executes, and approval waiting does not consume active budget', async (t) => {
   await t.test('cancel', async () => {
     const f = fixture([response([call('a', 'write'), call('b')])])
@@ -230,6 +257,7 @@ test('cancellation during approval never executes, and approval waiting does not
   await t.test('pause', async () => {
     const f = fixture([response([call('a', 'write')]), response()])
     f.request.budget = { maxActiveMs: 10 }
+    f.hooks.begin = async () => { f.setNow(5) }
     f.hooks.approve = async (input) => { f.setNow(1000); return { binding: input.binding, decision: 'approved', expiresAt: input.expiresAt } }
     assert.equal((await f.run()).status, 'completed')
     assert.deepEqual(f.executions, ['a'])
