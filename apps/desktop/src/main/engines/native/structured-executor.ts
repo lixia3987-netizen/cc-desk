@@ -320,7 +320,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (duplicate.request.input !== active.input || canonicalJson(json(priorOptions)) !== active.options || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
-        result = this.turnResult(duplicate.result);
+        result = this.turnResult(duplicate.result, ledger);
       } else if (priorStartup) {
         if (priorStartup.inputDigest !== digest(active.input) || priorStartup.optionsDigest !== digest(active.options)) throw new Error('此提交标识已用于不同的输入或配置。');
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
@@ -540,7 +540,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.refreshProjection(id, ledger);
       try { if (!this.taskErrors.has(id)) await active.tasks.refresh(ledger); }
       catch { this.taskErrors.set(id, '本轮执行已结束，但任务记录未能完成核查，验收状态未知。'); this.projection.notifyTask(id); }
-      result = this.turnResult(run);
+      result = this.turnResult(run, ledger);
       }
     } catch (error) {
       failure = error;
@@ -606,11 +606,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const message = error instanceof Error ? error.message : '';
     return /^[\u3400-\u9fff]/.test(message) && message.length < 1000 ? message : '自研 agent 执行失败，请检查连接、项目权限和本地记录。';
   }
-  private turnResult(result: RunResult): ChatTurnResult {
-    let lastUser = -1;
-    for (let index = result.context.items.length - 1; index >= 0; index--) { const item = result.context.items[index]; if (item && typeof item === 'object' && !Array.isArray(item) && item.role === 'user') { lastUser = index; break; } }
-    const last = result.context.items.slice(lastUser + 1).findLast(item => Boolean(extractNativeAssistantText([item])));
-    const summary = last ? extractNativeAssistantText([last]) : '';
+  private turnResult(result: RunResult, ledger: NativeRunStore): ChatTurnResult {
+    // Compacted context contains host-authored historical assistant data. Only
+    // the current run's latest durable model response may become its workflow
+    // artifact; a tool-only or empty response deliberately produces no summary.
+    let summary = '';
+    for (let end = ledger.usage.records; end > 0;) {
+      const start = Math.max(0, end - 1000);
+      const response = ledger.replay(start, end - start).findLast(record => record.identity && sameRun(record.identity, result.identity) && record.event.type === 'model_response');
+      if (response?.event.type === 'model_response') { summary = extractNativeAssistantText(response.event.response.outputItems); break; }
+      end = start;
+    }
     return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {

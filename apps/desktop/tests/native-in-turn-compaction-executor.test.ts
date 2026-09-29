@@ -20,7 +20,7 @@ import { startChatCompletionsFixture } from '../../../packages/agent-node/tests/
 
 type Protocol = 'responses' | 'chat-completions';
 type Body = { input?: any[]; messages?: any[]; tools?: any[]; instructions?: string };
-type Mode = 'normal' | 'invalid-summary' | 'cancel-summary' | 'instructions-changed';
+type Mode = 'normal' | 'invalid-summary' | 'cancel-summary' | 'instructions-changed' | 'empty-final';
 const secret = 'sk-in-turn-executor-local-fixture';
 const input = 'Keep the original engineering goal intact; inspect the file and retain human verification.';
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
@@ -37,10 +37,10 @@ const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent
   },
 });
 
-async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number } = {}) {
+async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number; toolOnlyBoundary?: boolean } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
-  await fs.writeFile(path.join(project, 'fixture.txt'), 'original content remains unchanged\n');
+  await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');
   let ordinary = 0, summaries = 0, summaryEntered!: () => void;
@@ -65,8 +65,9 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
         goal: input, steps: [{ id: 'inspect', title: 'Inspect original file', dependsOn: [], status: 'in_progress' }],
         criteria: [{ id: 'verify-humans', description: 'Human confirms scope and relevance', stepIds: ['inspect'], kind: 'manual' }],
       } });
-      if (index <= 3) return call(`read-${index}`, 'read_file', { path: 'fixture.txt' }, `${index}: ${padding}`);
+      if (index <= 3) return call(`read-${index}`, 'read_file', { path: 'fixture.txt' }, options.toolOnlyBoundary ? '' : `${index}: ${padding}`);
       if (index === 4) return call('task-after-history', 'read_task', {});
+      if (options.mode === 'empty-final') return protocol === 'responses' ? { output: [] } : { message: { role: 'assistant', content: '' } };
       return protocol === 'responses' ? { output: [assistantMessage('final', '模型声称整项任务已经验收通过。')] }
         : { message: { role: 'assistant', content: '模型声称整项任务已经验收通过。' } };
     },
@@ -81,7 +82,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
     state.sessions.push({ id, projectId, title: 'in-turn compaction', kind: 'agent', cwd: project,
       execution: { providerId: 'native', mode: 'structured', conversationId },
       engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: options.autoCompact ?? 'before_send_and_during_run',
-        maxInputTokens: 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
+        maxInputTokens: options.toolOnlyBoundary ? 40000 : 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
   const worker: NonNullable<NativeExecutorOptions['worker']> = async request => {
@@ -201,5 +202,40 @@ for (const phase of ['before', 'after'] as const) test(`${phase} publication fai
     NativeRunStore.prototype.commitRunCompaction = original;
     await f.restart(); assert.equal((await f.send()).success, false);
     assert.equal(f.server.requests.length, requests); assert.deepEqual((await f.ledger()).context, ledger.context);
+  } finally { NativeRunStore.prototype.commitRunCompaction = original; await f.dispose(); }
+});
+
+for (const protocol of ['responses', 'chat-completions'] as const) test(`${protocol}: an empty final model response cannot turn host continuity or earlier commentary into a workflow summary`, { timeout: 25000 }, async () => {
+  const f = await fixture(protocol, { mode: 'empty-final' });
+  try {
+    const result = await f.send(); assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(f.summaries, 1); assert.equal(result.summary, '');
+    assert.ok(JSON.stringify((await f.ledger()).context).includes(summary), 'the final context really contains synthetic historical assistant content');
+    const requests = f.server.requests.length;
+    await f.restart(); const duplicate = await f.send();
+    assert.equal(duplicate.success, true); assert.equal(duplicate.summary, ''); assert.equal(f.server.requests.length, requests);
+  } finally { await f.dispose(); }
+});
+
+for (const protocol of ['responses', 'chat-completions'] as const) test(`${protocol}: cancellation after a tool-only compaction commit never exposes host continuity as a workflow summary`, { timeout: 25000 }, async () => {
+  const f = await fixture(protocol, { toolOnlyBoundary: true });
+  const original = NativeRunStore.prototype.commitRunCompaction;
+  let injected = false;
+  NativeRunStore.prototype.commitRunCompaction = async function (...args) {
+    const receipt = await original.apply(this, args);
+    if (args[0].sessionId === f.id) { injected = true; void f.executor.stop(f.id).catch(() => {}); }
+    return receipt;
+  };
+  try {
+    const result = await f.send(); assert.equal(injected, true); assert.equal(f.summaries, 1);
+    assert.equal(result.success, false); assert.equal(result.interrupted, true); assert.equal(result.summary, '');
+    const ledger = await f.ledger(); assert.ok(JSON.stringify(ledger.context).includes(summary));
+    const last = ledger.records.findLast(record => record.event.type === 'model_response')!;
+    assert.equal(last.event.type, 'model_response');
+    if (last.event.type === 'model_response') assert.ok(last.event.response.toolCalls.length > 0, 'latest raw response is the textless tool batch');
+    const requests = f.server.requests.length;
+    NativeRunStore.prototype.commitRunCompaction = original;
+    await f.restart(); const duplicate = await f.send();
+    assert.equal(duplicate.success, false); assert.equal(duplicate.summary, ''); assert.equal(f.server.requests.length, requests);
   } finally { NativeRunStore.prototype.commitRunCompaction = original; await f.dispose(); }
 });
