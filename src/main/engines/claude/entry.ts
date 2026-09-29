@@ -3,6 +3,8 @@ import type { ClaudeCommand } from '../../../shared/claude-session';
 import type { AssistantStream } from './assistant-stream';
 import type { ClaudeConnection } from './connection';
 
+export type ContextObservationSource = 'assistant' | 'message_start' | 'message_delta';
+
 interface Turn {
   id: string; resolve: (value: ChatTurnResult) => void; interrupted: boolean;
   command?: string; resetRequested?: boolean; resetApplied?: boolean;
@@ -25,5 +27,11 @@ export interface Entry {
   commands?: ClaudeCommand[];
   /** CLI selection for the next turn; never replaced by an assistant response model. */
   selectionModel?: string;
-  contextRequest?: { id: string; usage: Record<string, unknown> };
+  contextRequest?: {
+    id: string; usage: Record<string, unknown>;
+    /** A stream start owns this message boundary, including before usage arrives. */
+    streamed?: boolean;
+    /** Input components reported by deltas take precedence over envelopes. */
+    deltaFields?: string[];
+  };
 }

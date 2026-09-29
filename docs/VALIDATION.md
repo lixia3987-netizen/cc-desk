@@ -1,5 +1,22 @@
 # 验证记录
 
+## 上下文用量的 message_delta 更新（2026-09-29）
+
+- 基于 `main` 的 `05cbbec` 修复，合入目标为 `main`；未触发 CI、递增版本或发布安装包。
+- 根流的 `message_delta.usage` 通过原始 API message ID 进入上下文 tracker。同消息按字段合并，新请求清除旧请求的缓存分量；不使用 `result.usage` 或 `modelUsage` 的累计消耗作为上下文占用。
+- 开始/完整消息中的显式 0/0 占位不替换最近一次测量；包含缓存的有效输入、旧协议 input-only 零值及 delta 确认的真实零值仍有效。delta 已报告字段优先，完整消息可以补齐未报告字段；旧消息、子流和停止后的流不能覆盖新请求。没有活动流的匿名完整消息独立计算，不继承旧缓存。
+- 用量按 API 消息边界更新，未引入逐 token 估算或修改 IPC 刷新机制。模型切换、压缩和清空仍会使相应旧测量失效。
+- 上下文运行时回归 15 项通过，最后补充/调整的 2 项边界定向回归通过（该文件现共 16 项）；覆盖 27,147 → 28,395、55,542 累计值隔离、占位保护、部分字段合并、有效零值、子流、旧/匿名消息及压缩后的迟到 delta。最终既有聊天/上下文/事件定向回归另 11 项通过；TypeScript 检查和本地生产构建通过，独立源码审查通过。
+- 较宽的 62 项回归中 61 项通过，1 项既有进程退出测试失败：`structured shutdown waits for an ignoring descendant after the CLI root has exited`。当前环境 `ps -o stat= -p $$` 返回 `fatal library error, lookup self`，与本文件此前记录的基线限制一致，未计作通过。
+- 新增 Electron 用例通过文件门控验证第二请求占位期间仍显示 27,147，最终显示 28,395 / 1,000,000（2.8%），且未发送 `/context`。用例可枚举，但尚未执行：当前环境创建 AF_UNIX socket 返回 EPERM，临时 Xvfb 无法建立 X11 监听。
+
+### 需要正式运行确认
+
+| 环境 | 待确认内容 | 当前状态 |
+| --- | --- | --- |
+| 支持 X11 的 Linux 或 Windows/macOS 桌面 | `npm run test:e2e -- tests/context-commands.spec.ts --grep "message delta usage"`；验证仪表通过真实 IPC 更新 | 用例已补，执行环境阻塞 |
+| 实际 Claude CLI v2.1.284 / 用户 provider | 单回复、工具往返、缓存命中、`/context` 后继续发送，以及压缩后更新；核对应用实际帧和仪表数值 | 本次用样本字段构造 fixture 验证，未调用真实账户 |
+
 ## 列表右键菜单与首发创建会话（2026-09-29）
 
 - 从 `main` 的 `51e8eeec884b5d433d55bbb81c9051efbbfe1a3c` 开发，合入目标为 `main`；未启动 CI、递增版本或发布安装包。

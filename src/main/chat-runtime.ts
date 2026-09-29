@@ -342,7 +342,7 @@ export class ChatRuntime {
       const current = entry;
       current.assistant = new AssistantStream({
         turnId: () => current.turn?.id, getMessage: key => this.history.getMessage(id, key),
-        message: (message, delta) => this.message(id, message, delta), context: payload => this.events.context.observe(id, current, payload),
+        message: (message, delta) => this.message(id, message, delta), context: (payload, source) => this.events.context.observe(id, current, payload, undefined, source),
         model: model => { this.history.get(id).model = model; this.notify(id); },
       });
       current.connection = new ClaudeConnection(invocation, session.cwd, env, {

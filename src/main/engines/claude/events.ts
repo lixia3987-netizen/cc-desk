@@ -129,7 +129,8 @@ export class ClaudeEvents {
       if (group) {
         group.completed = true;
         if (!parent && group.blocks.size) entry.assistant.latestRoot = group;
-        if (group.stopped) entry.assistant.streams.delete(JSON.stringify(parent ?? null));
+        const scope = JSON.stringify(parent ?? null);
+        if (group.stopped && entry.assistant.streams.get(scope) === group.id) entry.assistant.streams.delete(scope);
         entry.assistant.prune();
       }
       return;
