@@ -34,6 +34,7 @@ export interface Capabilities { executable: string; version: string; available: 
 export interface Snapshot { state: AppState; capabilities: Capabilities; executors: ExecutionDescriptor[]; cliUpdate: CLIUpdateState; platform: string; dataPath: string }
 export interface NewSession { projectId: string; title: string; kind: 'agent' | 'shell'; model: string; effort: Effort; permissionMode?: PermissionMode; isolated: boolean; worktreeName?: string; worktreeBaseRef?: string; providerId?: string; mode?: ExecutionMode; conversationId?: string; fork?: boolean }
 export interface Attachment { path: string; name: string; bytes: number }
+export interface DraftAttachment extends Attachment { selectionId: string }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
 export interface TerminalChunk { sessionId: string; seq: number; data: string }
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
@@ -66,6 +67,11 @@ export interface DesktopAPI {
   respondChat(id: string, requestId: string, decision: ChatDecision): Promise<void>;
   pickAttachments(id: string): Promise<Attachment[]>;
   addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
+  /** Metadata for original files; call stageDraftAttachments before submitting. */
+  chooseDraftAttachments(): Promise<DraftAttachment[]>;
+  addDroppedDraftAttachments(files: File[]): Promise<DraftAttachment[]>;
+  /** Returns private session-owned paths, which are the only paths accepted for submission. */
+  stageDraftAttachments(id: string, files: DraftAttachment[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;
   onChat(callback: (sessionId: string, taskState?: TaskState) => void): () => void;

@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, MoreHorizontal, Play, Square, X } from 'lucide-react';
+import { ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, Play, Square, X } from 'lucide-react';
 import type { AppState, Session } from '../../shared/types';
 import { AttentionCenter } from '../AttentionCenter';
 
@@ -7,14 +7,14 @@ import type { Perform } from './types';
 
 interface Props {
   state: AppState; active?: Session; project?: AppState['projects'][number]; structured: boolean;
-  activeBusy: boolean; busy: boolean;
-  onRename: (title: string) => void; onPalette: () => void;
+  activeBusy: boolean; busy: boolean; creating?: boolean;
+  onPalette: () => void;
   onAttention: (item: { sessionId: string; requestId: string }) => void;
   openIde: () => void; perform: Perform; setNotice: (value: string) => void;
   start: (session: Session) => Promise<void>;
 }
 
-export function WorkspaceHeader({ state, active, project, structured, activeBusy, busy, onRename, onPalette, onAttention, openIde, perform, setNotice, start }: Props) {
+export function WorkspaceHeader({ state, active, project, structured, activeBusy, busy, creating, onPalette, onAttention, openIde, perform, setNotice, start }: Props) {
   return <header className={'topbar ' + (active ? 'session-header' : '')}>
     {active ? <div className="session-heading">
       <div className="breadcrumb">
@@ -25,9 +25,6 @@ export function WorkspaceHeader({ state, active, project, structured, activeBusy
       <div className="session-title-line">
         <h1>
           <span title={active.title}>{active.title}</span>
-          <button className="icon-button" title="重命名" onClick={() => { onRename(active.title); }}>
-            <MoreHorizontal size={18} />
-          </button>
         </h1>
         <span className={`status-tag ${sessionColor(active)}`}>
           <span className={`dot ${sessionColor(active)}`} />{sessionLabel(active)}</span>
@@ -36,7 +33,7 @@ export function WorkspaceHeader({ state, active, project, structured, activeBusy
       <FolderOpen size={15} />
       <span>{project?.name ?? '工作空间'}</span>
       <ChevronRight size={13} />
-      <strong>概览</strong>
+      <strong>{creating ? '新建会话' : '概览'}</strong>
     </div>}
     <div className="workspace-actions">
       <AttentionCenter sessions={state.sessions} projects={state.projects} onOpen={onAttention} />
@@ -46,12 +43,7 @@ export function WorkspaceHeader({ state, active, project, structured, activeBusy
       {(active || project) && <button className="secondary compact ide-open" aria-label="在 IDE 中打开" title={state.settings.idePath ? `使用 ${state.settings.idePath} 打开 ${active?.cwd ?? project?.path}` : '配置用于打开项目的 IDE 应用'} disabled={busy} onClick={openIde}>
         <Code2 size={16} />IDE</button>}
       {active && <div className="session-actions">
-        <button className="secondary compact" aria-label="打开工作目录" title={active.cwd} onClick={() => void perform(() => window.desktop.openFolder(active.id))}>
-          <FolderOpen size={16} />
-        </button>
-        <button className="secondary compact" title="导出会话记录" onClick={() => void perform(async () => { const file = await window.desktop.exportTranscript(active.id); if (file) setNotice('会话记录已导出'); })}>
-          <ArrowDownToLine size={16} />
-        </button>{activeBusy ? <>
+        {activeBusy ? <>
           <button className="secondary compact" disabled={busy || active.status === 'stopping'} onClick={() => void perform(() => window.desktop.interruptSession(active.id))}>{active.status === 'stopping' ? '正在停止' : '中断任务'}</button>
           <button className="secondary compact danger" disabled={busy || active.status === 'stopping'} onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
             <Square size={13} />停止</button>

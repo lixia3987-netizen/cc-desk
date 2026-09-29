@@ -1,3 +1,4 @@
+import { createSessionFixture, sessionAction } from './helpers/session-ui';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { selectProjectFilter } from './helpers/project-filter';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
@@ -139,27 +140,7 @@ async function close(app: ElectronApplication) {
 }
 
 async function create(page: Page, title = '', adapter: 'structured' | 'terminal' = 'structured', projectId?: string) {
-  if (adapter === 'terminal') {
-    // Native sessions are legacy-compatible IPC fixtures; new UI sessions always use structured mode.
-    const session = await page.evaluate(async ({ title, projectId }) => {
-      const state = (await window.desktop.snapshot()).state;
-      const selectedProject = projectId ?? state.sessions.find(value => value.id === state.selectedSessionId)?.projectId ?? state.projects[0].id;
-      const session = await window.desktop.createSession({ projectId: selectedProject, title, kind: 'agent', providerId: 'claude', mode: 'terminal', model: '', effort: 'default', isolated: false });
-      await window.desktop.setSelection(session.id);
-      return session;
-    }, { title, projectId });
-    await expect(page.getByRole('heading', { name: session.title, exact: true })).toBeVisible();
-    return session;
-  }
-  await page.getByRole('button', { name: /新建会话/ }).click();
-  const form = page.getByRole('dialog', { name: '新建会话', exact: true });
-  if (projectId) await form.getByLabel('项目', { exact: true }).selectOption(projectId);
-  await form.getByLabel('会话名称', { exact: true }).fill(title);
-  await expect(form.getByLabel('交互方式', { exact: true })).toHaveCount(0);
-  await expect(form.getByRole('button', { name: 'Shell 终端', exact: true })).toHaveCount(0);
-  await form.getByRole('button', { name: '创建会话', exact: true }).click();
-  await expect(form).toHaveCount(0);
-  return page.evaluate(async () => { const state = (await window.desktop.snapshot()).state; return state.sessions.find(session => session.id === state.selectedSessionId)!; });
+  return createSessionFixture(page, { title, mode: adapter, ...(projectId ? { projectId } : {}) });
 }
 
 async function completed(page: Page) {
@@ -259,7 +240,7 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await close(app); app = await f.launch(); page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: '登录校验修复摘要', exact: true })).toBeVisible();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].titleSource).toBe('auto');
-    await page.getByRole('button', { name: '重命名', exact: true }).click();
+    await sessionAction(page, '登录校验修复摘要', '重命名会话');
     await page.getByLabel('新的会话名称', { exact: true }).fill('登录校验专项');
     await page.getByRole('button', { name: '保存', exact: true }).click();
     // Saving crosses IPC; the dialog keeps background inputs inert until it closes.
@@ -296,21 +277,13 @@ test('session experience: active tasks block worktree changes, completed workers
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(1);
     await expect(page.locator('.session-actions').getByRole('button', { name: '中断任务', exact: true })).toBeVisible();
-    await page.getByRole('button', { name: /新建会话/ }).click();
-    const form = page.getByRole('dialog', { name: '新建会话', exact: true });
-    await form.getByLabel('会话名称', { exact: true }).fill('下一项独立任务');
-    await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
-    await form.getByLabel('Worktree 名称', { exact: true }).fill('next-task');
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
-    await expect(form.getByRole('alert')).toContainText('停止');
+    const input = { projectId: f.project.id, title: '下一项独立任务', kind: 'agent' as const, mode: 'structured' as const, model: '', effort: 'default' as const, isolated: true, worktreeName: 'next-task' };
+    await expect(page.evaluate(input => window.desktop.createSession(input), input)).rejects.toThrow(/停止/);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(1);
     expect(f.git('worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
     await f.signal('complete');
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(value => value.id === original.id)?.taskState).toBe('completed');
-    await form.getByRole('button', { name: '创建会话', exact: true }).click();
-    await expect(form).toHaveCount(0);
-    await expect(page.getByRole('heading', { name: '下一项独立任务', exact: true })).toBeVisible();
-    const created = (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(value => value.title === '下一项独立任务')!;
+    const created = await createSessionFixture(page, input);
     expect(created.worktree).toBeTruthy(); expect(await fs.readFile(path.join(created.cwd, 'README.md'), 'utf8')).toBe('Session experience fixture\n');
     await page.locator('.session-row').filter({ hasText: '常驻进程会话' }).click();
     await completed(page);

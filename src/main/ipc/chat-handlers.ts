@@ -1,5 +1,4 @@
 import { dialog, type BrowserWindow } from 'electron';
-import path from 'node:path';
 import { z } from 'zod';
 import type { Session } from '../../shared/types';
 import type { ChatTurnResult } from '../../shared/chat';
@@ -9,6 +8,7 @@ import type { Attachments } from '../attachments';
 import type { WorkflowEngine } from '../workflows';
 import type { ChatQueue } from '../chat-queue';
 import { invokedCommand } from '../../shared/session-commands';
+import { attachmentFilters, attachmentPathsSchema, draftAttachmentSelectionsSchema, DraftAttachments } from '../draft-attachments';
 import type { Register } from './registration';
 
 interface ChatPorts {
@@ -41,8 +41,7 @@ const sendSchema = z.object({
 });
 const droppedFilesSchema = z.object({
   id: idSchema,
-  paths: z.array(z.string().min(1).max(4096).refine(value => path.isAbsolute(value) && !/[\x00-\x1f\x7f]/.test(value), '附件必须来自有效的本机绝对路径。'))
-    .min(1, '请拖入本机文件。').max(8, '一次最多添加 8 个附件。'),
+  paths: attachmentPathsSchema,
 }).strict();
 const responseSchema = z.object({
   id: idSchema, requestId: shortId,
@@ -53,6 +52,7 @@ const responseSchema = z.object({
 });
 
 export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
+  const draftAttachments = new DraftAttachments(ports.attachments);
   const assertCanStageAttachments = (id: string) => {
     const session = ports.structured(id);
     if (session.archived) throw new Error('请先取消会话归档，再添加附件。');
@@ -114,12 +114,24 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     assertCanStageAttachments(id);
     const result = await dialog.showOpenDialog(ports.getWindow()!, {
       title: '添加上下文附件', properties: ['openFile', 'multiSelections'],
-      filters: [{ name: '文本、图片与 PDF', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf', 'txt', 'md', 'json', 'csv', 'ts', 'tsx', 'js', 'py', 'yaml', 'yml', 'html', 'css', 'xml', 'log'] }],
+      filters: attachmentFilters,
     });
     if (result.canceled) return [];
     // A native picker may outlive deletion, archiving or maintenance of its source session.
     assertCanStageAttachments(id);
     return ports.attachments.add(id, result.filePaths);
+  });
+  handle('files:choose-draft', z.undefined(), async () => {
+    const result = await dialog.showOpenDialog(ports.getWindow()!, {
+      title: '添加上下文附件', properties: ['openFile', 'multiSelections'], filters: attachmentFilters,
+    });
+    if (result.canceled || !result.filePaths.length) return [];
+    return draftAttachments.inspect(result.filePaths);
+  });
+  handle('files:add-dropped-draft', attachmentPathsSchema, paths => draftAttachments.inspect(paths));
+  handle('files:stage-draft', z.object({ id: idSchema, files: draftAttachmentSelectionsSchema }).strict(), ({ id, files }) => {
+    assertCanStageAttachments(id);
+    return draftAttachments.stage(id, files, () => assertCanStageAttachments(id));
   });
   handle('files:add-dropped', droppedFilesSchema, ({ id, paths }) => {
     assertCanStageAttachments(id);

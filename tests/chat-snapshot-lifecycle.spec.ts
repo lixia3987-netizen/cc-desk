@@ -1,3 +1,4 @@
+import { sessionAction } from './helpers/session-ui';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import type { IpcMainInvokeEvent } from 'electron';
 import fs from 'node:fs/promises';
@@ -121,9 +122,9 @@ async function settle(page: Page) {
 
 async function beginDeletion(app: ElectronApplication, page: Page) {
   await app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.armDelete());
-  const context = page.getByRole('region', { name: '上下文面板', exact: true });
-  if (!await context.isVisible()) await page.getByRole('button', { name: '上下文', exact: true }).click();
-  await context.getByRole('button', { name: '删除会话', exact: true }).click();
+  const state = (await page.evaluate(() => window.desktop.snapshot())).state;
+  const active = state.sessions.find(session => session.id === state.selectedSessionId)!;
+  await sessionAction(page, active.title, '删除会话');
   await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '确认删除会话', exact: true }).click();
   await expect.poll(() => app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.deleteEntered())).toBe(true);
 }
@@ -188,7 +189,7 @@ test('snapshot lifecycle: a pending confirmation cannot clear a session selected
     await beginDeletion(f.app, f.page);
     await f.page.evaluate(id => window.desktop.setSelection(id), b.id);
     await f.app.evaluate(({ BrowserWindow }, id) => BrowserWindow.getAllWindows()[0].webContents.send('session:navigate', id), b.id);
-    await expect(f.page.getByRole('heading', { name: b.title, exact: true })).toBeVisible();
+    await expect(f.page.locator('.session-header')).toContainText(b.title);
     await expect.poll(async () => (await f.page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId).toBe(b.id);
     await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseDelete());
     await expect.poll(async () => (await f.page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === a.id)).toBe(false);
