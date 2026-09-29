@@ -11,16 +11,17 @@ async function close(app: ElectronApplication) {
   await app.close();
 }
 
-async function workspace(options: { preserveReportedContext?: boolean; routedModelResponses?: boolean } = {}) {
+async function workspace(options: { preserveReportedContext?: boolean; routedModelResponses?: boolean; deltaUsage?: boolean } = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-context-')));
   const data = path.join(directory, 'data'), projectPath = path.join(directory, 'project');
   const prefix = path.join(directory, 'npm'), pkg = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
   const log = path.join(directory, 'prompts.jsonl');
+  const releaseDelta = path.join(directory, 'release-delta');
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath), fs.mkdir(pkg, { recursive: true }), fs.writeFile(log, '')]);
   const node = path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node');
   if (process.platform === 'win32') await fs.copyFile(process.execPath, node); else await fs.symlink(process.execPath, node);
   await fs.writeFile(path.join(pkg, 'package.json'), JSON.stringify({ name: '@anthropic-ai/claude-code', bin: { claude: 'cli.js' } }));
-  await fs.writeFile(path.join(pkg, 'cli.js'), `const log = ${JSON.stringify(log)};\nconst preserveReportedContext = ${JSON.stringify(options.preserveReportedContext ?? false)};\nconst routedModelResponses = ${JSON.stringify(options.routedModelResponses ?? false)};\n` + String.raw`
+  await fs.writeFile(path.join(pkg, 'cli.js'), `const log = ${JSON.stringify(log)};\nconst preserveReportedContext = ${JSON.stringify(options.preserveReportedContext ?? false)};\nconst routedModelResponses = ${JSON.stringify(options.routedModelResponses ?? false)};\nconst deltaUsage = ${JSON.stringify(options.deltaUsage ?? false)};\nconst releaseDelta = ${JSON.stringify(releaseDelta)};\n` + String.raw`
 const readline = require('node:readline'), fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('Claude Code fixture 2.1.280'); process.exit(0); }
 if (process.argv.includes('--help')) { console.log('--session-id --resume --permission-mode --model --effort --print --input-format --output-format --verbose --permission-prompt-tool --include-partial-messages'); process.exit(0); }
@@ -48,6 +49,28 @@ readline.createInterface({input:process.stdin}).on('line', line => {
   if (text==='/clear') { session='33333333-3333-4333-8333-333333333333';output({type:'conversation_reset',new_conversation_id:session,session_id:session});done('上下文已清空');return; }
   if (text.startsWith('/team:review')) { commands.push({name:'new-skill',description:'新加载的 Skill',builtin:false});output({type:'system',subtype:'commands_changed',commands});done('已执行项目 Skill');return; }
   if (text==='/context') { output({type:'assistant',context_usage:{model:preserveReportedContext?'Sonnet 4.6':model,total_tokens:30000,raw_max_tokens:200000},message:{id:'report-'+turn,content:[{type:'text',text:'详细上下文报告'}]}});done('详细上下文报告');return; }
+  if (deltaUsage) {
+    const stream = event => output({type:'stream_event',event});
+    const placeholder = {input_tokens:0,output_tokens:0};
+    const first = 'first-'+turn, second = 'second-'+turn, toolId = 'read-'+turn;
+    stream({type:'message_start',message:{id:first,model,usage:placeholder}});
+    output({type:'assistant',message:{id:first,model,usage:placeholder,content:[{type:'tool_use',id:toolId,name:'Read',input:{file_path:'README.md'}}]}});
+    stream({type:'message_delta',usage:{input_tokens:7179,cache_read_input_tokens:19968,cache_creation_input_tokens:0,output_tokens:53}});
+    stream({type:'message_stop'});
+    output({type:'user',message:{content:[{type:'tool_result',tool_use_id:toolId,content:'fixture project'}]}});
+    stream({type:'message_start',message:{id:second,model,usage:placeholder}});
+    output({type:'assistant',message:{id:second,model,usage:placeholder,content:[{type:'text',text:'等待第二次请求用量'}]}});
+    // Let the test inspect the UI after the second request starts, before its
+    // real usage arrives. A file gate avoids racing the renderer's refresh.
+    const finish = () => {
+      if (!fs.existsSync(releaseDelta)) { setTimeout(finish,25);return; }
+      stream({type:'message_delta',usage:{input_tokens:1259,cache_read_input_tokens:27136,cache_creation_input_tokens:0,output_tokens:16}});
+      output({type:'assistant',message:{id:second,model,usage:placeholder,content:[{type:'text',text:'等待第二次请求用量'}]}});
+      stream({type:'message_stop'});
+      output({type:'result',subtype:'success',session_id:session,result:'等待第二次请求用量',usage:{input_tokens:8438,cache_read_input_tokens:47104,cache_creation_input_tokens:0,output_tokens:69},modelUsage:{[model]:{inputTokens:8438,cacheReadInputTokens:47104,contextWindow:1000000}},num_turns:2});
+    };
+    finish();return;
+  }
   if (routedModelResponses) {
     const missingUsage = text === '路由响应省略全部用量';
     const usage = missingUsage ? undefined : {input_tokens:2000,cache_read_input_tokens:9000,cache_creation_input_tokens:1000};
@@ -77,7 +100,7 @@ process.stdin.on('end',()=>process.exit(0));
   const state: AppState = { version: 2, projects: [project], sessions: [session], selectedSessionId: session.id, settings: { claudePath: cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system' } };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const launch = () => electron.launch({ args: electronLaunchArgs(), env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, CLAUDE_CONFIG_DIR: path.join(directory, 'claude-config') } });
-  return { launch, log, session, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
+  return { launch, log, session, releaseDelta, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
 test('slash menu discovers commands without a model prompt, supports keyboard/IME/arguments and skill updates', async () => {
@@ -146,6 +169,26 @@ test('context meter uses root request usage, invalidates after compact and clear
     await input.fill('恢复清空后的新记录'); await input.press('Enter');
     await expect.poll(async () => (await fs.readFile(f.log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).at(-1)?.text).toBe('恢复清空后的新记录');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
+  } finally { await close(app); await f.dispose(); }
+});
+
+test('context meter refreshes from message delta usage without a context command and retains usage through placeholders', async () => {
+  const f = await workspace({ deltaUsage: true }), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), input = page.getByLabel('提示词编辑器'), meter = page.locator('.context-meter');
+    await input.fill('读取文件后回复'); await input.press('Enter');
+    // The marker establishes that the second request's start and zero-valued
+    // assistant envelope have reached the UI while its delta is still gated.
+    await expect(page.getByText('等待第二次请求用量', { exact: true })).toBeVisible();
+    await expect(meter).toContainText('27,147 / 未知容量');
+    await fs.writeFile(f.releaseDelta, 'continue');
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
+    await expect(meter).toContainText('28,395 / 1,000,000');
+    await expect(meter.getByRole('progressbar', { name: '上下文占用' })).toHaveAttribute('aria-valuenow', '2.8');
+    const snapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), f.session.id);
+    expect(snapshot.context).toMatchObject({ inputTokens: 28395, contextWindow: 1000000, source: 'request' });
+    expect(snapshot.usage).toMatchObject({ inputTokens: 8438, cacheReadTokens: 47104 });
+    expect((await fs.readFile(f.log, 'utf8')).trim().split('\n').map(line => JSON.parse(line).text)).toEqual(['读取文件后回复']);
   } finally { await close(app); await f.dispose(); }
 });
 
