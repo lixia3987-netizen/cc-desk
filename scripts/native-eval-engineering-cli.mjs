@@ -1,10 +1,16 @@
 import path from 'node:path';
 
-export const ENGINEERING_USAGE = 'engineering-init <empty-operator-directory> <40-character-app-commit> | engineering-verify <operator-directory> <run-id> <candidate-directory> [--timeout-ms <1..300000>] | engineering-report <operator-directory> <new-report.json> | engineering-compare <left-report.json> <right-report.json>';
+export const ENGINEERING_USAGE = 'engineering-init <empty-operator-directory> <40-character-app-commit> | engineering-readiness <operator-directory> | engineering-verify <operator-directory> <run-id> <candidate-directory> [--timeout-ms <1..300000>] | engineering-report <operator-directory> <new-report.json> | engineering-compare <left-report.json> <right-report.json>';
 
 /** Engineering commands are separate from the original three smoke-task commands. */
 export async function engineeringCommand(args) {
   const [command, first, second, third] = args;
+  if (command === 'engineering-readiness') {
+    if (args.length !== 2) throw new Error('Usage: node scripts/native-eval.mjs engineering-readiness <operator-directory>');
+    const { checkEngineeringReadiness } = await import('./native-eval-engineering-readiness.mjs');
+    const value = await checkEngineeringReadiness(first);
+    return { exitCode: value.status === 'metadata_complete' ? 0 : 1, output: value };
+  }
   if (command === 'engineering-init' && args.length === 3) {
     const { initializeEngineeringBatch } = await import('./native-eval-engineering-reports.mjs');
     const value = await initializeEngineeringBatch(first, second);

@@ -217,6 +217,6 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     else if (command === 'prepare' && first && args.length === 2) console.log(JSON.stringify(await prepareEvaluation(first), null, 2));
     else if (command === 'verify' && first && args.length === 2) { const report = await verifyEvaluation(first); console.log(JSON.stringify({ report: path.resolve(first, 'report.json'), functionalStatus: report.functionalStatus, realQualityStatus: report.realQualityStatus }, null, 2)); process.exitCode = report.functionalStatus === 'pass' ? 0 : 1; }
     else if (command === 'compare' && first && second && args.length === 3) console.log(JSON.stringify(await compareReports(first, second), null, 2));
-    else throw new Error('Usage: node scripts/native-eval.mjs prepare <empty-directory> | verify <directory> | compare <left-report.json> <right-report.json>; engineering commands: engineering-init, engineering-verify, engineering-report, engineering-compare');
+    else throw new Error('Usage: node scripts/native-eval.mjs prepare <empty-directory> | verify <directory> | compare <left-report.json> <right-report.json>; engineering commands: engineering-init, engineering-readiness, engineering-verify, engineering-report, engineering-compare');
   } catch (error) { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 2; }
 }
