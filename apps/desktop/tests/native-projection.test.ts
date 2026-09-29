@@ -363,3 +363,59 @@ test('unknown tool output cannot overwrite host-attested per-file effects in rec
     assert.equal(message.nativeChangeSetResult?.status, 'unknown');
   } finally { await f.dispose(); }
 });
+
+test('failed partial output is discarded with a durable diagnostic and cannot become assistant history', async () => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req); await f.store.append(f.req.identity, { type: 'model_request_started', attempt: 1 }); await f.projection.hydrate(f.id, f.store);
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'UNCOMMITTED-PARTIAL' });
+    assert.equal(f.projection.snapshot(f.id).messages.at(-1)?.text, 'UNCOMMITTED-PARTIAL');
+    await f.store.append(f.req.identity, { type: 'model_request_failed', attempt: 1, failure: { category: 'network', retryable: false }, partial: true }); await f.projection.hydrate(f.id, f.store);
+    assert.equal(f.projection.snapshot(f.id).messages.some(message => message.role === 'assistant'), false);
+    assert.match(f.projection.snapshot(f.id).messages.at(-1)!.text, /未完成.*丢弃/);
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'failed', reason: 'model_partial_response', modelRequests: 1, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } }); await f.projection.hydrate(f.id, f.store);
+    assert.equal((await fs.readFile(f.projection.exportPath(f.id), 'utf8')).includes('UNCOMMITTED-PARTIAL'), false);
+    await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).messages, f.projection.snapshot(f.id).messages); restored.flush();
+    const next = { ...f.req, identity: { ...f.req.identity, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 2 } };
+    await f.store.beginRun(next); await f.store.append(next.identity, { type: 'model_request_started', attempt: 1 }); await f.projection.hydrate(f.id, f.store);
+    f.projection.event(f.id, { type: 'text_delta', identity: next.identity, text: 'NEW-RESPONSE' });
+    assert.equal(f.projection.snapshot(f.id).messages.at(-1)?.text, 'NEW-RESPONSE');
+    assert.equal(f.projection.snapshot(f.id).messages.some(message => message.text.includes('UNCOMMITTED-PARTIAL')), false);
+  } finally { await f.dispose(); }
+});
+
+test('successful bounded retry keeps one assistant answer and unknown whole-run cost after restart', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration.pricing = { model: 'fixture-model', inputUSDPerMillion: 3, outputUSDPerMillion: 15 };
+    await f.store.beginRun(f.req); await f.store.append(f.req.identity, { type: 'model_request_started', attempt: 1 });
+    await f.store.append(f.req.identity, { type: 'model_request_failed', attempt: 1, failure: { category: 'rate_limit', httpStatus: 429, retryable: true }, partial: false, retryDelayMs: 500 }); await f.projection.hydrate(f.id, f.store);
+    assert.match(f.projection.snapshot(f.id).messages.at(-1)!.text, /重试/);
+    await f.store.append(f.req.identity, { type: 'model_request_started', attempt: 2 }); await f.projection.hydrate(f.id, f.store);
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'temporary output' });
+    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Only final answer')], toolCalls: [], finishReason: 'completed', usage: { inputTokens: 10, outputTokens: 5 } } });
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'completed', reason: 'model_completed', modelRequests: 2, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } }); await f.projection.hydrate(f.id, f.store);
+    const snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.taskState, 'completed'); assert.deepEqual(snapshot.usage, {});
+    assert.deepEqual(snapshot.messages.filter(message => message.role === 'assistant').map(message => message.text), ['Only final answer']);
+    await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).usage, {}); assert.deepEqual(restored.snapshot(f.id).messages, snapshot.messages); restored.flush();
+  } finally { await f.dispose(); }
+});
+
+for (const actualRetry of [false, true]) test(`blocked summary counts actual retries rather than scheduled waits: ${actualRetry}`, async () => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req); await f.store.append(f.req.identity, { type: 'model_request_started', attempt: 1 });
+    await f.store.append(f.req.identity, { type: 'model_request_failed', attempt: 1, failure: { category: 'service_unavailable', httpStatus: 503, retryable: true }, partial: false, retryDelayMs: 500 });
+    if (actualRetry) {
+      await f.store.append(f.req.identity, { type: 'model_request_started', attempt: 2 });
+      await f.store.append(f.req.identity, { type: 'model_request_failed', attempt: 2, failure: { category: 'authentication', httpStatus: 401, retryable: false }, partial: false });
+    }
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: actualRetry ? 'failed' : 'cancelled', reason: actualRetry ? 'model_authentication' : 'cancelled', modelRequests: actualRetry ? 2 : 1, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } }); await f.projection.hydrate(f.id, f.store);
+    const error = f.projection.snapshot(f.id).error ?? '';
+    assert.match(error, new RegExp(`模型请求 ${actualRetry ? 2 : 1} 次`));
+    assert.equal(error.includes('已执行有限重试 1 次'), actualRetry);
+  } finally { await f.dispose(); }
+});
