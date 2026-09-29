@@ -24,6 +24,8 @@ class FakeWorker extends EventEmitter implements NativeWorkerChild {
   stderr = new PassThrough();
   sent: Record<string, unknown>[] = [];
   sequence = 0;
+  modelAttempts = 0;
+  summaryRequests = 0;
   killed = false;
   autoFinish = true;
   autoCancel = true;
@@ -47,12 +49,16 @@ class FakeWorker extends EventEmitter implements NativeWorkerChild {
   send(message: Record<string, unknown>): void {
     setImmediate(() => this.emit('message', { version: WORKER_PROTOCOL, identity: run.identity, seq: ++this.sequence, ...message }));
   }
-  rpc<T = unknown>(method: string, args: unknown): Promise<T> {
+  async rpc<T = unknown>(method: string, args: unknown): Promise<T> {
     const seq = ++this.sequence;
     const requestId = `run:${seq}`;
     const promise = new Promise<T>((resolve, reject) => this.pending.set(requestId, { resolve: value => resolve(value as T), reject }));
     setImmediate(() => this.emit('message', { type: 'request', version: WORKER_PROTOCOL, identity: run.identity, seq, requestId, method, args: clone(args) }));
-    return promise;
+    const value = await promise;
+    const event = (args as { event?: { type: string } }).event;
+    if (method === 'store.append' && event?.type === 'model_request_started') this.modelAttempts++;
+    if (method === 'context.maintain') this.summaryRequests += (value as { modelRequests: number }).modelRequests;
+    return value;
   }
   exit(code: number, closeStreams = true): void {
     if (this.closed) return;
@@ -97,7 +103,11 @@ async function begin(worker: FakeWorker, protocol = { id: 'openai-responses', ve
   await worker.rpc('store.checkpoint', { identity: run.identity, context: admission.context });
   return admission.context;
 }
+async function startAttempt(worker: FakeWorker, attempt = worker.modelAttempts + 1): Promise<void> {
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_started', attempt } });
+}
 async function prepare(worker: FakeWorker, context: ModelContext): Promise<PreparedTool> {
+  await startAttempt(worker);
   const response: ModelResponse = {
     outputItems: [{ type: 'function_call', id: 'fc-one', call_id: requestCall.id, name: requestCall.name, arguments: requestCall.arguments, status: 'completed' }],
     toolCalls: [requestCall], usage: null, finishReason: 'tool_calls',
@@ -112,7 +122,7 @@ function approvalRequest(prepared: PreparedTool) {
   return { binding: { ...run.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: prepared.policyRevision }, tool: prepared.definition, input: prepared.input, preconditions: prepared.preconditions, expiresAt: Date.now() + 30_000 };
 }
 async function finish(worker: FakeWorker, context: ModelContext, extra: Partial<RunResult> = {}): Promise<void> {
-  const result: RunResult = { identity: run.identity, status: 'completed', reason: 'model_completed', modelRequests: 1, toolCalls: 0, context, usage: null, committed: true, ...extra };
+  const result: RunResult = { identity: run.identity, status: 'completed', reason: 'model_completed', modelRequests: worker.modelAttempts + worker.summaryRequests, toolCalls: 0, context, usage: null, committed: true, ...extra };
   await worker.rpc('store.append', { identity: run.identity, event: { type: 'run_finished', result } });
   await worker.rpc('event', { type: 'run_finished', identity: run.identity, result });
   worker.send({ type: 'done', result });
@@ -202,7 +212,7 @@ test('real tool port, committed preparation, exact approval, and journal results
   const result = await h.promise;
   assert.equal(result.toolCalls, 1);
   assert.equal(h.worker.scriptError, undefined);
-  assert.deepEqual(h.journal.map(item => (item as { type: string }).type), ['model_response', 'tool_prepared', 'tool_completed', 'run_finished']);
+  assert.deepEqual(h.journal.map(item => (item as { type: string }).type), ['model_request_started', 'model_response', 'tool_prepared', 'tool_completed', 'run_finished']);
 });
 
 test('worker cannot change prepared input or execute before durable preparation', async () => {
@@ -248,7 +258,7 @@ test('a thrown write cannot be relabeled as cancelled to erase an unknown side e
   });
   h.options.tools.execute = async () => { throw new Error('side effect happened before the secret failure'); };
   await assert.rejects(h.promise, { code: 'protocol' });
-  assert.deepEqual(h.journal.map(item => (item as { type: string }).type), ['model_response', 'tool_prepared']);
+  assert.deepEqual(h.journal.map(item => (item as { type: string }).type), ['model_request_started', 'model_response', 'tool_prepared']);
 });
 
 test('RPC cancellation aborts approval but storage RPCs finish committing', async () => {
@@ -349,6 +359,7 @@ test('credential-buffered stream tails finish projecting before the full model r
   const tailStarted = new Promise<void>(resolve => { projecting = resolve; });
   const h = harness(async worker => {
     const context = await begin(worker);
+    await startAttempt(worker);
     await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'short tail' });
     const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'short tail' }] }], toolCalls: [], finishReason: 'completed', usage: null };
     await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
@@ -383,6 +394,7 @@ test('worker host rejects interleaved credential deltas from a compromised worke
   const key = 'secret-key-sentinel';
   const h = harness(async worker => {
     await begin(worker);
+    await startAttempt(worker);
     await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: key.slice(0, 7) });
     await worker.rpc('event', { type: 'tool_arguments_delta', identity: run.identity, callId: 'other', delta: 'padding'.repeat(20) });
     await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: key.slice(7) });
@@ -435,6 +447,7 @@ test('independent shorter MCP secret fragments cannot pass model-key stream buff
   const secret = 'mcp-secret';
   const h = harness(async worker => {
     await begin(worker);
+    await startAttempt(worker);
     await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: secret.slice(0, 4) });
     await worker.rpc('event', { type: 'tool_arguments_delta', identity: run.identity, callId: 'other', delta: 'padding'.repeat(20) });
     await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: secret.slice(4) });
@@ -448,12 +461,13 @@ test('MCP credential echoes cannot become durable responses or worker tool repli
   const secret = 'mcp-main-process-sentinel';
   const response = harness(async worker => {
     await begin(worker);
+    await startAttempt(worker);
     await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response: {
       outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: secret }] }], toolCalls: [], usage: null, finishReason: 'completed',
     } } });
   }, { forbiddenValues: [secret] });
   await assert.rejects(response.promise, { code: 'protocol' });
-  assert.deepEqual(response.journal, []);
+  assert.deepEqual(response.journal, [{ type: 'model_request_started', attempt: 1 }]);
   const tool = harness(async worker => {
     const context = await begin(worker), prepared = await prepare(worker, context);
     const approval = await worker.rpc('approval', approvalRequest(prepared));
@@ -487,6 +501,7 @@ const chatCallMessage = () => ({ role: 'assistant', content: null, tool_calls: [
 test('chat worker host binds native messages, approvals, tool results and final context', async () => {
   const h = harness(async worker => {
     const context = await begin(worker, chatProtocol);
+    await startAttempt(worker);
     const response: ModelResponse = { outputItems: [chatCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
     await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
     context.items.push(...response.outputItems);
@@ -514,6 +529,7 @@ test('chat worker cannot claim the Responses protocol selected by neither connec
 for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation', 'responses_result']) test(`chat worker rejects ${forgery} before accepting effects`, async () => {
   const h = harness(async worker => {
     await begin(worker, chatProtocol);
+    await startAttempt(worker);
     const response: ModelResponse = { outputItems: [chatCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
     if (forgery === 'mismatched_calls') response.toolCalls = [{ ...requestCall, name: 'different' }];
     if (forgery === 'hidden_reasoning') (response.outputItems[0] as Record<string, unknown>).reasoning_content = 'opaque';
@@ -526,7 +542,7 @@ for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation', '
     }
   }, { model: chatModel });
   await assert.rejects(h.promise, { code: 'protocol' });
-  assert.equal(h.journal.length, forgery === 'responses_result' ? 1 : 0);
+  assert.equal(h.journal.length, forgery === 'responses_result' ? 2 : 1);
 });
 
 const maintenanceBudget = { ...DEFAULT_RUN_BUDGET, maxInputTokens: 1024 };
@@ -664,4 +680,128 @@ test('unconfirmed summary worker cleanup preserves the host resource barrier', a
     await worker.rpc('context.maintain', maintenanceRequest(context));
   }, { ...maintenanceOptions, contextMaintenance: { async maintain() { throw new NativeWorkerCleanupError(); } } });
   await assert.rejects(h.promise, error => error instanceof NativeWorkerCleanupError && error.cleanupUnconfirmed);
+});
+
+const transientFailure = { category: 'rate_limit', httpStatus: 429, retryable: true } as const;
+const retryOptions = { request: { ...run, modelRetry: 'safe_transient' as const } };
+async function failAttempt(worker: FakeWorker, options: { partial?: boolean; retryDelayMs?: number; failure?: unknown } = {}) {
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_failed', attempt: worker.modelAttempts,
+    failure: options.failure ?? transientFailure, partial: options.partial ?? false,
+    ...(options.retryDelayMs === undefined ? {} : { retryDelayMs: options.retryDelayMs }) } });
+}
+async function textResponse(worker: FakeWorker, context: ModelContext) {
+  const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'complete' }] }],
+    toolCalls: [], finishReason: 'completed', usage: null };
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+  context.items.push(...response.outputItems);
+}
+for (const operation of ['response', 'stream', 'failure', 'malformed_failure']) test(`worker requires a durable active attempt before ${operation}`, async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    if (operation === 'response') await textResponse(worker, context);
+    else if (operation === 'stream') await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'forged' });
+    else await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_failed',
+      ...(operation === 'malformed_failure' ? {} : { attempt: 1 }), failure: transientFailure, partial: false } });
+  });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(h.journal.length, 0);
+});
+for (const attempt of [0, 2, '1']) test(`worker rejects invalid initial model attempt ${attempt}`, async () => {
+  const h = harness(async worker => { await begin(worker); await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_started', attempt } }); });
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.equal(h.journal.length, 0);
+});
+test('worker cannot overlap attempts or manufacture a successful terminal from a failed request', async () => {
+  for (const operation of ['overlap', 'success', 'next']) {
+    const h = harness(async worker => {
+      const context = await begin(worker); await startAttempt(worker);
+      if (operation !== 'overlap') await failAttempt(worker);
+      if (operation === 'success') await finish(worker, context);
+      else await startAttempt(worker);
+    }, retryOptions);
+    await assert.rejects(h.promise, { code: 'protocol' });
+    assert.equal(h.journal.some(item => (item as { type: string }).type === 'run_finished'), false);
+  }
+});
+for (const [name, failure, partial, retryDelayMs] of [
+  ['wrong backoff', transientFailure, false, 100],
+  ['non-transient HTTP', { category: 'service_error', httpStatus: 500, retryable: true }, false, 500],
+  ['wrong category', { category: 'authentication', httpStatus: 429, retryable: true }, false, 500],
+  ['unknown error', { category: 'unknown', retryable: false }, false, 500],
+  ['partial stream', transientFailure, true, 500],
+  ['arbitrary message', { ...transientFailure, message: 'untrusted' }, false, 500],
+] as const) test(`worker rejects retry with ${name}`, async () => {
+  const h = harness(async worker => { await begin(worker); await startAttempt(worker); await failAttempt(worker, { failure, partial, retryDelayMs }); }, retryOptions);
+  await assert.rejects(h.promise, { code: 'protocol' }); assert.deepEqual(h.journal, [{ type: 'model_request_started', attempt: 1 }]);
+});
+test('retry stays disabled by default and cannot consume a nonexistent model slot', async () => {
+  for (const overrides of [{}, { request: { ...run, modelRetry: 'safe_transient' as const, budget: { maxModelRequests: 1 } } }]) {
+    const h = harness(async worker => { await begin(worker); await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 500 }); }, overrides);
+    await assert.rejects(h.promise, { code: 'protocol' });
+  }
+});
+test('host enforces durable backoff and allows only two additional attempts per run', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker);
+    await failAttempt(worker, { retryDelayMs: 500 }); now += 500;
+    await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 1500 }); now += 1500;
+    await startAttempt(worker); await textResponse(worker, context); await finish(worker, context);
+  }, retryOptions);
+  const result = await h.promise; assert.equal(result.modelRequests, 3);
+  assert.deepEqual(h.journal.map(item => (item as { type: string }).type), ['model_request_started', 'model_request_failed', 'model_request_started', 'model_request_failed', 'model_request_started', 'model_response', 'run_finished']);
+  for (const forgery of ['early', 'third']) {
+    const denied = harness(async worker => {
+      await begin(worker); await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 500 });
+      if (forgery === 'early') { await startAttempt(worker); return; }
+      now += 500; await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 1500 });
+      now += 1500; await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 1500 });
+    }, retryOptions);
+    await assert.rejects(denied.promise, { code: 'protocol' });
+  }
+});
+test('observed partial output cannot be relabeled as empty and held tails never leak after failure', async () => {
+  const forged = harness(async worker => {
+    await begin(worker); await startAttempt(worker); await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'tail' });
+    await failAttempt(worker, { retryDelayMs: 500 });
+  }, retryOptions);
+  await assert.rejects(forged.promise, { code: 'protocol' });
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker); await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'tail' });
+    await failAttempt(worker, { partial: true }); await finish(worker, context, { status: 'failed', reason: 'model_partial_response' });
+  }, retryOptions);
+  assert.equal((await h.promise).status, 'failed'); assert.equal(h.events.some(event => (event as { type: string }).type === 'text_delta'), false);
+});
+test('failed requests count toward maintenance and terminal request accounting', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now); let maintained = 0;
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 500 }); now += 500;
+    await prepare(worker, context);
+    const result: ToolResult = { status: 'denied', output: { executed: false } };
+    const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems); await worker.rpc('context.maintain', { ...maintenanceRequest(context), modelRequests: 2 });
+    await finish(worker, context, { toolCalls: 1 });
+  }, { ...maintenanceOptions, request: { ...maintenanceOptions.request, modelRetry: 'safe_transient' }, contextMaintenance: {
+    async maintain(request) { maintained++; assert.equal(request.modelRequests, 2); return { kind: 'unchanged', modelRequests: 0, usage: null }; },
+  } });
+  assert.equal((await h.promise).modelRequests, 2); assert.equal(maintained, 1);
+  const forged = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker); await failAttempt(worker);
+    await finish(worker, context, { status: 'failed', reason: 'model_rate_limit', modelRequests: 0 });
+  });
+  await assert.rejects(forged.promise, { code: 'protocol' });
+});
+test('model journal acknowledgement loss allows recovery only and never another request', async () => {
+  for (const proceed of [false, true]) {
+    const h = harness(async worker => {
+      const context = await begin(worker); await assert.rejects(startAttempt(worker), /host operation failed/);
+      if (proceed) { await startAttempt(worker); return; }
+      worker.send({ type: 'done', result: { identity: run.identity, status: 'recovery_required', reason: 'store_model_request_started_failed', modelRequests: 1, toolCalls: 0, usage: null, context, committed: false } });
+    });
+    h.options.store.append = async () => { throw new Error('acknowledgement lost'); };
+    if (proceed) await assert.rejects(h.promise, { code: 'protocol' }); else assert.equal((await h.promise).committed, false);
+  }
+});
+test('retry setting stays bound to the host configuration before worker startup', async () => {
+  const h = harness(async () => assert.fail('Invalid binding must not spawn.'), { request: { ...run, modelRetry: 'safe_transient', configuration: { sessionOptions: { modelRetry: 'off' } } } });
+  await assert.rejects(h.promise, { code: 'configuration' }); assert.equal(h.forkOptions, undefined);
 });

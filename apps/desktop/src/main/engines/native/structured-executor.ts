@@ -28,7 +28,7 @@ import { parseNativeConfig } from './config';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from './projection';
 import { runNativeWorker } from './worker-host';
 import { sameRun } from './worker-protocol';
-import { nativeRunError } from './run-errors';
+import { nativeRunError, type NativeRunErrorDetails } from './run-errors';
 import { summarizeNativeContext } from './context-summary';
 import { assertNativeInputBudget, autoCompactBeforeSend } from './automatic-compaction';
 import { mcpConnectionMetadata, mcpStartupMetadata } from './mcp-startup';
@@ -511,7 +511,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.phase = undefined;
       this.changed(id, 'starting');
       const run = await (this.options.worker ?? runNativeWorker)({
-        request: { identity, input: active.input, policyRevision, configuration: json({ connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: config, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, policyRevision, modelRetry: config.modelRetry, configuration: json({ connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: config, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const waitingAt = performance.now();
@@ -610,14 +610,30 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     // Compacted context contains host-authored historical assistant data. Only
     // the current run's latest durable model response may become its workflow
     // artifact; a tool-only or empty response deliberately produces no summary.
-    let summary = '';
+    let summary = '', foundResponse = false;
+    const details: NativeRunErrorDetails = { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: 0 };
+    const startedAttempts = new Set<number>();
     for (let end = ledger.usage.records; end > 0;) {
       const start = Math.max(0, end - 1000);
-      const response = ledger.replay(start, end - start).findLast(record => record.identity && sameRun(record.identity, result.identity) && record.event.type === 'model_response');
-      if (response?.event.type === 'model_response') { summary = extractNativeAssistantText(response.event.response.outputItems); break; }
+      const records = ledger.replay(start, end - start);
+      for (let index = records.length - 1; index >= 0; index--) {
+        const record = records[index];
+        if (!record.identity || !sameRun(record.identity, result.identity)) continue;
+        const event = record.event;
+        if (event.type === 'model_response' && !foundResponse) {
+          summary = extractNativeAssistantText(event.response.outputItems); foundResponse = true;
+        } else if (event.type === 'model_request_started') startedAttempts.add(event.attempt);
+        else if (event.type === 'model_request_failed') {
+          if (details.modelFailure === undefined) { details.modelFailure = event.failure.category; details.partial = event.partial; }
+          // A scheduled delay cancelled before the next durable attempt is not
+          // an executed retry. Backward replay has already seen later starts.
+          if (event.retryDelayMs !== undefined && startedAttempts.has(event.attempt + 1)) details.retries!++;
+        } else if (event.type === 'run_started') { end = 0; break; }
+      }
+      if (end === 0) break;
       end = start;
     }
-    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason), interrupted: result.status === 'cancelled' } : {}) };
+    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason, details), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
     this.assertActive(id, active);
