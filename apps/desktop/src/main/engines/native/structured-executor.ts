@@ -297,6 +297,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async execute(id: string, active: ActiveRun): Promise<ChatTurnResult> {
     let result: ChatTurnResult | undefined, failure: unknown;
+    let receiptOnly = false;
     let mcpTools: ManagedMcpToolPort | undefined;
     let commandTools: NativeCommandTools | undefined;
     let startup: { identity: RunIdentity; startupId: string } | undefined;
@@ -309,19 +310,21 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       let ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId! });
       active.store = ledger;
       await this.refreshProjection(id, ledger);
-      if (this.projection.hasMissingContext(id)) this.recovery.add(id);
+      if (ledger.recoveryRequired || this.projection.hasMissingContext(id)) this.recovery.add(id);
       // A terminal model receipt is not proof that its local service resources closed.
       if (ledger.getRecoveryReport()?.tools.some(tool => tool.name === 'mcp_stdio_startup' && tool.status === 'unknown')) throw new Error(RECOVERY);
       const priorStartup = ledger.lookupStartup(active.requestId);
       if (priorStartup?.status === 'recovery_required') throw new Error(RECOVERY);
       const duplicate = ledger.lookupSubmission(active.requestId);
       if (duplicate) {
+        receiptOnly = true;
         const priorOptions = parseNativeConfig({ schemaVersion: 1, options: duplicate.request.configuration.sessionOptions as EngineConfig['options'] });
         if (duplicate.request.input !== active.input || canonicalJson(json(priorOptions)) !== active.options || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
         result = this.turnResult(duplicate.result, ledger);
       } else if (priorStartup) {
+        receiptOnly = true;
         if (priorStartup.inputDigest !== digest(active.input) || priorStartup.optionsDigest !== digest(active.options)) throw new Error('此提交标识已用于不同的输入或配置。');
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
@@ -483,8 +486,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         assertNativeInputBudget(ledger.loadContext()!, active.input, modelInstructions, config, model);
       }
       await assertOwnership();
-      const maxActiveMs = automatic.compacted || mcpConnections.length ? Math.floor(config.maxActiveMs - (performance.now() - startedAt)) : config.maxActiveMs;
-      if (maxActiveMs < 1 || automatic.remainingRequests < 1) throw new Error('自动压缩尝试已占用本次请求或时长预算，剩余额度不足；请检查已保存记录并调整预算后重新发送。');
+      // Every submission shares one active-time budget, including preparation
+      // when no MCP discovery or automatic compaction was needed.
+      const maxActiveMs = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
+      if (maxActiveMs < 1) throw new Error('本次执行时长预算已耗尽，未发起后续模型请求；请调整预算或缩小任务后重新发送。');
+      if (automatic.remainingRequests < 1) throw new Error('本次模型请求预算已耗尽；请检查已保存记录并调整预算后重新发送。');
       const mcpMetadata = mcpConnections.map(mcpConnectionMetadata);
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest,
         ...(mcpMetadata.length ? { mcpConnections: mcpMetadata, mcpTools: mcpTools!.definitions } : {}) })));
@@ -584,7 +590,14 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         // committed execution receipt or cause an already executed queue item to replay.
         if (executionCleanupUnconfirmed || !result?.success) result = { success: false, summary: '', error: '进程或记录的清理尚未确认，目录继续保持占用。请先解决清理失败。' };
       }
-      try { this.changed(id, result?.success ? 'completed' : result?.interrupted ? 'interrupted' : 'error', this.recovery.has(id) ? this.recoveryMessage(id) : result?.error); }
+      // A historical receipt (including a rejected identity mismatch) belongs
+      // to its original run. It must not overwrite a newer run's live state.
+      // Actual recovery or resource-release failures still publish a barrier.
+      try {
+        if (!receiptOnly || this.recovery.has(id)) this.changed(id,
+          this.recovery.has(id) ? 'error' : result?.success ? 'completed' : result?.interrupted ? 'interrupted' : 'error',
+          this.recovery.has(id) ? this.recoveryMessage(id) : result?.error);
+      }
       catch { this.options.onError?.(new Error('Native session state could not be saved.')); }
     }
     return result!;
@@ -596,6 +609,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     // Keep host diagnostics useful without persisting arbitrary transport errors or credentials.
     const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     const contextErrors: Record<string, string> = {
+      active_time_budget: '本次执行时长预算已耗尽，未发起后续模型请求；请调整预算或缩小任务后重新发送。',
       nothing_to_compact: '暂无可压缩的完整旧回合；至少需要保留一个最近完整回合。',
       compaction_not_smaller: '模型摘要未能缩小上下文，本次未替换历史；摘要请求仍可能产生费用。',
       unsupported_protocol: '记录包含暂不支持压缩或恢复的协议内容，原始记录保持不变。',
