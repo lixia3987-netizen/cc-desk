@@ -24,7 +24,7 @@ const object = (value: unknown): value is Record<string, unknown> => value !== n
 
 export class NativeContextSummaryError extends Error {
   constructor(readonly code: 'configuration' | 'image_context' | 'context_budget' | 'cancelled' | 'timeout' | 'invalid_summary' | 'failed', readonly usage: Usage | null = null) {
-    super({ image_context: '含图片的上下文暂不支持压缩，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。', configuration: '上下文摘要配置无效。', context_budget: '待压缩历史超过摘要请求输入预算，请提高预算或减少压缩范围。',
+    super({ image_context: '仅可压缩首张图片所在轮次之前的纯文本，图片不得进入摘要请求，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。', configuration: '上下文摘要配置无效。', context_budget: '待压缩历史超过摘要请求输入预算，请提高预算或减少压缩范围。',
       cancelled: '上下文压缩已取消，原始记录保持不变。', timeout: '上下文摘要请求超时，原始记录保持不变。',
       invalid_summary: '模型未返回有效的纯文本摘要，原始记录保持不变。', failed: '上下文摘要生成失败，原始记录保持不变。' }[code]);
     this.name = 'NativeContextSummaryError';

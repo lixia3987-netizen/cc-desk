@@ -4,7 +4,7 @@
 
 用户已要求跳过配置兼容性确认，先继续功能开发，兼容性问题后续处理。本批实现 Native 会话的显式图片输入，实际服务识图、Electron 交互和平台行为另列为 [RA-29](NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。E0-03 仍未执行；不再把提交 cc-switch 配置作为功能开发前置条件。
 
-后续 [N5-02](NATIVE-AGENT-N5-PREVIEW.md)已增加按需本地预览；本页保留 N5-01 固定候选的交付及验证记录。
+后续 [N5-02](NATIVE-AGENT-N5-PREVIEW.md)已增加按需本地预览，[N5-03](NATIVE-AGENT-N5-CONTEXT.md)补充保留图片的纯文本前缀压缩；本页保留 N5-01 固定候选的交付及验证记录，以下首批压缩限制不作为后续版本的完整行为说明。
 
 ## 交付范围
 

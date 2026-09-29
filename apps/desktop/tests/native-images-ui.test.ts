@@ -33,7 +33,7 @@ test('Claude attachment chips retain generic file behavior and contain no Native
 
 test('Native image notice explains explicit send, retention, capacity and pending compatibility without adding consent controls', () => {
   const html = renderToStaticMarkup(createElement(NativeImageNotice));
-  for (const text of ['PNG / JPEG', '最多 4 张', '1 MiB', '点击发送后', '保存在本机会话及原始记录中', '图片能力尚未验证', '编码字节', '提高输入预算', '含图片的会话暂不支持压缩']) assert.ok(html.includes(text), text);
+  for (const text of ['PNG / JPEG', '最多 4 张', '1 MiB', '点击发送后', '保存在本机会话及原始记录中', '图片能力尚未验证', '编码字节', '提高输入预算', '首个含图回合之前的纯文本历史', '之后的记录完整保留', '首轮就含图或保留内容超预算']) assert.ok(html.includes(text), text);
   assert.doesNotMatch(html, /<input|<button|<img|src=/);
 });
 
