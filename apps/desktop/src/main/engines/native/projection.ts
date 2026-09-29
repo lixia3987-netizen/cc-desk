@@ -15,7 +15,7 @@ import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
 import type { ExecutionEvents } from '../../execution/events';
 import { parseNativeConfig } from './config';
-import { nativeRunError } from './run-errors';
+import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
@@ -52,7 +52,7 @@ interface ProjectionEntry {
   seq: number;
   hash: string;
   conversationId: string;
-  modelCounts: Map<string, number>;
+  streamEpochs: Map<string, number>;
   currentIdentity?: AgentEvent['identity'];
   currentTerminal?: boolean;
   pending: ChatApproval[];
@@ -86,7 +86,7 @@ export class NativeProjection {
     this.validId(id);
     let entry = this.entries.get(id);
     if (!entry) {
-      entry = { history: this.history(), seq: 0, hash: '', conversationId: '', modelCounts: new Map(), pending: [] };
+      entry = { history: this.history(), seq: 0, hash: '', conversationId: '', streamEpochs: new Map(), pending: [] };
       this.entries.set(id, entry);
     }
     return entry;
@@ -126,6 +126,10 @@ export class NativeProjection {
     const session = this.getSession(id);
     const modelCounts = new Map<string, number>();
     const summaryCounts = new Map<string, number>();
+    const streamEpochs = new Map<string, number>();
+    const failures = new Map<string, Extract<RunStoreRecord['event'], { type: 'model_request_failed' }>>();
+    const retryCounts = new Map<string, number>();
+    const scheduledRetries = new Set<string>();
     const tools = new Map<string, ChatMessage>();
     const preparedTools = new Set<string>();
     const changeSets = new Map<string, { preview: NativeChangeSetPreview; receipts: NativeChangeSetFileEvent[] }>();
@@ -152,7 +156,18 @@ export class NativeProjection {
         add({ type: 'metadata', resetUsage: true, ...(typeof model === 'string' ? { model } : {}) });
         add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', ...bounded(event.request.input), createdAt } });
         add({ type: 'state', taskState: 'thinking' });
+      } else if (event.type === 'model_request_started') {
+        streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
+        if (scheduledRetries.delete(runId)) retryCounts.set(runId, (retryCounts.get(runId) ?? 0) + 1);
+        add({ type: 'state', taskState: 'thinking' });
+      } else if (event.type === 'model_request_failed') {
+        streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
+        failures.set(runId, event);
+        if (event.retryDelayMs !== undefined) scheduledRetries.add(runId);
+        add({ type: 'message', message: { id: `model-failure:${record.seq}`, turnId: runId, role: 'system', text: nativeModelFailureMessage(event.failure, event.partial, event.retryDelayMs), isError: true, createdAt } });
+        add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'model_response') {
+        streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
         const reported = event.response.usage?.inputTokens;
         inputTokens = typeof reported === 'number' && Number.isSafeInteger(reported) && reported >= 0 ? reported : undefined;
         measuredAt = createdAt;
@@ -203,10 +218,12 @@ export class NativeProjection {
         const result = event.result;
         // A failed request can consume service tokens without yielding a durable response.
         // Earlier reported usage is then partial and cannot price the complete run.
-        const costUSD = result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
+        const costUSD = !failures.has(runId) && result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
           ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
-        add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
-        add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error: nativeRunError(result.reason) }) });
+        const failure = failures.get(runId);
+        const error = nativeRunError(result.reason, { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: retryCounts.get(runId) ?? 0, ...(failure ? { modelFailure: failure.failure.category, partial: failure.partial } : {}) });
+        add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error }) });
+        add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
           const message = tools.get(messageId);
           if (message?.turnId === runId) add({ type: 'message', message: { ...message, text: '执行结果未知，需要人工核查；不会自动重试。', isError: true, ...(message.toolName === 'apply_change_set' ? { nativeChangeSetState: 'result' as const } : {}) } });
@@ -303,10 +320,10 @@ export class NativeProjection {
     // ChatHistory correctly treats restored live states as interrupted. This
     // host still owns a live run, so use the current committed state in memory.
     if (this.isActive(id)) snapshot.taskState = finalState;
-    const stream = old.stream && (modelCounts.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
+    const stream = old.stream && (streamEpochs.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
     this.missingContext.delete(id);
-    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, modelCounts, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records) });
+    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records) });
     this.archive.forget(id);
     if (old.seq && old.conversationId === store.conversationId) for (const item of projected) if (item.seq > old.seq) this.journal(id, item.event);
     this.changed(id);
@@ -352,7 +369,7 @@ export class NativeProjection {
     const entry = this.entry(id);
     if (event.identity.sessionId !== id || entry.currentIdentity && (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => event.identity[key] !== entry.currentIdentity![key])) return;
     if (event.type !== 'text_delta' || entry.currentTerminal) return;
-    if (!entry.stream || entry.stream.identity.runId !== event.identity.runId) entry.stream = { identity: clone(event.identity), responseNumber: entry.modelCounts.get(event.identity.runId) ?? 0, text: '', createdAt: new Date().toISOString() };
+    if (!entry.stream || entry.stream.identity.runId !== event.identity.runId) entry.stream = { identity: clone(event.identity), responseNumber: entry.streamEpochs.get(event.identity.runId) ?? 0, text: '', createdAt: new Date().toISOString() };
     entry.stream.text = (entry.stream.text + event.text).slice(0, MAX_TEXT);
     this.changed(id);
   }

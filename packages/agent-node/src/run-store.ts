@@ -6,6 +6,7 @@ import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
+import { validateModelFailureDiagnostic } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
@@ -189,6 +190,11 @@ interface InternalRun extends Omit<StoredRun, 'tools'> {
   tools: Map<string, StoredToolState>;
   finishedSeq?: number;
 }
+interface ModelRequestState {
+  attempt: number;
+  outcome?: 'response' | 'failed';
+  retryDelayMs?: number;
+}
 interface Checkpoint {
   schemaVersion: 1;
   conversationId: string;
@@ -320,6 +326,8 @@ export class NativeRunStore implements RunStore {
   private readonly autoCompactionAttempts = new Map<string, AutoCompactionAttempt>();
   private readonly autoCompactionContexts = new Map<string, string>();
   private readonly runCompactionAttempts = new Map<string, RunCompactionAttempt>();
+  private readonly modelRequests = new Map<string, ModelRequestState[]>();
+  private readonly legacyModelResponses = new Map<string, number>();
   private journalBytes = 0;
   private closed = false;
   private closing = false;
@@ -587,7 +595,29 @@ export class NativeRunStore implements RunStore {
       if (progress.status === 'prepared' && previous.some(item => item.status === 'not_applied' || item.status === 'unknown')) fail('recovery_required', 'A stopped change set cannot resume or replay');
       return;
     }
+    if (event.type === 'model_request_started') {
+      const attempts = this.modelRequests.get(identity.runId) ?? [];
+      if (!Number.isSafeInteger(event.attempt) || event.attempt !== attempts.length + 1 || Object.keys(event).some(key => !['type', 'attempt'].includes(key))) fail('invalid_record', 'Model attempts must use consecutive run-local identities');
+      const last = attempts.at(-1);
+      if (last && !last.outcome) fail('pending_model_request', 'A model request already has an unresolved outcome');
+      if (last?.outcome === 'failed' && last.retryDelayMs === undefined) fail('model_retry_unavailable', 'A stopped model failure does not authorize another request');
+      if ([...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown')) fail('pending_tools', 'Model requests require complete known tool outcomes');
+      if (this.runCompactionAttempts.get(identity.runId)?.status === 'attempted') fail('pending_model_request', 'A context summary has an unresolved outcome');
+      return;
+    }
+    if (event.type === 'model_request_failed') {
+      const pending = this.modelRequests.get(identity.runId)?.at(-1);
+      if (!pending || pending.outcome || pending.attempt !== event.attempt) fail('pending_model_request', 'Model failure does not match an unresolved request');
+      if (!validateModelFailureDiagnostic(event.failure) || typeof event.partial !== 'boolean' || Object.keys(event).some(key => !['type', 'attempt', 'failure', 'partial', 'retryDelayMs'].includes(key))) fail('invalid_record', 'Invalid model failure diagnostic');
+      if (event.retryDelayMs !== undefined) {
+        const retries = this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'model_request_failed' && record.event.retryDelayMs !== undefined).length;
+        if (event.partial || !event.failure.retryable || retries >= 2 || event.retryDelayMs !== [500, 1500][retries]) fail('invalid_record', 'Invalid bounded model retry delay');
+      }
+      return;
+    }
     if (event.type === 'model_response') {
+      const attempts = this.modelRequests.get(identity.runId);
+      if (attempts?.length && attempts.at(-1)!.outcome) fail('pending_model_request', 'A complete model response requires an unresolved request');
       if ([...run.tools.values()].some(tool => !tool.completed)) fail('pending_tools', 'Previous model tool calls have no durable result');
       const response = event.response;
       if (!object(response) || !Array.isArray(response.outputItems) || !Array.isArray(response.toolCalls) || !['completed', 'tool_calls', 'refused', 'incomplete'].includes(response.finishReason)) fail('invalid_record', 'Invalid model response');
@@ -654,8 +684,16 @@ export class NativeRunStore implements RunStore {
       if (!object(result) || !VALID_STATUSES.has(result.status) || result.committed !== true || !equal(result.identity, identity)) fail('invalid_record', 'Invalid terminal run result');
       validateContext(result.context);
       if (!equal(result.context, this.context)) fail('context_mismatch', 'Terminal context differs from durable model/tool items');
-      const unresolved = [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool)) || this.runCompactionAttempts.get(run.identity.runId)?.status === 'attempted';
-      if (unresolved && result.status !== 'recovery_required') fail('recovery_required', 'Unresolved tool effects require recovery');
+      const attempts = this.modelRequests.get(identity.runId);
+      const modelPending = !!attempts?.length && !attempts.at(-1)!.outcome;
+      if (attempts?.length) {
+        if (attempts.at(-1)!.outcome === 'failed' && result.status === 'completed') fail('invalid_record', 'A failed model outcome cannot become a completed run');
+        const expectedRequests = attempts.length + (this.legacyModelResponses.get(identity.runId) ?? 0) + (this.runCompactionAttempts.has(identity.runId) ? 1 : 0);
+        if (result.modelRequests !== expectedRequests) fail('invalid_record', 'Terminal model request count differs from durable attempts');
+        if ((modelPending || attempts.some(attempt => attempt.outcome === 'failed')) && result.usage !== null) fail('invalid_usage', 'Unreported failed model requests cannot have complete run usage');
+      }
+      const unresolved = modelPending || [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool)) || this.runCompactionAttempts.get(run.identity.runId)?.status === 'attempted';
+      if (unresolved && result.status !== 'recovery_required') fail('recovery_required', 'Unresolved model requests or tool effects require recovery');
       return;
     }
     fail('invalid_record', 'Unknown journal event type');
@@ -737,7 +775,15 @@ export class NativeRunStore implements RunStore {
       Object.assign(this.runCompactionAttempts.get(run.identity.runId)!, { status: 'committed', usage: clone(event.plan.usage), afterBytes: event.plan.afterBytes, compactionSeq: record.seq, finishedSeq: record.seq });
     } else if (event.type === 'run_context_compaction_failed') {
       Object.assign(this.runCompactionAttempts.get(run.identity.runId)!, { status: 'failed', usage: clone(event.failure.usage), reason: event.failure.reason, finishedSeq: record.seq });
+    } else if (event.type === 'model_request_started') {
+      const attempts = this.modelRequests.get(run.identity.runId) ?? [];
+      attempts.push({ attempt: event.attempt }); this.modelRequests.set(run.identity.runId, attempts);
+    } else if (event.type === 'model_request_failed') {
+      Object.assign(this.modelRequests.get(run.identity.runId)!.at(-1)!, { outcome: 'failed', ...(event.retryDelayMs === undefined ? {} : { retryDelayMs: event.retryDelayMs }) });
     } else if (event.type === 'model_response') {
+      const attempts = this.modelRequests.get(run.identity.runId);
+      if (attempts?.length) attempts.at(-1)!.outcome = 'response';
+      else this.legacyModelResponses.set(run.identity.runId, (this.legacyModelResponses.get(run.identity.runId) ?? 0) + 1);
       this.contextBatches.push({ runId: run.identity.runId, start: this.context!.items.length });
       this.context = { protocol: this.context!.protocol, items: [...this.context!.items, ...event.response.outputItems], ...(event.response.continuation === undefined ? {} : { continuation: event.response.continuation }) };
       for (const call of event.response.toolCalls) run.tools.set(call.id, { call, state: 'requested' });
@@ -786,14 +832,19 @@ export class NativeRunStore implements RunStore {
     return { bytes, records };
   }
 
-  private runCompactionHeadroom(identity: RunIdentity | undefined, event: StoreEvent): { bytes: number; records: number } {
+  private runRequestHeadroom(identity: RunIdentity | undefined, event: StoreEvent): { bytes: number; records: number } {
     let records = 0;
     for (const run of this.runs.values()) {
       if (run.status !== 'active' || event.type === 'run_recovered' && event.runId === run.identity.runId || event.type === 'run_finished' && identity?.runId === run.identity.runId) continue;
       const changed = identity?.runId === run.identity.runId;
-      if (changed && (event.type === 'run_context_compacted' || event.type === 'run_context_compaction_failed')) { records++; continue; }
-      const attempt = this.runCompactionAttempts.get(run.identity.runId);
-      if (attempt || changed && event.type === 'run_context_compaction_attempted') records += !attempt || attempt.status === 'attempted' ? 2 : 1;
+      const model = this.modelRequests.get(run.identity.runId)?.at(-1);
+      const summary = this.runCompactionAttempts.get(run.identity.runId);
+      const modelPending = changed && event.type === 'model_request_started' || !!model && !model.outcome && !(changed && ['model_response', 'model_request_failed'].includes(event.type));
+      const summaryPending = changed && event.type === 'run_context_compaction_attempted' || summary?.status === 'attempted' && !(changed && ['run_context_compacted', 'run_context_compaction_failed'].includes(event.type));
+      // An ordinary request and summary cannot overlap. Both share the one run
+      // terminal reservation; a pending request additionally owns its outcome.
+      if (modelPending || summaryPending) records += 2;
+      else if (model || summary) records++;
     }
     return { bytes: records * this.limits.maxRecordBytes, records };
   }
@@ -810,10 +861,10 @@ export class NativeRunStore implements RunStore {
     const bytes = Buffer.byteLength(line);
     if (bytes > this.limits.maxRecordBytes || this.journalBytes + bytes > this.limits.maxJournalBytes || this.records.length >= this.limits.maxRecords) fail('limit_exceeded', 'Conversation disk budget exhausted; history is never silently pruned');
     const commandHeadroom = this.commandHeadroom(ownedIdentity, event);
-    const compactionHeadroom = this.runCompactionHeadroom(ownedIdentity, event);
+    const requestHeadroom = this.runRequestHeadroom(ownedIdentity, event);
     if (event.type === 'command_lifecycle' && event.progress.status === 'prepared' && commandTerminalBytes(event.progress.maxOutputBytes) > this.limits.maxRecordBytes) fail('limit_exceeded', 'Command terminal receipt exceeds the configured record budget');
     if (this.journalBytes + bytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Outstanding command terminal receipts have reserved durable storage');
-    if (this.journalBytes + bytes + commandHeadroom.bytes + compactionHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records + compactionHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'In-turn summary outcome and terminal run have reserved durable storage');
+    if (this.journalBytes + bytes + commandHeadroom.bytes + requestHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records + requestHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Model outcome and terminal run have reserved durable storage');
     if (event.type === 'tool_prepared' && event.prepared.call.name === 'apply_change_set') {
       const preview = (event.prepared.preconditions as JsonObject).changeSet as unknown as NativeChangeSetPreview;
       // Reserve every before/after file receipt now. A later file must not consume
@@ -901,7 +952,7 @@ export class NativeRunStore implements RunStore {
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
-      if (!['model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
+      if (!['model_request_started', 'model_request_failed', 'model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
       const run = this.owner(identity);
       if (event.type === 'tool_completed') {
         const tool = run.tools.get(event.call.id);
@@ -1026,7 +1077,9 @@ export class NativeRunStore implements RunStore {
     requireCompleteContext(context);
     const responses = this.records.filter(record => record.identity?.runId === runId).flatMap(record => record.event.type === 'model_response' ? [record.event.response] : []);
     const maintenance = this.runCompactionAttempts.get(runId);
-    const usages = [...responses.map(response => response.usage), ...(maintenance ? [maintenance.usage ?? null] : [])];
+    const attempts = this.modelRequests.get(runId) ?? [];
+    const unreported = attempts.some(attempt => attempt.outcome !== 'response');
+    const usages = [...responses.map(response => response.usage), ...(unreported ? [null] : []), ...(maintenance ? [maintenance.usage ?? null] : [])];
     let usage: RunResult['usage'] = null;
     if (run.result) usage = clone(run.result.usage);
     else if (usages.length && usages.every(value => value !== null)) {
@@ -1040,7 +1093,7 @@ export class NativeRunStore implements RunStore {
       }
     }
     return { completions, result: { identity: clone(run.identity), status: 'cancelled', reason: 'recovery_resolved',
-      modelRequests: run.result?.modelRequests ?? responses.length + (maintenance ? 1 : 0),
+      modelRequests: run.result?.modelRequests ?? attempts.length + (this.legacyModelResponses.get(runId) ?? 0) + (maintenance ? 1 : 0),
       toolCalls: run.result?.toolCalls ?? [...run.tools.values()].filter(tool => tool.prepared || tool.completed).length,
       usage, context, committed: true } };
   }
@@ -1061,6 +1114,8 @@ export class NativeRunStore implements RunStore {
   private runCompactionBoundary(identity: RunIdentity): { boundary: number; goals: JsonValue[]; currentStart: number } {
     const run = this.activeOwner(identity);
     if (this.recoveryRequired) fail('recovery_required', 'Context maintenance cannot cross a recovery barrier');
+    const model = this.modelRequests.get(identity.runId)?.at(-1);
+    if (model && model.outcome !== 'response') fail('pending_model_request', 'Context maintenance requires a complete successful model outcome');
     if ([...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown')) fail('pending_tools', 'In-turn compaction requires complete durable tool outcomes');
     if ([...run.tools.values()].some(tool => uncertainCommand(tool))) fail('commands_active', 'In-turn compaction waits for all command handles to finish');
     if (!this.context) fail('nothing_to_compact', 'No model context is available');

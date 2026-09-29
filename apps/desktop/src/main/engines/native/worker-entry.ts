@@ -61,7 +61,7 @@ async function start(message: WorkerStart) {
       beginRun: request => rpc('store.beginRun', request),
       append: async (run, event) => {
         // Drain this response's streaming RPCs before its authoritative UI replacement.
-        if (event.type === 'model_response') await eventChain;
+        if (event.type === 'model_response' || event.type === 'model_request_failed') await eventChain;
         return rpc('store.append', { identity: run, event });
       },
       ensureCapacity: (run, bytes) => rpc('store.ensureCapacity', { identity: run, bytes }),
@@ -82,6 +82,12 @@ async function start(message: WorkerStart) {
         if (parent.aborted) cancel();
         return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent.removeEventListener('abort', cancel); } };
       },
+      wait: (milliseconds, signal) => new Promise<void>((resolve, reject) => {
+        const cancelled = () => { clearTimeout(timer); signal.removeEventListener('abort', cancelled); const error = new Error('Native retry cancelled.'); error.name = 'AbortError'; reject(error); };
+        const timer = setTimeout(() => { signal.removeEventListener('abort', cancelled); resolve(); }, milliseconds);
+        signal.addEventListener('abort', cancelled, { once: true });
+        if (signal.aborted) cancelled();
+      }),
       emit,
     },
   };

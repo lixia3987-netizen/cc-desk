@@ -192,3 +192,18 @@ test('pre-cancelled requests and invalid budgets never create a worker; cleanup 
     assert.doesNotMatch(String(error), new RegExp(sentinel)); return true;
   });
 });
+
+test('summary audits its single failed model attempt and never enables transient recovery', async () => {
+  const server = await startResponsesFixture({ handler: () => ({ httpStatus: 503, raw: 'temporary failure' }) });
+  const types: string[] = [];
+  try {
+    await assert.rejects(summarizeNativeContext(options(server.baseURL, { worker: async worker => {
+      assert.equal(worker.request.modelRetry, 'off');
+      const append = worker.store.append;
+      worker.store.append = async (identity, event) => { types.push(event.type); return append(identity, event); };
+      return inlineWorker(worker);
+    } })), error => { assert.equal((error as { usage: unknown }).usage, null); return true; });
+    assert.equal(server.requests.length, 1);
+    assert.deepEqual(types, ['model_request_started', 'model_request_failed', 'run_finished']);
+  } finally { await server.close(); }
+});

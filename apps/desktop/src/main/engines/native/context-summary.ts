@@ -1,5 +1,5 @@
 import {
-  canonicalJson,
+  canonicalJson, validateModelFailureDiagnostic,
   type JsonValue, type ModelContext, type ModelResponse, type RunIdentity,
   type RunResult, type RunStore, type ToolPort, type Usage,
 } from '@cc-desk/agent-core';
@@ -81,7 +81,7 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
   const timer = setTimeout(() => { timedOut = true; controller.abort(); }, duration);
   options.signal.addEventListener('abort', cancel, { once: true });
   if (options.signal.aborted) cancel();
-  let begun = false, sequence = 0;
+  let begun = false, sequence = 0, attempted = false, attemptPending = false;
   let response: ModelResponse | undefined;
   let observedUsage: Usage | null = null;
   let committed: RunResult | undefined;
@@ -96,7 +96,14 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
     },
     async append(run, event) {
       owned(run);
-      if (event.type === 'model_response') {
+      if (event.type === 'model_request_started') {
+        if (attempted || event.attempt !== 1) invalid();
+        attempted = true; attemptPending = true;
+      } else if (event.type === 'model_request_failed') {
+        if (!attemptPending || event.attempt !== 1 || !validateModelFailureDiagnostic(event.failure) || typeof event.partial !== 'boolean' || event.retryDelayMs !== undefined) invalid();
+        attemptPending = false;
+      } else if (event.type === 'model_response') {
+        if (!attemptPending) invalid();
         // The protocol adapter has already validated the complete response's
         // reported counters. A forbidden summary tool call still consumed them.
         const reported = event.response.usage;
@@ -105,10 +112,10 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
         if (response || event.response.finishReason !== 'completed' || event.response.toolCalls.length) invalid();
         if (!isNativeTextSummary(protocol, event.response.outputItems) || protocol.id === 'openai-chat-completions' && event.response.continuation !== undefined) invalid();
         assertNoModelCredential(event.response, forbiddenValues);
-        response = clone(event.response);
+        response = clone(event.response); attemptPending = false;
         saved = { protocol, items: [...saved.items, ...clone(response.outputItems)], ...(response.continuation === undefined ? {} : { continuation: clone(response.continuation) }) };
       } else if (event.type === 'run_finished') {
-        if (!sameRun(event.result.identity, identity) || !event.result.committed || !equal(event.result.context, saved)) invalid();
+        if (!sameRun(event.result.identity, identity) || !event.result.committed || !equal(event.result.context, saved) || attemptPending || event.result.modelRequests !== Number(attempted)) invalid();
         committed = clone(event.result);
       } else invalid();
       return { seq: ++sequence };
@@ -118,7 +125,7 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
   };
   try {
     const result = await (options.worker ?? runNativeWorker)({
-      request: { identity, input, configuration: { purpose: 'context_summary', adapterVersion: 1 }, policyRevision: 'native-context-summary-v1',
+      request: { identity, input, modelRetry: 'off', configuration: { purpose: 'context_summary', adapterVersion: 1 }, policyRevision: 'native-context-summary-v1',
         budget: { maxModelRequests: 1, maxToolCalls: 1, maxInputTokens: options.maxInputTokens, maxOutputTokens: Math.min(options.maxOutputTokens, 4096), maxActiveMs: duration } },
       model: { ...summaryModel, timeoutMs: Math.min(options.model.timeoutMs ?? duration, duration),
         maxResponseBytes: Math.min(options.model.maxResponseBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES) },

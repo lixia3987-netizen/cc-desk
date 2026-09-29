@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { runAgent, canonicalJson, RunAlreadyActiveError } from '../dist/index.js'
+import { runAgent, canonicalJson, RunAlreadyActiveError, validateModelFailureDiagnostic } from '../dist/index.js'
 
 const copy = (value) => JSON.parse(JSON.stringify(value))
 const digest = (value) => createHash('sha256').update(value).digest('hex')
@@ -35,6 +35,11 @@ function fixture(responses = [response()]) {
         return { signal: child.signal, dispose: () => parent.removeEventListener('abort', abort) }
       },
       emit(event) { emitted.push(copy(event)); return hooks.emit?.(event) },
+      async wait(milliseconds, signal) {
+        order.push(`wait:${milliseconds}`)
+        await hooks.wait?.(milliseconds, signal)
+        now += milliseconds
+      },
     },
     store: {
       async beginRun(begin) {
@@ -70,6 +75,7 @@ function fixture(responses = [response()]) {
       userItems: (input) => [{ role: 'user', content: input }],
       toolResultItems: (tool, result) => [{ type: 'function_call_output', call_id: tool.id, output: JSON.stringify(result) }],
       estimateInputTokens: () => 100,
+      classifyError: error => hooks.classifyError?.(error) ?? { category: 'unknown', retryable: false },
       async generate(input) {
         order.push('model')
         modelInputs.push(copy({ context: input.context, maxOutputTokens: input.maxOutputTokens }))
@@ -325,7 +331,7 @@ test('storage capacity is checked before a tool can have effects', async () => {
 test('model failure has no automatic retry, incomplete response never executes, missing usage stays unknown', async (t) => {
   await t.test('network failure', async () => {
     const f = fixture(); f.hooks.generate = async () => { throw new Error('network') }
-    assert.equal((await f.run()).reason, 'model_request_failed')
+    assert.equal((await f.run()).reason, 'model_unknown')
     assert.equal(f.modelInputs.length, 1)
   })
   await t.test('incomplete', async () => {
@@ -421,7 +427,7 @@ test('context maintenance runs only after all tool results commit and adopts its
   assert.deepEqual(f.modelInputs[1].context.items, [{ role: 'assistant', content: 'historical summary' }])
   const commit = f.order.indexOf('maintenance_commit')
   assert.equal(f.order[commit + 1], 'checkpoint')
-  assert.equal(f.order[commit + 2], 'model')
+  assert.deepEqual(f.order.slice(commit + 2, commit + 5), ['capacity', 'model_request_started', 'model'])
 })
 
 test('unchanged context checks refund the reserved request and can defer until a later complete boundary', async () => {
@@ -437,6 +443,7 @@ test('unchanged context checks refund the reserved request and can defer until a
 
 test('maintenance makes at most one actual summary request even as subsequent tool batches grow context again', async () => {
   const f = maintenanceFixture([response([call('a')]), response([call('b')]), response([call('c')]), response()])
+  f.hooks.execute = prepared => ({ status: 'completed', output: { value: prepared.call.id } })
   f.hooks.maintain = () => f.compact()
   const result = await f.run()
   assert.equal(result.status, 'completed')
@@ -592,4 +599,257 @@ test('compaction preserves duplicate tool identity and denied-input guards', asy
     assert.equal(f.approvals.length, 1)
     assert.equal(f.events.filter(event => event.type === 'tool_completed').at(-1).result.output.error, 'approval_previously_denied')
   })
+})
+
+const transient = { category: 'rate_limit', httpStatus: 429, retryable: true }
+const attempts = f => f.events.filter(event => event.type === 'model_request_started')
+const failures = f => f.events.filter(event => event.type === 'model_request_failed')
+function retryFixture(responses) {
+  const f = fixture(responses)
+  f.request.modelRetry = 'safe_transient'
+  f.hooks.classifyError = () => transient
+  return f
+}
+
+test('model diagnostics reject raw fields, inconsistent HTTP classes and unsafe retries', () => {
+  for (const value of [null, {}, [], { ...transient, message: 'secret' }, { ...transient, retryable: 'yes' },
+    { ...transient, httpStatus: 401 }, { category: 'network', retryable: true },
+    { category: 'service_error', httpStatus: 500, retryable: true }, { category: 'authentication', httpStatus: 403, retryable: true },
+    { category: 'protocol', httpStatus: 200, retryable: false }, { category: 'other', retryable: false }]) {
+    assert.equal(validateModelFailureDiagnostic(value), false, JSON.stringify(value))
+  }
+  for (const value of [transient, { category: 'service_unavailable', httpStatus: 503, retryable: true },
+    { category: 'configuration', httpStatus: 422, retryable: false }, { category: 'authentication', httpStatus: 401, retryable: false },
+    { category: 'service_error', httpStatus: 500, retryable: false }, { category: 'protocol', httpStatus: 302, retryable: false },
+    { category: 'network', retryable: false }, { category: 'unknown', retryable: false }]) assert.equal(validateModelFailureDiagnostic(value), true)
+})
+
+test('model attempt is durable before network and failed attempts have unknown aggregate usage', async () => {
+  const f = retryFixture()
+  let count = 0
+  f.hooks.generate = () => {
+    assert.equal(f.events.at(-1).type, 'model_request_started')
+    if (++count === 1) throw new Error('transient')
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 2)
+  assert.equal(result.usage, null)
+  assert.deepEqual(attempts(f).map(event => event.attempt), [1, 2])
+  assert.deepEqual(failures(f), [{ type: 'model_request_failed', attempt: 1, failure: transient, partial: false, retryDelayMs: 500 }])
+  assert.ok(f.order.indexOf('model_request_failed') < f.order.indexOf('wait:500'))
+  assert.deepEqual(f.modelInputs[0], f.modelInputs[1])
+})
+
+test('retry opt-in never retries without the host wait capability or the default policy', async (t) => {
+  for (const kind of ['off', 'missing wait']) await t.test(kind, async () => {
+    const f = retryFixture()
+    if (kind === 'off') delete f.request.modelRetry
+    else delete f.ports.host.wait
+    f.hooks.generate = () => { throw new Error('retryable') }
+    const result = await f.run()
+    assert.equal(result.reason, 'model_rate_limit')
+    assert.equal(result.modelRequests, 1)
+    assert.equal(failures(f)[0].retryDelayMs, undefined)
+  })
+})
+
+test('safe HTTP recovery has two extra requests per whole run and bounded backoff', async () => {
+  const f = retryFixture()
+  f.hooks.generate = () => { throw new Error('transient') }
+  const result = await f.run()
+  assert.equal(result.reason, 'model_retry_exhausted')
+  assert.equal(result.modelRequests, 3)
+  assert.deepEqual(failures(f).map(event => event.retryDelayMs), [500, 1500, undefined])
+  assert.deepEqual(attempts(f).map(event => event.attempt), [1, 2, 3])
+})
+
+test('successful tool batches do not reset the whole-run retry allowance or replay tools', async () => {
+  const f = retryFixture()
+  let count = 0
+  f.hooks.generate = () => {
+    count++
+    if ([1, 3, 5].includes(count)) throw new Error('transient')
+    return response([call(`tool-${count}`, 'write')])
+  }
+  const result = await f.run()
+  assert.equal(result.reason, 'model_retry_exhausted')
+  assert.equal(result.modelRequests, 5)
+  assert.deepEqual(f.executions, ['tool-2', 'tool-4'])
+  assert.equal(f.approvals.length, 2)
+})
+
+test('any accepted stream delta forbids retry and cannot be concatenated with another attempt', async (t) => {
+  for (const event of [{ type: 'text_delta', text: 'partial' }, { type: 'tool_arguments_delta', callId: 'a', delta: '{' }]) {
+    await t.test(event.type, async () => {
+      const f = retryFixture()
+      let late
+      f.hooks.generate = input => { late = input.onEvent; input.onEvent(event); throw new Error('interrupted') }
+      const result = await f.run()
+      assert.equal(result.reason, 'model_rate_limit')
+      assert.equal(result.modelRequests, 1)
+      assert.equal(failures(f)[0].partial, true)
+      assert.equal(failures(f)[0].retryDelayMs, undefined)
+      const prior = f.emitted.length
+      late(event)
+      assert.equal(f.emitted.length, prior)
+      assert.equal(f.executions.length, 0)
+    })
+  }
+})
+
+test('only sanitized adapter diagnostics are retained and unsafe errors never retry', async (t) => {
+  for (const category of ['authentication', 'configuration', 'network', 'timeout', 'protocol', 'security', 'service_error', 'unknown']) {
+    await t.test(category, async () => {
+      const f = retryFixture()
+      f.hooks.classifyError = () => ({ category, retryable: false })
+      f.hooks.generate = () => { throw new Error('secret model response') }
+      const result = await f.run()
+      assert.equal(result.reason, `model_${category}`)
+      assert.equal(result.modelRequests, 1)
+      assert.equal(JSON.stringify(f.events).includes('secret model response'), false)
+    })
+  }
+  for (const classifier of [() => ({ ...transient, raw: 'secret' }), () => { throw new Error('classifier failure') }]) {
+    const f = retryFixture()
+    f.hooks.classifyError = classifier
+    f.hooks.generate = () => { throw new Error('secret') }
+    assert.equal((await f.run()).reason, 'model_unknown')
+    assert.equal(f.modelInputs.length, 1)
+  }
+})
+
+test('retry respects request and active-time budgets without waiting for an impossible attempt', async (t) => {
+  for (const [budget, reason] of [[{ maxModelRequests: 1 }, 'model_request_budget'], [{ maxActiveMs: 500 }, 'active_time_budget']]) {
+    await t.test(reason, async () => {
+      const f = retryFixture()
+      f.request.budget = budget
+      f.hooks.generate = () => { throw new Error('transient') }
+      const result = await f.run()
+      assert.equal(result.status, 'budget_exhausted')
+      assert.equal(result.reason, reason)
+      assert.equal(result.modelRequests, 1)
+      assert.equal(failures(f)[0].retryDelayMs, undefined)
+      assert.equal(f.order.some(item => item.startsWith('wait:')), false)
+    })
+  }
+})
+
+test('cancellation during backoff is durable and prevents a second model request', async () => {
+  const f = retryFixture()
+  f.hooks.generate = () => { throw new Error('transient') }
+  f.hooks.wait = (_delay, signal) => { f.controller.abort(); assert.equal(signal.aborted, true); throw new Error('cancelled') }
+  const result = await f.run()
+  assert.equal(result.status, 'cancelled')
+  assert.equal(result.modelRequests, 1)
+  assert.equal(failures(f).length, 1)
+  assert.equal(f.events.at(-1).type, 'run_finished')
+})
+
+test('cancellation during a model request closes its attempt without scheduling recovery', async () => {
+  const f = retryFixture()
+  f.hooks.generate = () => { f.controller.abort(); throw new Error('cancelled') }
+  const result = await f.run()
+  assert.equal(result.status, 'cancelled')
+  assert.equal(result.modelRequests, 1)
+  assert.equal(failures(f)[0].retryDelayMs, undefined)
+})
+
+test('attempt and failure append uncertainty leave a recovery barrier and never retry', async (t) => {
+  for (const operation of ['model_request_started', 'model_request_failed']) await t.test(operation, async () => {
+    const f = retryFixture()
+    f.hooks.generate = () => { throw new Error('transient') }
+    f.hooks.append = event => { if (event.type === operation) throw new Error('acknowledgement lost') }
+    const result = await f.run()
+    assert.equal(result.reason, `store_${operation}_failed`)
+    assert.equal(result.committed, false)
+    assert.equal(result.modelRequests, 1)
+    assert.equal(f.modelInputs.length, operation === 'model_request_started' ? 0 : 1)
+    assert.equal(f.events.some(event => event.type === 'run_finished'), false)
+    assert.equal(f.order.some(item => item.startsWith('wait:')), false)
+  })
+})
+
+test('request capacity failure consumes no attempt and sends no model request', async () => {
+  const f = retryFixture()
+  f.hooks.capacity = () => { throw new Error('full') }
+  const result = await f.run()
+  assert.equal(result.reason, 'store_capacity_failed')
+  assert.equal(result.modelRequests, 0)
+  assert.equal(f.modelInputs.length, 0)
+})
+
+test('three identical complete failure batches stop with all results durable', async (t) => {
+  for (const status of ['failed', 'denied']) await t.test(status, async () => {
+    const f = fixture([response([call('a')]), response([call('b')]), response([call('c')]), response()])
+    f.hooks.execute = () => ({ status, output: { error: 'unchanged failure' } })
+    const result = await f.run()
+    assert.equal(result.reason, 'tool_failure_repeated')
+    assert.equal(result.modelRequests, 3)
+    assert.equal(f.events.filter(event => event.type === 'tool_completed').length, 3)
+    assert.equal(result.committed, true)
+  })
+})
+
+test('three identical read batches detect no progress, independent of call IDs and JSON key order', async () => {
+  const f = fixture([response([call('a', 'read', { a: 1, b: 2 })]), response([call('b', 'read', { b: 2, a: 1 })]),
+    response([call('c', 'read', { a: 1, b: 2 })]), response()])
+  const result = await f.run()
+  assert.equal(result.reason, 'tool_no_progress')
+  assert.equal(result.modelRequests, 3)
+  assert.deepEqual(f.executions, ['a', 'b', 'c'])
+})
+
+test('changed observations or successful side effects reset the stalled batch streak', async (t) => {
+  await t.test('changed output', async () => {
+    const f = fixture([response([call('a')]), response([call('b')]), response([call('c')]), response()])
+    f.hooks.execute = prepared => ({ status: 'completed', output: prepared.call.id })
+    assert.equal((await f.run()).status, 'completed')
+  })
+  await t.test('successful write', async () => {
+    const f = fixture([response([call('a')]), response([call('b')]), response([call('c', 'write')]),
+      response([call('d')]), response([call('e')]), response()])
+    assert.equal((await f.run()).status, 'completed')
+    assert.equal(f.executions.length, 5)
+  })
+})
+
+test('host command polling remains useful with unchanged observations and is excluded from no-progress detection', async (t) => {
+  for (const name of ['command_status', 'read_command_output']) await t.test(name, async () => {
+    const f = fixture([response([call('a', name)]), response([call('b', name)]), response([call('c', name)]),
+      response([call('d', name)]), response()])
+    f.ports.tools.definitions.push({ name, description: name, inputSchema: { type: 'object' }, risk: 'read' })
+    assert.equal((await f.run()).status, 'completed')
+    assert.equal(f.executions.length, 4)
+  })
+})
+
+test('cancellation after durable attempt start prevents network and records conservative unknown usage', async () => {
+  const f = retryFixture()
+  f.hooks.append = event => { if (event.type === 'model_request_started') f.controller.abort() }
+  const result = await f.run()
+  assert.equal(result.status, 'cancelled')
+  assert.equal(result.modelRequests, 1)
+  assert.equal(result.usage, null)
+  assert.equal(f.modelInputs.length, 0)
+  assert.deepEqual(failures(f), [{ type: 'model_request_failed', attempt: 1,
+    failure: { category: 'unknown', retryable: false }, partial: false }])
+})
+
+test('retry and compaction both consume the run budget while ordinary attempts keep consecutive IDs', async () => {
+  const f = maintenanceFixture()
+  f.request.modelRetry = 'safe_transient'
+  f.hooks.classifyError = () => transient
+  let requests = 0
+  f.hooks.generate = () => { if (++requests === 1) throw new Error('transient') }
+  f.hooks.maintain = request => {
+    assert.equal(request.modelRequests, 2)
+    return f.compact()
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 4)
+  assert.equal(result.usage, null)
+  assert.deepEqual(attempts(f).map(event => event.attempt), [1, 2, 3])
+  assert.equal(f.maintenance.length, 1)
 })

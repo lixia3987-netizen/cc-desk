@@ -1,5 +1,6 @@
-import type { JsonObject, JsonValue, ModelContext, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage } from '@cc-desk/agent-core'
 import { canonicalJson, estimateContextInputTokens } from '@cc-desk/agent-core'
+import { classifyNativeModelFailure } from './model-failure.js'
 
 export interface ResponsesModelOptions {
   /** API base, normally https://api.openai.com/v1. /responses is appended. */
@@ -23,6 +24,10 @@ export class ResponsesModelError extends Error {
     this.name = code === 'cancelled' ? 'AbortError' : 'ResponsesModelError'
   }
 }
+
+// An error code/status alone cannot grant retry permission: callbacks can throw
+// arbitrary exceptions, including a manually constructed adapter error.
+const rejectedHttpRequests = new WeakMap<ResponsesModelError, number>()
 
 const failure = (code: string, message: string): never => { throw new ResponsesModelError(code, message) }
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -274,6 +279,13 @@ export class ResponsesModel implements ModelPort {
     return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson)
   }
 
+  classifyError(error: unknown): ModelFailureDiagnostic {
+    if (!(error instanceof ResponsesModelError)) return { category: 'unknown', retryable: false }
+    const status = rejectedHttpRequests.get(error)
+    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus)
+      : classifyNativeModelFailure('http', status, true)
+  }
+
   async generate(request: ModelRequest): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
@@ -308,7 +320,9 @@ export class ResponsesModel implements ModelPort {
       const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
       if (!response.ok) {
         await response.body?.cancel()
-        throw new ResponsesModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
+        const error = new ResponsesModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
+        rejectedHttpRequests.set(error, response.status)
+        throw error
       }
       if (!response.body || !/^text\/event-stream(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel()
@@ -320,7 +334,9 @@ export class ResponsesModel implements ModelPort {
       let result: ModelResponse | undefined
       let responseId: string | undefined
       let refused = false
-      const deltas = new SafeModelDeltas(this.#apiKey, request.onEvent)
+      const deltas = new SafeModelDeltas(this.#apiKey, event => {
+        try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
+      })
       const calls = new Map<number, { itemId: string; callId: string }>()
       const parser = new EventStreamParser((data, eventName) => {
         if (data === '[DONE]') {
