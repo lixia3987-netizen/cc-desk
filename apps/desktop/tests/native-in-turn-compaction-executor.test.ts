@@ -123,7 +123,8 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(maintenance.status, 'committed');
     assert.deepEqual(maintenance.summaryUsage, { inputTokens: 11, outputTokens: 7 });
     assert.ok(Math.abs(maintenance.summaryCostUSD! - 0.000078) < 1e-12);
-    assert.ok(Math.abs(f.executor.snapshot(f.id).usage.costUSD! - 0.000546) < 1e-12, 'total cost includes the summary exactly once');
+    const totalCost = f.executor.snapshot(f.id).usage?.costUSD; assert.ok(typeof totalCost === 'number');
+    assert.ok(Math.abs(totalCost - 0.000546) < 1e-12, 'total cost includes the summary exactly once');
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original content remains unchanged\n');
     const requests = f.server.requests.length, task = f.executor.snapshot(f.id).nativeTask;
     await f.restart(); assert.equal((await f.send()).success, true);
