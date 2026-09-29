@@ -2,7 +2,7 @@
 
 **面向 Claude Code 的中文桌面工作台，在一个窗口中管理项目、会话、子任务和工作流。**
 
-cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和代码审阅，也保留原生 Claude 终端与 Shell。沿用本机 CLI 的登录、模型和 provider 配置，将日常开发中的对话、文件、Git 变更和隔离工作目录放在同一处管理。
+cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和代码审阅，已有原生 Claude 终端与 Shell 会话也可继续使用。沿用本机 CLI 的登录、模型和 provider 配置，将日常开发中的对话、文件、Git 变更和隔离工作目录放在同一处管理。
 
 适合同时推进多个项目、需要隔离工作目录，或希望随时看清任务进度与待处理请求的开发者。基于 Electron + React + TypeScript，面向 Windows、Apple silicon Mac 和 Linux。
 
@@ -14,25 +14,30 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 
 [下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.5.1 版本说明](docs/releases/v0.5.1.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
-客户端不是 Anthropic 官方产品，不附带模型服务或账户；使用前需安装并登录本机 Claude Code CLI。
+客户端不是 Anthropic 官方产品，不附带模型服务或账户；稳定版和 Claude 会话需安装并登录本机 Claude Code CLI。源码中的 Native Alpha 使用独立模型连接，见 [操作说明](docs/NATIVE-AGENT-ALPHA.md)。
 
-## v0.5.1 更新：会话命名、Worktree 分支与连接管理
+## 当前源码进展：双引擎与桌面流程集成
 
+- **自研 Agent Alpha**：Responses / Chat Completions 模型连接、独立 worker、持久任务计划与证据、本地上下文、逐次文件/命令审批、图片输入与串行队列/工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
+- **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills，以及 MCP HTTP / 本地 stdio 工具。HTTP 默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP；stdio 固定 `2025-11-25`，使用已安装程序的绝对路径与字面参数，无自动安装或协议回退。每回合启动本地服务前审批，每次工具调用另行审批；默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [stdio 说明](docs/NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。相关功能已在源码实现，图形、三平台与真实服务验收仍待执行。
+- **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。应用仍默认使用 Claude，已有原生终端和 Shell 会话继续可用；Native Alpha 按会话显式选择，当前源码的正式验收状态见对应记录。
+- **独立配置与 v3 数据**：会话统一保存带版本的 `engineConfig`，按引擎描述显示可用功能。读取旧工作区时保留身份和路径，在首次写入 v3 前保存独立的原始迁移快照；回退方法见 [阶段二验证记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。未知引擎保留配置并可读取已有结构化展示日志，不自动回退到 Claude。
+- **CLI 更新只影响 Claude**：确认后暂停 Claude 队列、中断工作流并释放目标进程与资源，Shell 和其他已注册引擎继续运行。进入实际更新阶段后等待安装和检测结束再退出；完成后不会自动继续 Claude 任务。
 - **发送后即可继续输入**：结构化消息保存成功后立即清空对应输入和附件，任务执行期间可继续发送，按会话依次排队。悬停或聚焦排队消息，点击「立即发送」可中断当前任务并优先执行该消息，其余消息保留顺序。停止、失败或重启后队列暂停并保留，检查已产生的操作后可手动继续。
 - **独立工具窗口**：右侧常驻「上下文 / 变更 / 工作流 / 诊断」竖向工具栏，各按钮独立开关，多个面板可同时显示。按打开顺序优先上下排列，再向右扩展为等宽两列；窄窗口保持单列滚动，隐藏后保留工具入口和当前输入，不重启终端。
 - **上下文按发起模型计算**：每条消息开始执行时绑定当前选择的模型，整轮按该模型查询窗口容量；ccSwitch 等路由返回不同模型名时，不再因此丢失占比。主请求用量持续刷新，缺失字段保留有效读数，详情可查看「上下文计算模型」。
 
-- **会话与 Worktree 命名**：自动会话标题由独立 agent 总结；Worktree 名称留空使用随机 ID，支持选择本地或远程起始分支。
-- **工程与连接管理**：工程筛选显示项目路径，长路径省略并支持悬停查看；点击底部连接数可查看所有已连接会话并单独关闭，保留记录和草稿。发送后不再持续显示接收提示。
-- **附件与恢复**：支持拖入本地文件作为待发送附件；改进清空上下文后的恢复，以及损坏或缺失 Worktree 的删除处理。
+- **会话与 Worktree 命名**：Claude 自动会话标题由独立 agent 总结；Worktree 名称留空使用随机 ID，支持选择本地或远程起始分支。
+- **工程与连接管理**：工程筛选显示项目路径；会话操作集中在列表菜单，连接管理可查看所有已连接或正在执行的会话，停止后保留记录和草稿。
+- **首次发送创建会话**：普通新建先编辑任务和配置，首次发送才建立结构化会话；跨引擎承接仍先创建待确认草稿，不自动执行。
 
-完整改动、下载与使用边界见 [v0.5.1 版本说明](docs/releases/v0.5.1.md)。
+2026-09-30 按用户要求在独立集成分支吸收最新 main，验证后合入 main；整合记录见 [Native / main 集成](docs/NATIVE-AGENT-MAIN-INTEGRATION.md)。Claude 仍为默认引擎，Native 按会话显式选择。最新已发布安装包的内容见 [v0.5.1 版本说明](docs/releases/v0.5.1.md)；本次源码集成不发布新版本，真实模型、Windows/Electron 及平台成品待验收项保持原状态。
 
 ## v0.4.0 更新：CLI 更新、上下文用量、命令与字体
 
 v0.4.0 整合自 v0.3.0 以来的功能与修复，支持查看上下文占比、调用命令与 Skills、选择本机字体，以及确认后更新 Claude Code CLI。
 
-- 每次启动后台检查 **Claude Code CLI 更新**，发现新版本可选择更新或暂不更新；也可在「设置与连接 → 连接与终端」手动检查。更新前必须确认断开全部工作区，等待所有聊天、终端、子进程及工作流停止；保留项目、会话记录与草稿，更新后手动恢复。详见 [CLI 更新说明](docs/CLI-UPDATES.md)。
+- 每次启动后台检查 **Claude Code CLI 更新**，发现新版本可选择更新或暂不更新；也可在「设置与连接 → 连接与终端」手动检查。**该已发布版本**更新前必须确认断开全部工作区，等待所有聊天、终端、子进程及工作流停止；保留项目、会话记录与草稿，更新后手动恢复。阶段二开发源码已改为只维护 Claude，不能将此新行为套用到 v0.4.0/v0.5.0 安装包。详见 [CLI 更新说明](docs/CLI-UPDATES.md)。
 - 图形化聊天输入区显示 **Context 占比、已用 token 与窗口容量**，展开可查看模型、更新时间和最近压缩记录。修复 `/context` 报告后继续普通对话丢失占比的问题；缺少后续用量字段或停止 / 重启时保留有效读数。
 - 在输入框开头输入 **`/`**，搜索当前 Claude Code 会话提供的系统命令和 Skills；支持方向键选择、Enter / Tab 填入、参数编辑和 Esc 关闭。用 `/context` 查看分布，用 `/compact` 主动压缩上下文。
 
@@ -90,9 +95,21 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 ## 运行与打包
 
-开发者可参阅[公共会话身份、执行接口与代码职责](docs/ARCHITECTURE.md)，了解现有 Claude 路径的适配边界和执行器扩展方式。
+开发者可参阅[公共会话身份、执行接口与代码职责](docs/ARCHITECTURE.md)，以及[阶段二实现与验收记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)，了解引擎包、桌面宿主和数据兼容边界。
 
 需要 Node.js 22.12+、npm、Git；使用 Claude 会话还需要安装并登录 Claude Code CLI。推荐原生 CLI 安装。
+
+仓库使用 npm workspaces，只在根目录安装依赖，维护一个 `package-lock.json`；以下命令也从根目录运行。
+
+| 目录 | 职责 |
+| --- | --- |
+| `packages/agent-core` | 平台中立的 Agent 循环、审批、预算与端口 |
+| `packages/agent-node` | Responses、完整记录库、本地工具、命令监管与项目指令 |
+| `apps/desktop` | Electron、React、IPC、数据存储、会话/队列/工作流调度、共享 PTY 与桌面装配 |
+| `packages/contracts` | 公共执行身份、配置、能力、消息、事件和生命周期接口 |
+| `packages/engine-claude` | Claude runtime、CLI 探测/参数、协议、transcript、hooks 与专属配置，通过宿主端口接入桌面 |
+
+根命令按 contracts → engine-claude → desktop 的顺序构建。内部包保持 private，桌面打包包含其运行代码；通用 PTY 和原生依赖仍由 desktop 管理。内部包或主进程改动后需重新启动 `npm run dev`。
 
 ```sh
 npm ci
@@ -102,20 +119,22 @@ npm run dev
 也可运行 PowerShell 的 `./scripts/start.ps1`，或 macOS/Linux 的 `bash scripts/start.sh`。首次运行会安装依赖和构建；修改代码后重新构建。
 
 ```sh
-npm run check        # TypeScript、单元/集成测试、生产构建
+npm run check        # TypeScript、契约/Claude 包/桌面测试、生产构建
 npm run test:e2e     # Electron UI + 真实 Shell / Claude 协议测试进程
-npm start           # 启动已有 dist
+npm start           # 启动已有 apps/desktop/dist
 npm run dist:win    # Windows 上构建 NSIS 安装包、单文件便携 EXE、ZIP
 npm run dist:mac    # macOS 上构建 DMG、免安装 ZIP
 npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
-Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。postinstall 会修复 node-pty macOS spawn-helper 的执行权限。所有打包命令显式关闭自动发布。
+Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windows SDK 和对应的 Spectre-mitigated C++ 库。`npm ci` 的 postinstall 会核对 node-pty 1.1.0 源码 SHA-256、应用仓库中的 ConPTY 生命周期补丁，并用固定的 node-gyp 12.4.0 编译 N-API 模块；编译或修复标记验证失败会直接终止，不回退旧预编译模块。重复运行 `node apps/desktop/scripts/prepare-native.mjs` 可重新构建。打包时还会通过成品 Electron 加载 ASAR 中的模块，确认 `build/Release/conpty.node` 与已验证的构建一致。安装包用户不需要编译工具链。
 
-GitHub Actions 构建仅手动触发；日常提交、推送、PR 和 `release:` 提交均不会自动启动构建。需要安装包时，在 Actions → Verify and package desktop → Run workflow 手动运行；默认只验证和打包，产物保存在 Artifacts。
+Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。macOS/Linux 的 postinstall 保留 node-pty macOS spawn-helper 执行权限修复，不编译 Windows 模块。所有打包命令显式关闭自动发布。
 
-维护者发布版本时，先更新 `package.json` / 锁文件版本及对应的 `docs/releases/v<版本>.md`。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
+GitHub Actions 仅通过 `workflow_dispatch` 手动触发；日常推送、创建或更新 PR、合并均不自动运行 CI。只有用户明确要求构建或运行 CI 时，才发起相应工作流，不因日常开发、修复或合并自行触发。Verify workspaces 提供 Ubuntu 类型检查、单测和构建；需要三平台完整验证与打包时，在 Actions → Verify and package desktop → Run workflow 选择待验证的分支。默认只验证和打包，产物保存在 Artifacts，不发布 Release。测试报告位于根 `test-results/`，安装包位于根 `release/`。
+
+维护者发布版本时，先更新 `apps/desktop/package.json` 的应用版本、根锁文件中的对应 workspace 元数据及 `docs/releases/v<版本>.md`。根编排包和内部包的版本不作为应用发布版本。随后在 main 分支手动运行构建工作流并勾选 `publish_release`。三个系统的验证与打包全部成功后，工作流上传安装包、便携包和校验文件，核对资源后发布 GitHub Release。
 
 ## 主要流程
 
@@ -141,7 +160,7 @@ GitHub Actions 构建仅手动触发；日常提交、推送、PR 和 `release:`
 | 审批和提问 | 顶栏集中显示各项目的有效请求，点击跳转并聚焦；保持原始工具参数，审批限当前请求，过期不可复用 |
 | 模型和权限 | 支持按需审批、Plan、接受编辑、Bypass；可保存默认权限模式，单个会话可覆盖 |
 | Context 与命令 | 主会话用量与容量、压缩状态；`/` 搜索当前 CLI 命令和 Skills，支持 `/context`、`/compact`、`/clear` |
-| CLI 更新 | 启动检查、暂不更新与手动重试；确认后停止全部工作区，校验更新结果，再手动恢复 |
+| CLI 更新 | 当前源码确认后仅停止 Claude，会话队列暂停、工作流中断；Shell 继续运行；校验更新结果后手动恢复 Claude |
 | 上下文 | 项目文件检索/预览与 @引用；拖放或选择附件，保留原名/大小、重启恢复与移除回收、纯附件发送；8 个附件、单个 8 MiB、合计 16 MiB |
 | 历史 | CLI 历史按项目分页/全文搜索；当前对话可检索本地保留消息、定位并分页阅读旧记录；不改写原日志 |
 | Git 审阅 | 文件级真实 diff、二进制提示、有界预览；不会隐式暂存或提交 |
@@ -255,6 +274,7 @@ Claude 启动子代理或后台任务后，输入区上方会出现「当前轮�
 
 ```text
 workspace.json / workspace.json.bak  项目、会话、草稿、非秘密设置
+workspace.pre-v3.<UUID>.json          首次写入 v3 前保存的原始旧格式快照
 chat/                               结构化快照和事件日志
 workflows.json                      工作流阶段与摘要产物
 attachments/                        用户选定附件的副本
@@ -262,12 +282,13 @@ logs/                               滚动终端日志
 worktrees/                          旧版创建的 Git 工作目录（继续保留）
 ```
 
-状态损坏时保留原文件并报错。恢复备份前先关闭应用并保留损坏文件副本。新版的自动 worktree 管理只处理具有可信所有权记录的目录，旧版目录保守保留。
+状态损坏或 workspace 版本过新时保留原文件并报错。恢复备份前先完全退出应用并保全整个数据目录；`workspace.json.bak` 是滚动备份，跨版本回退应选择明确的 `workspace.pre-v3.<UUID>.json` 或升级前完整备份，详见[迁移与回退说明](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md#回退到-workspace-v1v2-应用)。迁移快照不包含项目文件，恢复它不会回滚 worktree 改动。新版的自动 worktree 管理只处理具有可信所有权记录的目录，旧版目录保守保留。
 
 ## 规划与验证
 
 - [架构与权限边界](docs/ARCHITECTURE.md)
 - [实际验证记录](docs/VALIDATION.md)
+- [阶段二引擎边界与迁移验收](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)
 - [迭代状态与剩余工作](docs/ROADMAP.md)
 - [最初需求与开发提示词](docs/REQUEST_AND_PROMPT.md)
 

@@ -1,0 +1,49 @@
+import { ArrowUpRight, GitBranch, History, Layers, Plus, ShieldCheck, TerminalSquare } from 'lucide-react';
+import { version as appVersion } from '../../../package.json';
+
+import type { OpenNew } from './types';
+
+interface Props {
+  historyAvailable: boolean; hasProjects?: boolean; chooseProject?: () => Promise<void>; openNew: OpenNew; openHistory: () => Promise<void>;
+}
+
+export function WorkspaceWelcome({ historyAvailable, openNew, openHistory }: Props) {
+  return <div className="welcome">
+    <div className="eyebrow">
+      <span />LOCAL FIRST · BUILT FOR FOCUS</div>
+    <h1>让每个想法，<br />
+      <em>都有一个工作空间。</em>
+    </h1>
+    <p>选择一个工作目录和执行引擎，开始对话，<br />把注意力放在正在构建的东西上。</p>
+    <div className="welcome-actions">
+      <button className="primary" onClick={() => openNew()}>
+        <Plus size={17} />开始新会话<ArrowUpRight size={16} />
+      </button>
+      <button className="secondary" disabled={!historyAvailable} onClick={() => void openHistory()}>
+        <History size={16} />恢复已有会话</button>
+    </div>
+    <div className="feature-grid">
+      <article>
+        <Layers size={23} />
+        <h3>各有上下文</h3>
+        <p>项目分组与多会话切换，<br />随时继续之前的工作。</p>
+        <span>01 / SESSIONS</span>
+      </article>
+      <article>
+        <TerminalSquare size={23} />
+        <h3>熟悉的 Claude Code</h3>
+        <p>结构化消息与工具执行，保留审批、<br />MCP、命令与登录方式。</p>
+        <span>02 / NATIVE CLI</span>
+      </article>
+      <article>
+        <GitBranch size={23} />
+        <h3>放心探索分支</h3>
+        <p>可选 Git worktree，<br />让并行任务拥有独立目录。</p>
+        <span>03 / ISOLATION</span>
+      </article>
+    </div>
+    <div className="welcome-foot">
+      <ShieldCheck size={15} />Claude Code 与 Native 分别管理各自的模型连接。<span>WORKBENCH / v{appVersion}</span>
+    </div>
+  </div>;
+}

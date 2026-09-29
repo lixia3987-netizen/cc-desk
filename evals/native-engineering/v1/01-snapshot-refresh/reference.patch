@@ -1,0 +1,25 @@
+--- a/apps/desktop/src/renderer/chat-snapshot-sync.ts
++++ b/apps/desktop/src/renderer/chat-snapshot-sync.ts
+@@ -46,6 +46,8 @@
+       // A fresh read may discover another restart even if all its events were lost.
+       if (expected && expected.hostEpoch !== version.hostEpoch && requestGeneration !== this.notificationGeneration) return false;
+       if (old?.hostEpoch === version.hostEpoch && (version.revision < old.revision || version.eventSequence < old.eventSequence)) return false;
++      if (old?.hostEpoch === version.hostEpoch && old.conversationId === version.conversationId
++        && old.workerGeneration !== undefined && version.workerGeneration !== undefined && version.workerGeneration < old.workerGeneration) return false;
+       if (old && old.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(old.hostEpoch);
+       if (expected && expected.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(expected.hostEpoch);
+       this.expected = version;
+--- /dev/null
++++ b/apps/desktop/tests/e0-snapshot-regression.test.ts
+@@ -0,0 +1,11 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { ChatSnapshotSync } from '../src/renderer/chat-snapshot-sync';
++import type { ChatSnapshot } from '../src/shared/chat';
++test('late previous-worker completion cannot overwrite current worker state', async () => {
++  const make = (revision:number,workerGeneration:number,hostEpoch='a'):ChatSnapshot => ({sessionId:'s',messages:[],pending:[],taskState:'thinking',version:{hostEpoch,revision,eventSequence:revision,conversationId:'c',workerGeneration}});
++  const queue=[make(1,3),{...make(2,2),taskState:'completed' as const},make(3,3),make(1,1,'b')],seen:ChatSnapshot[]=[];
++  const sync=new ChatSnapshotSync('s',{read:async()=>queue.shift()!,apply:snapshot=>seen.push(snapshot),state:()=>{}});
++  try { await sync.refresh();await sync.refresh();assert.deepEqual(seen.map(item=>item.version?.workerGeneration),[3,3]);await sync.refresh();assert.equal(sync.snapshot?.version?.hostEpoch,'b'); }
++  finally {sync.dispose();}
++});

@@ -1,0 +1,48 @@
+{
+  "name": "@cc-desk/contracts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    "./execution": {
+      "types": "./dist/execution.d.ts",
+      "default": "./dist/execution.js"
+    },
+    "./chat": {
+      "types": "./dist/chat.d.ts",
+      "default": "./dist/chat.js"
+    },
+    "./execution-events": {
+      "types": "./dist/execution-events.d.ts",
+      "default": "./dist/execution-events.js"
+    },
+    "./execution-ports": {
+      "types": "./dist/execution-ports.d.ts",
+      "default": "./dist/execution-ports.js"
+    },
+    "./native-task": {
+      "types": "./dist/native-task.d.ts",
+      "default": "./dist/native-task.js"
+    },
+    "./native-changes": {
+      "types": "./dist/native-changes.d.ts",
+      "default": "./dist/native-changes.js"
+    },
+    "./native-commands": {
+      "types": "./dist/native-commands.d.ts",
+      "default": "./dist/native-commands.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test tests/public-exports.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

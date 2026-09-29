@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "cc-desk-engineering-v1",
+  "taskBaseline": "b45bd0623d2a44a2878c46d4701fa4b388c7d9be",
+  "tasks": [
+    {
+      "id": "01-snapshot-refresh",
+      "kind": "injected-regression",
+      "initialState": "A worker-generation guard is removed in a disposable baseline checkout. This is not a defect claim about the product branch.",
+      "allowedPaths": [
+        "apps/desktop/src/renderer/chat-snapshot-sync.ts",
+        "apps/desktop/tests/e0-snapshot-regression.test.ts"
+      ],
+      "requiredNewTests": [
+        "apps/desktop/tests/e0-snapshot-regression.test.ts"
+      ],
+      "injection": "01-snapshot-refresh/injection.patch",
+      "reference": "01-snapshot-refresh/reference.patch"
+    },
+    {
+      "id": "02-session-info",
+      "kind": "feature-gap",
+      "initialState": "The pinned baseline has no read-only session:info API or SessionInfoCard.",
+      "allowedPaths": [
+        "apps/desktop/src/main/ipc/session-handlers.ts",
+        "apps/desktop/src/shared/types.ts",
+        "apps/desktop/src/preload/index.ts",
+        "apps/desktop/src/renderer/ChatPane.tsx",
+        "apps/desktop/src/renderer/SessionInfoCard.tsx",
+        "apps/desktop/tests/e0-session-info.test.ts"
+      ],
+      "requiredNewTests": [
+        "apps/desktop/tests/e0-session-info.test.ts"
+      ],
+      "reference": "02-session-info/reference.patch"
+    },
+    {
+      "id": "03-canonical-json",
+      "kind": "behavior-preserving-refactor",
+      "initialState": "Runtime behavior passes the existing baseline tests, but duplicate serializers remain in two agent-node adapters.",
+      "allowedPaths": [
+        "packages/agent-core/src/run.ts",
+        "packages/agent-core/src/index.ts",
+        "packages/agent-core/src/canonical-json.ts",
+        "packages/agent-node/src/tools/local-tools.ts",
+        "packages/agent-node/src/mcp-tools.ts",
+        "packages/agent-core/tests/e0-canonical-json.test.mjs",
+        "packages/agent-node/tests/e0-tool-digests.test.mjs"
+      ],
+      "requiredNewTests": [
+        "packages/agent-core/tests/e0-canonical-json.test.mjs",
+        "packages/agent-node/tests/e0-tool-digests.test.mjs"
+      ],
+      "reference": "03-canonical-json/reference.patch"
+    }
+  ]
+}
