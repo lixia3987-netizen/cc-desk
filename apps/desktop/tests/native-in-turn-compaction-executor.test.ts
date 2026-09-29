@@ -20,7 +20,7 @@ import { startChatCompletionsFixture } from '../../../packages/agent-node/tests/
 
 type Protocol = 'responses' | 'chat-completions';
 type Body = { input?: any[]; messages?: any[]; tools?: any[]; instructions?: string };
-type Mode = 'normal' | 'invalid-summary' | 'cancel-summary';
+type Mode = 'normal' | 'invalid-summary' | 'cancel-summary' | 'instructions-changed';
 const secret = 'sk-in-turn-executor-local-fixture';
 const input = 'Keep the original engineering goal intact; inspect the file and retain human verification.';
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
@@ -84,14 +84,21 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
         maxInputTokens: 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
-  let executor = new NativeStructuredExecutor(store, connections, events, { worker: inline }); await executor.initialize();
+  const worker: NonNullable<NativeExecutorOptions['worker']> = async request => {
+    const result = await inline(request);
+    if (options.mode === 'instructions-changed' && request.request.configuration.purpose === 'context_summary') {
+      await fs.appendFile(path.join(project, 'CLAUDE.md'), '\nNew rule added while the summary was in flight.');
+    }
+    return result;
+  };
+  let executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize();
   return { id, project, server, summaryStarted, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
     send: () => executor.send(id, input, [], undefined, { requestId: 'in-turn-submission' }),
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
       try { return { runs: ledger.listRuns(), records: ledger.replay(), context: ledger.loadContext(), recovery: ledger.getRecoveryReport() }; } finally { await ledger.close(); }
     },
-    async restart() { await executor.shutdown(); executor = new NativeStructuredExecutor(store, connections, events, { worker: inline }); await executor.initialize(); },
+    async restart() { await executor.shutdown(); executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize(); },
     async dispose() { await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); },
   };
 }
@@ -112,11 +119,17 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(encoded.includes(secret), false);
     assert.equal(f.executor.snapshot(f.id).nativeTask!.goal, input);
     assert.notEqual(f.executor.snapshot(f.id).nativeTask!.verification, 'passed');
+    const maintenance = f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!;
+    assert.equal(maintenance.status, 'committed');
+    assert.deepEqual(maintenance.summaryUsage, { inputTokens: 11, outputTokens: 7 });
+    assert.ok(Math.abs(maintenance.summaryCostUSD! - 0.000078) < 1e-12);
+    assert.ok(Math.abs(f.executor.snapshot(f.id).usage.costUSD! - 0.000546) < 1e-12, 'total cost includes the summary exactly once');
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original content remains unchanged\n');
     const requests = f.server.requests.length, task = f.executor.snapshot(f.id).nativeTask;
     await f.restart(); assert.equal((await f.send()).success, true);
     assert.equal(f.server.requests.length, requests); assert.equal(f.executor.snapshot(f.id).nativeTask!.taskId, task!.taskId);
     assert.deepEqual((await f.ledger()).context, ledger.context);
+    assert.deepEqual(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn, maintenance);
   } finally { await f.dispose(); }
 });
 
@@ -131,6 +144,9 @@ test('invalid summary stops the current run without a second summary or a follow
   try {
     const result = await f.send(); assert.equal(result.success, false); assert.equal(f.summaries, 1);
     assert.equal(f.ordinary, 4); assert.equal(JSON.stringify((await f.ledger()).context).includes(summary), false);
+    const resultReceipt = (await f.ledger()).runs[0].result!;
+    assert.equal(resultReceipt.modelRequests, 5);
+    assert.deepEqual(resultReceipt.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 }, 'a complete rejected summary still contributes its known service usage');
     assert.notEqual(f.executor.snapshot(f.id).nativeTask!.verification, 'passed');
   } finally { await f.dispose(); }
 });
@@ -150,4 +166,39 @@ test('the last model slot cannot be consumed by an in-turn summary', { timeout: 
   const f = await fixture('responses', { maxModelRequests: 5 });
   try { const result = await f.send(); assert.equal(result.success, false); assert.equal(f.summaries, 0); assert.ok(f.ordinary <= 5); }
   finally { await f.dispose(); }
+});
+
+test('CLAUDE instruction changes during summary prevent committing or resuming the old policy', { timeout: 20000 }, async () => {
+  const f = await fixture('responses', { mode: 'instructions-changed' });
+  try {
+    const result = await f.send(); assert.equal(result.success, false);
+    assert.equal(f.summaries, 1); assert.equal(f.ordinary, 4);
+    const ledger = await f.ledger(); assert.equal(JSON.stringify(ledger.context).includes(summary), false);
+    assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'failed');
+    assert.deepEqual(ledger.runs[0].result!.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 });
+  } finally { await f.dispose(); }
+});
+
+for (const phase of ['before', 'after'] as const) test(`${phase} publication failure cannot checkpoint the old context or repeat the summary after restart`, { timeout: 20000 }, async () => {
+  const f = await fixture('responses');
+  const original = NativeRunStore.prototype.commitRunCompaction;
+  let injected = false;
+  NativeRunStore.prototype.commitRunCompaction = async function (...args) {
+    if (args[0].sessionId !== f.id) return original.apply(this, args);
+    injected = true;
+    if (phase === 'after') await original.apply(this, args);
+    throw new Error(`Injected ${phase} compaction publication failure`);
+  };
+  try {
+    const result = await f.send(); assert.equal(result.success, false); assert.equal(injected, true);
+    assert.equal(f.summaries, 1); assert.equal(f.ordinary, 4);
+    const ledger = await f.ledger();
+    assert.equal(JSON.stringify(ledger.context).includes(summary), phase === 'after');
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compacted').length, phase === 'after' ? 1 : 0);
+    assert.equal(ledger.records.some(record => record.event.type === 'run_finished'), false);
+    const requests = f.server.requests.length;
+    NativeRunStore.prototype.commitRunCompaction = original;
+    await f.restart(); assert.equal((await f.send()).success, false);
+    assert.equal(f.server.requests.length, requests); assert.deepEqual((await f.ledger()).context, ledger.context);
+  } finally { NativeRunStore.prototype.commitRunCompaction = original; await f.dispose(); }
 });
