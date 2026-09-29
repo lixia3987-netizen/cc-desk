@@ -267,6 +267,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}
       currentRunId={snapshot?.nativeRun?.runId}
       maintenance={nativeMaintenance?{...nativeMaintenance,compacting}:undefined}
+      previewBlockedReason={syncState.error?'unavailable':nativeRecovery?'recovery_required':running||submitting||reviewingTask||confirmingNativeRecovery||!!descriptor.maintenance?'busy':undefined}
       compactDisabled={running||composerDisabled||readOnly||!!descriptor.maintenance||!!snapshot?.queue?.items.length}
       onCompact={session.execution.providerId==='native'&&descriptor.capabilities.compactContext?()=>void compactNative():undefined}
       onCancelCompact={readOnly||session.archived||sessionStatus==='stopping'?undefined:()=>void window.desktop.interruptSession(session.id).catch(onError)}/>}

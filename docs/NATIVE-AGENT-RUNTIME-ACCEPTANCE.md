@@ -52,6 +52,7 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 | RA-29 | N5-01 显式图片输入、历史与重启 | pending：本地功能验证不等于服务识图或目标平台通过 |
 | RA-30 | N5-02 本地图片预览与历史版本查看 | pending：待 Windows 图片解码、键盘与会话切换实际体验 |
 | RA-31 | N5-03 含图会话纯文本前缀压缩 | pending：待 Windows 交互及真实模型压缩后图片连续性 |
+| RA-32 | N5-04 压缩范围预览与不可用原因 | pending：待 Windows 展示、状态切换与无额外请求验证 |
 
 ## 3. 真实连接、模型与编码流程
 
@@ -231,6 +232,12 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 - 预期：首图回合及之后记录保持原值和顺序，工具配对完整，原始/当前目标不重复；前缀不可压缩或保留内容已超预算时在调用摘要前停止。预检失败不消耗自动摘要机会；实际请求按既有规则计次，未知不重试。由人工核对真实模型仍能识图且未丢失前缀约束，不能只凭缩减字节数宣布质量通过。
 - 证据：`R`、图片哈希、压缩前后完整上下文及请求类别/次数、摘要源不含图证明、重启后的历史预览、Windows 操作记录、真实模型连续性人工复核及实际用量。状态：**pending**；本地 fixture 和重放校验不替代本项。
 
+### RA-32：N5-04 上下文压缩范围预览
+
+- 前置/步骤：按 [N5-04](NATIVE-AGENT-N5-COMPACTION-PREVIEW.md)锁定候选，在 Windows Electron 中展开 Native 运行预算面板，分别查看纯文本、多轮后含图、首轮含图和旧历史。核对显示大小与宿主保存范围，检查无模型凭据、运行中、正在压缩、停止、任务复核、恢复屏障、刷新、切换会话及重启后的状态。只有用户明确点击压缩才允许发起摘要。
+- 预期：范围只包含本地字节统计、图片数量和保留规则，不展示正文、图片编码或内部错误；两组大小不被解释为净节省或服务用量。忙碌/恢复时不展示旧可用数字，旧快照缺字段和暂不可用原因清楚；展开不新增模型请求、摘要预留或账本事件。实际压缩继续核对 headHash 与预算。
+- 证据：`R`、显示截图和对应快照、大小/图片计数对照、状态切换时间线、跨会话检查、展开前后请求与账本事件比较；窄窗口和大字号可读性。状态：**pending**；SSR、本地执行器 fixture 和构建不能替代图形验收。
+
 ## 8. 结果模板与历史索引
 
 每次执行复制以下记录，不覆盖此前失败：
@@ -249,4 +256,4 @@ Claude 保持默认，只向 `dev/native-agent` 集成；不修改 main、不发
 
 共享工作台的历史记录见 [VALIDATION](VALIDATION.md)、[产品路线](ROADMAP.md)和[字体说明](FONTS.md)；其中旧故障修复不重新记为当前缺陷，尚需实际账号/平台确认的部分由 RA-22/RA-23 承接。历史证据按原候选保留：[P3 验收档案](NATIVE-AGENT-PHASE-3-VALIDATION.md)、[P4](NATIVE-AGENT-PHASE-4.md)、[P4b](NATIVE-AGENT-PHASE-4B.md)、[自动压缩](NATIVE-AGENT-PHASE-4B-AUTO.md)、[Skills](NATIVE-AGENT-PHASE-4C-SKILLS.md)、[MCP HTTP](NATIVE-AGENT-PHASE-4C-MCP.md)、[MCP 2025 HTTP](NATIVE-AGENT-PHASE-4C-MCP-2025.md)、[MCP stdio](NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)、[Chat Completions](NATIVE-AGENT-PHASE-4C-CHAT-COMPLETIONS.md)、[提问](NATIVE-AGENT-P5-QUESTIONS.md)、[PR #43 本地交付](NATIVE-AGENT-COMPLETION.md)、[N1 本地验收](NATIVE-AGENT-N1.md)。其中 N1 的 1303 项本地通过与两项图形场景仅收集/启动失败记录，不构成 RA-14 或三平台成品通过。
 
-本文件不把暂缓的多 Agent、native TUI、自动截图/屏幕控制、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N4/N5 其它未交付功能列为当前已经实现能力的验收义务。N5-01 显式图片输入由 RA-29 承接，N5-02 图片预览由 RA-30 承接，N5-03 纯文本前缀压缩由 RA-31 承接；新增能力交付后再增加稳定 ID，已有 ID 不复用于不同目标。
+本文件不把暂缓的多 Agent、native TUI、自动截图/屏幕控制、全局自动 Skills、所有 MCP 扩展、操作系统沙箱、N4/N5 其它未交付功能列为当前已经实现能力的验收义务。N5-01 显式图片输入由 RA-29 承接，N5-02 图片预览由 RA-30 承接，N5-03 纯文本前缀压缩由 RA-31 承接，N5-04 压缩范围预览由 RA-32 承接；新增能力交付后再增加稳定 ID，已有 ID 不复用于不同目标。

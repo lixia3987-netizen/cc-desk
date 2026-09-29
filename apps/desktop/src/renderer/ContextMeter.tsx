@@ -8,6 +8,7 @@ interface ContextMeterProps {
   maintenance?: NativeContextMaintenance;
   currentRunId?: string;
   compactDisabled?: boolean;
+  previewBlockedReason?: 'busy' | 'recovery_required' | 'unavailable';
   onCompact?: () => void;
   onCancelCompact?: () => void;
 }
@@ -40,7 +41,7 @@ export function ContextMeter({ context, native = false, ...actions }: ContextMet
   </details>;
 }
 
-function NativeContextMeter({ context, maintenance, currentRunId, compactDisabled, onCompact, onCancelCompact }: Omit<ContextMeterProps, 'native'>) {
+function NativeContextMeter({ context, maintenance, currentRunId, compactDisabled, previewBlockedReason, onCompact, onCancelCompact }: Omit<ContextMeterProps, 'native'>) {
   const budget = context?.budget;
   const ratio = budget ? Math.max(budget.estimatedInputTokens / budget.maxInputTokens, budget.contextBytes / budget.maxContextBytes) : undefined;
   const percentage = ratio === undefined ? undefined : ratio * 100;
@@ -59,6 +60,7 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
       <span className="context-count">{label}</span>
     </summary>
     <div className="context-details">
+      <CompactionPreview maintenance={maintenance} blockedReason={previewBlockedReason}/>
       {maintenance?.autoCompact && <span>{maintenance.autoCompact.enabled
         ? maintenance.autoCompact.mode === 'before_send_and_during_run'
           ? `自动压缩已开启：发送前与回合内达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试；发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次。摘要请求可能计费，并计入本回合模型请求次数和运行时长。`
@@ -84,6 +86,41 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
       <span>可在模型连接中填写价格；本回合费用包含回合内摘要，仅在全部请求提供完整输入和输出用量、价格模型一致时估算。发送前及手动压缩另计，请以服务商账单为准。</span>
     </div>
   </details>;
+}
+
+const previewReasons = {
+  no_complete_prefix: '暂无可摘要的完整旧历史前缀。',
+  image_prefix_unavailable: '首个回合已含图片，没有可摘要的完整旧历史前缀。',
+  busy: '会话正在运行或压缩，暂不提供范围预览。',
+  recovery_required: '会话尚待恢复处理，暂不提供范围预览。',
+  unsupported_context: '当前上下文协议不支持范围预览。',
+  unavailable: '压缩范围暂不可用。',
+} as const;
+
+function CompactionPreview({ maintenance, blockedReason }: { maintenance?: NativeContextMaintenance; blockedReason?: ContextMeterProps['previewBlockedReason'] }) {
+  const preview = maintenance?.preview;
+  const knownSize = (value: number) => Number.isSafeInteger(value) && value >= 0;
+  let unavailable: string | undefined;
+  if (maintenance?.compacting) unavailable = previewReasons.busy;
+  else if (blockedReason) unavailable = previewReasons[blockedReason];
+  else if (!preview) unavailable = '当前快照未提供压缩范围。';
+  else if (preview.status === 'unavailable') {
+    unavailable = Object.hasOwn(previewReasons, preview.reason) ? previewReasons[preview.reason] : previewReasons.unavailable;
+  } else if (maintenance?.canCompact === false) {
+    unavailable = '当前界面暂不可压缩，范围信息暂不展示。';
+  }
+  const available = !unavailable && preview?.status === 'available'
+    && knownSize(preview.summarizableBytes) && knownSize(preview.retainedBytes) && knownSize(preview.retainedImages)
+    && (preview.retention === 'recent_turns' || preview.retention === 'image_suffix');
+  return <div className="context-compaction-preview" role="group" aria-label="压缩范围预览">
+    {available ? <>
+      <span>可摘要旧历史：{count(preview.summarizableBytes)} 本地编码字节 · 需保留内容：{count(preview.retainedBytes)} 本地编码字节 · 保留图片：{count(preview.retainedImages)} 张。</span>
+      <span>{preview.retention === 'image_suffix'
+        ? '保留原始目标，首个含图回合及其后内容完整保留。'
+        : '保留原始目标及最近完整回合。'}</span>
+      <span>两组分别编码，原始目标有重叠，不可相加或推算节省量；摘要长度未知。字节数不是服务端 tokens 或实际费用，范围可用不代表预算或模型连接校验通过。</span>
+    </> : <span>{unavailable ?? previewReasons.unavailable}</span>}
+  </div>;
 }
 
 function InTurnReceipt({ receipt, compacting, historical }: { receipt: NonNullable<NativeContextMaintenance['inTurn']>; compacting: boolean; historical: boolean }) {

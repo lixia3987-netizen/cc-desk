@@ -308,7 +308,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .context-high .context-track>span{background:var(--warning)}
 .context-count{margin-left:auto;font-variant-numeric:tabular-nums}
 .context-details{display:grid;gap:4px;padding:8px 0 10px;line-height:1.6;overflow-wrap:anywhere;max-height:160px;overflow:auto}
-.context-compaction-receipt{display:grid;gap:4px}
+.context-compaction-receipt,.context-compaction-preview{display:grid;gap:4px}
 .chat-composer .slash-menu{border-bottom:1px solid var(--border);background:var(--panel);font-family:var(--ui-font-family);font-size:calc(11px * var(--ui-font-scale))}
 .slash-menu header{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;color:var(--text-secondary)}
 .slash-menu header span{font-size:calc(9px * var(--ui-font-scale));color:var(--text-muted)}
