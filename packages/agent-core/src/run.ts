@@ -1,6 +1,6 @@
 import type {
   AgentPorts, AgentRunRequest, ApprovalBinding, ApprovalDecision, JsonObject, JsonValue,
-  ModelResponse, PreparedTool, RunBudget, RunIdentity, RunJournalEvent,
+  ContextMaintenanceResult, ModelResponse, PreparedTool, RunBudget, RunIdentity, RunJournalEvent,
   RunResult, RunStatus, ToolCall, ToolExecutionContext, ToolResult, Usage,
 } from './types.js'
 import { contextBudgetUsage } from './context.js'
@@ -81,6 +81,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   let toolCalls = 0
   let usage: Usage | null = null
   let usageUnknown = false
+  let maintenanceAttempted = false
   let pausedMs = 0
   const startedAt = host.now()
   let pending: ToolCall[] = []
@@ -158,6 +159,54 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
     }
     usage = total
+  }
+  const maintainContext = async (): Promise<void> => {
+    if (!ports.contextMaintenance || maintenanceAttempted || modelRequests === 0 ||
+      budget.maxModelRequests - modelRequests < 2) return
+    // This is called only between complete model/tool batches. Reserve one
+    // request before the host can contact a model, retaining a continuation slot.
+    const previousRequests = modelRequests++
+    let maintained: ContextMaintenanceResult
+    try {
+      maintained = clone(await activeOperation((signal) => ports.contextMaintenance!.maintain({
+        identity: clone(identity), context: clone(context), budget: clone(budget),
+        modelRequests: previousRequests, toolCalls,
+        remainingActiveMs: Math.max(1, budget.maxActiveMs - activeMs()), signal,
+      })))
+      if (!maintained || !['unchanged', 'compacted', 'failed'].includes(maintained.kind) ||
+        ![0, 1].includes(maintained.modelRequests) || maintained.modelRequests === 0 && maintained.usage !== null ||
+        maintained.kind === 'unchanged' && maintained.modelRequests !== 0 ||
+        maintained.usage !== null && (typeof maintained.usage !== 'object' || Array.isArray(maintained.usage) ||
+          Object.entries(maintained.usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || value < 0))) {
+        throw new Error('Invalid context maintenance result')
+      }
+      if (maintained.kind === 'compacted' && (maintained.modelRequests !== 1 || !maintained.context ||
+        maintained.context.protocol?.id !== model.protocol.id || maintained.context.protocol?.version !== model.protocol.version ||
+        !Array.isArray(maintained.context.items) || byteLength(maintained.context) >= byteLength(context))) {
+        throw new Error('Invalid compacted context')
+      }
+      if (maintained.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful'].includes(maintained.reason)) {
+        throw new Error('Invalid context maintenance failure')
+      }
+    } catch (error) {
+      if (error instanceof Stop) { modelRequests--; throw error }
+      // The host may have committed a replacement without acknowledging it. Do
+      // not checkpoint the old context, retry the summary, or run another tool.
+      maintenanceAttempted = true
+      usageUnknown = true
+      throw new PersistenceFailure('context_maintenance')
+    }
+    if (maintained.modelRequests === 0) modelRequests--
+    else {
+      maintenanceAttempted = true
+      accumulateUsage(maintained.usage)
+    }
+    if (maintained.kind === 'compacted') {
+      context = clone(maintained.context)
+      await checkpoint()
+    }
+    checkStopped()
+    if (maintained.kind === 'failed') throw new Stop('failed', maintained.reason)
   }
   const finish = async (status: RunStatus, reason: string): Promise<RunResult> => {
     await checkpoint()
@@ -272,7 +321,12 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     while (true) {
       checkStopped()
       if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
-      const estimatedTokens = model.estimateInputTokens(clone(context))
+      let estimatedTokens = model.estimateInputTokens(clone(context))
+      if (Number.isFinite(estimatedTokens) && estimatedTokens >= 0 &&
+        contextBudgetUsage(context, estimatedTokens, budget).status !== 'within_budget') {
+        await maintainContext()
+        estimatedTokens = model.estimateInputTokens(clone(context))
+      }
       if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0 || contextBudgetUsage(context, estimatedTokens, budget).status === 'exceeded') {
         throw new Stop('budget_exhausted', 'context_budget')
       }

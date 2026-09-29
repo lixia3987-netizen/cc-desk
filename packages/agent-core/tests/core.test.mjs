@@ -104,7 +104,9 @@ function fixture(responses = [response()]) {
     },
   }
   return { request, ports, hooks, controller, events, order, modelInputs, executions, approvals, emitted,
-    run: () => runAgent(request, ports), setNow: (value) => { now = value }, get storedResult() { return storedResult }, get context() { return copy(current) } }
+    run: () => runAgent(request, ports), setNow: (value) => { now = value },
+    replaceContext: (value) => { current = copy(value) },
+    get storedResult() { return storedResult }, get context() { return copy(current) } }
 }
 
 test('whole response is committed before ordered tools, and full opaque context survives normal continuation', async () => {
@@ -376,4 +378,218 @@ test('terminal projection failure reports separately from committed result and d
 test('canonical input digest sorts nested keys and rejects non-JSON numbers', () => {
   assert.equal(canonicalJson({ z: 1, a: { y: 2, b: [3, null] } }), '{"a":{"b":[3,null],"y":2},"z":1}')
   assert.throws(() => canonicalJson({ number: Infinity }), /Non-finite/)
+})
+
+function maintenanceFixture(responses = [response([call('a')]), response()]) {
+  const f = fixture(responses)
+  f.request.budget = { maxInputTokens: 100 }
+  const maintenance = []
+  f.ports.contextMaintenance = {
+    async maintain(request) {
+      maintenance.push(request)
+      f.order.push('maintain')
+      return await f.hooks.maintain?.(request) ?? { kind: 'unchanged', modelRequests: 0, usage: null }
+    },
+  }
+  const compact = (usage = { inputTokens: 5, outputTokens: 1, totalTokens: 6 }) => {
+    const context = { protocol, items: [{ role: 'assistant', content: 'historical summary' }] }
+    f.replaceContext(context)
+    f.order.push('maintenance_commit')
+    return { kind: 'compacted', modelRequests: 1, usage, context }
+  }
+  return { ...f, maintenance, compact }
+}
+
+test('context maintenance runs only after all tool results commit and adopts its durable replacement before continuation', async () => {
+  const f = maintenanceFixture([response([call('a'), call('b', 'write')]), response()])
+  f.hooks.maintain = (request) => {
+    assert.equal(f.events.at(-1).type, 'tool_completed')
+    assert.deepEqual(f.executions, ['a', 'b'])
+    assert.equal(request.context.items.filter(item => item.type === 'function_call_output').length, 2)
+    assert.equal(request.modelRequests, 1)
+    assert.equal(request.toolCalls, 2)
+    assert.equal(request.remainingActiveMs, 600_000)
+    assert.equal(request.budget.maxInputTokens, 100)
+    return f.compact()
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.equal(result.toolCalls, 2)
+  assert.deepEqual(result.usage, { inputTokens: 25, outputTokens: 5, totalTokens: 30 })
+  assert.equal(f.maintenance.length, 1)
+  assert.deepEqual(f.modelInputs[1].context.items, [{ role: 'assistant', content: 'historical summary' }])
+  const commit = f.order.indexOf('maintenance_commit')
+  assert.equal(f.order[commit + 1], 'checkpoint')
+  assert.equal(f.order[commit + 2], 'model')
+})
+
+test('unchanged context checks refund the reserved request and can defer until a later complete boundary', async () => {
+  const f = maintenanceFixture([response([call('a')]), response([call('b')]), response()])
+  f.hooks.maintain = () => f.maintenance.length === 1 ? { kind: 'unchanged', modelRequests: 0, usage: null } : f.compact()
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 4)
+  assert.equal(f.maintenance.length, 2)
+  assert.deepEqual(f.maintenance.map(request => request.modelRequests), [1, 2])
+  assert.deepEqual(result.usage, { inputTokens: 35, outputTokens: 7, totalTokens: 42 })
+})
+
+test('maintenance makes at most one actual summary request even as subsequent tool batches grow context again', async () => {
+  const f = maintenanceFixture([response([call('a')]), response([call('b')]), response([call('c')]), response()])
+  f.hooks.maintain = () => f.compact()
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 5)
+  assert.equal(f.maintenance.length, 1)
+  assert.deepEqual(f.executions, ['a', 'b', 'c'])
+})
+
+test('maintenance never starts at admission, below threshold, or without an ordinary continuation slot', async (t) => {
+  await t.test('admission hard limit', async () => {
+    const f = maintenanceFixture()
+    f.request.budget = { maxInputTokens: 99 }
+    assert.equal((await f.run()).reason, 'context_budget')
+    assert.equal(f.maintenance.length, 0)
+    assert.equal(f.modelInputs.length, 0)
+  })
+  await t.test('below threshold', async () => {
+    const f = maintenanceFixture()
+    f.request.budget = { maxInputTokens: 1000 }
+    assert.equal((await f.run()).status, 'completed')
+    assert.equal(f.maintenance.length, 0)
+  })
+  await t.test('one slot remains', async () => {
+    const f = maintenanceFixture()
+    f.request.budget = { maxInputTokens: 100, maxModelRequests: 2 }
+    assert.equal((await f.run()).modelRequests, 2)
+    assert.equal(f.maintenance.length, 0)
+  })
+  await t.test('summary and continuation consume final two slots', async () => {
+    const f = maintenanceFixture([response([call('a')]), response([call('b')])])
+    f.request.budget = { maxInputTokens: 100, maxModelRequests: 3 }
+    f.hooks.maintain = () => f.compact()
+    const result = await f.run()
+    assert.equal(result.reason, 'model_request_budget')
+    assert.equal(result.modelRequests, 3)
+    assert.equal(f.maintenance.length, 1)
+    assert.deepEqual(f.executions, ['a', 'b'])
+  })
+})
+
+test('post-compaction hard input guard still stops oversized context before another ordinary request', async () => {
+  const f = maintenanceFixture()
+  f.ports.model.estimateInputTokens = () => f.modelInputs.length ? 101 : 100
+  f.hooks.maintain = () => f.compact()
+  const result = await f.run()
+  assert.equal(result.reason, 'context_budget')
+  assert.equal(result.modelRequests, 2)
+  assert.equal(f.modelInputs.length, 1)
+})
+
+test('known maintenance failures stop explicitly and account for attempted versus unattempted model work', async (t) => {
+  for (const modelRequests of [0, 1]) await t.test(`requests ${modelRequests}`, async () => {
+    const f = maintenanceFixture()
+    f.hooks.maintain = () => ({ kind: 'failed', reason: 'context_maintenance_unhelpful', modelRequests, usage: null })
+    const result = await f.run()
+    assert.equal(result.status, 'failed')
+    assert.equal(result.reason, 'context_maintenance_unhelpful')
+    assert.equal(result.modelRequests, 1 + modelRequests)
+    assert.equal(result.committed, true)
+    assert.deepEqual(result.usage, modelRequests ? null : { inputTokens: 10, outputTokens: 2, totalTokens: 12 })
+    assert.equal(f.modelInputs.length, 1)
+    assert.deepEqual(f.executions, ['a'])
+  })
+})
+
+test('uncertain maintenance commit stops without stale checkpoints, fabricated terminal events or another request', async () => {
+  const f = maintenanceFixture()
+  f.hooks.maintain = () => { f.compact(); throw new Error('durable replacement acknowledgement lost') }
+  const result = await f.run()
+  assert.equal(result.status, 'recovery_required')
+  assert.equal(result.reason, 'store_context_maintenance_failed')
+  assert.equal(result.committed, false)
+  assert.equal(result.modelRequests, 2)
+  assert.equal(result.usage, null)
+  assert.equal(f.order.at(-1), 'maintenance_commit')
+  assert.equal(f.events.some(event => event.type === 'run_finished'), false)
+  assert.equal(f.modelInputs.length, 1)
+  assert.deepEqual(f.executions, ['a'])
+})
+
+test('maintenance replacement is adopted before cancellation or active-time exhaustion is finalized', async (t) => {
+  for (const reason of ['cancelled', 'active_time_budget']) await t.test(reason, async () => {
+    const f = maintenanceFixture()
+    f.request.budget = { maxInputTokens: 100, maxActiveMs: 50 }
+    f.hooks.maintain = (request) => {
+      assert.equal(request.remainingActiveMs, 50)
+      if (reason === 'cancelled') {
+        f.controller.abort()
+        assert.equal(request.signal.aborted, true)
+      } else f.setNow(50)
+      return f.compact()
+    }
+    const result = await f.run()
+    assert.equal(result.reason, reason)
+    assert.equal(result.committed, true)
+    assert.deepEqual(result.context.items, [{ role: 'assistant', content: 'historical summary' }])
+    assert.equal(result.modelRequests, 2)
+    assert.equal(f.modelInputs.length, 1)
+    assert.ok(f.order.lastIndexOf('checkpoint') > f.order.indexOf('maintenance_commit'))
+  })
+})
+
+test('failed replacement checkpoint cannot resume tools or model execution', async () => {
+  const f = maintenanceFixture()
+  f.hooks.maintain = () => f.compact()
+  f.hooks.checkpoint = () => { if (f.order.includes('maintenance_commit')) throw new Error('checkpoint unavailable') }
+  const result = await f.run()
+  assert.equal(result.reason, 'store_checkpoint_failed')
+  assert.equal(result.committed, false)
+  assert.equal(f.modelInputs.length, 1)
+  assert.deepEqual(f.executions, ['a'])
+})
+
+test('malformed maintenance results conservatively retain the reserved request and recovery barrier', async (t) => {
+  for (const [label, returned] of [
+    ['wrong protocol', { kind: 'compacted', modelRequests: 1, usage: null, context: { protocol: { id: 'other', version: 1 }, items: [] } }],
+    ['free compaction', { kind: 'compacted', modelRequests: 0, usage: null, context: { protocol, items: [] } }],
+    ['unchanged after request', { kind: 'unchanged', modelRequests: 1, usage: null }],
+    ['unbounded requests', { kind: 'failed', reason: 'context_maintenance_failed', modelRequests: 2, usage: null }],
+    ['invented usage', { kind: 'unchanged', modelRequests: 0, usage: { inputTokens: 1 } }],
+    ['invalid usage', { kind: 'failed', reason: 'context_maintenance_failed', modelRequests: 1, usage: { inputTokens: -1 } }],
+    ['untrusted error', { kind: 'failed', reason: 'raw error content', modelRequests: 1, usage: null }],
+  ]) await t.test(label, async () => {
+    const f = maintenanceFixture()
+    f.hooks.maintain = () => returned
+    const result = await f.run()
+    assert.equal(result.reason, 'store_context_maintenance_failed')
+    assert.equal(result.committed, false)
+    assert.equal(result.modelRequests, 2)
+    assert.equal(f.modelInputs.length, 1)
+  })
+  await t.test('replacement does not shrink', async () => {
+    const f = maintenanceFixture()
+    f.hooks.maintain = request => ({ kind: 'compacted', modelRequests: 1, usage: null, context: request.context })
+    assert.equal((await f.run()).reason, 'store_context_maintenance_failed')
+  })
+})
+
+test('compaction preserves duplicate tool identity and denied-input guards', async (t) => {
+  await t.test('duplicate call identity', async () => {
+    const f = maintenanceFixture([response([call('same', 'write')]), response([call('same', 'write')])])
+    f.hooks.maintain = () => f.compact()
+    assert.equal((await f.run()).reason, 'invalid_tool_call_identity')
+    assert.deepEqual(f.executions, ['same'])
+    assert.equal(f.approvals.length, 1)
+  })
+  await t.test('denied input is not approved again', async () => {
+    const f = maintenanceFixture([response([call('first', 'write')]), response([call('again', 'write')]), response()])
+    f.hooks.approve = input => ({ binding: input.binding, decision: 'denied', expiresAt: input.expiresAt })
+    f.hooks.maintain = () => f.compact()
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(f.executions, [])
+    assert.equal(f.approvals.length, 1)
+    assert.equal(f.events.filter(event => event.type === 'tool_completed').at(-1).result.output.error, 'approval_previously_denied')
+  })
 })
