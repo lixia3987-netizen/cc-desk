@@ -1,5 +1,6 @@
 import { hashJson } from './native-eval-engineering-common.mjs';
 import { loadEngineeringBatch } from './native-eval-engineering-reports.mjs';
+import { UNLIMITED_BUDGET } from './native-eval-engineering-schema.mjs';
 
 const METADATA_FIELDS = ['model', 'protocol', 'configurationReference', 'credentialSourceReference'];
 const EXECUTION_BUDGET_FIELDS = ['modelRequests', 'toolCalls', 'inputTokens', 'outputTokens', 'activeDurationMs', 'wallDurationMs'];
@@ -22,11 +23,12 @@ function inspectSlot(slot) {
     else if (record.budget[field] === 0) add('nonpositive_execution_budget', `budget.${field}`);
   }
   for (const field of ['costAmount', 'currency']) {
+    if (field === 'currency' && record.budget.costAmount === UNLIMITED_BUDGET) continue;
     if (record.budget[field] === null) add('missing_budget', `budget.${field}`);
   }
   if (record.budget.approvalPolicy === null || !record.budget.approvalPolicy.trim()) add('missing_budget', 'budget.approvalPolicy');
   if (!record.budget.stopConditions.length || record.budget.stopConditions.some(value => !value.trim())) add('missing_budget', 'budget.stopConditions');
-  if (record.budget.activeDurationMs !== null && record.budget.wallDurationMs !== null && record.budget.activeDurationMs > record.budget.wallDurationMs) {
+  if (typeof record.budget.wallDurationMs === 'number' && (record.budget.activeDurationMs === UNLIMITED_BUDGET || typeof record.budget.activeDurationMs === 'number' && record.budget.activeDurationMs > record.budget.wallDurationMs)) {
     add('inconsistent_duration_budget', 'budget.activeDurationMs');
   }
   if (slot.attempts.length) add('existing_verification_attempt', 'attempts');

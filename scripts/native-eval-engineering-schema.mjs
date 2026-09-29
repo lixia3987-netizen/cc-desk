@@ -39,10 +39,11 @@ function texts(value, label, limit = 32) {
   if (!Array.isArray(value) || value.length > limit) fail(label);
   value.forEach(entry => text(entry, label));
 }
-function amountCurrency(value, label) {
-  number(value.costAmount, `${label} costAmount`, { integer: false });
+function amountCurrency(value, label, allowUnlimited = false) {
+  const unlimited = allowUnlimited && value.costAmount === UNLIMITED_BUDGET;
+  if (!unlimited) number(value.costAmount, `${label} costAmount`, { integer: false });
   if (value.currency !== null && (typeof value.currency !== 'string' || !/^[A-Z]{3}$/.test(value.currency))) fail(`${label} currency`);
-  if (value.costAmount !== null && value.currency === null) fail(`${label} cost currency`);
+  if (!unlimited && value.costAmount !== null && value.currency === null) fail(`${label} cost currency`);
 }
 export function assertSuiteIdentity(value, expected) {
   object(value, ['id', 'taskBaseline', 'digest'], 'suite');
@@ -68,14 +69,19 @@ export function assertBatchManifest(manifest, suite, tasks) {
   });
   return manifest;
 }
-const budgetNumbers = ['modelRequests', 'toolCalls', 'inputTokens', 'outputTokens', 'activeDurationMs', 'wallDurationMs'];
+export const UNLIMITED_BUDGET = 'unlimited';
+export const BUDGET_NUMBERS = ['modelRequests', 'toolCalls', 'inputTokens', 'outputTokens', 'activeDurationMs', 'wallDurationMs'];
 export const METRIC_NUMBERS = ['activeDurationMs', 'approvalWaitMs', 'verificationDurationMs', 'inputTokens', 'outputTokens', 'modelRequests', 'toolCalls', 'searchCalls', 'approvalCount', 'clarificationCount', 'rescuePromptCount', 'manualCodeEdits', 'wrongScopeChanges', 'statusMismatches'];
 export function assertEngineeringRecord(record, slot, manifest) {
   object(record, ['schemaVersion', 'suiteId', 'taskBaseline', 'suiteDigest', 'taskId', 'round', 'engine', 'appRevision', 'model', 'protocol', 'configurationReference', 'credentialSourceReference', 'budget', 'evidence', 'result', 'metrics', 'limitations'], 'record');
-  if (record.schemaVersion !== 1 || record.suiteId !== manifest.suite.id || record.taskBaseline !== manifest.suite.taskBaseline || record.suiteDigest !== manifest.suite.digest || record.appRevision !== manifest.appRevision || record.taskId !== slot.taskId || record.engine !== slot.engine || record.round !== slot.round) fail('record identity');
+  if (![1, 2].includes(record.schemaVersion) || record.suiteId !== manifest.suite.id || record.taskBaseline !== manifest.suite.taskBaseline || record.suiteDigest !== manifest.suite.digest || record.appRevision !== manifest.appRevision || record.taskId !== slot.taskId || record.engine !== slot.engine || record.round !== slot.round) fail('record identity');
   for (const key of ['model', 'protocol', 'configurationReference', 'credentialSourceReference']) text(record[key], key, { nullable: true, nonempty: true });
-  object(record.budget, [...budgetNumbers, 'costAmount', 'currency', 'approvalPolicy', 'stopConditions'], 'budget');
-  budgetNumbers.forEach(key => number(record.budget[key], `budget ${key}`)); amountCurrency(record.budget, 'budget');
+  object(record.budget, [...BUDGET_NUMBERS, 'costAmount', 'currency', 'approvalPolicy', 'stopConditions'], 'budget');
+  const allowUnlimited = record.schemaVersion === 2;
+  BUDGET_NUMBERS.forEach(key => {
+    if (!allowUnlimited || record.budget[key] !== UNLIMITED_BUDGET) number(record.budget[key], `budget ${key}`);
+  });
+  amountCurrency(record.budget, 'budget', allowUnlimited);
   text(record.budget.approvalPolicy, 'approval policy', { nullable: true, nonempty: true }); texts(record.budget.stopConditions, 'stop conditions');
   const evidenceRefs = ['sessionReference', 'transcriptReference', 'candidateCommit', 'diffReference', 'independentVerifierReference', 'originalTestsReference', 'newTestsReference', 'humanReviewReference'];
   object(record.evidence, ['kind', ...evidenceRefs], 'evidence');

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadEngineeringSuite, ordinaryDirectory, readJson, createJson, hashJson, assertSeparate, evaluatorRoot } from './native-eval-engineering-common.mjs';
-import { MAX_ATTEMPTS, MAX_REPORT_BYTES, MAX_RECEIPT_BYTES, RECORD_STATUSES, METRIC_NUMBERS, VERIFICATION_STATUSES, ENGINES, UUID, REVISION, engineeringSlots, assertSuiteIdentity, assertBatchManifest, assertEngineeringRecord, assertAttemptIntent, assertAttemptResult, assertJsonBudget, object } from './native-eval-engineering-schema.mjs';
+import { MAX_ATTEMPTS, MAX_REPORT_BYTES, MAX_RECEIPT_BYTES, RECORD_STATUSES, METRIC_NUMBERS, BUDGET_NUMBERS, UNLIMITED_BUDGET, VERIFICATION_STATUSES, ENGINES, UUID, REVISION, engineeringSlots, assertSuiteIdentity, assertBatchManifest, assertEngineeringRecord, assertAttemptIntent, assertAttemptResult, assertJsonBudget, object } from './native-eval-engineering-schema.mjs';
 
 const LIMITATIONS = [
   'Records, evidence references and human review references are operator declarations; this tool does not authenticate them or contact a model service.',
@@ -13,8 +13,9 @@ const LIMITATIONS = [
   'Metric totals describe the current twelve declared model-run records, not the number or total cost of repeated verifier attempts. Prior record snapshots remain attached to each attempt.',
 ];
 
-export async function initializeEngineeringBatch(directory, appRevision) {
+export async function initializeEngineeringBatch(directory, appRevision, { unlimitedBudget = false } = {}) {
   if (typeof appRevision !== 'string' || !REVISION.test(appRevision)) throw new Error('Application revision must be a full lowercase 40-character commit hash.');
+  if (typeof unlimitedBudget !== 'boolean') throw new Error('Unlimited budget must be an explicit boolean option.');
   const { suite, manifest: sourceManifest, template } = await loadEngineeringSuite();
   assertSeparate(path.resolve(directory), evaluatorRoot);
   await fs.mkdir(path.resolve(directory), { recursive: true });
@@ -24,6 +25,10 @@ export async function initializeEngineeringBatch(directory, appRevision) {
   await fs.mkdir(path.join(root, 'records')); await fs.mkdir(path.join(root, 'attempts'));
   for (const slot of manifest.slots) {
     const record = { ...structuredClone(template), suiteId: suite.id, taskBaseline: suite.taskBaseline, suiteDigest: suite.digest, taskId: slot.taskId, engine: slot.engine, round: slot.round, appRevision };
+    if (unlimitedBudget) {
+      record.schemaVersion = 2;
+      for (const key of [...BUDGET_NUMBERS, 'costAmount']) record.budget[key] = UNLIMITED_BUDGET;
+    }
     assertEngineeringRecord(record, slot, manifest);
     await createJson(path.join(root, slot.recordFile), record);
   }
@@ -183,7 +188,7 @@ export async function compareEngineeringReports(leftFile, rightFile) {
   const differences = [];
   const missingFor = record => [
     ...metadataKeys.filter(key => key !== 'budget' && record[key] === null),
-    ...Object.entries(record.budget).filter(([, value]) => value === null || (Array.isArray(value) && value.length === 0)).map(([key]) => `budget.${key}`),
+    ...Object.entries(record.budget).filter(([key, value]) => !(key === 'currency' && record.budget.costAmount === UNLIMITED_BUDGET) && (value === null || (Array.isArray(value) && value.length === 0))).map(([key]) => `budget.${key}`),
   ];
   const missingMetadata = [];
   if (left.batch.manifest.appRevision !== right.batch.manifest.appRevision) differences.push('appRevision');

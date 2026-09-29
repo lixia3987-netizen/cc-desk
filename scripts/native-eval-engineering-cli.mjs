@@ -1,6 +1,6 @@
 import path from 'node:path';
 
-export const ENGINEERING_USAGE = 'engineering-init <empty-operator-directory> <40-character-app-commit> | engineering-readiness <operator-directory> | engineering-verify <operator-directory> <run-id> <candidate-directory> [--timeout-ms <1..300000>] | engineering-report <operator-directory> <new-report.json> | engineering-compare <left-report.json> <right-report.json>';
+export const ENGINEERING_USAGE = 'engineering-init <empty-operator-directory> <40-character-app-commit> [--unlimited-budget] | engineering-readiness <operator-directory> | engineering-verify <operator-directory> <run-id> <candidate-directory> [--timeout-ms <1..300000>] | engineering-report <operator-directory> <new-report.json> | engineering-compare <left-report.json> <right-report.json>';
 
 /** Engineering commands are separate from the original three smoke-task commands. */
 export async function engineeringCommand(args) {
@@ -11,9 +11,9 @@ export async function engineeringCommand(args) {
     const value = await checkEngineeringReadiness(first);
     return { exitCode: value.status === 'metadata_complete' ? 0 : 1, output: value };
   }
-  if (command === 'engineering-init' && args.length === 3) {
+  if (command === 'engineering-init' && (args.length === 3 || args.length === 4 && third === '--unlimited-budget')) {
     const { initializeEngineeringBatch } = await import('./native-eval-engineering-reports.mjs');
-    const value = await initializeEngineeringBatch(first, second);
+    const value = await initializeEngineeringBatch(first, second, { unlimitedBudget: args.length === 4 });
     return { exitCode: 0, output: { directory: path.resolve(first), ...value } };
   }
   if (command === 'engineering-report' && args.length === 3) {
