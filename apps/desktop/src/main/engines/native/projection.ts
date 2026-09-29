@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type JsonObject, type JsonValue, type RunResult, type ToolDefinition } from '@cc-desk/agent-core';
 import { estimateNativeInputTokens, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
 import { estimateNativeCost } from '../../../shared/native-cost';
+import { isNativeImageAttachments } from '@cc-desk/contracts/chat';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetPreview, type NativeChangeSetFileEvent, type NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, NativeCommandSnapshot, TaskState } from '../../../shared/chat';
@@ -154,7 +155,10 @@ export class NativeProjection {
         measuredAt = undefined;
         const model = event.request.configuration.model;
         add({ type: 'metadata', resetUsage: true, ...(typeof model === 'string' ? { model } : {}) });
-        add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', ...bounded(event.request.input), createdAt } });
+        const images = configuration.imageAttachments;
+        if (images !== undefined && !isNativeImageAttachments(images)) throw new Error('Native 图片记录元数据损坏，原始记录已保留。');
+        add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', ...bounded(event.request.input), createdAt,
+          ...(images === undefined ? {} : { nativeImageAttachments: clone(images) }) } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'model_request_started') {
         streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);

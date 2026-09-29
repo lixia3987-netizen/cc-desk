@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
+import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import type { ChatQueueSnapshot } from '../shared/chat';
 
 const itemSchema = z.object({
@@ -8,7 +9,8 @@ const itemSchema = z.object({
   createdAt: z.string().max(100), status: z.enum(['queued', 'sending']),
   attachmentNames: z.array(z.string().max(1024)).max(8).optional(),
   nativeTaskId: z.string().uuid().optional(),
-});
+  nativeImageAttachments: z.custom<NativeImageAttachment[]>(isNativeImageAttachments).optional(),
+}).refine(item => item.nativeImageAttachments === undefined || item.nativeImageAttachments.length === item.attachments.length);
 const schema = z.object({
   version: z.literal(1), items: z.array(itemSchema).max(100), paused: z.boolean(), error: z.string().max(8000).optional(),
   receipts: z.array(z.object({ requestId: z.string().max(200), messageId: z.string().uuid(), digest: z.string().length(64) })).max(512),

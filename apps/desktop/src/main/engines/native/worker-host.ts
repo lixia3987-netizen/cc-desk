@@ -5,6 +5,7 @@ import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, validateModelFai
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
+import { verifyNativeImageAttachments } from '../../native-image-attachments';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
@@ -136,6 +137,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
   const definitions = clone(options.tools.definitions);
   const model = { ...clone(options.model), toolDefinitions: definitions };
   const adapter = createNativeModel(model);
+  try { verifyNativeImageAttachments(run.images ?? [], run.configuration.imageAttachments ?? []); }
+  catch { throw new NativeWorkerError('configuration', 'Native image attachment metadata is invalid.'); }
   const { apiKey: _credential, ...modelMetadata } = model;
   try { assertNoModelCredential({ run, definitions, model: modelMetadata }, forbiddenValues); }
   catch { throw new NativeWorkerError('credential', 'Native worker input contained a protected credential.'); }
@@ -316,7 +319,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const item = fields(args, ['identity', 'input', 'inputDigest', 'userItems', 'protocol', 'configuration', 'policyRevision']);
         identity(item.identity, runIdentity);
         if (begun || startingRun || item.input !== run.input || !equal(item.configuration, run.configuration) || item.policyRevision !== run.policyRevision ||
-            !equal(item.protocol, adapter.protocol) || !equal(item.userItems, adapter.userItems(run.input))) invalid();
+            !equal(item.protocol, adapter.protocol) || !equal(item.userItems, adapter.userItems(run.input, run.images))) invalid();
         const digest = createHash('sha256').update(canonicalJson({ input: run.input, userItems: item.userItems as JsonValue, protocol: item.protocol as JsonValue, configuration: run.configuration, policyRevision: run.policyRevision })).digest('hex');
         if (item.inputDigest !== digest) invalid();
         startingRun = true;
@@ -354,7 +357,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (!['unchanged', 'compacted', 'failed'].includes(result.kind) || ![0, 1].includes(result.modelRequests) ||
               result.kind === 'unchanged' && (result.modelRequests !== 0 || result.usage !== null) ||
               result.kind === 'compacted' && (result.modelRequests !== 1 || !('context' in value)) ||
-              result.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful'].includes(result.reason)) invalid();
+              result.kind === 'failed' && !['context_maintenance_failed', 'context_maintenance_unhelpful', 'context_maintenance_images_unsupported'].includes(result.reason)) invalid();
           usage(result.usage);
           assertNoModelCredential(result, forbiddenValues);
           if (result.kind === 'compacted') {

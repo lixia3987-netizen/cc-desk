@@ -177,13 +177,14 @@ test('stable duplicate in-flight returns one promise and changed payload is reje
   } finally { await f.dispose(); }
 });
 
-test('missing credential and unsupported attachment reject before worker/model starts', async () => {
+test('missing credential and unselected attachment fail before worker/model starts', async () => {
   let starts = 0; const f = await fixture(async options => { starts++; return inlineWorker(options); });
   try {
     await f.restart();
     const result = await f.executor.send(f.id, 'missing'); assert.equal(result.success, false);
     assert.equal(starts, 0); assert.equal(f.server.requests.length, 0);
-    await assert.rejects(f.executor.send(f.id, 'attachment', ['/tmp/secret']), /附件/); assert.equal(starts, 0);
+    const attachment = await f.executor.send(f.id, 'attachment', ['/tmp/secret']);
+    assert.equal(attachment.success, false); assert.match(attachment.error!, /附件/); assert.equal(starts, 0);
     assert.equal(f.executor.has(f.id), false);
   } finally { await f.dispose(); }
 });

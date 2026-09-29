@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type RunIdentity, type Usage } from '@cc-desk/agent-core';
+import { contextHasUserImages, contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type RunIdentity, type Usage } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
@@ -27,6 +27,7 @@ export function createInRunCompaction(options: {
     if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
     if (request.modelRequests < 1 || request.budget.maxModelRequests - request.modelRequests < 2 ||
         contextBudgetUsage(request.context, model.estimateInputTokens(request.context), request.budget).status === 'within_budget') return unchanged();
+    if (contextHasUserImages(request.context)) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_images_unsupported' };
     maintaining = true;
     let phaseStarted = false;
     try {

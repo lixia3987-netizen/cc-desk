@@ -379,6 +379,12 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .composer .attachment-chips{display:flex;flex-wrap:wrap;gap:6px;padding:10px 12px 0}
 .composer .attachment-chips>span{flex:none;display:flex;align-items:center;gap:4px;max-width:100%;font-size:calc(10px * var(--ui-font-scale));border:1px solid var(--border);border-radius:5px;padding:3px 4px 3px 8px;color:var(--text-secondary)}
 .attachment-chips .icon-button{height:21px;width:21px;min-height:21px;padding:3px}
+.composer .native-image-notice{margin:8px 12px;line-height:1.5;overflow-wrap:anywhere}
+.native-image-history ul{list-style:none;padding:0;margin:8px 0}
+.native-image-history li{padding:5px 0;overflow-wrap:anywhere}
+.native-image-history li>svg{vertical-align:middle;margin-right:6px}
+.native-image-history details{font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
+.native-image-history code{display:block;overflow-wrap:anywhere}
 .jump-latest{position:absolute;bottom:170px;right:27px;box-shadow:0 3px 15px var(--shadow);font-size:calc(10px * var(--ui-font-scale))}
 .palette-results{margin-top:14px;max-height:440px;overflow:auto}
 .palette-results>button{width:100%;justify-content:space-between;text-align:left;padding:13px 8px;border-bottom:1px solid var(--border);font-size:calc(12px * var(--ui-font-scale))}

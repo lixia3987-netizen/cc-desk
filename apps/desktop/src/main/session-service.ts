@@ -8,6 +8,7 @@ import { StructuredExecutions, TerminalExecutions } from './execution/routers';
 import { sameConversation } from '../shared/execution';
 import { exportSession } from './execution/export-session';
 import { Attachments } from './attachments';
+import { readNativeImageAttachments } from './native-image-attachments';
 import { WorkflowEngine } from './workflows';
 import { ChatQueue } from './chat-queue';
 import { ChatSnapshotClock } from './chat-snapshot-clock';
@@ -102,8 +103,10 @@ export class SessionService {
         if (this.runtime.has(id)) throw new Error('此会话已有终端进程。');
       },
       blocked: id => this.admissions.has(id) || this.chat.isBusy(id) || this.workflows.isSessionBusy(id),
+      attachmentMetadata: async (id, files) => this.session(id).execution.providerId === 'native' && files.length
+        ? (await readNativeImageAttachments(store.directory, id, files)).metadata : undefined,
       acceptAttachments: (id, files, commit) => this.attachments.acceptQueued(id, files, commit),
-      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}) }),
+      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}), ...(item.nativeImageAttachments ? { imageAttachments: item.nativeImageAttachments } : {}) }),
       settled:id => this.refreshDirectoryRelease(id),
       interrupt: id => this.interruptForQueue(id),
       changed: id => {

@@ -4,6 +4,7 @@ import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
 import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot } from '../shared/chat';
 import { MessageText } from './MessageText';
+import { ChatAttachmentChips, NativeImageAttachments, NativeImageNotice } from './NativeImageAttachments';
 import { ChatSearch } from './ChatSearch';
 import { ApprovalDrafts, type ApprovalDraft } from './approval-drafts';
 import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
@@ -61,11 +62,11 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
 }
 
 function sameMessage(left:ChatMessage,right:ChatMessage) {
-  return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input)&&left.nativeChangeSetState===right.nativeChangeSetState&&JSON.stringify(left.nativeChangeSetResult)===JSON.stringify(right.nativeChangeSetResult);
+  return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input)&&left.nativeChangeSetState===right.nativeChangeSetState&&JSON.stringify(left.nativeChangeSetResult)===JSON.stringify(right.nativeChangeSetResult)&&JSON.stringify(left.nativeImageAttachments)===JSON.stringify(right.nativeImageAttachments);
 }
 const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative}:{message:ChatMessage;engineName:string;isNative:boolean}) {
   const changeSet=isNative&&message.role==='tool'&&message.toolName==='apply_change_set';
-  const content=<><MessageText text={message.text}/>{message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
+  const content=<><MessageText text={message.text}/>{isNative&&message.role==='user'&&message.nativeImageAttachments&&<NativeImageAttachments images={message.nativeImageAttachments}/>} {message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
   const changeSetContent=<><NativeChangeSetResult result={message.nativeChangeSetResult} state={message.nativeChangeSetState}/>{message.nativeChangeSetState==='not_executed'&&<><pre className="tool-input" aria-label="工具未执行原因">{message.text}</pre>{message.truncated&&<p className="panel-note message-truncated">未执行原因过长，展示内容已截断。可导出会话查看完整记录。</p>}</>}</>;
   return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{changeSet?changeSetContent:<>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</>}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
 },(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&sameMessage(previous.message,next.message));
@@ -268,7 +269,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     </Dialog>}
     <div className="composer chat-composer">
       {unavailable&&<p className="inline-warning engine-unavailable" role="status">{unavailable}</p>}
-      {visibleAttachments.length>0&&<div className="attachment-chips">{visibleAttachments.map(file=><span key={file.path} title={file.path}><Paperclip size={12}/>{file.name}<button className="icon-button" aria-label={'移除附件 '+file.name} disabled={attachmentsBlocked} onClick={()=>onRemoveAttachment(file.path)}><X size={12}/></button></span>)}</div>}
+      <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment}/>
+      {session.execution.providerId==='native'&&descriptor?.capabilities.attachments&&<NativeImageNotice/>}
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
         commands={descriptor?.capabilities.commands?snapshot?.commands:undefined} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>

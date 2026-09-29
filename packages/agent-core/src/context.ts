@@ -1,4 +1,11 @@
-import type { ModelContext, RunBudget } from './types.js'
+import type { JsonObject, ModelContext, RunBudget } from './types.js'
+
+/** Image-bearing history must stay intact until a lossless maintenance policy exists. */
+export function contextHasUserImages(context: ModelContext): boolean {
+  return context.items.some(item => item !== null && typeof item === 'object' && !Array.isArray(item) && item.role === 'user' &&
+    Array.isArray(item.content) && item.content.some(part => part !== null && typeof part === 'object' && !Array.isArray(part) &&
+      ['input_image', 'image_url'].includes((part as JsonObject).type as string)))
+}
 
 export interface ContextBudgetUsage {
   estimatedInputTokens: number

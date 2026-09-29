@@ -13,6 +13,11 @@ const manifestSchema = z.object({ version:z.literal(1), items:z.array(z.object({
 })).max(10000) });
 type Item = z.infer<typeof manifestSchema>['items'][number];
 
+/** Parse the shared staging format without loading, collecting or mutating drafts. */
+export function parseStagedAttachmentManifest(value:unknown):ReadonlyArray<Item> {
+  return manifestSchema.parse(value).items;
+}
+
 /** Only native-picker/drop copies recorded in the private manifest can be sent. */
 export class Attachments {
   private entries = new Map<string, Item[]>();
@@ -55,12 +60,15 @@ export class Attachments {
   }
   private attachment(id:string,item:Item):Attachment {return {path:path.join(this.folder(id),item.file),name:item.name,bytes:item.bytes};}
   list(id:string):Promise<Attachment[]> {return this.serial(id,async()=> (await this.load(id)).filter(item=>item.draft).map(item=>this.attachment(id,item)));}
-  async add(id: string, selected: string[]): Promise<Attachment[]> {
+  add(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected);}
+  /** Native staging is atomic with draft validation; Claude retains its existing limits. */
+  addNative(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected,true);}
+  private async addFiles(id: string, selected: string[], native=false): Promise<Attachment[]> {
     return this.serial(id,async()=>{
       if (selected.length > 8) throw new Error('一次最多选择 8 个附件。');
       const items=await this.load(id); const added:Item[]=[];
       const folder=this.folder(id); await fs.mkdir(folder,{recursive:true,mode:0o700});
-      let total=0;
+      let total=0,saved=false;
       try {
         for(const file of selected) {
           const source=await fs.realpath(file), stat=await fs.stat(source), ext=path.extname(source).toLowerCase();
@@ -74,9 +82,18 @@ export class Attachments {
           const copied=await fs.stat(target);
           if(copied.size!==stat.size)throw new Error('附件在选择期间已变更，请重新选择。');
         }
-        if(added.length)await this.save(id,[...items,...added]);
+        if(added.length) {await this.save(id,[...items,...added]);saved=true;}
+        if(native) {
+          const {readNativeImageAttachments}=await import('./native-image-attachments');
+          await readNativeImageAttachments(this.directory,id,[...items,...added].filter(item=>item.draft).map(item=>this.attachment(id,item).path));
+        }
         return added.map(item=>this.attachment(id,item));
-      } catch(error) {await Promise.all(added.map(item=>fs.rm(path.join(folder,item.file),{force:true})));throw error;}
+      } catch(error) {
+        // Restore the prior draft manifest before removing this call's new files.
+        // If restoring fails, preserve bytes conservatively for later recovery.
+        if(native&&saved)await this.save(id,items);
+        await Promise.all(added.map(item=>fs.rm(path.join(folder,item.file),{force:true})));throw error;
+      }
     });
   }
   private async validateFiles(id:string,files:string[]):Promise<string[]> {

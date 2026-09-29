@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision } from '@cc-desk/agent-core';
 import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
@@ -28,6 +28,48 @@ async function fixture() {
   }, dispose: async () => { projection.flush(); await store.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+
+for (const protocol of ['openai-responses', 'openai-chat-completions']) test(`Native image-only history keeps submitted metadata through pagination, export and restart: ${protocol}`, async () => {
+  const f = await fixture();
+  try {
+    const payload = Buffer.from('private-image-payload-only-in-model-ledger');
+    const image = { name: '原图-snapshot.png', mimeType: 'image/png', bytes: payload.length, sha256: createHash('sha256').update(payload).digest('hex') };
+    const original = structuredClone(image), dataUrl = `data:image/png;base64,${payload.toString('base64')}`;
+    f.req.input = ''; f.req.protocol = { id: protocol, version: 1 };
+    f.req.userItems = [{ role: 'user', content: protocol === 'openai-responses' ? [{ type: 'input_image', image_url: dataUrl, detail: 'auto' }] : [{ type: 'image_url', image_url: { url: dataUrl, detail: 'auto' } }] }];
+    f.req.configuration.imageAttachments = [image];
+    await f.store.beginRun(f.req); await f.finish(); await f.projection.hydrate(f.id, f.store);
+    const before = f.projection.snapshot(f.id).messages[0];
+    assert.equal(before.text, ''); assert.deepEqual(before.nativeImageAttachments, [original]);
+    image.name = 'changed-after-submit.jpg';
+    before.nativeImageAttachments![0].name = 'renderer-cannot-rewrite.png';
+    assert.deepEqual(f.projection.snapshot(f.id).messages[0].nativeImageAttachments, [original]);
+    assert.deepEqual((await f.projection.page(f.id)).messages[0].nativeImageAttachments, [original]);
+    assert.equal((await f.projection.search(f.id, '原图-snapshot')).hits[0].id, before.id);
+    const exported = await fs.readFile(f.projection.exportPath(f.id), 'utf8');
+    assert.match(exported, /原图-snapshot.png/); assert.match(exported, new RegExp(original.sha256));
+    assert.ok(!exported.includes(dataUrl)); assert.ok(!exported.includes(payload.toString('base64'))); assert.ok(!exported.includes(f.directory));
+    await f.reopen(); f.setActive(false); const restored = f.create();
+    assert.deepEqual(restored.snapshot(f.id).messages[0].nativeImageAttachments, [original], 'display journal is readable before rebuilding model history');
+    await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).messages[0].nativeImageAttachments, [original]);
+    assert.deepEqual((await restored.page(f.id)).messages[0].nativeImageAttachments, [original]);
+    assert.equal(await fs.readFile(restored.exportPath(f.id), 'utf8'), exported);
+    restored.flush();
+  } finally { await f.dispose(); }
+});
+
+test('Native projection refuses corrupt image metadata without exporting hidden payload fields', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration.imageAttachments = [{ name: 'image.png', mimeType: 'image/png', bytes: 100, sha256: 'a'.repeat(64), data: 'SECRET-IMAGE-PAYLOAD' }];
+    await f.store.beginRun(f.req);
+    await assert.rejects(f.projection.hydrate(f.id, f.store), /图片记录元数据损坏/);
+    assert.equal(f.projection.snapshot(f.id).messages.length, 0);
+    const exported = await fs.readFile(f.projection.exportPath(f.id), 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+    assert.ok(!exported.includes('SECRET-IMAGE-PAYLOAD'));
+  } finally { await f.dispose(); }
+});
 
 test('durable response replaces stream preview, preserves provider-only data outside UI, and survives restart', async () => {
   const f = await fixture();

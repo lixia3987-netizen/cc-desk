@@ -4,11 +4,35 @@ import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
+/** Immutable metadata of the bytes submitted with one Native user message. Never a file path or image payload. */
+export interface NativeImageAttachment {
+  name: string;
+  mimeType: 'image/png' | 'image/jpeg';
+  bytes: number;
+  sha256: string;
+}
+export function isNativeImageAttachments(value: unknown): value is NativeImageAttachment[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 4) return false;
+  let bytes = 0;
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return false;
+    const image = item as Record<string, unknown>;
+    if (Object.keys(image).some(key => !['name', 'mimeType', 'bytes', 'sha256'].includes(key))
+      || typeof image.name !== 'string' || !image.name || image.name.length > 1024 || /[\\/\x00-\x1f\x7f]/.test(image.name)
+      || !['image/png', 'image/jpeg'].includes(String(image.mimeType))
+      || typeof image.bytes !== 'number' || !Number.isSafeInteger(image.bytes) || image.bytes < 1
+      || typeof image.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(image.sha256)) return false;
+    bytes += image.bytes;
+  }
+  return bytes <= 1024 * 1024;
+}
 export interface ChatMessage {
   id: string; turnId: string; role: 'user' | 'assistant' | 'tool' | 'system';
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
+  /** Submitted image version metadata; no live link to the original or staged file. */
+  nativeImageAttachments?: NativeImageAttachment[];
   /** Structured host projection of durable multi-file effects. */
   nativeChangeSetResult?: NativeChangeSetResult;
   nativeChangeSetState?: 'pending' | 'running' | 'not_executed' | 'result';
@@ -111,6 +135,8 @@ export interface ChatSnapshot {
 export interface QueuedChatMessage {
   id: string; text: string; attachments: string[]; createdAt: string;
   attachmentNames?: string[];
+  /** Bytes selected at explicit submission; binds later Native dispatch to the same image version. */
+  nativeImageAttachments?: NativeImageAttachment[];
   status: 'queued' | 'sending';
   nativeTaskId?: string;
 }

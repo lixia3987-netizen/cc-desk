@@ -6,7 +6,7 @@ import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
 } from '@cc-desk/agent-core';
-import { validateModelFailureDiagnostic } from '@cc-desk/agent-core';
+import { contextHasUserImages, validateModelFailureDiagnostic } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
@@ -14,6 +14,12 @@ import { contextSummaryItem, requireCompleteContext, contextPendingCalls, native
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
+
+/** Keep pre-image request identities byte-for-byte compatible with existing journals. */
+export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue): string {
+  const value = Array.isArray(imageAttachments) && imageAttachments.length ? canonical({ input, imageAttachments }) : input;
+  return createHash('sha256').update(value).digest('hex');
+}
 
 export interface RunStoreLimits {
   maxJournalBytes: number;
@@ -496,7 +502,7 @@ export class NativeRunStore implements RunStore {
           if (requestId === identity.requestId) {
             if (!equal(startup.identity, identity)) fail('stale_owner', 'Only the startup owner may begin its associated run');
             if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot begin a new run');
-            if (startup.inputDigest !== createHash('sha256').update(request.input).digest('hex') || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
+            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments) || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
           } else if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
         }
       }
@@ -1132,6 +1138,7 @@ export class NativeRunStore implements RunStore {
   /** Complete durable model/tool boundary. The execution worker cannot invoke this host API. */
   getRunCompactionSource(identity: RunIdentity, expectedContext?: ModelContext): RunCompactionSource {
     this.writable();
+    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (expectedContext !== undefined && !equal(expectedContext, this.context)) fail('context_mismatch', 'Worker context differs from the durable run context');
     const { boundary, goals } = this.runCompactionBoundary(identity);
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
@@ -1207,6 +1214,7 @@ export class NativeRunStore implements RunStore {
   }
 
   private compactionBoundary(keepRecentTurns: number): number {
+    if (this.context && contextHasUserImages(this.context)) fail('image_context_compaction_unsupported', 'Image-bearing context cannot be compressed by a text summary');
     if (!Number.isSafeInteger(keepRecentTurns) || keepRecentTurns < 1 || keepRecentTurns > 10_000) fail('invalid_limits', 'At least one complete recent turn must be retained');
     if (this.recoveryRequired || [...this.runs.values()].some(run => run.status === 'active')) fail('conversation_busy', 'Context maintenance requires an idle conversation without recovery barriers');
     if (!this.context || this.contextTurns.length <= keepRecentTurns) fail('nothing_to_compact', 'At least one older and one retained complete turn are required');
