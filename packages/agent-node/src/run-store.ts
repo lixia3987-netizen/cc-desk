@@ -9,7 +9,7 @@ import type {
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
-import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems } from './context-maintenance.js';
+import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
@@ -126,6 +126,38 @@ export interface AutoCompactionAttempt extends AutoCompactionRequest {
   status: 'attempted' | 'committed';
   compactionSeq?: number;
 }
+export interface RunCompactionSource extends ContextCompactionSource {
+  contextHash: string;
+  /** Irreducible exact goals and latest complete model/tool batch. */
+  retainedContext: ModelContext;
+}
+export interface RunCompactionRequest { requestId: string; contextHash: string }
+export interface RunCompactionAttempt extends RunCompactionRequest {
+  runId: string;
+  seq: number;
+  createdAt: string;
+  status: 'attempted' | 'committed' | 'failed';
+  beforeBytes: number;
+  afterBytes?: number;
+  usage?: Usage | null;
+  reason?: string;
+  compactionSeq?: number;
+  finishedSeq?: number;
+}
+export interface RunCompactionInput extends RunCompactionRequest {
+  summary: string;
+  continuity: string;
+  usage: Usage | null;
+}
+export interface RunCompactionFailure { requestId: string; reason: string; usage: Usage | null }
+interface RunCompactionPlan extends RunCompactionInput {
+  beforeBytes: number;
+  afterBytes: number;
+  context: ModelContext;
+  retainedTurns: Array<{ runId: string; start: number }>;
+  retainedBatches: Array<{ runId: string; start: number }>;
+}
+export interface RunCompactionReceipt { seq: number; context: ModelContext; beforeBytes: number; afterBytes: number }
 type RecoveryCompletion = Extract<RunJournalEvent, { type: 'tool_completed' }>;
 type StoreEvent =
   | { type: 'conversation_created' }
@@ -138,6 +170,9 @@ type StoreEvent =
   | { type: 'recovery_resolved'; runId: string; expectedHash: string; resourcesVerified: true; completions: RecoveryCompletion[]; result: RunResult }
   | { type: 'context_compacted'; plan: ContextCompactionPlan }
   | { type: 'context_compaction_attempted'; requestId: string; inputDigest: string; configurationDigest: string; expectedHash: string; contextHash: string }
+  | { type: 'run_context_compaction_attempted'; request: RunCompactionRequest }
+  | { type: 'run_context_compacted'; plan: RunCompactionPlan }
+  | { type: 'run_context_compaction_failed'; failure: RunCompactionFailure }
   | RunJournalEvent;
 export interface RunStoreRecord {
   schemaVersion: 1;
@@ -192,6 +227,14 @@ function validateAutoCompactionRequest(request: AutoCompactionRequest): void {
   hash(request.inputDigest, 'automatic input digest');
   hash(request.configurationDigest, 'automatic configuration digest');
   hash(request.expectedHash, 'automatic expected head');
+}
+function validateRunCompactionRequest(request: RunCompactionRequest): void {
+  if (!object(request)) fail('invalid_record', 'Invalid in-turn compaction request');
+  text(request.requestId, 'in-turn compaction request id', 256);
+  hash(request.contextHash, 'in-turn context digest');
+}
+function validateSummaryUsage(usage: Usage | null): void {
+  if (usage !== null && (!object(usage) || Object.entries(usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || (value as number) < 0))) fail('invalid_usage', 'Summary usage must contain only nonnegative integer token counts');
 }
 function validateStartupRequest(request: NativeStartupRequest, conversationId: string): void {
   if (!object(request)) fail('invalid_record', 'Invalid startup reservation');
@@ -272,9 +315,11 @@ export class NativeRunStore implements RunStore {
   private context: ModelContext | null = null;
   private originalUserItems: JsonValue[] | undefined;
   private contextTurns: Array<{ runId: string; start: number }> = [];
+  private contextBatches: Array<{ runId: string; start: number }> = [];
   private lastCompaction: ContextCompactionReceipt | null = null;
   private readonly autoCompactionAttempts = new Map<string, AutoCompactionAttempt>();
   private readonly autoCompactionContexts = new Map<string, string>();
+  private readonly runCompactionAttempts = new Map<string, RunCompactionAttempt>();
   private journalBytes = 0;
   private closed = false;
   private closing = false;
@@ -480,6 +525,28 @@ export class NativeRunStore implements RunStore {
     }
     if (!identity) fail('invalid_identity', 'Run event is missing identity');
     const run = this.activeOwner(identity);
+    if (event.type === 'run_context_compaction_attempted') {
+      validateRunCompactionRequest(event.request);
+      if (this.runCompactionAttempts.has(identity.runId)) fail('compaction_already_attempted', 'Each run permits only one summary request');
+      const source = this.getRunCompactionSource(identity);
+      if (source.contextHash !== event.request.contextHash) fail('stale_context', 'Run context changed before reserving compaction');
+      return;
+    }
+    if (event.type === 'run_context_compacted') {
+      if (!object(event.plan)) fail('invalid_record', 'Invalid in-turn compaction plan');
+      const expected = this.planRunCompaction(identity, event.plan);
+      if (!equal(event.plan, expected)) fail('invalid_record', 'In-turn compaction cannot introduce unverified context');
+      return;
+    }
+    if (event.type === 'run_context_compaction_failed') {
+      const failure = event.failure;
+      if (!object(failure)) fail('invalid_record', 'Invalid in-turn compaction failure');
+      text(failure.requestId, 'in-turn compaction request id', 256); text(failure.reason, 'in-turn compaction failure reason', 128);
+      validateSummaryUsage(failure.usage);
+      const attempt = this.runCompactionAttempts.get(identity.runId);
+      if (!attempt || attempt.requestId !== failure.requestId || attempt.status !== 'attempted') fail('compaction_unavailable', 'Summary failure requires an unused durable reservation');
+      return;
+    }
     if (event.type === 'command_lifecycle') {
       text(event.toolCallId, 'command tool call id', 512);
       const tool = run.tools.get(event.toolCallId);
@@ -587,7 +654,7 @@ export class NativeRunStore implements RunStore {
       if (!object(result) || !VALID_STATUSES.has(result.status) || result.committed !== true || !equal(result.identity, identity)) fail('invalid_record', 'Invalid terminal run result');
       validateContext(result.context);
       if (!equal(result.context, this.context)) fail('context_mismatch', 'Terminal context differs from durable model/tool items');
-      const unresolved = [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool));
+      const unresolved = [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool)) || this.runCompactionAttempts.get(run.identity.runId)?.status === 'attempted';
       if (unresolved && result.status !== 'recovery_required') fail('recovery_required', 'Unresolved tool effects require recovery');
       return;
     }
@@ -642,6 +709,9 @@ export class NativeRunStore implements RunStore {
       return;
     }
     if (event.type === 'context_compacted') {
+      const firstRetained = event.plan.retainedTurns[0];
+      const previousStart = this.contextTurns.find(turn => turn.runId === firstRetained.runId)!.start;
+      this.contextBatches = this.contextBatches.filter(batch => batch.start >= previousStart).map(batch => ({ ...batch, start: batch.start - previousStart + firstRetained.start }));
       this.context = clone(event.plan.context);
       this.contextTurns = clone(event.plan.retainedTurns);
       this.lastCompaction = { expectedHash: event.plan.expectedHash, seq: record.seq, beforeBytes: event.plan.beforeBytes, afterBytes: event.plan.afterBytes, createdAt: record.committedAt, ...(event.plan.usage === undefined ? {} : { usage: clone(event.plan.usage) }), ...(event.plan.automaticRequestId === undefined ? {} : { automaticRequestId: event.plan.automaticRequestId }) };
@@ -658,7 +728,17 @@ export class NativeRunStore implements RunStore {
       return;
     }
     const run = this.runs.get(record.identity!.runId)!;
-    if (event.type === 'model_response') {
+    if (event.type === 'run_context_compaction_attempted') {
+      this.runCompactionAttempts.set(run.identity.runId, { ...clone(event.request), runId: run.identity.runId, seq: record.seq, createdAt: record.committedAt, status: 'attempted', beforeBytes: Buffer.byteLength(JSON.stringify(this.context)) });
+    } else if (event.type === 'run_context_compacted') {
+      this.context = clone(event.plan.context);
+      this.contextTurns = clone(event.plan.retainedTurns);
+      this.contextBatches = clone(event.plan.retainedBatches);
+      Object.assign(this.runCompactionAttempts.get(run.identity.runId)!, { status: 'committed', usage: clone(event.plan.usage), afterBytes: event.plan.afterBytes, compactionSeq: record.seq, finishedSeq: record.seq });
+    } else if (event.type === 'run_context_compaction_failed') {
+      Object.assign(this.runCompactionAttempts.get(run.identity.runId)!, { status: 'failed', usage: clone(event.failure.usage), reason: event.failure.reason, finishedSeq: record.seq });
+    } else if (event.type === 'model_response') {
+      this.contextBatches.push({ runId: run.identity.runId, start: this.context!.items.length });
       this.context = { protocol: this.context!.protocol, items: [...this.context!.items, ...event.response.outputItems], ...(event.response.continuation === undefined ? {} : { continuation: event.response.continuation }) };
       for (const call of event.response.toolCalls) run.tools.set(call.id, { call, state: 'requested' });
     } else if (event.type === 'tool_prepared') {
@@ -706,6 +786,18 @@ export class NativeRunStore implements RunStore {
     return { bytes, records };
   }
 
+  private runCompactionHeadroom(identity: RunIdentity | undefined, event: StoreEvent): { bytes: number; records: number } {
+    let records = 0;
+    for (const run of this.runs.values()) {
+      if (run.status !== 'active' || event.type === 'run_recovered' && event.runId === run.identity.runId || event.type === 'run_finished' && identity?.runId === run.identity.runId) continue;
+      const changed = identity?.runId === run.identity.runId;
+      if (changed && (event.type === 'run_context_compacted' || event.type === 'run_context_compaction_failed')) { records++; continue; }
+      const attempt = this.runCompactionAttempts.get(run.identity.runId);
+      if (attempt || changed && event.type === 'run_context_compaction_attempted') records += !attempt || attempt.status === 'attempted' ? 2 : 1;
+    }
+    return { bytes: records * this.limits.maxRecordBytes, records };
+  }
+
   private async commit(identity: RunIdentity | undefined, value: StoreEvent): Promise<{ seq: number }> {
     this.writable();
     const event = clone(value);
@@ -718,8 +810,10 @@ export class NativeRunStore implements RunStore {
     const bytes = Buffer.byteLength(line);
     if (bytes > this.limits.maxRecordBytes || this.journalBytes + bytes > this.limits.maxJournalBytes || this.records.length >= this.limits.maxRecords) fail('limit_exceeded', 'Conversation disk budget exhausted; history is never silently pruned');
     const commandHeadroom = this.commandHeadroom(ownedIdentity, event);
+    const compactionHeadroom = this.runCompactionHeadroom(ownedIdentity, event);
     if (event.type === 'command_lifecycle' && event.progress.status === 'prepared' && commandTerminalBytes(event.progress.maxOutputBytes) > this.limits.maxRecordBytes) fail('limit_exceeded', 'Command terminal receipt exceeds the configured record budget');
     if (this.journalBytes + bytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Outstanding command terminal receipts have reserved durable storage');
+    if (this.journalBytes + bytes + commandHeadroom.bytes + compactionHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records + compactionHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'In-turn summary outcome and terminal run have reserved durable storage');
     if (event.type === 'tool_prepared' && event.prepared.call.name === 'apply_change_set') {
       const preview = (event.prepared.preconditions as JsonObject).changeSet as unknown as NativeChangeSetPreview;
       // Reserve every before/after file receipt now. A later file must not consume
@@ -931,12 +1025,14 @@ export class NativeRunStore implements RunStore {
     const context: ModelContext = { ...clone(this.context!), items: [...clone(this.context!.items), ...completions.flatMap(item => item.resultItems)] };
     requireCompleteContext(context);
     const responses = this.records.filter(record => record.identity?.runId === runId).flatMap(record => record.event.type === 'model_response' ? [record.event.response] : []);
+    const maintenance = this.runCompactionAttempts.get(runId);
+    const usages = [...responses.map(response => response.usage), ...(maintenance ? [maintenance.usage ?? null] : [])];
     let usage: RunResult['usage'] = null;
     if (run.result) usage = clone(run.result.usage);
-    else if (responses.length && responses.every(response => response.usage !== null)) {
+    else if (usages.length && usages.every(value => value !== null)) {
       usage = {};
       for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
-        const values = responses.map(response => response.usage?.[key]);
+        const values = usages.map(value => value?.[key]);
         if (values.every((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0)) {
           const total = values.reduce((sum, value) => sum + value, 0);
           if (Number.isFinite(total)) usage[key] = total;
@@ -944,7 +1040,7 @@ export class NativeRunStore implements RunStore {
       }
     }
     return { completions, result: { identity: clone(run.identity), status: 'cancelled', reason: 'recovery_resolved',
-      modelRequests: run.result?.modelRequests ?? responses.length,
+      modelRequests: run.result?.modelRequests ?? responses.length + (maintenance ? 1 : 0),
       toolCalls: run.result?.toolCalls ?? [...run.tools.values()].filter(tool => tool.prepared || tool.completed).length,
       usage, context, committed: true } };
   }
@@ -960,6 +1056,99 @@ export class NativeRunStore implements RunStore {
       await this.commit(undefined, { type: 'recovery_resolved', runId: request.runId, expectedHash: request.expectedHash, resourcesVerified: true, ...resolution });
       return clone(resolution.result);
     });
+  }
+
+  private runCompactionBoundary(identity: RunIdentity): { boundary: number; goals: JsonValue[]; currentStart: number } {
+    const run = this.activeOwner(identity);
+    if (this.recoveryRequired) fail('recovery_required', 'Context maintenance cannot cross a recovery barrier');
+    if ([...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown')) fail('pending_tools', 'In-turn compaction requires complete durable tool outcomes');
+    if ([...run.tools.values()].some(tool => uncertainCommand(tool))) fail('commands_active', 'In-turn compaction waits for all command handles to finish');
+    if (!this.context) fail('nothing_to_compact', 'No model context is available');
+    requireCompleteContext(this.context);
+    const batch = this.contextBatches.filter(item => item.runId === identity.runId).at(-1);
+    if (!batch || !this.contextBatches.some(item => item.start < batch.start)) fail('nothing_to_compact', 'An older complete batch and a retained current batch are required');
+    const start = this.records[run.startedSeq - 1].event;
+    if (start.type !== 'run_started') fail('corrupt_store', 'Current run has no original input');
+    const firstRun = this.runs.values().next().value!;
+    const sameOriginal = firstRun.identity.runId === identity.runId;
+    return { boundary: batch.start, goals: [...clone(this.originalUserItems!), ...(sameOriginal ? [] : clone(start.request.userItems))], currentStart: sameOriginal ? 0 : this.originalUserItems!.length };
+  }
+
+  /** Complete durable model/tool boundary. The execution worker cannot invoke this host API. */
+  getRunCompactionSource(identity: RunIdentity, expectedContext?: ModelContext): RunCompactionSource {
+    this.writable();
+    if (expectedContext !== undefined && !equal(expectedContext, this.context)) fail('context_mismatch', 'Worker context differs from the durable run context');
+    const { boundary, goals } = this.runCompactionBoundary(identity);
+    const context: ModelContext = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
+    requireCompleteContext(context);
+    const latest = this.records.at(-1)!;
+    return { expectedHash: latest.hash, sourceSeq: latest.seq, contextHash: digest(this.context), scope: 'prefix', context,
+      beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), retainedContext: { protocol: clone(this.context!.protocol), items: [...goals, ...clone(this.context!.items.slice(boundary))] } };
+  }
+
+  /** Reserve once per run before any billable summary request. A lost acknowledgment never authorizes retry. */
+  reserveRunCompaction(identity: RunIdentity, request: RunCompactionRequest): Promise<{ kind: 'reserved' | 'existing'; attempt: RunCompactionAttempt }> {
+    return this.exclusive(async () => {
+      this.writable(); this.owner(identity); validateRunCompactionRequest(request);
+      const prior = this.runCompactionAttempts.get(identity.runId);
+      if (prior) {
+        if (prior.requestId !== request.requestId || prior.contextHash !== request.contextHash) fail('payload_mismatch', 'In-turn summary reservation was reused with different input');
+        return { kind: 'existing', attempt: clone(prior) };
+      }
+      await this.commit(identity, { type: 'run_context_compaction_attempted', request });
+      return { kind: 'reserved', attempt: clone(this.runCompactionAttempts.get(identity.runId)!) };
+    });
+  }
+
+  private planRunCompaction(identity: RunIdentity, input: RunCompactionInput): RunCompactionPlan {
+    validateRunCompactionRequest(input); validateSummaryUsage(input.usage);
+    const attempt = this.runCompactionAttempts.get(identity.runId);
+    if (!attempt || attempt.requestId !== input.requestId || attempt.contextHash !== input.contextHash || attempt.status !== 'attempted') fail('compaction_unavailable', 'In-turn compaction requires an unused durable reservation');
+    const source = this.getRunCompactionSource(identity);
+    if (source.contextHash !== input.contextHash) fail('stale_context', 'Run context changed while producing the summary');
+    const { boundary, goals, currentStart } = this.runCompactionBoundary(identity);
+    const prefix = [...goals, contextSummaryItem(input.summary, this.context!.protocol), runContinuityItem(input.continuity, this.context!.protocol)];
+    const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
+    requireCompleteContext(context);
+    const afterBytes = Buffer.byteLength(JSON.stringify(context));
+    if (afterBytes >= source.beforeBytes) fail('compaction_not_smaller', 'In-turn summary would not reduce the model context');
+    if (Buffer.byteLength(canonical({ schemaVersion: 1, conversationId: this.conversationId, seq: this.records.length + 1, journalHash: ZERO_HASH, context, hash: ZERO_HASH })) > this.limits.maxCheckpointBytes) fail('limit_exceeded', 'Compacted context exceeds checkpoint limit');
+    return { requestId: input.requestId, contextHash: input.contextHash, summary: input.summary, continuity: input.continuity, usage: clone(input.usage), beforeBytes: source.beforeBytes, afterBytes, context,
+      retainedTurns: [{ runId: identity.runId, start: currentStart }], retainedBatches: [{ runId: identity.runId, start: prefix.length }] };
+  }
+
+  /** Construct and publish the complete replacement in one serialized append+fsync. */
+  commitRunCompaction(identity: RunIdentity, input: RunCompactionInput): Promise<RunCompactionReceipt> {
+    return this.exclusive(async () => {
+      this.writable(); this.owner(identity);
+      const attempt = this.runCompactionAttempts.get(identity.runId);
+      if (attempt?.compactionSeq !== undefined) {
+        const prior = this.records[attempt.compactionSeq - 1].event;
+        if (prior.type !== 'run_context_compacted' || !equal(input, { requestId: prior.plan.requestId, contextHash: prior.plan.contextHash, summary: prior.plan.summary, continuity: prior.plan.continuity, usage: prior.plan.usage })) fail('payload_mismatch', 'In-turn compaction receipt cannot change');
+        return { seq: attempt.compactionSeq, context: clone(prior.plan.context), beforeBytes: prior.plan.beforeBytes, afterBytes: prior.plan.afterBytes };
+      }
+      const plan = this.planRunCompaction(identity, input);
+      const receipt = await this.commit(identity, { type: 'run_context_compacted', plan });
+      return { ...receipt, context: clone(plan.context), beforeBytes: plan.beforeBytes, afterBytes: plan.afterBytes };
+    });
+  }
+
+  failRunCompaction(identity: RunIdentity, failure: RunCompactionFailure): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable(); this.owner(identity);
+      const attempt = this.runCompactionAttempts.get(identity.runId);
+      if (attempt?.status === 'failed') {
+        const prior = this.records[attempt.finishedSeq! - 1].event;
+        if (prior.type !== 'run_context_compaction_failed' || !equal(prior.failure, failure)) fail('payload_mismatch', 'Summary failure receipt cannot change');
+        return { seq: attempt.finishedSeq! };
+      }
+      return this.commit(identity, { type: 'run_context_compaction_failed', failure });
+    });
+  }
+
+  lookupRunCompaction(runId: string): RunCompactionAttempt | undefined {
+    const attempt = this.runCompactionAttempts.get(runId);
+    return attempt ? clone(attempt) : undefined;
   }
 
   private compactionBoundary(keepRecentTurns: number): number {
