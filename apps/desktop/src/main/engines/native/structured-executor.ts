@@ -39,6 +39,7 @@ import { createQuestionTool, type NativeQuestionTool } from './question-tool';
 import { createCommandTools, type NativeCommandTools } from './command-tools';
 import { createInRunCompaction } from './in-run-compaction';
 import { buildNativeContextContinuity } from './context-continuity';
+import { nativeCompactionPreview, unavailableCompactionPreview } from './compaction-preview';
 import { estimateNativeCost } from '../../../shared/native-cost';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
@@ -171,8 +172,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       for (const tool of report.tools) tools[tool.status === 'not_executed' ? 'notExecuted' : tool.status]++;
       this.recoveryViews.set(id, { status: report.classification === 'safe_to_continue' ? 'recoverable' : 'blocked', headHash, runId: report.runId, tools });
     } else this.recoveryViews.delete(id);
-    let canCompact = false;
-    try { ledger.getCompactionSource(); canCompact = true; } catch { /* No complete compressible prefix, or recovery is required. */ }
+    let canCompact = false, preview: NonNullable<ChatSnapshot['nativeContextMaintenance']>['preview'];
+    try {
+      const source = ledger.getCompactionSource(); canCompact = true;
+      preview = nativeCompactionPreview(source);
+    } catch (error) { preview = ledger.recoveryRequired ? { status: 'unavailable', reason: 'recovery_required' } : unavailableCompactionPreview(error); }
     const last = ledger.getLastCompaction();
     if (ledger.getAutoCompactionForCurrentContext()?.status === 'attempted') this.autoCompactionBlocked.add(id);
     else this.autoCompactionBlocked.delete(id);
@@ -186,7 +190,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       beforeBytes: attempt.beforeBytes, ...(attempt.afterBytes === undefined ? {} : { afterBytes: attempt.afterBytes }),
       ...(attempt.usage ? { summaryUsage: { ...(attempt.usage.inputTokens === undefined ? {} : { inputTokens: attempt.usage.inputTokens }), ...(attempt.usage.outputTokens === undefined ? {} : { outputTokens: attempt.usage.outputTokens }) } } : {}),
       ...(summaryCostUSD === undefined ? {} : { summaryCostUSD }) } : undefined;
-    this.contextViews.set(id, { headHash, canCompact, ...(last ? { lastCompaction: { beforeBytes: last.beforeBytes, afterBytes: last.afterBytes, createdAt: last.createdAt, trigger: last.automaticRequestId ? 'automatic' : 'manual' } } : {}), ...(inTurn ? { inTurn } : {}) });
+    this.contextViews.set(id, { headHash, canCompact, preview, ...(last ? { lastCompaction: { beforeBytes: last.beforeBytes, afterBytes: last.afterBytes, createdAt: last.createdAt, trigger: last.automaticRequestId ? 'automatic' : 'manual' } } : {}), ...(inTurn ? { inTurn } : {}) });
     await this.projection.hydrate(id, ledger);
   }
   private async openTaskSession(id: string, forbiddenValues: string[] = []) {
@@ -266,6 +270,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const view = this.contextViews.get(id), recovery = this.recoveryViews.get(id);
     if (this.recovery.has(id)) snapshot.nativeRecovery = { ...(recovery ?? { status: 'blocked', headHash: view?.headHash ?? '', tools: { completed: 0, notExecuted: 0, unknown: 0 } }), ...(this.acknowledged.has(id) ? { status: 'acknowledged' as const } : {}), reason: this.recoveryMessage(id) };
     if (view) snapshot.nativeContextMaintenance = { ...view, canCompact: view.canCompact && !this.has(id) && !this.recovery.has(id),
+      preview: this.recovery.has(id) ? { status: 'unavailable', reason: 'recovery_required' }
+        : this.has(id) || this.maintenance || this.sessionMaintenance.has(id) ? { status: 'unavailable', reason: 'busy' } : view.preview ? { ...view.preview } : undefined,
       compacting: operation?.kind === 'compact' || active?.phase === 'compacting' || active?.phase === 'compacting_in_turn',
       ...(active?.phase === 'compacting' ? { compactionTrigger: 'automatic' as const } : active?.phase === 'compacting_in_turn' ? { compactionTrigger: 'in_turn' as const } : operation?.kind === 'compact' ? { compactionTrigger: 'manual' as const } : {}),
       autoCompact: { enabled: parseNativeConfig(this.session(id).engineConfig).autoCompact !== 'off', mode: parseNativeConfig(this.session(id).engineConfig).autoCompact, thresholdPercent: 90, ...(this.autoCompactionBlocked.has(id) && active?.phase !== 'compacting' ? { blocked: true } : {}) } };

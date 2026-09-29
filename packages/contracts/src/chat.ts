@@ -72,9 +72,23 @@ export interface NativeRecoveryStatus {
   reason?: string;
   tools: { completed: number; notExecuted: number; unknown: number };
 }
+/** Metadata only, derived from the same durable head as the maintenance view. */
+export type NativeContextCompactionPreview = {
+  status: 'available';
+  /** Independently serialized local context sizes, not provider tokens or net savings. */
+  summarizableBytes: number;
+  retainedBytes: number;
+  retainedImages: number;
+  retention: 'recent_turns' | 'image_suffix';
+} | {
+  status: 'unavailable';
+  reason: 'no_complete_prefix' | 'image_prefix_unavailable' | 'busy' | 'recovery_required' | 'unsupported_context' | 'unavailable';
+};
 export interface NativeContextMaintenance {
   headHash: string;
   canCompact: boolean;
+  /** Local inspection does not request a summary or guarantee its size or quality. */
+  preview?: NativeContextCompactionPreview;
   compacting?: boolean;
   compactionTrigger?: 'manual' | 'automatic' | 'in_turn';
   autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' };

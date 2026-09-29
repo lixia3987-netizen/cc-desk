@@ -40,8 +40,8 @@ test('unknown recovery only releases the directory after confirmation and keeps 
 });
 
 const maintenance: NativeContextMaintenance = { headHash: 'b'.repeat(64), canCompact: true };
-const renderContext = (state = maintenance, compactDisabled = false) => renderToStaticMarkup(createElement(ContextMeter, {
-  native: true, maintenance: state, compactDisabled, onCompact: fail, onCancelCompact: fail,
+const renderContext = (state = maintenance, compactDisabled = false, previewBlockedReason?: 'busy' | 'recovery_required' | 'unavailable') => renderToStaticMarkup(createElement(ContextMeter, {
+  native: true, maintenance: state, compactDisabled, previewBlockedReason, onCompact: fail, onCancelCompact: fail,
 }));
 
 test('native manual compaction explains billing, lossy summary and retained history before the explicit action', () => {
@@ -156,4 +156,120 @@ test('a historical receipt identifies its own turn and cannot be mistaken for cu
   assert.match(markup, /历史回合压缩回执/);
   assert.match(markup, /已计入所属回合汇总，不需重复相加/);
   assert.doesNotMatch(markup, /此项已计入本回合汇总/);
+});
+
+const textPreview = { status: 'available', summarizableBytes: 12000, retainedBytes: 8000, retainedImages: 0, retention: 'recent_turns' } as const;
+
+test('local text compaction preview keeps independently encoded sizes separate without promising savings or an accepted request', () => {
+  const markup = renderContext({ ...maintenance, preview: textPreview });
+  assert.match(markup, /role="group" aria-label="压缩范围预览"/);
+  assert.match(markup, /可摘要旧历史：12,000 本地编码字节 · 需保留内容：8,000 本地编码字节 · 保留图片：0 张/);
+  assert.match(markup, /保留原始目标及最近完整回合/);
+  assert.match(markup, /两组分别编码，原始目标有重叠，不可相加或推算节省量；摘要长度未知/);
+  assert.match(markup, /字节数不是服务端 tokens 或实际费用，范围可用不代表预算或模型连接校验通过/);
+  assert.match(markup, /使用当前模型生成摘要，可能产生费用；不会执行工具/);
+  assert.equal((markup.match(/<button/g) ?? []).length, 1);
+  assert.doesNotMatch(markup, /20,000|12,000 → 8,000|disabled=""/);
+});
+
+test('image compaction preview retains the first image turn and all later content without rendering payloads or paths', () => {
+  const preview = { ...textPreview, retention: 'image_suffix', retainedImages: 3,
+    body: 'PRIVATE_PROMPT_SENTINEL', path: 'C:\\PRIVATE_IMAGE_SENTINEL.png', imageUrl: 'data:image/png;base64,PRIVATE_IMAGE_BYTES' };
+  const markup = renderContext({ ...maintenance, preview: preview as NonNullable<NativeContextMaintenance['preview']> });
+  assert.match(markup, /保留图片：3 张/);
+  assert.match(markup, /保留原始目标，首个含图回合及其后内容完整保留/);
+  assert.doesNotMatch(markup, /PRIVATE_|data:image|<img|<a /);
+  assert.equal((markup.match(/<button/g) ?? []).length, 1);
+});
+
+test('unavailable previews explain the exact host reason and never display stale measurements', () => {
+  const reasons = {
+    no_complete_prefix: /暂无可摘要的完整旧历史前缀/,
+    image_prefix_unavailable: /首个回合已含图片，没有可摘要的完整旧历史前缀/,
+    busy: /会话正在运行或压缩，暂不提供范围预览/,
+    recovery_required: /会话尚待恢复处理，暂不提供范围预览/,
+    unsupported_context: /当前上下文协议不支持范围预览/,
+    unavailable: /压缩范围暂不可用/,
+  } as const;
+  for (const [reason, message] of Object.entries(reasons)) {
+    const preview = { ...textPreview, status: 'unavailable', reason } as NonNullable<NativeContextMaintenance['preview']>;
+    const markup = renderContext({ ...maintenance, canCompact: false, preview }, true);
+    assert.match(markup, message);
+    assert.doesNotMatch(markup, /可摘要旧历史：|需保留内容：|保留图片：|12,000|8,000/);
+    assert.match(markup, /disabled=""[^>]*>压缩上下文/);
+  }
+});
+
+test('local busy and recovery states hide an older available preview immediately', () => {
+  const state = { ...maintenance, preview: textPreview };
+  const busy = renderContext({ ...state, compacting: true });
+  assert.match(busy, /会话正在运行或压缩，暂不提供范围预览/);
+  assert.match(busy, />取消压缩</);
+  assert.doesNotMatch(busy, /可摘要旧历史：|12,000|8,000/);
+  for (const [reason, message] of [
+    ['busy', /会话正在运行或压缩，暂不提供范围预览/],
+    ['recovery_required', /会话尚待恢复处理，暂不提供范围预览/],
+    ['unavailable', /压缩范围暂不可用/],
+  ] as const) {
+    const markup = renderContext(state, true, reason);
+    assert.match(markup, message);
+    assert.doesNotMatch(markup, /可摘要旧历史：|12,000|8,000/);
+    assert.match(markup, /disabled=""[^>]*>压缩上下文/);
+  }
+  const inconsistent = renderContext({ ...state, canCompact: false });
+  assert.match(inconsistent, /当前界面暂不可压缩，范围信息暂不展示/);
+  assert.doesNotMatch(inconsistent, /可摘要旧历史：|12,000|8,000/);
+});
+
+test('missing model credentials may disable compaction without hiding a saved local range', () => {
+  const markup = renderContext({ ...maintenance, preview: textPreview }, true);
+  assert.match(markup, /可摘要旧历史：12,000 本地编码字节 · 需保留内容：8,000 本地编码字节 · 保留图片：0 张/);
+  assert.match(markup, /disabled=""[^>]*>压缩上下文/);
+  assert.doesNotMatch(markup, /暂不提供范围预览|范围信息暂不展示/);
+});
+
+test('older snapshots lack range metadata without changing their host-owned compaction permission', () => {
+  const allowed = renderContext();
+  assert.match(allowed, /当前快照未提供压缩范围/);
+  assert.match(allowed, />压缩上下文（可能计费）</);
+  assert.doesNotMatch(allowed, /disabled=""|可摘要旧历史：/);
+  const blocked = renderContext({ ...maintenance, canCompact: false });
+  assert.match(blocked, /当前快照未提供压缩范围/);
+  assert.match(blocked, /disabled=""[^>]*>压缩上下文/);
+});
+
+test('invalid preview sizes and image counts never display an available range or fabricated measurements', () => {
+  for (const field of ['summarizableBytes', 'retainedBytes', 'retainedImages'] as const) {
+    for (const invalid of [NaN, Infinity, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, '12', undefined]) {
+      const preview = { ...textPreview, [field]: invalid } as NonNullable<NativeContextMaintenance['preview']>;
+      const markup = renderContext({ ...maintenance, preview });
+      assert.match(markup, /压缩范围暂不可用/);
+      assert.doesNotMatch(markup, /可摘要旧历史：|需保留内容：|保留图片：|12,000|8,000|NaN|Infinity/);
+    }
+  }
+});
+
+test('unknown preview states and reasons use a fixed fallback instead of rendering untrusted fields', () => {
+  for (const preview of [
+    { ...textPreview, status: 'PRIVATE_STATUS_SENTINEL' },
+    { ...textPreview, retention: 'PRIVATE_RETENTION_SENTINEL' },
+    { status: 'unavailable', reason: 'PRIVATE_REASON_SENTINEL' },
+    { status: 'unavailable', reason: '__proto__' },
+    { status: 'unavailable', reason: 'constructor' },
+  ]) {
+    const markup = renderContext({ ...maintenance, preview: preview as NonNullable<NativeContextMaintenance['preview']> });
+    assert.match(markup, /压缩范围暂不可用/);
+    assert.doesNotMatch(markup, /可摘要旧历史：|PRIVATE_|__proto__|constructor|12,000|8,000/);
+  }
+});
+
+test('native range metadata cannot change the Claude context meter', () => {
+  const markup = renderToStaticMarkup(createElement(ContextMeter, {
+    context: { inputTokens: 2000, contextWindow: 10000, status: 'ready' },
+    maintenance: { ...maintenance, preview: textPreview }, onCompact: fail, onCancelCompact: fail,
+  }));
+  assert.match(markup, /上下文使用情况/);
+  assert.match(markup, /20.0%/);
+  assert.match(markup, /\/context/);
+  assert.doesNotMatch(markup, /压缩范围|可摘要旧历史|需保留内容|<button/);
 });
