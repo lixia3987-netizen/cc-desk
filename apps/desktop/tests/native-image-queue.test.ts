@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { NativeImageAttachment, QueuedChatMessage } from '@cc-desk/contracts/chat';
 import { ChatQueue } from '../src/main/chat-queue';
 import { ChatQueueStorage } from '../src/main/chat-queue-storage';
@@ -78,4 +79,35 @@ test('queue persistence rejects image metadata that does not match attachment co
   saved.items[0].attachments = [];
   assert.throws(() => storage.save('session', saved));
   assert.equal(storage.load('session').items[0].attachments.length, 1);
+});
+
+test('read-only preview lookup preserves a cold interrupted queue without restoring or dispatching it', async t => {
+  const f = await setup(t), storage = new ChatQueueStorage(f.directory);
+  const file = '/staged/screen.png', id = randomUUID();
+  storage.save('session', { version: 1, paused: false, receipts: [],
+    items: [{ id, text: '', attachments: [file], nativeImageAttachments: [image()], status: 'sending', createdAt: 'now' }] });
+  const queueFile = path.join(f.directory, 'chat-queue', 'session.json');
+  const before = await fs.readFile(queueFile), beforeStat = await fs.stat(queueFile, { bigint: true });
+  let changed = 0;
+  const queue = new ChatQueue(f.directory, { ...f.options, changed: () => { changed++; } });
+  assert.equal(queue.referencesReadOnly('session', file), true);
+  assert.equal(queue.referencesReadOnly('session', '/other.png'), false);
+  assert.deepEqual(await fs.readFile(queueFile), before);
+  assert.equal((await fs.stat(queueFile, { bigint: true })).mtimeNs, beforeStat.mtimeNs);
+  assert.equal(changed, 0); assert.deepEqual(f.dispatched, []);
+  const restored = queue.snapshot('session');
+  assert.equal(restored.paused, true);
+  assert.equal(restored.items[0].status, 'queued');
+  assert.match(restored.error!, /上次退出/);
+});
+
+test('read-only preview lookup does not create or cache an absent queue and sees later accepted ownership', async t => {
+  const f = await setup(t), file = '/staged/screen.png';
+  assert.equal(f.queue.referencesReadOnly('session', file), false);
+  assert.deepEqual(await fs.readdir(f.directory), []);
+  const storage = new ChatQueueStorage(f.directory);
+  storage.save('session', { version: 1, paused: false, receipts: [],
+    items: [{ id: randomUUID(), text: '', attachments: [file], nativeImageAttachments: [image()], status: 'queued', createdAt: 'now' }] });
+  assert.equal(f.queue.referencesReadOnly('session', file), true);
+  assert.deepEqual(f.dispatched, []);
 });

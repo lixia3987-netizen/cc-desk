@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import type { UserImage } from '@cc-desk/agent-core';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import { parseStagedAttachmentManifest } from './attachments';
+import type { NativeImagePreview } from '../shared/native-images';
 
 export const NATIVE_IMAGE_MAX_COUNT = 4;
 export const NATIVE_IMAGE_MAX_BYTES = 1024 * 1024;
@@ -161,6 +162,20 @@ export function verifyNativeImageAttachments(images:unknown,metadata:unknown):vo
 
 /** Read only the current session's private staged manifest. No draft collection or writes. */
 export async function readNativeImageAttachments(directory:string,sessionId:string,paths:string[]):Promise<{images:UserImage[];metadata:NativeImageAttachment[]}> {
+  return readNativeImages(directory,sessionId,paths,false);
+}
+
+/** One explicitly selected draft, using the same manifest capture as the image bytes. */
+export async function readNativeDraftImage(directory:string,sessionId:string,file:string):Promise<NativeImagePreview> {
+  try {
+    const {images,metadata}=await readNativeImages(directory,sessionId,[file],true);
+    return {image:metadata[0],dataUrl:images[0].dataUrl};
+  } catch {
+    throw new Error('Native 图片预览不可用，附件已移除、已发送或发生变更，请重新选择。');
+  }
+}
+
+async function readNativeImages(directory:string,sessionId:string,paths:string[],draftOnly:boolean):Promise<{images:UserImage[];metadata:NativeImageAttachment[]}> {
   if(!/^[a-zA-Z0-9_-]+$/.test(sessionId)||!Array.isArray(paths)||paths.length>NATIVE_IMAGE_MAX_COUNT||new Set(paths).size!==paths.length)throw invalid();
   if(!paths.length)return {images:[],metadata:[]};
   try {
@@ -173,6 +188,7 @@ export async function readNativeImageAttachments(directory:string,sessionId:stri
     for(const file of paths) {
       const item=items.find(item=>path.join(folder,item.file)===file);
       if(!item)throw new Error('Native 图片附件不属于当前会话，请重新选择。');
+      if(draftOnly&&!item.draft)throw invalid();
       const ext=path.extname(item.file).toLowerCase(),nameExt=path.extname(item.name).toLowerCase();
       const mimeType:ImageMime=ext==='.png'?'image/png':'image/jpeg';
       if(!['.png','.jpg','.jpeg'].includes(ext)||!['.png','.jpg','.jpeg'].includes(nameExt)||

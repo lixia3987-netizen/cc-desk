@@ -2,9 +2,11 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
 import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
-import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot } from '../shared/chat';
+import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot, NativeImageAttachment } from '../shared/chat';
 import { MessageText } from './MessageText';
 import { ChatAttachmentChips, NativeImageAttachments, NativeImageNotice } from './NativeImageAttachments';
+import { NativeImagePreview } from './NativeImagePreview';
+import { isNativeImagePreviewCurrent, nativeImagePreviewKey, type NativeImagePreviewSelection } from './native-image-preview-state';
 import { ChatSearch } from './ChatSearch';
 import { ApprovalDrafts, type ApprovalDraft } from './approval-drafts';
 import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
@@ -64,12 +66,12 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
 function sameMessage(left:ChatMessage,right:ChatMessage) {
   return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input)&&left.nativeChangeSetState===right.nativeChangeSetState&&JSON.stringify(left.nativeChangeSetResult)===JSON.stringify(right.nativeChangeSetResult)&&JSON.stringify(left.nativeImageAttachments)===JSON.stringify(right.nativeImageAttachments);
 }
-const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative}:{message:ChatMessage;engineName:string;isNative:boolean}) {
+const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative,onImagePreview}:{message:ChatMessage;engineName:string;isNative:boolean;onImagePreview?:(runId:string,index:number,image:NativeImageAttachment)=>void}) {
   const changeSet=isNative&&message.role==='tool'&&message.toolName==='apply_change_set';
-  const content=<><MessageText text={message.text}/>{isNative&&message.role==='user'&&message.nativeImageAttachments&&<NativeImageAttachments images={message.nativeImageAttachments}/>} {message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
+  const content=<><MessageText text={message.text}/>{isNative&&message.role==='user'&&message.nativeImageAttachments&&<NativeImageAttachments images={message.nativeImageAttachments} onPreview={onImagePreview?(index,image)=>onImagePreview(message.turnId,index,image):undefined}/>} {message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
   const changeSetContent=<><NativeChangeSetResult result={message.nativeChangeSetResult} state={message.nativeChangeSetState}/>{message.nativeChangeSetState==='not_executed'&&<><pre className="tool-input" aria-label="工具未执行原因">{message.text}</pre>{message.truncated&&<p className="panel-note message-truncated">未执行原因过长，展示内容已截断。可导出会话查看完整记录。</p>}</>}</>;
   return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{changeSet?changeSetContent:<>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</>}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
-},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&sameMessage(previous.message,next.message));
+},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&previous.onImagePreview===next.onImagePreview&&sameMessage(previous.message,next.message));
 
 export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,descriptor,readOnly=false,disabled=false,unavailable}:{
   descriptor?:ExecutionDescriptor;readOnly?:boolean;session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;unavailable?:string;
@@ -77,6 +79,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
 }) {
   const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
+  const [imagePreview,setImagePreview]=useState<NativeImagePreviewSelection>();
+  const previewHistoryImage=useCallback((runId:string,index:number,image:NativeImageAttachment)=>{
+    if(session.execution.providerId!=='native'||!session.execution.conversationId)return;
+    setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId,source:{kind:'history',runId,index,sha256:image.sha256}},expected:{...image}});
+  },[session.id,session.execution.providerId,session.execution.conversationId]);
   const [syncState,setSyncState]=useState<ChatSyncState>({loading:true,failures:0});
   const snapshotSync=useRef<ChatSnapshotSync | undefined>(undefined);
   const [continuationTaskId,setContinuationTaskId]=useState<string>();
@@ -219,11 +226,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   };
   const queued=running||!!snapshot?.queue?.items.length;
   const visibleAttachments=descriptor?.capabilities.attachments?attachments:[];
+  const currentImagePreview=imagePreview&&session.execution.providerId==='native'&&isNativeImagePreviewCurrent(imagePreview,session.id,session.execution.conversationId,visibleAttachments)?imagePreview:undefined;
+  useEffect(()=>{if(imagePreview&&!currentImagePreview)setImagePreview(undefined);},[imagePreview,currentImagePreview]);
   const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
+    {currentImagePreview&&<NativeImagePreview key={nativeImagePreviewKey(currentImagePreview)} selection={currentImagePreview} onClose={()=>setImagePreview(undefined)}/>}
     {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给当前引擎。</span></div>}
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
     {syncState.error&&<div className="chat-error" role="alert"><strong>状态未知，显示的是上次读取的记录。</strong><p>{syncState.error}</p><button className="secondary compact" disabled={syncState.loading} onClick={()=>void load()}>{syncState.loading?'正在重试…':'重新同步状态'}</button></div>}
@@ -234,7 +244,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {!visible?.messages.length&&!snapshot?.queue?.items.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
-      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'}/>)}
+      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>)}
       {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
@@ -269,7 +279,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     </Dialog>}
     <div className="composer chat-composer">
       {unavailable&&<p className="inline-warning engine-unavailable" role="status">{unavailable}</p>}
-      <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment}/>
+      <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={session.execution.providerId==='native'&&session.execution.conversationId?file=>setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId!,source:{kind:'draft',path:file.path}},expected:{name:file.name,bytes:file.bytes}}):undefined}/>
       {session.execution.providerId==='native'&&descriptor?.capabilities.attachments&&<NativeImageNotice/>}
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}

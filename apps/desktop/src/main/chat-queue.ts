@@ -105,6 +105,10 @@ export class ChatQueue {
   hasActive(id: string) { return this.active.has(id) || this.priorities.has(id) || this.failedAcks.has(id); }
   isPrioritizing(id: string) { return this.priorities.has(id); }
   references(id: string, file: string) { return this.state(id).items.some(item => item.attachments.includes(file)); }
+  /** Preview checks must not restore, normalize, cache or persist a cold queue. */
+  referencesReadOnly(id: string, file: string) {
+    return (this.states.get(id) ?? this.storage.load(id)).items.some(item => item.attachments.includes(file));
+  }
   removeAttachment(id: string, file: string, remove: () => Promise<void>) {
     return this.serial(id, async () => {
       if (this.references(id, file)) throw new Error('附件正在被排队或执行中的消息使用，请先移除该排队消息。');

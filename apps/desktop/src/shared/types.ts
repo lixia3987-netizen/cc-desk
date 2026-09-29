@@ -13,6 +13,7 @@ import type { CLIUpdateState } from './cli-update';
 import type { NativeConnectionsAPI } from './native-connections';
 import type { NativeSkillsAPI } from './native-skills';
 import type { NativeMcpConnectionsAPI } from './native-mcp';
+import type { NativeImagePreviewRequest, NativeImagePreview } from './native-images';
 import type { SessionContinuationInput, SessionContinuationPreview } from './session-continuation';
 import type { SessionExecution, ExecutionMode, ExecutionDescriptor, SessionStatus, TerminalChunk, EngineConfig } from './execution';
 import type { ExecutionEvent } from './execution-events';
@@ -45,6 +46,7 @@ export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStat
 export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
+  previewNativeImage(input: NativeImagePreviewRequest): Promise<NativeImagePreview>;
   nativeConnections: NativeConnectionsAPI;
   nativeSkills: NativeSkillsAPI;
   nativeMcp: NativeMcpConnectionsAPI;

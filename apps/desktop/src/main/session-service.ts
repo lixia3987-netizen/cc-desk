@@ -8,6 +8,8 @@ import { StructuredExecutions, TerminalExecutions } from './execution/routers';
 import { sameConversation } from '../shared/execution';
 import { exportSession } from './execution/export-session';
 import { Attachments } from './attachments';
+import { NativeImagePreviewHost } from './native-image-preview';
+import { registerNativeImageHandlers } from './ipc/native-image-handlers';
 import { readNativeImageAttachments } from './native-image-attachments';
 import { WorkflowEngine } from './workflows';
 import { ChatQueue } from './chat-queue';
@@ -32,6 +34,8 @@ export class SessionService {
   readonly workflows: WorkflowEngine;
   readonly queue: ChatQueue;
   private attachments: Attachments;
+  private imagePreviews: NativeImagePreviewHost;
+  private imagePreviewEpochs = new Map<string, number>();
   private admissions = new Set<string>();
   private cancellations = new Map<string, number>();
   private lifecycle = new Set<string>();
@@ -114,6 +118,27 @@ export class SessionService {
         this.getWindow()?.webContents.send('chat:changed', id, this.chat.taskState(id), version);
       },
     });
+    this.imagePreviews = new NativeImagePreviewHost({ directory: store.directory,
+      session: id => this.session(id), captureAdmission: id => this.captureImagePreviewAdmission(id),
+      queueReferences: (id, file) => this.queue.referencesReadOnly(id, file),
+    });
+  }
+  private beginLifecycle(id: string) {
+    this.lifecycle.add(id);
+    this.imagePreviewEpochs.set(id, (this.imagePreviewEpochs.get(id) ?? 0) + 1);
+  }
+  private captureImagePreviewAdmission(id: string): () => void {
+    const initial = this.session(id), checkEngine = this.captureEngineAdmission(initial.execution.providerId);
+    const cancelled = this.cancellations.get(id) ?? 0, lifecycle = this.imagePreviewEpochs.get(id) ?? 0;
+    const identity = JSON.stringify([initial.cwd, initial.projectId, initial.kind, initial.execution]);
+    const check = () => {
+      checkEngine();
+      const current = this.session(id);
+      if (this.lifecycle.has(id) || cancelled !== (this.cancellations.get(id) ?? 0) || lifecycle !== (this.imagePreviewEpochs.get(id) ?? 0) ||
+          identity !== JSON.stringify([current.cwd, current.projectId, current.kind, current.execution])) throw new Error('图片预览已失效。');
+      this.assertDirectoriesUnlocked([this.pathKey(current.cwd)]);
+    };
+    check(); return check;
   }
   private navigateFromNotification(id:string) {
     const exists=this.store.state.sessions.some(session=>session.id===id);
@@ -180,7 +205,7 @@ export class SessionService {
     for (const conflict of this.directoryExecution.conflicts(keys, id)) {
       const other = this.store.state.sessions.find(value => value.id === conflict.owner.sessionId);
       if (other?.execution.mode === 'structured' && !this.taskOccupied(other.id) && !this.lifecycle.has(other.id)) {
-        this.lifecycle.add(other.id);
+        this.beginLifecycle(other.id);
         try {
           await this.chat.stopIdle(other.id);
           checkAdmission();
@@ -272,7 +297,7 @@ export class SessionService {
     this.assertUnlocked(this.session(id));
     if(this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id) || this.recoveryRequired(id)) throw new Error('请先停止正在执行的任务并核查未知副作用。');
     if (this.session(id).execution.mode === 'structured') this.queue.pause(id);
-    this.lifecycle.add(id);
+    this.beginLifecycle(id);
     // Capture the driver before a record deletion. Its explicit barrier remains usable afterward.
     const driver = this.execution.registration(this.session(id)).executor;
     try { return await action(); } finally {
@@ -300,7 +325,7 @@ export class SessionService {
     const epoch = this.cancellations.get(id) ?? 0;
     const original = JSON.stringify([session.cwd, session.projectId, session.execution]);
     this.queue.pause(id, '上下文维护已暂停队列，请检查结果后手动继续。');
-    this.lifecycle.add(id);
+    this.beginLifecycle(id);
     let keys: string[] = [];
     try {
       const roots = await this.executionRoots(session);
@@ -416,7 +441,7 @@ export class SessionService {
         ![...this.directoryLocks].some(key => this.overlaps(key,this.pathKey(s.cwd))))
         .sort((a,b) => a.updatedAt.localeCompare(b.updatedAt))[0];
       if (!idle) throw new Error('已达到最大并发会话数。');
-      this.lifecycle.add(idle.id);
+      this.beginLifecycle(idle.id);
       try {
         await this.chat.stopIdle(idle.id);
         assertReady();
@@ -510,6 +535,7 @@ export class SessionService {
   }
   select(id: string) { if(id) this.session(id); this.store.change(s => {s.selectedSessionId=id;}); this.onState(); }
   register(handle: Register) {
+    registerNativeImageHandlers(handle, this.imagePreviews);
     registerSessionHandlers(handle, {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),
