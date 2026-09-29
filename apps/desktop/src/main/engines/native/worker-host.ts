@@ -163,7 +163,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let duplicateResult: RunResult | undefined, begun = false, startingRun = false;
     let activeTool: string | undefined;
     let maintenanceInFlight = false, maintenanceUncertain = false, summaryRequests = 0;
-    let modelAttempts = 0, activeAttempt: number | undefined, modelStreamObserved = false, modelJournalUncertain = false;
+    let modelAttempts = 0, activeAttempt: number | undefined, modelStreamObserved = false, modelJournalUncertain = false, modelJournalInFlight = false;
     let retries = 0, retryNotBefore: number | undefined, modelFailureClosed = false;
     let maintenanceSource: ModelContext | undefined;
     let lastMaintenanceBoundary: ModelContext | undefined, completedToolBoundary = false, maintenanceFailed = false;
@@ -308,6 +308,9 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     }
 
     async function dispatch(method: string, args: unknown, signal: AbortSignal): Promise<unknown> {
+      // Ordinary model outcomes are indivisible with their stream boundary.
+      // Reject even event RPCs until validation, projection and commit settle.
+      if (modelJournalInFlight) invalid();
       if (method === 'store.beginRun') {
         const item = fields(args, ['identity', 'input', 'inputDigest', 'userItems', 'protocol', 'configuration', 'policyRevision']);
         identity(item.identity, runIdentity);
@@ -389,80 +392,84 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         if (!isObject(item.event) || typeof item.event.type !== 'string' || !savedContext || committedResult) invalid();
         const event = item.event as unknown as RunJournalEvent;
         if (maintenanceFailed && (event.type !== 'run_finished' || event.result.status === 'completed')) invalid();
-        let response: ModelResponse | undefined, state: ToolState | undefined;
-        if (event.type === 'model_request_started') {
-          fields(event, ['type', 'attempt']);
-          if (!integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
-              modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
-              modelFailureClosed && (retryNotBefore === undefined || Date.now() < retryNotBefore)) invalid();
-        } else if (event.type === 'model_request_failed') {
-          fields(event, ['type', 'attempt', 'failure', 'partial'], ['retryDelayMs']);
-          if (!activeAttempt || !integer(event.attempt) || event.attempt !== activeAttempt || typeof event.partial !== 'boolean' || !validateModelFailureDiagnostic(event.failure) ||
-              modelStreamObserved && !event.partial || inFlight.size !== 1) invalid();
-          if (event.retryDelayMs !== undefined && (modelRetry !== 'safe_transient' || !event.failure.retryable || event.partial ||
-              retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || modelAttempts + summaryRequests >= budget.maxModelRequests ||
-              event.retryDelayMs >= budget.maxActiveMs)) invalid();
-        } else if (event.type === 'model_response') {
-          fields(event, ['type', 'response']);
-          if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
-          response = validResponse(event.response);
-          // The completed response replaces streamed text in the projection.
-          // Release the credential guard's withheld suffix before that durable
-          // replacement, so it cannot appear as a new partial response later.
-          const flushing = projectionChain.then(async () => {
-            safeDeltas.finish();
-            while (projectionQueue.length) await options.onEvent(projectionQueue.shift()!);
-          });
-          projectionChain = flushing.catch(() => {});
-          await flushing;
-        } else if (event.type === 'tool_prepared') {
-          fields(event, ['type', 'prepared'], ['approval']);
-          state = requirePrepared(event.prepared);
-          if (!state.validated || state.recorded || state.executing || state.executed) invalid();
-          requireApproval(state, event.approval);
-        } else if (event.type === 'tool_completed') {
-          fields(event, ['type', 'call', 'result', 'resultItems']);
-          requireCall(event.call);
-          toolResult(event.result);
-          state = toolStates.get(event.call.id);
-          if (state?.executing || event.result.status === 'unknown') invalid();
-          // A thrown command/write after invocation has an unknown effect. The
-          // worker cannot manufacture a cancellation/failure and close its ledger.
-          if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
-          if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
-          if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
-        } else if (event.type === 'run_finished') {
-          fields(event, ['type', 'result']);
-          result(event.result, runIdentity);
-          if (!event.result.committed || !equal(event.result.context, savedContext) || activeAttempt ||
-              modelFailureClosed && event.result.status === 'completed' ||
-              event.result.modelRequests !== modelAttempts + summaryRequests || event.result.toolCalls > budget.maxToolCalls ||
-              (pendingCalls.length && event.result.status !== 'recovery_required')) invalid();
-        } else invalid();
-        let receipt: { seq: number };
-        try { receipt = await options.store.append(runIdentity, clone(event)); }
-        catch (error) {
-          if (['model_request_started', 'model_request_failed', 'model_response'].includes(event.type)) modelJournalUncertain = true;
-          throw error;
-        }
-        if (event.type === 'model_request_started') {
-          modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
-        } else if (event.type === 'model_request_failed') {
-          activeAttempt = undefined; modelFailureClosed = true;
-          // Failed partial output is never replayed into a later terminal projection.
-          safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
-          if (event.retryDelayMs !== undefined) { retries++; retryNotBefore = Date.now() + event.retryDelayMs; }
-        } else if (event.type === 'model_response' && response) {
-          activeAttempt = undefined; modelFailureClosed = false;
-          completedToolBoundary = response.toolCalls.length > 0;
-          savedContext!.items.push(...clone(response.outputItems));
-          if (response.continuation !== undefined) savedContext!.continuation = clone(response.continuation);
-          else delete savedContext!.continuation;
-          for (const requested of response.toolCalls) { calls.set(requested.id, clone(requested)); pendingCalls.push(requested.id); }
-        } else if (event.type === 'tool_prepared') state!.recorded = true;
-        else if (event.type === 'tool_completed') { savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
-        else if (event.type === 'run_finished') committedResult = clone(event.result);
-        return receipt;
+        const modelJournal = ['model_request_started', 'model_request_failed', 'model_response'].includes(event.type);
+        if (modelJournal) modelJournalInFlight = true;
+        try {
+          let response: ModelResponse | undefined, state: ToolState | undefined;
+          if (event.type === 'model_request_started') {
+            fields(event, ['type', 'attempt']);
+            if (!integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
+                modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
+                modelFailureClosed && (retryNotBefore === undefined || Date.now() < retryNotBefore)) invalid();
+          } else if (event.type === 'model_request_failed') {
+            fields(event, ['type', 'attempt', 'failure', 'partial'], ['retryDelayMs']);
+            if (!activeAttempt || !integer(event.attempt) || event.attempt !== activeAttempt || typeof event.partial !== 'boolean' || !validateModelFailureDiagnostic(event.failure) ||
+                modelStreamObserved && !event.partial || inFlight.size !== 1) invalid();
+            if (event.retryDelayMs !== undefined && (modelRetry !== 'safe_transient' || !event.failure.retryable || event.partial ||
+                retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || modelAttempts + summaryRequests >= budget.maxModelRequests ||
+                event.retryDelayMs >= budget.maxActiveMs)) invalid();
+          } else if (event.type === 'model_response') {
+            fields(event, ['type', 'response']);
+            if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
+            response = validResponse(event.response);
+            // The completed response replaces streamed text in the projection.
+            // Release the credential guard's withheld suffix before that durable
+            // replacement, so it cannot appear as a new partial response later.
+            const flushing = projectionChain.then(async () => {
+              safeDeltas.finish();
+              while (projectionQueue.length) await options.onEvent(projectionQueue.shift()!);
+            });
+            projectionChain = flushing.catch(() => {});
+            await flushing;
+          } else if (event.type === 'tool_prepared') {
+            fields(event, ['type', 'prepared'], ['approval']);
+            state = requirePrepared(event.prepared);
+            if (!state.validated || state.recorded || state.executing || state.executed) invalid();
+            requireApproval(state, event.approval);
+          } else if (event.type === 'tool_completed') {
+            fields(event, ['type', 'call', 'result', 'resultItems']);
+            requireCall(event.call);
+            toolResult(event.result);
+            state = toolStates.get(event.call.id);
+            if (state?.executing || event.result.status === 'unknown') invalid();
+            // A thrown command/write after invocation has an unknown effect. The
+            // worker cannot manufacture a cancellation/failure and close its ledger.
+            if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
+            if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
+            if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
+          } else if (event.type === 'run_finished') {
+            fields(event, ['type', 'result']);
+            result(event.result, runIdentity);
+            if (!event.result.committed || !equal(event.result.context, savedContext) || activeAttempt ||
+                modelFailureClosed && event.result.status === 'completed' ||
+                event.result.modelRequests !== modelAttempts + summaryRequests || event.result.toolCalls > budget.maxToolCalls ||
+                (pendingCalls.length && event.result.status !== 'recovery_required')) invalid();
+          } else invalid();
+          let receipt: { seq: number };
+          try { receipt = await options.store.append(runIdentity, clone(event)); }
+          catch (error) {
+            if (['model_request_started', 'model_request_failed', 'model_response'].includes(event.type)) modelJournalUncertain = true;
+            throw error;
+          }
+          if (event.type === 'model_request_started') {
+            modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
+          } else if (event.type === 'model_request_failed') {
+            activeAttempt = undefined; modelFailureClosed = true;
+            // Failed partial output is never replayed into a later terminal projection.
+            safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
+            if (event.retryDelayMs !== undefined) { retries++; retryNotBefore = Date.now() + event.retryDelayMs; }
+          } else if (event.type === 'model_response' && response) {
+            activeAttempt = undefined; modelFailureClosed = false;
+            completedToolBoundary = response.toolCalls.length > 0;
+            savedContext!.items.push(...clone(response.outputItems));
+            if (response.continuation !== undefined) savedContext!.continuation = clone(response.continuation);
+            else delete savedContext!.continuation;
+            for (const requested of response.toolCalls) { calls.set(requested.id, clone(requested)); pendingCalls.push(requested.id); }
+          } else if (event.type === 'tool_prepared') state!.recorded = true;
+          else if (event.type === 'tool_completed') { savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
+          else if (event.type === 'run_finished') committedResult = clone(event.result);
+          return receipt;
+        } finally { if (modelJournal) modelJournalInFlight = false; }
       }
       if (method === 'tools.prepare') {
         const item = fields(args, ['call', 'context']);

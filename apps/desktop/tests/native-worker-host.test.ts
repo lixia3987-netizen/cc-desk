@@ -805,3 +805,49 @@ test('retry setting stays bound to the host configuration before worker startup'
   const h = harness(async () => assert.fail('Invalid binding must not spawn.'), { request: { ...run, modelRetry: 'safe_transient', configuration: { sessionOptions: { modelRetry: 'off' } } } });
   await assert.rejects(h.promise, { code: 'configuration' }); assert.equal(h.forkOptions, undefined);
 });
+
+for (const outcome of ['model_request_failed', 'model_response'] as const) test(`model journal rejects concurrent stream while ${outcome} commit is pending`, async () => {
+  let entered!: () => void, release!: () => void;
+  const committing = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker);
+    if (outcome === 'model_request_failed') await failAttempt(worker, { retryDelayMs: 500 });
+    else await textResponse(worker, context);
+  }, retryOptions);
+  const append = h.options.store.append;
+  h.options.store.append = async (identity, event) => {
+    if (event.type === outcome) { entered(); await blocked; }
+    return append(identity, event);
+  };
+  const rejected = assert.rejects(h.promise, { code: 'protocol' });
+  await committing;
+  void h.worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'late untrusted stream' }).catch(() => {});
+  await tick(); await tick();
+  assert.equal(h.worker.closed, true);
+  assert.equal(h.events.some(event => (event as { type: string }).type === 'text_delta'), false);
+  release(); await rejected;
+  assert.equal(h.journal.filter(item => (item as { type: string }).type === 'model_request_started').length, 1);
+});
+
+test('model response boundary rejects a concurrent stream while its prior tail projects', async () => {
+  let entered!: () => void, release!: () => void;
+  const projecting = new Promise<void>(resolve => { entered = resolve; });
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const projected: string[] = [];
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker);
+    await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'tail' });
+    await textResponse(worker, context);
+  }, { onEvent: async event => {
+    if (event.type !== 'text_delta') return;
+    projected.push(event.text); entered(); await blocked;
+  } });
+  const rejected = assert.rejects(h.promise, { code: 'protocol' });
+  await projecting;
+  void h.worker.rpc('event', { type: 'text_delta', identity: run.identity, text: 'forged' }).catch(() => {});
+  await tick(); await tick();
+  assert.equal(h.worker.closed, true); assert.deepEqual(projected, ['tail']);
+  release(); await rejected;
+  assert.deepEqual(projected, ['tail']);
+});
