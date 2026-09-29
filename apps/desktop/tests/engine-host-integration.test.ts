@@ -12,13 +12,15 @@ import { claudeCapabilities, validateClaudeSession } from '@cc-desk/engine-claud
 import { StateStore } from '../src/main/store';
 import { SessionCreation } from '../src/main/session-creation';
 import { ExecutionRegistry } from '../src/main/execution/registry';
+import { generateClaudeSessionTitle } from '../src/main/engines/claude/title-generator';
 import { ClaudeStructuredExecutor } from '../src/main/engines/claude/structured-executor';
 import type { ChatSnapshot, ChatTurnResult, ChatPage, ChatSearchPage } from '../src/shared/chat';
 import type { Capabilities } from '../src/shared/types';
 import type { ExecutionEvent } from '../src/shared/execution-events';
 
-// Only the native file picker is substituted. The package, desktop host,
-// SessionCreation, SessionService IPC, subprocess and persistence remain real.
+// The native file picker and CLI command paths use fixtures. The package, desktop
+// host, SessionCreation, SessionService IPC, title generator, subprocesses and
+// persistence remain real.
 const require = createRequire(import.meta.url);
 const electronPath = require.resolve('electron');
 const previousElectron = require.cache[electronPath];
@@ -54,14 +56,31 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
 `;
 const capabilities: Capabilities = {
   available: true, executable: process.execPath, version: 'fixture', efforts: ['default', 'high'],
-  flags: ['--print', '--input-format', '--output-format', '--verbose', '--permission-prompt-tool', '--resume', '--session-id'],
+  flags: ['--print', '--input-format', '--output-format', '--verbose', '--permission-prompt-tool', '--resume', '--session-id',
+    '--tools', '--strict-mcp-config', '--mcp-config', '--settings', '--no-session-persistence', '--system-prompt'],
 };
 
-async function setup(root: string) {
+async function setup(root: string, options: { deferTitle?: boolean; titleIsolation?: boolean } = {}) {
   const { SessionService } = await import('../src/main/session-service');
   const projectPath = path.join(root, 'project'); fs.mkdirSync(projectPath, { recursive: true });
   const script = path.join(root, 'fixture.cjs'); fs.writeFileSync(script, fixtureSource);
   const wire = path.join(root, 'wire.jsonl');
+  const titleScript = path.join(root, 'title.cjs'), titleRecord = path.join(root, 'title-request.json'), titleRelease = path.join(root, 'title-release');
+  fs.writeFileSync(titleScript, String.raw`
+const fs = require('node:fs');
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => input += chunk).on('end', () => {
+  fs.writeFileSync(process.argv[2], JSON.stringify({ input, args: process.argv.slice(4), cwd: process.cwd() }));
+  const finish = () => {
+    if (process.argv[3] && !fs.existsSync(process.argv[3])) { setTimeout(finish, 10); return; }
+    process.stdout.write(JSON.stringify({ type:'result', subtype:'success', result:'引擎宿主持久化验证' }));
+  };
+  finish();
+});
+`);
+  const runtimeCapabilities = options.titleIsolation === false
+    ? { ...capabilities, flags: capabilities.flags.filter(flag => flag !== '--tools') } : capabilities;
   const store = new StateStore(path.join(root, 'data'));
   if (!store.state.projects.length) store.change(state => state.projects.push({ id: randomUUID(), path: projectPath, name: 'Engine host fixture', createdAt: new Date().toISOString() }));
   const registry = new ExecutionRegistry(id => {
@@ -69,13 +88,15 @@ async function setup(root: string) {
     if (!session) throw new Error('Missing integration session');
     return session;
   });
-  const executor = new ClaudeStructuredExecutor(store, () => capabilities, registry.events, {
+  const executor = new ClaudeStructuredExecutor(store, () => runtimeCapabilities, registry.events, {
     invocation: session => ({ file: process.execPath, args: [script, wire, session.execution.conversationId!] }),
     transcriptExists: async () => false,
+    titleGenerator: request => generateClaudeSessionTitle(request, { invocation: { file: process.execPath,
+      prefix: [titleScript, titleRecord, options.deferTitle ? titleRelease : ''] } }),
   });
   registry.register({
     providerId: 'claude', mode: 'structured', executor,
-    capabilities: () => claudeCapabilities(capabilities, 'structured'), validateSession: validateClaudeSession,
+    capabilities: () => claudeCapabilities(runtimeCapabilities, 'structured'), validateSession: validateClaudeSession,
     configuration: () => ({ schemaVersion: 1, defaults: createClaudeConfig(), fields: [] }),
     validateConfig: config => createClaudeConfig(parseClaudeConfig(config)),
     createIdentity: input => ({ providerId: 'claude', mode: 'structured', conversationId: input.conversationId ?? randomUUID(), imported: !!input.conversationId }),
@@ -93,13 +114,14 @@ async function setup(root: string) {
   };
   const until = (condition: () => boolean) => new Promise<void>((resolve, reject) => {
     const stop = registry.events.subscribe(() => check());
-    const timer = setTimeout(() => { stop(); reject(new Error('Expected engine event did not occur')); }, 5000);
+    const timer = setTimeout(() => { stop(); reject(new Error('Expected engine event did not occur')); }, 10000);
     const check = () => { if (condition()) { stop(); clearTimeout(timer); resolve(); } };
     check();
   });
   const creation = new SessionCreation(store, service, () => {}, 'claude');
   const create = () => creation.create({ projectId: store.state.projects[0].id, title: '', kind: 'agent', isolated: false, mode: 'structured', engineConfig: createClaudeConfig() });
-  return { store, registry, executor, service, call, until, create, delivered, wire };
+  return { store, registry, executor, service, call, until, create, delivered, wire, titleRecord,
+    releaseTitle: () => fs.writeFileSync(titleRelease, 'release') };
 }
 
 test('packaged Claude runs through desktop creation and IPC, then reloads durable history and exports it', async () => {
@@ -107,7 +129,7 @@ test('packaged Claude runs through desktop creation and IPC, then reloads durabl
   const previousConfig = process.env.CLAUDE_CONFIG_DIR; process.env.CLAUDE_CONFIG_DIR = path.join(root, 'claude');
   let fixture: Awaited<ReturnType<typeof setup>> | undefined;
   try {
-    fixture = await setup(root);
+    fixture = await setup(root, { deferTitle: true });
     const session = await fixture.create();
     assert.notEqual(session.id, session.execution.conversationId);
     const turn = fixture.call<ChatTurnResult>('chat:send', { id: session.id, text: 'integration prompt' });
@@ -118,10 +140,22 @@ test('packaged Claude runs through desktop creation and IPC, then reloads durabl
     assert.equal((await turn).success, true);
     await assert.rejects(fixture.call('chat:respond', { id: session.id, requestId: approval.requestId, decision: { behavior: 'allow' } }), /失效/);
     assert.equal(fixture.store.state.sessions[0].started, true);
-    assert.equal(fixture.store.state.sessions[0].titleSource, 'auto');
+    assert.equal(fixture.store.state.sessions[0].titleSource, 'default', 'the completed foreground turn does not wait for optional naming');
+    fixture.releaseTitle();
+    await fixture.until(() => fixture!.store.state.sessions[0].titleSource === 'auto');
+    assert.equal(fixture.store.state.sessions[0].title, '引擎宿主持久化验证');
+    const titleRequest = JSON.parse(fs.readFileSync(fixture.titleRecord, 'utf8'));
+    assert.ok(titleRequest.input.includes('integration prompt'));
+    assert.equal(titleRequest.cwd, session.cwd);
+    assert.equal(titleRequest.args[titleRequest.args.indexOf('--tools') + 1], '');
+    assert.deepEqual(JSON.parse(titleRequest.args[titleRequest.args.indexOf('--settings') + 1]), { disableAllHooks: true });
+    assert.deepEqual(JSON.parse(titleRequest.args[titleRequest.args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
+    assert.ok(titleRequest.args.includes('--no-session-persistence'));
+    assert.ok(!titleRequest.args.includes('--resume') && !titleRequest.args.includes('--session-id'));
     const journalPath = path.join(fixture.store.directory, 'chat', session.id + '.jsonl');
     const journal = fs.readFileSync(journalPath, 'utf8');
     assert.ok(journal.includes('persisted needle answer'));
+    assert.ok(!journal.includes('引擎宿主持久化验证'), 'auxiliary title output never enters the conversation');
     assert.ok(journal.includes(approval.requestId));
     assert.ok(fs.readFileSync(fixture.wire, 'utf8').includes('reused-wire-request'));
     assert.ok(fixture.delivered.some(item => item.channel === 'chat:changed' && item.args[1] === 'waiting_approval'));
@@ -137,6 +171,8 @@ test('packaged Claude runs through desktop creation and IPC, then reloads durabl
 
     fixture = await setup(root);
     assert.equal(fixture.registry.activeCount, 0);
+    assert.equal(fixture.store.state.sessions[0].title, '引擎宿主持久化验证');
+    assert.equal(fixture.store.state.sessions[0].titleSource, 'auto');
     assert.equal(parseClaudeConfig(fixture.store.state.sessions[0].engineConfig).model, 'confirmed-model');
     const restored = await fixture.call<ChatSnapshot>('chat:snapshot', session.id);
     assert.deepEqual(restored.pending, []);
@@ -179,6 +215,26 @@ test('a real desktop journal write failure cannot report a successful subprocess
       assert.match(result.error ?? '', /integration journal disk failure/);
       assert.equal(fixture.executor.snapshot(session.id).taskState, 'error');
     } finally { failure.mock.restore(); }
+  } finally {
+    try { await fixture.service.shutdown(); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }
+});
+
+
+test('older Claude capabilities complete foreground IPC turns without launching an unisolated title process', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-engine-host-old-cli-'));
+  const fixture = await setup(root, { titleIsolation: false });
+  try {
+    const session = await fixture.create();
+    const turn = fixture.call<ChatTurnResult>('chat:send', { id: session.id, text: 'must not become a copied title' });
+    await fixture.until(() => fixture.executor.snapshot(session.id).pending.length === 1);
+    const approval = fixture.executor.snapshot(session.id).pending[0];
+    await fixture.call('chat:respond', { id: session.id, requestId: approval.requestId, decision: { behavior: 'allow' } });
+    assert.equal((await turn).success, true);
+    await fixture.executor.stopIdle(session.id);
+    assert.equal(fixture.store.state.sessions[0].title, '新的开发会话');
+    assert.equal(fixture.store.state.sessions[0].titleSource, 'default');
+    assert.equal(fs.existsSync(fixture.titleRecord), false, 'missing isolation flags prevent the auxiliary subprocess entirely');
   } finally {
     try { await fixture.service.shutdown(); } finally { fs.rmSync(root, { recursive: true, force: true }); }
   }
