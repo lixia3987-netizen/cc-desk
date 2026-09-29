@@ -29,6 +29,11 @@ const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
   contextMaintenance: options.contextMaintenance,
   host: { now: Date.now, digest: text => createHash('sha256').update(text).digest('hex'), emit: options.onEvent,
+    wait: (ms, signal) => new Promise<void>((resolve, reject) => {
+      const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(new Error('cancelled')); };
+      const timer = setTimeout(() => { signal.removeEventListener('abort', cancel); resolve(); }, ms);
+      signal.addEventListener('abort', cancel, { once: true }); if (signal.aborted) cancel();
+    }),
     deadline: (ms, parent) => {
       const controller = new AbortController(), abort = () => controller.abort(), timer = setTimeout(abort, ms);
       parent.addEventListener('abort', abort, { once: true }); if (parent.aborted) abort();
@@ -37,13 +42,16 @@ const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent
   },
 });
 
-async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number; toolOnlyBoundary?: boolean } = {}) {
+async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number; toolOnlyBoundary?: boolean; retryBeforeOrdinary?: boolean } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
   await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
+  // Distinct files make real inspection progress; repeatedly reading the same
+  // unchanged file is deliberately blocked by N3-03 after three batches.
+  for (const index of [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');
-  let ordinary = 0, summaries = 0, summaryEntered!: () => void;
+  let ordinary = 0, summaries = 0, retryFired = false, summaryEntered!: () => void;
   const summaryStarted = new Promise<void>(resolve => { summaryEntered = resolve; });
   const server = await (protocol === 'responses' ? startResponsesFixture : startChatCompletionsFixture)({ assertReplay: false,
     handler: ({ body }: { body: Body }) => {
@@ -55,6 +63,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
           : { message: { role: 'assistant', content: null, tool_calls: [{ id: 'forbidden-summary-tool', type: 'function', function: { name: 'read_file', arguments: '{"path":"fixture.txt"}' } }] } };
         return protocol === 'responses' ? { output: [assistantMessage('summary', summary)] } : { message: { role: 'assistant', content: summary } };
       }
+      if (options.retryBeforeOrdinary && !retryFired) { retryFired = true; return { httpStatus: 503, raw: 'temporary failure' }; }
       const items = body.input ?? body.messages!.filter(item => item.role !== 'system');
       requireCompleteContext({ protocol: { id: protocol === 'responses' ? 'openai-responses' : 'openai-chat-completions', version: 1 }, items });
       const index = ordinary++;
@@ -65,7 +74,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
         goal: input, steps: [{ id: 'inspect', title: 'Inspect original file', dependsOn: [], status: 'in_progress' }],
         criteria: [{ id: 'verify-humans', description: 'Human confirms scope and relevance', stepIds: ['inspect'], kind: 'manual' }],
       } });
-      if (index <= 3) return call(`read-${index}`, 'read_file', { path: 'fixture.txt' }, options.toolOnlyBoundary ? '' : `${index}: ${padding}`);
+      if (index <= 3) return call(`read-${index}`, 'read_file', { path: `fixture-${index}.txt` }, options.toolOnlyBoundary ? '' : `${index}: ${padding}`);
       if (index === 4) return call('task-after-history', 'read_task', {});
       if (options.mode === 'empty-final') return protocol === 'responses' ? { output: [] } : { message: { role: 'assistant', content: '' } };
       return protocol === 'responses' ? { output: [assistantMessage('final', '模型声称整项任务已经验收通过。')] }
@@ -82,6 +91,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
     state.sessions.push({ id, projectId, title: 'in-turn compaction', kind: 'agent', cwd: project,
       execution: { providerId: 'native', mode: 'structured', conversationId },
       engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: options.autoCompact ?? 'before_send_and_during_run',
+        ...(options.retryBeforeOrdinary ? { modelRetry: 'safe_transient' } : {}),
         maxInputTokens: options.toolOnlyBoundary ? 40000 : 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
@@ -132,6 +142,21 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(f.server.requests.length, requests); assert.equal(f.executor.snapshot(f.id).nativeTask!.taskId, task!.taskId);
     assert.deepEqual((await f.ledger()).context, ledger.context);
     assert.deepEqual(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn, maintenance);
+  } finally { await f.dispose(); }
+});
+
+test('a failed request followed by in-turn compaction consumes both budgets while total usage stays unknown', { timeout: 25000 }, async () => {
+  const f = await fixture('responses', { retryBeforeOrdinary: true });
+  try {
+    const result = await f.send(); assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(f.ordinary, 6); assert.equal(f.summaries, 1); assert.equal(f.server.requests.length, 8);
+    const ledger = await f.ledger(), run = ledger.runs[0].result!;
+    assert.equal(run.modelRequests, 8); assert.equal(run.usage, null);
+    assert.equal(ledger.records.filter(record => record.event.type === 'model_request_started').length, 7);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_attempted').length, 1);
+    assert.equal(ledger.records.filter(record => record.event.type === 'tool_completed').length, 5);
+    assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'committed');
+    assert.equal(f.executor.snapshot(f.id).usage?.costUSD, undefined);
   } finally { await f.dispose(); }
 });
 
