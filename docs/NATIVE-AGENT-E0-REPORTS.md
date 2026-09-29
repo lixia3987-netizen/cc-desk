@@ -2,6 +2,8 @@
 
 日期：2026-09-28（北京时间）。开发基线：`dev/native-agent@82aa2878451fded120f6bcd67345a053846f7b73`。本批补齐工程评估的记录、受控验收和对照入口，沿用 [E0-01](NATIVE-AGENT-E0.md) 已固定的任务及独立检查，不执行 E0-03 真实模型对照。
 
+2026-09-29 后续补充：[Windows + cc-switch 执行准备](NATIVE-AGENT-E0-WINDOWS.md)确定平台与不设评估上限的选择。`engineering-init ... --unlimited-budget` 可创建记录 schemaVersion 2，预算用 `"unlimited"` 明示；默认仍为 v1。报告、验收意图及批次的外层版本保持 v1，保留嵌套记录的版本和内容；旧工具不支持新记录时需更新评估工具，不能将其强改为 v1。未知实际指标仍是 `null`。
+
 ## 1. 版本与交付范围
 
 原有 `scripts/native-eval.mjs prepare / verify / compare` 三个小任务的有效用法保持。新命令使用 `engineering-` 前缀，并验证固定的工程套件身份：
