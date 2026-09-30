@@ -115,7 +115,13 @@ test('cancelling native in-turn compaction stops the active turn without a saved
   try {
     app = await f.launch(); const { page, session, meter } = await configure(app, f.projectId, f.fixture.baseURL);
     await meter.getByRole('button', { name: '取消压缩', exact: true }).click();
-    await expect.poll(async () => (await snapshot(page, session.id)).taskState).toBe('interrupted');
+    // Aborting marks the turn interrupted before the summary worker finishes
+    // cleanup and persists its failed receipt. Wait for that terminal state.
+    await expect.poll(async () => {
+      const current = await snapshot(page, session.id);
+      return { taskState: current.taskState, compacting: current.nativeContextMaintenance?.compacting,
+        status: current.nativeContextMaintenance?.inTurn?.status };
+    }).toEqual({ taskState: 'interrupted', compacting: false, status: 'failed' });
     const cancelled = await snapshot(page, session.id);
     expect(cancelled.nativeContextMaintenance?.compacting).toBe(false);
     expect(cancelled.nativeContextMaintenance?.inTurn?.status).toBe('failed');

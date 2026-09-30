@@ -20,15 +20,15 @@ const secret = 'sk-question-fixture-never-display';
 const input = { questions: [{ question: '采用哪个方案？', options: [{ label: 'A', description: '方案 A' }, { label: 'B' }] }] };
 const answers = { '采用哪个方案？': 'B，保留现有兼容行为。' };
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const inline = (budget: Partial<RunBudget> = {}): NonNullable<NativeExecutorOptions['worker']> => options => runAgent({ ...options.request, budget: { ...options.request.budget, ...budget }, signal: options.signal }, {
+const inline = (budget: Partial<RunBudget> = {}, now = Date.now): NonNullable<NativeExecutorOptions['worker']> => options => runAgent({ ...options.request, budget: { ...options.request.budget, ...budget }, signal: options.signal }, {
   model: new ResponsesModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
-  host: { now: Date.now, digest: hash, emit: options.onEvent, deadline: (ms, parent) => {
+  host: { now, digest: hash, emit: options.onEvent, deadline: (ms, parent) => {
     const controller = new AbortController(), abort = () => controller.abort(), timer = setTimeout(abort, ms);
     parent.addEventListener('abort', abort, { once: true }); if (parent.aborted) abort();
     return { signal: controller.signal, dispose() { clearTimeout(timer); parent.removeEventListener('abort', abort); } };
   } },
 });
-async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterPrepared?: boolean; skill?: boolean; budget?: Partial<RunBudget> } = {}) {
+async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterPrepared?: boolean; skill?: boolean; budget?: Partial<RunBudget>; now?: () => number } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-questions-')), data = path.join(directory, 'data'), project = path.join(directory, 'project');
   await fs.mkdir(project);
   const skillPath = 'tools/review/SKILL.md';
@@ -46,7 +46,7 @@ async function fixture(options: { write?: boolean; repeat?: boolean; crashAfterP
     state.projects.push({ id: projectId, name: 'project', path: project, createdAt: new Date().toISOString() });
     state.sessions.push({ id, projectId, title: 'questions', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId }, engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, ...(options.skill ? { projectSkills: [skillPath] } : {}) } }), started: false, archived: false, status: 'idle', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
-  const worker: NonNullable<NativeExecutorOptions['worker']> = workerOptions => inline(options.budget)(!options.crashAfterPrepared ? workerOptions : { ...workerOptions, store: { ...workerOptions.store,
+  const worker: NonNullable<NativeExecutorOptions['worker']> = workerOptions => inline(options.budget, options.now)(!options.crashAfterPrepared ? workerOptions : { ...workerOptions, store: { ...workerOptions.store,
     append: async (identity, event) => {
       const committed = await workerOptions.store.append(identity, event);
       if (event.type === 'tool_prepared' && event.prepared.call.name === 'ask_user') throw new Error('fixture lost worker after durable question preparation');
@@ -174,10 +174,13 @@ test('expired questions settle without replay and waiting does not consume activ
     const output = expired.server.requests[1].input.find((item: { type: string }) => item.type === 'function_call_output');
     assert.equal(JSON.parse(output.output).status, 'denied');
   } finally { await expired.dispose(); }
-  const paused = await fixture({ budget: { maxActiveMs: 250, approvalTimeoutMs: 1500 } });
+  let waitingMs = 0;
+  const paused = await fixture({ budget: { maxActiveMs: 5000, approvalTimeoutMs: 30000 }, now: () => Date.now() + waitingMs });
   try {
     const running = paused.executor.send(paused.id, '等待用户'); const question = await paused.pending();
-    await new Promise(resolve => setTimeout(resolve, 350));
+    // Advance the host clock only while a real question is pending. The wait
+    // exceeds the active budget without requiring sub-second filesystem I/O.
+    waitingMs = 6000;
     paused.executor.respond(paused.id, question.requestId, { behavior: 'allow', answers });
     assert.equal((await running).success, true, 'human response time is excluded from active budget');
   } finally { await paused.dispose(); }

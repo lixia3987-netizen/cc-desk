@@ -112,7 +112,7 @@ test('directory additions during a scan make the observation incomplete', async 
   try {
     fs.open = (async (...args: Parameters<typeof fs.open>) => {
       const handle = await open(...args);
-      if (!injected && String(args[0]).endsWith('/source.ts')) {
+      if (!injected && path.basename(String(args[0])) === 'source.ts') {
         injected = true; await fs.writeFile(path.join(f.directory, 'arrived-during-scan.ts'), 'external');
       }
       return handle;
