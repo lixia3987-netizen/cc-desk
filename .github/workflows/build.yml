@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       publish_release:
-        description: Publish installers and portable packages to GitHub Releases
+        description: Diagnostic branch only; no release is published
         type: boolean
         default: false
 permissions:
@@ -12,146 +12,32 @@ concurrency:
   group: desktop-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
-    # Windows runs additional PTY gates and slower filesystem-heavy tests;
-    # reserve time for source E2E, packaging, and smoke tests after check.
-    timeout-minutes: ${{ matrix.os == 'windows-2025' && 60 || 30 }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-2025
-            arch: x64
-          # Standard macos-15 is Apple Silicon; fail before packaging if that ever changes.
-          - os: macos-15
-            arch: arm64
-          - os: ubuntu-24.04
-            arch: x64
-    runs-on: ${{ matrix.os }}
+  windows-process-diagnostic:
+    runs-on: windows-2025
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: package-lock.json
-      - name: Verify native runner architecture
-        run: node -e "if (process.arch !== '${{ matrix.arch }}') throw new Error('Unexpected runner architecture ' + process.arch)"
       - run: npm ci
-      - name: Diagnose Windows PTY startup
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        timeout-minutes: 2
-        run: |
-          npm run build:packages
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node apps/desktop/scripts/diagnose-windows-pty-startup.mjs
-      - name: Verify Windows PTY test process exits
-        if: runner.os == 'Windows'
-        timeout-minutes: 3
-        run: |
-          node --import tsx --test --test-concurrency=1 apps/desktop/tests/runtime.test.ts
-          exit $LASTEXITCODE
-      - name: Verify Windows stale parent regressions against the failing baseline
-        if: runner.os == 'Windows'
-        timeout-minutes: 5
-        run: |
-          git fetch --no-tags --depth=1 origin 4fb62e7299e394e591b74764f263c32f6bba54f7
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          npm run build:packages
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node scripts/verify-windows-parentage-regressions.mjs 4fb62e7299e394e591b74764f263c32f6bba54f7
-          exit $LASTEXITCODE
-      - id: check
-        # Keep a stuck test process from consuming the entire job budget and
-        # hiding its failure logs and platform diagnostics.
-        timeout-minutes: ${{ runner.os == 'Windows' && 30 || 10 }}
-        run: npm run check
-      - name: Diagnose native process release after a Windows check failure
-        if: ${{ !cancelled() && steps.check.outcome == 'failure' && runner.os == 'Windows' }}
-        timeout-minutes: 2
-        run: |
-          node packages/agent-node/tests/helpers/windows-cleanup-probe.mjs
-          $probeExitCode = $LASTEXITCODE
-          node --test --test-name-pattern="executes explicit argv and cwd" packages/agent-node/tests/process-supervisor.test.mjs
-          $testExitCode = $LASTEXITCODE
-          if ($probeExitCode -ne 0) { exit $probeExitCode }
-          exit $testExitCode
-      - name: Verify real Windows npm Claude launcher
-        if: runner.os == 'Windows'
+      - run: npm run build:packages
+      - name: Repeat context and core test process exit
+        timeout-minutes: 8
         shell: pwsh
         run: |
-          $claudeNpmPrefix = Join-Path $env:RUNNER_TEMP 'cc-desk npm launcher'
-          npm install --global --prefix "$claudeNpmPrefix" @anthropic-ai/claude-code@2.1.278 --no-audit --no-fund
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          node --import tsx apps/desktop/scripts/verify-windows-npm.ts (Join-Path $claudeNpmPrefix 'claude.cmd')
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - run: npm run test:e2e
-      - name: Verify Windows terminal layout cleanup
-        # The full source suite exposed an intermittent stop failure after all
-        # layout assertions passed. Keep its targeted repeats as an independent
-        # required gate and retain their diagnostics even if source E2E failed.
-        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
-        timeout-minutes: 3
-        run: npm run test:e2e -- tests/inspector.spec.ts --grep "vertical rail and stacked panels" --repeat-each=3 --output ../../test-results/windows-inspector
-      # Source E2E and packaged smoke are independent gates. A source failure
-      # must remain a failed job, but should not hide packaging diagnostics.
-      - id: package_windows
-        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
-        run: npm run dist:win
-      - id: package_macos
-        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'macOS' }}
-        run: npm run dist:mac
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - id: package_linux
-        if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Linux' }}
-        run: npm run dist:linux
-      - name: Smoke test release payloads on Linux
-        if: ${{ !cancelled() && steps.package_linux.outcome == 'success' }}
-        run: xvfb-run -a npm run test:packaged
-      - name: Smoke test release payloads on Windows and macOS
-        if: ${{ !cancelled() && (steps.package_windows.outcome == 'success' || steps.package_macos.outcome == 'success') }}
-        run: npm run test:packaged
-      - uses: actions/upload-artifact@v4
-        with:
-          name: packages-${{ runner.os }}-${{ matrix.arch }}
-          if-no-files-found: error
-          compression-level: 0
-          path: |
-            release/*.exe
-            release/*.dmg
-            release/*.AppImage
-            release/*.zip
-            release/*.tar.gz
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: claude-workbench-${{ runner.os }}-${{ matrix.arch }}
-          path: |
-            docs/screenshots/*.png
-            docs/themes/*.png
-            test-results/**
-  publish:
-    needs: build
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      github.event_name == 'workflow_dispatch' && inputs.publish_release
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: packages-*
-          merge-multiple: true
-          path: release-assets
-      - name: Publish verified release assets
-        run: node scripts/publish-release.mjs
-        env:
-          GH_TOKEN: ${{ github.token }}
+          for ($iteration = 1; $iteration -le 3; $iteration++) {
+            Write-Output "Context/core process attempt $iteration"
+            node --import ./scripts/diagnose-test-handles.mjs --import tsx --test --test-concurrency=1 apps/desktop/tests/context-refresh.test.ts apps/desktop/tests/core.test.ts
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Full check with process resource diagnostics
+        timeout-minutes: 30
+        shell: pwsh
+        run: |
+          $probePath = Join-Path $PWD 'scripts/diagnose-test-handles.mjs'
+          $probeUrl = ([System.Uri]$probePath).AbsoluteUri
+          $env:NODE_OPTIONS = '--import=' + $probeUrl
+          npm run check
+          exit $LASTEXITCODE
