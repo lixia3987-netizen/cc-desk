@@ -1,8 +1,8 @@
 # cc-desk · Claude Workbench
 
-**面向 Claude Code 的中文桌面工作台，在一个窗口中管理项目、会话、子任务和工作流。**
+**支持 Claude Code 与自研 Agent 的中文桌面工作台，在一个窗口中管理项目、会话、子任务和工作流。**
 
-cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和代码审阅，已有原生 Claude 终端与 Shell 会话也可继续使用。沿用本机 CLI 的登录、模型和 provider 配置，将日常开发中的对话、文件、Git 变更和隔离工作目录放在同一处管理。
+cc-desk 默认封装本机 Claude Code CLI，沿用本机 CLI 的登录、模型和 provider 配置，提供图形化对话、工具审批和代码审阅，已有原生 Claude 终端与 Shell 会话也可继续使用。v1.0.0 同时提供按会话显式选择的 Native Alpha，通过独立模型连接运行自研 Agent。日常开发中的对话、文件、Git 变更和隔离工作目录放在同一处管理。
 
 适合同时推进多个项目、需要隔离工作目录，或希望随时看清任务进度与待处理请求的开发者。基于 Electron + React + TypeScript，面向 Windows、Apple silicon Mac 和 Linux。
 
@@ -12,11 +12,11 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 - **开发连贯**：项目文件引用、附件、Git diff 审阅和可配置位置的 worktree；使用指定的 VS Code、WebStorm 或定制 IDE 打开工作目录。
 - **执行可控**：按需审批、Plan、接受编辑与 Bypass，支持默认权限设置；工作流按阶段推进，可确认、取消、重试与恢复。
 
-[下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v0.5.1 版本说明](docs/releases/v0.5.1.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
+[下载最新稳定版](https://github.com/lixia3987-netizen/cc-desk/releases/latest) · [v1.0.0 版本说明](docs/releases/v1.0.0.md) · [主题预览](docs/THEMES.md) · [使用流程](#主要流程) · [验证记录](docs/VALIDATION.md)
 
-客户端不是 Anthropic 官方产品，不附带模型服务或账户；稳定版和 Claude 会话需安装并登录本机 Claude Code CLI。源码中的 Native Alpha 使用独立模型连接，见 [操作说明](docs/NATIVE-AGENT-ALPHA.md)。
+客户端不是 Anthropic 官方产品，不附带模型服务或账户。Claude 会话需安装并登录本机 Claude Code CLI；Native Alpha 使用独立模型连接，无需 Claude CLI 登录，见 [操作说明](docs/NATIVE-AGENT-ALPHA.md)。Native 仍处于 Alpha，真实模型与平台验收状态见 [正式验收台账](docs/NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。
 
-## 当前源码进展：双引擎与桌面流程集成
+## v1.0.0 更新：双引擎与桌面流程集成
 
 - **自研 Agent Alpha**：Responses / Chat Completions 模型连接、独立 worker、持久任务计划与证据、本地上下文、逐次文件/命令审批、图片输入与串行队列/工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
 - **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills，以及 MCP HTTP / 本地 stdio 工具。HTTP 默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP；stdio 固定 `2025-11-25`，使用已安装程序的绝对路径与字面参数，无自动安装或协议回退。每回合启动本地服务前审批，每次工具调用另行审批；默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [stdio 说明](docs/NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。相关功能已在源码实现，图形、三平台与真实服务验收仍待执行。
@@ -31,7 +31,7 @@ cc-desk 封装本机 Claude Code CLI，提供图形化对话、工具审批和�
 - **工程与连接管理**：工程筛选显示项目路径；会话操作集中在列表菜单，连接管理可查看所有已连接或正在执行的会话，停止后保留记录和草稿。
 - **首次发送创建会话**：普通新建先编辑任务和配置，首次发送才建立结构化会话；跨引擎承接仍先创建待确认草稿，不自动执行。
 
-2026-09-30 按用户要求在独立集成分支吸收最新 main，验证后合入 main；整合记录见 [Native / main 集成](docs/NATIVE-AGENT-MAIN-INTEGRATION.md)。Claude 仍为默认引擎，Native 按会话显式选择。最新已发布安装包的内容见 [v0.5.1 版本说明](docs/releases/v0.5.1.md)；本次源码集成不发布新版本，真实模型、Windows/Electron 及平台成品待验收项保持原状态。
+v1.0.0 将 Native / main 集成成果纳入桌面发布，整合记录见 [Native / main 集成](docs/NATIVE-AGENT-MAIN-INTEGRATION.md)，下载、升级与使用边界见 [版本说明](docs/releases/v1.0.0.md)。Claude 仍为默认引擎，Native 按会话显式选择；发布工作流的自动验证与真实模型、账号和平台人工验收分别记录，未完成项见 [正式验收台账](docs/NATIVE-AGENT-RUNTIME-ACCEPTANCE.md)。
 
 ## v0.4.0 更新：CLI 更新、上下文用量、命令与字体
 
@@ -67,15 +67,17 @@ v0.3.0 整合 v0.2.2 之后的功能与体验改进：
 2. 下载对应系统的桌面包，打开后在「设置与连接」中检测或指定 CLI 路径。
 3. 点击「新建会话」，选择已有工作空间或直接选择目录，在输入框上方调整选项后发送任务；需要隔离代码时勾选独立 Git worktree。
 
+以上步骤使用默认 Claude 引擎。如需 Native Alpha，在新建会话时显式选择 Native，并按 [操作说明](docs/NATIVE-AGENT-ALPHA.md)配置独立模型连接。
+
 ## 下载安装包与便携包
 
-打开 [最新 Release](https://github.com/lixia3987-netizen/cc-desk/releases/latest)，在 **Assets** 中选择对应系统的文件。v0.5.1 的安装包与便携包文件名如下：
+打开 [最新 Release](https://github.com/lixia3987-netizen/cc-desk/releases/latest)，在 **Assets** 中选择对应系统的文件。v1.0.0 的安装包与便携包文件名如下：
 
 | 系统 | 安装包 | 便携包（免安装） |
 | --- | --- | --- |
-| Windows x64 | `cc-desk-0.5.1-windows-x64-setup.exe` | `cc-desk-0.5.1-windows-x64-portable.exe`，或 `cc-desk-0.5.1-windows-x64-portable.zip` |
-| macOS arm64 | `cc-desk-0.5.1-macos-arm64-setup.dmg` | `cc-desk-0.5.1-macos-arm64-portable.zip` |
-| Linux x64 | 无系统安装器 | `cc-desk-0.5.1-linux-x86_64-portable.AppImage`，或 `cc-desk-0.5.1-linux-x64-portable.tar.gz` |
+| Windows x64 | `cc-desk-1.0.0-windows-x64-setup.exe` | `cc-desk-1.0.0-windows-x64-portable.exe`，或 `cc-desk-1.0.0-windows-x64-portable.zip` |
+| macOS arm64 | `cc-desk-1.0.0-macos-arm64-setup.dmg` | `cc-desk-1.0.0-macos-arm64-portable.zip` |
+| Linux x64 | 无系统安装器 | `cc-desk-1.0.0-linux-x86_64-portable.AppImage`，或 `cc-desk-1.0.0-linux-x64-portable.tar.gz` |
 
 共 7 个安装 / 便携文件，另附 `SHA256SUMS.txt`，用于校验下载文件；GitHub 自动提供的源码压缩包不是桌面应用。
 
@@ -83,7 +85,7 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 
 “便携”指免安装；会话、附件与设置默认仍保存在 Electron userData 目录，不会随可执行文件迁移。准确数据路径可在设置中查看。
 
-安装包尚未签名或公证，cc-desk 桌面应用自身没有自动更新。更新桌面应用前完全退出旧版（包括托盘），再安装或解压新版本，原数据目录不变。首次使用请在「设置与连接」中检测或指定 CLI 路径；使用桌面包不需要执行下方的源码构建命令。
+安装包尚未签名或公证，cc-desk 桌面应用自身没有自动更新。更新前备份设置中显示的数据目录，完全退出旧版（包括托盘），再安装或解压新版本，原数据目录不变。v1.0.0 首次写入 v3 工作区前会保存迁移快照；降级旧版须恢复迁移前备份或使用独立数据目录，见 [升级说明](docs/releases/v1.0.0.md)。Claude 会话首次使用需在「设置与连接」中检测或指定 CLI 路径；使用桌面包无需安装 Python、Visual Studio C++ Build Tools，也不需要执行下方的源码构建命令。
 
 ### Windows npm 安装的 CLI
 
@@ -109,7 +111,7 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 | `packages/contracts` | 公共执行身份、配置、能力、消息、事件和生命周期接口 |
 | `packages/engine-claude` | Claude runtime、CLI 探测/参数、协议、transcript、hooks 与专属配置，通过宿主端口接入桌面 |
 
-根命令按 contracts → engine-claude → desktop 的顺序构建。内部包保持 private，桌面打包包含其运行代码；通用 PTY 和原生依赖仍由 desktop 管理。内部包或主进程改动后需重新启动 `npm run dev`。
+根命令按 contracts → engine-claude → agent-core → agent-node → desktop 的顺序构建。内部包保持 private，桌面打包包含其运行代码；通用 PTY 和原生依赖仍由 desktop 管理。内部包或主进程改动后需重新启动 `npm run dev`。
 
 ```sh
 npm ci
@@ -119,7 +121,7 @@ npm run dev
 也可运行 PowerShell 的 `./scripts/start.ps1`，或 macOS/Linux 的 `bash scripts/start.sh`。首次运行会安装依赖和构建；修改代码后重新构建。
 
 ```sh
-npm run check        # TypeScript、契约/Claude 包/桌面测试、生产构建
+npm run check        # TypeScript、契约/Claude/Native 包/桌面测试、生产构建
 npm run test:e2e     # Electron UI + 真实 Shell / Claude 协议测试进程
 npm start           # 启动已有 apps/desktop/dist
 npm run dist:win    # Windows 上构建 NSIS 安装包、单文件便携 EXE、ZIP
