@@ -167,6 +167,7 @@ test('native utilityProcess completes approved patch/command, persists selected 
     expect(fixture.requests.length).toBe(count + 1); expect(fixture.errors).toEqual([]);
     expectProjectInstructions(fixture.requests[count], updatedClaudeRule);
     expect(fixture.requests[count].instructions).not.toContain(claudeRule);
+    await restoredSkills.getByRole('button', { name: '读取项目 Skills', exact: true }).click();
     await restoredSkills.getByRole('checkbox', { name: claudeSkillPath, exact: true }).uncheck();
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath]);

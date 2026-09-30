@@ -77,6 +77,10 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
   const events = new ExecutionEvents();
   const calls: Array<{ summary: boolean; input: string; budget: WorkerOptions['request']['budget']; instructions: string | undefined; definitions: readonly ToolDefinition[] }> = [];
   const worker: Worker = async request => {
+    if (request.request.configuration.purpose === 'context_summary') {
+      const snapshot = executor.snapshot(id);
+      assert.ok((snapshot.nativeRun?.workerGeneration ?? 0) < request.request.identity.workerGeneration, 'preflight generation must not become snapshot authority before a durable task run starts');
+    }
     calls.push({ summary: request.request.configuration.purpose === 'context_summary', input: request.request.input,
       budget: structuredClone(request.request.budget), instructions: request.model.instructions, definitions: structuredClone(request.model.toolDefinitions ?? []) });
     return (options.worker ?? inlineWorker)(request);

@@ -607,10 +607,11 @@ test('session deletion: stale snapshot failures do not replace the workspace, wh
     const activeFailure = 'Active snapshot read failed';
     await gateSnapshotRead(app, created.id, activeFailure);
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
-    await expect(page.locator('.error-banner')).toHaveText(activeFailure);
-    await page.getByRole('button', { name: '关闭错误', exact: true }).click();
+    await expect(page.locator('.chat-pane [role=alert]')).toContainText(activeFailure);
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.restore());
 
+    await page.getByRole('button', { name: '重新同步状态', exact: true }).click();
+    await expect(page.locator('.chat-pane [role=alert]')).toHaveCount(0);
     await gateSnapshotRead(app, created.id);
     await sessionAction(page, created.title, '删除会话');
     await page.getByRole('dialog', { name: '删除会话', exact: true }).getByRole('button', { name: '确认删除会话', exact: true }).click();
@@ -649,11 +650,11 @@ test('session deletion: a committed deletion invalidates reads before its delaye
     await expect(heading).toBeVisible();
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
     await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.rejection)).toBe('会话不存在。');
-    // The pane must resolve the failed read against current main-process state,
-    // even though neither the delete response nor workspace event reached it.
-    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.verificationReads)).toBeGreaterThan(0);
+    // Deletion invalidated this read before IPC began; the late rejection must
+    // remain suppressed even before the workspace event or delete reply arrives.
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(heading).toBeVisible();
+    await expect(page.locator('.chat-pane [role=alert]')).toHaveCount(0);
     await expect(page.locator('.error-banner')).toHaveText([]);
     await app.evaluate(() => (globalThis as typeof globalThis & { deletionNotificationGate: DeletionNotificationGate }).deletionNotificationGate.release());
     await expect(heading).toHaveCount(0);

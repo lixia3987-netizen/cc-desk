@@ -280,7 +280,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const task = this.taskViews.get(id);
     if (task && (!active || active.taskId === task.taskId)) snapshot.nativeTask = toNativeTaskView(task);
     if (this.taskErrors.has(id)) { delete snapshot.nativeTask; snapshot.nativeTaskError = this.taskErrors.get(id); }
-    if (active?.identity) snapshot.nativeRun = { ...active.identity };
+    // Only published ledger runs define snapshot authority. A preflight identity
+    // may be abandoned (for example after canceled automatic compaction); exposing
+    // it would make the next durable snapshot regress its worker generation.
     return snapshot;
   }
   async page(id: string, options?: ChatPageOptions) { await this.hydrate(id); return this.projection.page(id, options); }

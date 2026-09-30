@@ -8,7 +8,7 @@ import { Attachments, MAX_FILE } from '../src/main/attachments';
 import { DraftAttachments, MAX_DRAFT_ATTACHMENT_SELECTIONS } from '../src/main/draft-attachments';
 
 const fixture = async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-draft-attachments-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-draft-attachments-')));
   const directory = path.join(root, 'data'), manager = new Attachments(directory);
   return { root, directory, manager, drafts: new DraftAttachments(manager),
     file: async (name: string, contents = 'approved contents') => {

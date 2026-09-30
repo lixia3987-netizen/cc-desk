@@ -46,11 +46,14 @@ async function workspace(texts: string[], toolIndexes: number[] = []) {
 
 /** Exercise real renderer updates without starting a CLI or depending on a provider. */
 async function updateSnapshot(app: ElectronApplication, snapshot: ChatSnapshot) {
+  const page = await app.firstWindow();
+  const current = await page.evaluate(id => window.desktop.chatSnapshot(id), snapshot.sessionId);
+  const version = { ...current.version!, revision: current.version!.revision + 1, eventSequence: current.version!.eventSequence + 1 };
   await app.evaluate(({ ipcMain, BrowserWindow }, value) => {
     ipcMain.removeHandler('chat:snapshot');
     ipcMain.handle('chat:snapshot', () => value);
-    BrowserWindow.getAllWindows()[0].webContents.send('chat:changed', value.sessionId, value.taskState);
-  }, snapshot);
+    BrowserWindow.getAllWindows()[0].webContents.send('chat:changed', value.sessionId, value.taskState, value.version);
+  }, { ...snapshot, version });
 }
 
 test('mermaid: render real diagrams, switch individual blocks and copy the original source', async ({}, testInfo) => {

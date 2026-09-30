@@ -40,7 +40,7 @@ const inlineWorker: Worker = options => runAgent({ ...options.request, signal: o
 });
 
 async function fixture(options: { mode?: Mode; workerFailure?: boolean; selected?: boolean; twoChildren?: boolean; gateStartup?: boolean } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-mcp-stdio-executor-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-mcp-stdio-executor-')));
   const data = path.join(directory, 'data'), project = path.join(directory, 'project');
   const id = randomUUID(), conversationId = randomUUID(), projectId = randomUUID();
   await fs.mkdir(project); await fs.writeFile(path.join(project, 'AGENTS.md'), 'Only perform approved operations.\n');

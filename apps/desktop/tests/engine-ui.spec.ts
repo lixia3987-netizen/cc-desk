@@ -283,7 +283,7 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     await expect.poll(() => fs.readFile(started, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; })).toBe('started');
     await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).cliUpdate.phase)).toBe('updating');
     await send(page, 'maintenance message');
-    await expect(page.locator('.chat-message.assistant')).toContainText('测试引擎完成：maintenance message');
+    await expect(page.locator('.chat-message.assistant').last()).toContainText('测试引擎完成：maintenance message');
     await page.locator('.session-row').filter({ hasText: '等待维护的 Claude' }).click();
     await expect(page.locator('.engine-unavailable')).toContainText('正在维护');
     await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
@@ -301,5 +301,10 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     await fs.writeFile(release, 'continue');
     await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).cliUpdate.phase)).toBe('updated');
     await expect(page.locator('.error-banner')).toHaveCount(0);
-  } finally { await fs.writeFile(release, 'continue'); await stopAndClose(app); await f.dispose(); }
+  } finally {
+    await fs.writeFile(release, 'continue');
+    const page = await app.firstWindow();
+    await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).cliUpdate.phase)).not.toBe('updating');
+    await stopAndClose(app); await f.dispose();
+  }
 });
