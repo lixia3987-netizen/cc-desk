@@ -51,7 +51,8 @@ async function workspace() {
     async dispose() { release(); await fixture.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); },
   };
 }
-async function configure(app: ElectronApplication, projectId: string, baseURL: string) {
+async function configure(app: ElectronApplication, projectId: string, fixture: Fixture) {
+  const { baseURL } = fixture;
   const page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible();
   const session = await page.evaluate(async ({ projectId, baseURL }) => {
     const item = await window.desktop.nativeConnections.upsert({ name: 'Local in-turn compaction fixture', protocol: 'responses', baseURL, model: 'in-turn-fixture', enabled: true, allowLoopbackHttp: true, auth: { mode: 'memory' } });
@@ -67,6 +68,10 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
   await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!.engineConfig.options.autoCompact, session.id)).toBe('before_send_and_during_run');
   await page.evaluate(({ id, goal }) => window.desktop.submitChat(id, goal), { id: session.id, goal });
   await expect.poll(async () => (await snapshot(page, session.id)).nativeContextMaintenance?.compactionTrigger).toBe('in_turn');
+  // The host exposes its phase before the summary worker reaches HTTP. Wait
+  // for the gated summary request before asserting counts or cancelling it.
+  await expect.poll(() => fixture.requests.length).toBe(3);
+  expect(fixture.requests[2].tools).toHaveLength(0);
   const meter = page.locator('details.context-meter');
   if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
   await expect(meter).toContainText('持久保存后继续当前任务；取消会停止本回合');
@@ -77,7 +82,7 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
 test('native in-turn compaction exposes the host phase across reload and persists the committed receipt without replay after restart', async () => {
   const f = await workspace(); let app: ElectronApplication | undefined;
   try {
-    app = await f.launch(); const configured = await configure(app, f.projectId, f.fixture.baseURL); let page = configured.page; const session = configured.session;
+    app = await f.launch(); const configured = await configure(app, f.projectId, f.fixture); let page = configured.page; const session = configured.session;
     const before = await snapshot(page, session.id);
     expect(before.nativeContextMaintenance?.inTurn?.status).toBe('attempted');
     expect(before.nativeContextMaintenance?.lastCompaction).toBeUndefined();
@@ -113,7 +118,7 @@ test('native in-turn compaction exposes the host phase across reload and persist
 test('cancelling native in-turn compaction stops the active turn without a saved-success claim or an automatic retry', async () => {
   const f = await workspace(); let app: ElectronApplication | undefined;
   try {
-    app = await f.launch(); const { page, session, meter } = await configure(app, f.projectId, f.fixture.baseURL);
+    app = await f.launch(); const { page, session, meter } = await configure(app, f.projectId, f.fixture);
     await meter.getByRole('button', { name: '取消压缩', exact: true }).click();
     // Aborting marks the turn interrupted before the summary worker finishes
     // cleanup and persists its failed receipt. Wait for that terminal state.
