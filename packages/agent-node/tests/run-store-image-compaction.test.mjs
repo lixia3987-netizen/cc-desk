@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { canonicalJson, contextHasUserImages } from '@cc-desk/agent-core';
@@ -12,7 +12,7 @@ const protocols = ['openai-responses', 'openai-chat-completions'];
 const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
 async function fixture(t, id, options = {}) {
-  const rootDirectory = await mkdtemp(path.join(tmpdir(), 'native-image-maintenance-')), conversationId = randomUUID();
+  const rootDirectory = await realpath(await mkdtemp(path.join(tmpdir(), 'native-image-maintenance-'))), conversationId = randomUUID();
   const protocol = { id, version: 1 };
   let store = await NativeRunStore.open({ rootDirectory, conversationId, ...options });
   t.after(async () => { await store.close().catch(() => {}); await rm(rootDirectory, { recursive: true, force: true }); });
