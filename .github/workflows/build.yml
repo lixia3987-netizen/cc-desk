@@ -13,7 +13,9 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    timeout-minutes: 30
+    # Windows runs additional PTY gates and slower filesystem-heavy tests;
+    # reserve time for source E2E, packaging, and smoke tests after check.
+    timeout-minutes: ${{ matrix.os == 'windows-2025' && 60 || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,7 +65,7 @@ jobs:
       - id: check
         # Keep a stuck test process from consuming the entire job budget and
         # hiding its failure logs and platform diagnostics.
-        timeout-minutes: ${{ runner.os == 'Windows' && 20 || 10 }}
+        timeout-minutes: ${{ runner.os == 'Windows' && 30 || 10 }}
         run: npm run check
       - name: Diagnose native process release after a Windows check failure
         if: ${{ !cancelled() && steps.check.outcome == 'failure' && runner.os == 'Windows' }}
