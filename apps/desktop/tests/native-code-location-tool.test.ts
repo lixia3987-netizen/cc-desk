@@ -205,10 +205,14 @@ test('overlapping preparation keeps the first exact binding and enforces the cac
   } finally { await f.dispose(); }
 });
 
-test('output budget includes actual escaped Unicode paths and all scoped instructions before persistence', async () => {
+// Windows rejects quotes in filenames. Run the portable UTF-8 byte-budget case
+// everywhere, plus JSON-escaped paths on filesystems that support them.
+for (const namePart of process.platform === 'win32' ? ['界文'] : ['界文', '界"'])
+test(`output budget includes Unicode paths and scoped instructions before persistence (${JSON.stringify(namePart)})`, async () => {
   const f = await fixture();
   try {
-    const relative = `${'界"'.repeat(40)}.ts`; await fs.writeFile(path.join(f.project, relative), f.content);
+    const relative = `${namePart.repeat(40)}.ts`;
+    await fs.writeFile(path.join(f.project, relative), f.content);
     const call = { id: 'quoted', name: 'record_code_location', arguments: JSON.stringify({ ...f.input(), path: relative }) };
     const small = { ...f.context, maxOutputBytes: 2048 };
     const prepared = await f.tool.prepare(call, small);
