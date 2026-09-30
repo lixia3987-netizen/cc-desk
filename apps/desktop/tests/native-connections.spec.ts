@@ -180,6 +180,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
   const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
   try {
     const page = await app.firstWindow();
+    await expect(page.locator('main.workspace')).toBeVisible();
     const connections = await page.evaluate(async ids => {
       const model = await window.desktop.nativeConnections.upsert({ name: 'MCP UI 模型引用', protocol: 'responses', baseURL: 'https://unused.example.test/v1', model: 'fixture-model', auth: { mode: 'memory' }, allowLoopbackHttp: false, enabled: true });
       await window.desktop.nativeConnections.setCredential({ id: model.id, revision: model.revision, mode: 'memory', secret: 'fixture-no-network' });
@@ -197,7 +198,10 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await expect(choices).toContainText('协议 2025-11-25');
     await expect(choices).toContainText('协议 2026-07-28');
     await expect(choices.getByLabel(`MCP 禁用服务 (${connections.disabled.id})`, { exact: true })).toBeDisabled();
-    await choices.getByLabel('MCP missing-service (missing-service)', { exact: true }).uncheck();
+    const missing = choices.getByLabel('MCP missing-service (missing-service)', { exact: true });
+    // Removing an unavailable selection also removes its checkbox.
+    await missing.click();
+    await expect(missing).toHaveCount(0);
     await choices.getByLabel(`MCP 可选服务 (${connections.ready.id})`, { exact: true }).check();
     await page.locator('form.session-config').getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.mcpConnections, sessionIds[0])).toEqual([connections.ready.id]);
@@ -407,7 +411,7 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     await expect(region).toContainText('不代表工具调用兼容性');
 
     await run.click();
-    await expect(region.locator('.native-connection-test-result')).toContainText('Responses 文本流测试通过');
+    await expect(region.locator('.native-connection-test-result')).toContainText('所选协议文本流测试通过');
     await expect(region.locator('.native-connection-test-result')).toContainText('合计 13 tokens');
     expect(requests).toBe(1);
     expect(bodies[0].tools).toEqual([]); expect(bodies[0].max_output_tokens).toBe(256);

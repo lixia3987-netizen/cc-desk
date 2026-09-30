@@ -26,7 +26,7 @@ after(() => { if (previousElectron) require.cache[electronPath] = previousElectr
 
 async function fixture(providerId = 'native') {
   const { registerChatHandlers } = await import('../src/main/ipc/chat-handlers');
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'native-image-ipc-'));
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-image-ipc-')));
   const id = randomUUID(), attachments = new Attachments(path.join(root, 'data'));
   const session: Session = { id, projectId: randomUUID(), title: 'Images', kind: 'agent', cwd: root,
     execution: { providerId, mode: 'structured', conversationId: randomUUID() }, engineConfig: { schemaVersion: 1, options: {} },

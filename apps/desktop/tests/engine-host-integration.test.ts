@@ -146,7 +146,7 @@ test('packaged Claude runs through desktop creation and IPC, then reloads durabl
     assert.equal(fixture.store.state.sessions[0].title, '引擎宿主持久化验证');
     const titleRequest = JSON.parse(fs.readFileSync(fixture.titleRecord, 'utf8'));
     assert.ok(titleRequest.input.includes('integration prompt'));
-    assert.equal(titleRequest.cwd, session.cwd);
+    assert.equal(titleRequest.cwd, fs.realpathSync(session.cwd));
     assert.equal(titleRequest.args[titleRequest.args.indexOf('--tools') + 1], '');
     assert.deepEqual(JSON.parse(titleRequest.args[titleRequest.args.indexOf('--settings') + 1]), { disableAllHooks: true });
     assert.deepEqual(JSON.parse(titleRequest.args[titleRequest.args.indexOf('--mcp-config') + 1]), { mcpServers: {} });

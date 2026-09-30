@@ -25,6 +25,10 @@ export async function createSessionFixture(page: Page, input: Partial<NewSession
 
 /** Keep session creation and Git real; these UI fixtures do not run account-dependent Claude tasks. */
 export async function stubChatSubmission(app: ElectronApplication) {
+  // Electron launch resolves before the host has registered all IPC handlers.
+  // Install overrides only after startup, otherwise host registration can throw.
+  const page = await app.firstWindow();
+  await expect(page.locator('main.workspace')).toBeVisible();
   await app.evaluate(({ ipcMain }) => {
     ipcMain.removeHandler('chat:submit');
     ipcMain.handle('chat:submit', (_event, input: { requestId?: string }) => ({ messageId: input.requestId ?? 'ui-fixture-message' }));

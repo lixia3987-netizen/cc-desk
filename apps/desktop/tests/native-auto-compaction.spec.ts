@@ -71,7 +71,7 @@ async function seedHistory(page: Page, sessionId: string) {
   await send(page, sessionId, recentGoal);
 }
 async function saveAutomaticCompaction(page: Page, sessionId: string, enabled: boolean) {
-  const value = enabled ? 'before_send' : 'off', maxInputTokens = enabled ? 50_000 : 64_000;
+  const value = enabled ? 'before_send' : 'off', maxInputTokens = enabled ? 50_000 : 128_000;
   await page.getByLabel('会话自动压缩', { exact: true }).selectOption(value);
   await page.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill(String(maxInputTokens));
   await page.getByRole('button', { name: '保存配置', exact: true }).click();

@@ -169,7 +169,19 @@ for (const mutation of ['append', 'truncate', 'same-size rewrite', 'file replace
   await f.store.close();
   const original = await fs.readFile(f.journal);
   let mutated = false;
+  const replaceParent = async () => {
+    await fs.rename(f.directory, f.directory + '-old');
+    await fs.mkdir(f.directory);
+    await fs.writeFile(f.journal, original);
+    await fs.copyFile(path.join(f.directory + '-old', 'checkpoint.json'), f.checkpoint);
+  };
   await hooked({ open: open => async (file, ...args) => {
+    // Windows forbids renaming a directory with open child handles. Replace it
+    // after path metadata was captured, but before opening the first child.
+    if (mutation === 'parent replacement' && process.platform === 'win32' && !mutated) {
+      mutated = true;
+      await replaceParent();
+    }
     const handle = await open(file, ...args);
     if (file === f.journal) {
       const read = handle.read.bind(handle);
@@ -185,12 +197,7 @@ for (const mutation of ['append', 'truncate', 'same-size rewrite', 'file replace
             await fs.utimes(f.journal, future, future);
           }
           if (mutation === 'file replacement') { await fs.rename(f.journal, f.journal + '.old'); await fs.writeFile(f.journal, original); }
-          if (mutation === 'parent replacement') {
-            await fs.rename(f.directory, f.directory + '-old');
-            await fs.mkdir(f.directory);
-            await fs.writeFile(f.journal, original);
-            await fs.copyFile(path.join(f.directory + '-old', 'checkpoint.json'), f.checkpoint);
-          }
+          if (mutation === 'parent replacement') await replaceParent();
         }
         return result;
       };

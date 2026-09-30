@@ -44,7 +44,7 @@ async function configure(page: Page, projectId: string, baseURL: string): Promis
     let connection = await window.desktop.nativeConnections.upsert({ name: '维护 HTTP fixture', protocol: 'responses', baseURL, model: 'maintenance-fixture', allowLoopbackHttp: true, enabled: true, auth: { mode: 'memory' } });
     connection = await window.desktop.nativeConnections.setCredential({ id: connection.id, revision: connection.revision, mode: 'memory', secret: credential });
     const session = await window.desktop.createSession({ projectId, title: 'Native 恢复与压缩', kind: 'agent', providerId: 'native', mode: 'structured', isolated: false,
-      engineConfig: { schemaVersion: 1, options: { connectionId: connection.id, model: '' } } });
+      engineConfig: { schemaVersion: 1, options: { connectionId: connection.id, model: '', maxInputTokens: 128_000 } } });
     await window.desktop.setSelection(session.id);
     return session;
   }, { projectId, baseURL, credential });

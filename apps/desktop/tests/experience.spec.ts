@@ -155,6 +155,8 @@ test('experience: project groups preserve navigation and drafts with a compact h
         const button=page.getByRole('button',{name,exact:true});await expect(button).toBeVisible();
         const bounds=(await button.boundingBox())!;expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(layout.width);
       }
+      await sessionRow(page,title).scrollIntoViewIfNeeded();
+      await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
       await sessionRow(page,title).click({button:'right'});
       for(const name of ['打开工作目录','导出会话记录']){
         const item=page.getByRole('menuitem',{name,exact:true});await expect(item).toBeVisible();
@@ -451,7 +453,10 @@ test('experience: permission defaults persist while sessions, forks and import o
     },{projectId:f.projects[1].id,sourceId:f.sessions[0].execution.conversationId});
     expect(modes).toEqual({agents:['bypassPermissions','bypassPermissions','plan','default','default'],shell:{schemaVersion:1,options:{}}});
     await expect(page.locator('.error-banner')).toHaveCount(0);
-  }finally{await app.close();await f.dispose();}
+  }finally{
+    await app.evaluate(({dialog})=>{dialog.showMessageBox=async()=>({response:1,checkboxChecked:false});});
+    await app.close();await f.dispose();
+  }
 });
 
 async function cliProbe(directory:string,version:string){

@@ -141,6 +141,7 @@ async function close(app: ElectronApplication) {
 }
 
 async function create(page: Page, title = '', adapter: 'structured' | 'terminal' = 'structured', projectId?: string) {
+  await expect(page.locator('main.workspace')).toBeVisible();
   return createSessionFixture(page, { title, mode: adapter, ...(projectId ? { projectId } : {}) });
 }
 
@@ -158,7 +159,11 @@ test('session connections: list idle and active processes across sidebar filters
     const idle = await create(page, '已完成但保持连接');
     await page.getByLabel('提示词编辑器', { exact: true }).fill('快速完成任务');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter'); await completed(page);
-    const running = await create(page, '正在执行的连接');
+    // Keep the idle connection on a different directory; competing execution
+    // intentionally drains an idle Claude connection that owns the same root.
+    const runningPath = path.join(f.directory, '独立执行工程'); await fs.mkdir(runningPath);
+    const runningProject = await page.evaluate(folder => window.desktop.addProject(folder), runningPath);
+    const running = await create(page, '正在执行的连接', 'structured', runningProject.id);
     await page.getByLabel('提示词编辑器', { exact: true }).fill('保持运行直到关闭连接');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(s => s.id === running.id)?.taskState).toBe('thinking');

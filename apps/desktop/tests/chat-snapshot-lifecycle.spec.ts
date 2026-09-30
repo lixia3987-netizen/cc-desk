@@ -229,6 +229,6 @@ test('snapshot lifecycle: failed deletion resumes reads and current-session fail
     await f.page.getByRole('button', { name: '关闭错误', exact: true }).click();
     await holdSnapshot(f.app, a.id);
     await f.app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.releaseRead('当前有效会话的读取确实失败'));
-    await expect(f.page.locator('.error-banner')).toContainText('当前有效会话的读取确实失败');
+    await expect(f.page.locator('.chat-pane [role=alert]')).toContainText('当前有效会话的读取确实失败');
   } finally { await f.close(); }
 });
