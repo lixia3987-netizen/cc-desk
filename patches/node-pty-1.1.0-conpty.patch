@@ -407,7 +407,7 @@
      }
    }
  
-@@ -572,6 +670,14 @@
+@@ -572,6 +670,18 @@
  */
  
  Napi::Object init(Napi::Env env, Napi::Object exports) {
@@ -416,7 +416,11 @@
 +    auto stats = Napi::Object::New(info.Env());
 +    stats.Set("livePseudoconsoles", Napi::Number::New(info.Env(), livePseudoconsoles.load()));
 +    std::lock_guard<std::mutex> lock(ptyHandlesMutex);
-+    stats.Set("indexedPseudoconsoles", Napi::Number::New(info.Env(), ptyHandles.size()));
++    const size_t indexedPseudoconsoles = ptyHandles.size();
++    if (indexedPseudoconsoles > 9007199254740991ULL) { // Number.MAX_SAFE_INTEGER
++      throw Napi::RangeError::New(info.Env(), "Pseudoconsole count exceeds JavaScript's exact integer range");
++    }
++    stats.Set("indexedPseudoconsoles", Napi::Number::New(info.Env(), static_cast<double>(indexedPseudoconsoles)));
 +    return stats;
 +  }));
    exports.Set("startProcess", Napi::Function::New(env, PtyStartProcess));

@@ -274,3 +274,18 @@ test('main-process credential guards protect multiple independent secrets and th
   deltas.finish();
   assert.equal(emitted.join(''), 'short safe tail');
 });
+
+test('main-process guards reject credentials split across Anthropic text blocks and worker response messages', () => {
+  const secret = 'fictional-anthropic-key-that-must-not-cross-ipc';
+  const split = Math.floor(secret.length / 2);
+  const parts = [{ type: 'text', text: secret.slice(0, split) }, { type: 'text', text: secret.slice(split) }];
+  const assistant = { role: 'assistant', content: parts };
+  const response = { outputItems: [assistant], toolCalls: [], finishReason: 'completed', usage: null };
+  const workerMessage = { method: 'store.append', args: { event: { type: 'model_response', response } } };
+  for (const candidate of [assistant, response, workerMessage, { role: 'user', content: parts }, {
+    outputItems: parts.map(part => ({ role: 'assistant', content: [part] })),
+  }]) {
+    assert.throws(() => assertNoModelCredential(candidate, secret), error => error instanceof ResponsesModelError && error.code === 'credential_echo' && !error.message.includes(secret));
+  }
+  assert.doesNotThrow(() => assertNoModelCredential({ role: 'assistant', content: [{ type: 'text', text: 'safe first block' }, { type: 'text', text: 'safe second block' }] }, secret));
+});

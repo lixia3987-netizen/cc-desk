@@ -28,7 +28,7 @@ test('native MCP settings persist explicit protocol choices locally and clear wr
     let page = await app.firstWindow();
     const open = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+      await page.getByRole('tab', { name: 'MCP 连接', exact: true }).click();
       return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
     };
     let region = await open();
@@ -107,7 +107,7 @@ test('native stdio settings persist literal program configuration without launch
     let page = await app.firstWindow();
     const open = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+      await page.getByRole('tab', { name: 'MCP 连接', exact: true }).click();
       return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
     };
     let region = await open();
@@ -231,7 +231,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
   } finally { await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
-test('native connections UI saves metadata separately, clears secret input, disables and deletes, and loses memory keys at restart', async () => {
+test('native connections UI keeps model settings compact, saves metadata separately, clears secret input and loses memory keys at restart', async ({}, testInfo) => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-connections-ui-'));
   const data = path.join(directory, 'data');
   await fs.mkdir(data);
@@ -243,9 +243,38 @@ test('native connections UI saves metadata separately, clears secret input, disa
   try {
     let page = await app.firstWindow();
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-    await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     const connections = page.getByRole('region', { name: 'Native 模型连接', exact: true });
+    const modelPage = page.getByRole('tabpanel', { name: '模型配置', exact: true });
+    await expect(modelPage.getByRole('heading', { name: '自研 Agent 模型连接', exact: true })).toBeVisible();
+    await expect(modelPage.getByRole('heading', { name: /Claude.*默认.*模型/ })).toHaveCount(0);
+    await expect(page.getByLabel('Claude Code 路径', { exact: true })).toHaveCount(0);
+    const explanation = connections.locator('details').filter({ hasText: '连接与测试说明' });
+    await expect(explanation).toHaveJSProperty('open', false);
+    await expect(explanation.getByText('不代表工具调用兼容性', { exact: false })).toBeHidden();
+    await explanation.locator('summary').click();
+    await expect(explanation.getByText('不代表工具调用兼容性', { exact: false })).toBeVisible();
+    await explanation.locator('summary').click();
+    const defaults = modelPage.locator('details').filter({ hasText: '新会话默认模型' });
+    await expect(defaults).toHaveJSProperty('open', false);
+    const connectionLabel = await page.evaluate(async () => {
+      const descriptor = (await window.desktop.snapshot()).executors.find(item => item.providerId === 'native' && item.mode === 'structured')!;
+      return '默认' + descriptor.configuration!.fields.find(field => field.key === 'connectionId')!.label;
+    });
+    await expect(defaults.getByLabel(connectionLabel, { exact: true })).toBeHidden();
+    await defaults.locator('summary').click();
+    await expect(defaults.getByLabel(connectionLabel, { exact: true })).toBeVisible();
+    await defaults.locator('summary').click();
+    await page.screenshot({ path: testInfo.outputPath('native-model-settings-collapsed.png') });
     await connections.getByRole('button', { name: '新增模型连接', exact: true }).click();
+    const advanced = connections.locator('details').filter({ hasText: '高级设置（价格与本地代理）' });
+    await expect(advanced).toHaveJSProperty('open', false);
+    await expect(connections.getByLabel('填写模型价格', { exact: true })).toBeHidden();
+    await expect(connections.getByLabel('明确允许本地回环 HTTP', { exact: false })).toBeHidden();
+    await advanced.locator('summary').click();
+    await expect(connections.getByLabel('填写模型价格', { exact: true })).toBeVisible();
+    await expect(connections.getByLabel('明确允许本地回环 HTTP', { exact: false })).toBeVisible();
+    await advanced.locator('summary').click();
     await page.getByLabel('Native 连接名称', { exact: true }).fill('UI 内存连接');
     await page.getByLabel('Native 服务地址', { exact: true }).fill('https://model.example.test/v1');
     await page.getByLabel('Native 默认模型', { exact: true }).fill('fixture-model');
@@ -267,7 +296,7 @@ test('native connections UI saves metadata separately, clears secret input, disa
     await expect.poll(() => page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0].ready)).toBe(true);
     await app.close(); app = await launch(); page = await app.firstWindow();
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-    await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     const restarted = page.getByRole('region', { name: 'Native 模型连接', exact: true });
     await expect(restarted.locator('.connection-box')).toContainText('UI 内存连接');
     await expect(restarted.locator('.connection-box')).toContainText('未就绪');
@@ -389,7 +418,7 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     const page = await app.firstWindow();
     const openSettings = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-      await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+      await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     };
     await openSettings();
     const region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
@@ -397,6 +426,7 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     await page.getByLabel('Native 连接名称', { exact: true }).fill('手动诊断连接');
     await page.getByLabel('Native 服务地址', { exact: true }).fill(`http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`);
     await page.getByLabel('Native 默认模型', { exact: true }).fill('fixture-model');
+    await region.locator('summary').filter({ hasText: '高级设置（价格与本地代理）' }).click();
     await page.getByLabel('明确允许本地回环 HTTP', { exact: false }).check();
     await page.getByLabel('Native 认证方式', { exact: true }).selectOption('memory');
     await region.getByRole('button', { name: '保存模型连接', exact: true }).click();
@@ -408,7 +438,11 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     const run = region.getByRole('button', { name: '测试连接（可能计费）', exact: true });
     await expect(run).toBeEnabled();
     expect(requests).toBe(0);
-    await expect(region).toContainText('不代表工具调用兼容性');
+    const explanation = region.locator('details').filter({ hasText: '连接与测试说明' });
+    await expect(explanation).toHaveJSProperty('open', false);
+    await expect(explanation.getByText('不代表工具调用兼容性', { exact: false })).toBeHidden();
+    await explanation.locator('summary').click();
+    await expect(explanation.getByText('不代表工具调用兼容性', { exact: false })).toBeVisible();
 
     await run.click();
     await expect(region.locator('.native-connection-test-result')).toContainText('所选协议文本流测试通过');
@@ -438,9 +472,9 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     await expect(run).toBeEnabled();
 
     await run.click(); await expect.poll(() => requests).toBe(4);
-    await page.getByRole('tab').filter({ hasNotText: '连接与终端' }).first().click();
+    await page.getByRole('tab').filter({ hasNotText: '模型配置' }).first().click();
     await expect.poll(() => disconnected).toBe(2);
-    await page.getByRole('tab', { name: '连接与终端', exact: true }).click();
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
     await expect(run).toBeEnabled();
     await expect(region.locator('.native-connection-test-result')).toHaveCount(0);
 

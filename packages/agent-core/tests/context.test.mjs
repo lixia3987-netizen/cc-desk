@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { contextBudgetUsage, estimateContextInputTokens } from '../dist/index.js'
+import { contextBudgetUsage, estimateContextInputTokens, contextHasUserImages } from '../dist/index.js'
 
 test('context estimate counts UTF-8 history and instructions without claiming provider usage', () => {
   const context = { protocol: { id: 'test', version: 1 }, items: [{ role: 'user', content: '中文🙂' }], continuation: { opaque: 'saved' } }
@@ -23,4 +23,12 @@ test('context budget permits its exact boundary and flags either input or byte e
   assert.equal(contextBudgetUsage(context, 101, { maxInputTokens: 100, maxContextBytes: bytes }).status, 'exceeded')
   assert.equal(contextBudgetUsage(context, 0, { maxInputTokens: 100, maxContextBytes: bytes - 1 }).status, 'exceeded')
   for (const estimate of [NaN, Infinity, -1]) assert.throws(() => contextBudgetUsage(context, estimate, { maxInputTokens: 100, maxContextBytes: 100 }))
+})
+
+test('Anthropic base64 image history is recognized before any lossy context maintenance', () => {
+  const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } }
+  const protocol = { id: 'anthropic-messages', version: 1 }
+  assert.equal(contextHasUserImages({ protocol, items: [{ role: 'user', content: [{ type: 'text', text: 'describe' }, image] }] }), true)
+  assert.equal(contextHasUserImages({ protocol, items: [{ role: 'user', content: [{ type: 'text', text: 'image' }] }] }), false)
+  assert.equal(contextHasUserImages({ protocol, items: [{ role: 'assistant', content: [image] }] }), false)
 })

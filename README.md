@@ -18,7 +18,7 @@ cc-desk 默认封装本机 Claude Code CLI，沿用本机 CLI 的登录、模型
 
 ## v1.0.0 更新：双引擎与桌面流程集成
 
-- **自研 Agent Alpha**：Responses / Chat Completions 模型连接、独立 worker、持久任务计划与证据、本地上下文、逐次文件/命令审批、图片输入与串行队列/工作流。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
+- **自研 Agent Alpha**：Responses / Chat Completions / Anthropic Messages 模型连接、独立 worker、持久任务计划与证据、本地上下文、逐次文件/命令审批、图片输入与串行队列/工作流。可从 Claude 配置预览并导入模型连接。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
 - **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills，以及 MCP HTTP / 本地 stdio 工具。HTTP 默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP；stdio 固定 `2025-11-25`，使用已安装程序的绝对路径与字面参数，无自动安装或协议回退。每回合启动本地服务前审批，每次工具调用另行审批；默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [stdio 说明](docs/NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。相关功能已在源码实现，图形、三平台与真实服务验收仍待执行。
 - **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。应用仍默认使用 Claude，已有原生终端和 Shell 会话继续可用；Native Alpha 按会话显式选择，当前源码的正式验收状态见对应记录。
 - **独立配置与 v3 数据**：会话统一保存带版本的 `engineConfig`，按引擎描述显示可用功能。读取旧工作区时保留身份和路径，在首次写入 v3 前保存独立的原始迁移快照；回退方法见 [阶段二验证记录](docs/ENGINE-BOUNDARIES-PHASE-2-VALIDATION.md)。未知引擎保留配置并可读取已有结构化展示日志，不自动回退到 Claude。
@@ -41,12 +41,14 @@ v0.4.0 整合自 v0.3.0 以来的功能与修复，支持查看上下文占比�
 - 图形化聊天输入区显示 **Context 占比、已用 token 与窗口容量**，展开可查看模型、更新时间和最近压缩记录。修复 `/context` 报告后继续普通对话丢失占比的问题；缺少后续用量字段或停止 / 重启时保留有效读数。
 - 在输入框开头输入 **`/`**，搜索当前 Claude Code 会话提供的系统命令和 Skills；支持方向键选择、Enter / Tab 填入、参数编辑和 Esc 关闭。用 `/context` 查看分布，用 `/compact` 主动压缩上下文。
 
-- 设置窗口改为**左侧分类菜单、右侧配置**：外观与字体、连接与终端、会话与权限、工作区与 IDE、通知与后台。切换分类会保留未保存的输入。
+- 设置窗口采用**左侧分类菜单、右侧配置**：外观与字体、模型配置、终端配置、MCP 连接、会话与权限、工作区与 IDE、通知与后台。切换分类会保留未保存的输入。
+- 「模型配置」仅管理自研 Agent；可读取 Claude Code 配置并转换为自研 Agent 模型连接，也可从连接的服务地址读取可用模型并选择切换。Claude Code 的模型设置由 Claude Code 管理，连接高级选项和新会话默认模型按需展开。
+- 自研 Agent 支持 Anthropic 思考内容块与完整历史续接，兼容 Kimi 未返回签名的思考响应。模型窗口与输入/输出上限自动优先读取服务端详情及模型目录，缺失字段查本地能力表；界面显示来源，运行预算只会按模型限制收紧，不自动提高用户设置。
 - 「外观与字体」分别设置聊天正文 / 输入框与菜单界面的字体和字号。聊天范围 **11–28 px**，菜单基准范围 **11–20 px**；标题、辅助文字按比例缩放，代码保持等宽。
 - 默认使用**系统字体**；打开设置后读取已安装的字体，支持搜索、刷新，并分别用于聊天和菜单。系统字体直接使用本机安装，无需复制或重新导入；移除全部 `@fontsource-variable/*` 依赖，不再分发预置 Fontsource 字体。
 - 支持导入 **TTF、OTF、WOFF、WOFF2**，单个最多 20 MiB、最多 24 个；保存应用内副本，原文件移动后仍可使用。
 - 字体、字号与主题**即时预览，无需重启**。点击「保存设置」后重启仍保留；取消 / 关闭设置会恢复已保存的外观。导入和移除字体库条目立即保存，移除正在使用的字体会恢复系统默认，原文件不受影响。
-- 原有「终端字号」位于「连接与终端」，保存后即时更新，不重启正在运行的终端。聊天字号与终端字号相互独立。
+- 原有「终端字号」位于「终端配置」，保存后即时更新，不重启正在运行的终端。聊天字号与终端字号相互独立。
 
 同时提取公共会话身份、执行接口、事件和能力声明，拆分运行器与工作台组件；现有 Claude / Shell 路径通过接口接入。Linux 桌面测试统一使用 X11 / Xvfb，修复无显示环境下的测试启动崩溃。完整改动与升级说明见 [v0.4.0 版本说明](docs/releases/v0.4.0.md)，字体设置见 [字体说明](docs/FONTS.md)。
 
@@ -106,7 +108,7 @@ macOS 仅提供 Apple silicon 的 `arm64` 包，尚未提供 Intel 包。Windows
 | 目录 | 职责 |
 | --- | --- |
 | `packages/agent-core` | 平台中立的 Agent 循环、审批、预算与端口 |
-| `packages/agent-node` | Responses、完整记录库、本地工具、命令监管与项目指令 |
+| `packages/agent-node` | Responses / Chat Completions / Anthropic Messages、完整记录库、本地工具、命令监管与项目指令 |
 | `apps/desktop` | Electron、React、IPC、数据存储、会话/队列/工作流调度、共享 PTY 与桌面装配 |
 | `packages/contracts` | 公共执行身份、配置、能力、消息、事件和生命周期接口 |
 | `packages/engine-claude` | Claude runtime、CLI 探测/参数、协议、transcript、hooks 与专属配置，通过宿主端口接入桌面 |
@@ -130,7 +132,9 @@ npm run dist:linux  # Linux 上构建 AppImage、免安装 tar.gz
 npm run test:packaged # 本机验证已构建的实际发布包（Windows 会安装/卸载，手动需 -- --allow-install）
 ```
 
-Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windows SDK 和对应的 Spectre-mitigated C++ 库。`npm ci` 的 postinstall 会核对 node-pty 1.1.0 源码 SHA-256、应用仓库中的 ConPTY 生命周期补丁，并用固定的 node-gyp 12.4.0 编译 N-API 模块；编译或修复标记验证失败会直接终止，不回退旧预编译模块。重复运行 `node apps/desktop/scripts/prepare-native.mjs` 可重新构建。打包时还会通过成品 Electron 加载 ASAR 中的模块，确认 `build/Release/conpty.node` 与已验证的构建一致。安装包用户不需要编译工具链。
+仓库 `.npmrc` 使用支持安全审计的 npm 官方源，并省略仅由 peer 自动引入的包；当前打包目标不使用 Squirrel.Windows，因此不安装其旧 `temp` / `rimraf` 依赖链。需要的 peer 均由工作区显式声明或普通依赖提供。根 `overrides` 固定维护中的 ASAR、macOS universal、下载代理和 `lodash-es` 版本，消除旧打包依赖的弃用提示及图表依赖的安全漏洞。打包工具 `electron-builder` 放在根开发依赖，`mermaid` 同时在根声明相同版本的开发依赖，确保 npm 11.13.0 能正确向两条工作区依赖链传播这些覆盖（[npm 工作区覆盖问题](https://github.com/npm/cli/issues/9514)）；桌面仍显式声明 `mermaid` 运行依赖。
+
+Windows 开发构建需要 Python 3、Visual Studio 2022 C++ Build Tools、Windows SDK 和对应的 Spectre-mitigated C++ 库。`npm ci` 的 postinstall 会核对 node-pty 1.1.0 源码 SHA-256、应用仓库中的 ConPTY 生命周期补丁，并用固定的 node-gyp 12.4.0 仅编译所需的 `conpty` 和 `conpty_console_list` N-API 模块，避免重编译旧 winpty 源码；编译或修复标记验证失败会直接终止，ConPTY 不回退旧预编译模块。重复运行 `node apps/desktop/scripts/prepare-native.mjs` 可重新构建。打包时还会通过成品 Electron 加载 ASAR 中的模块，确认 `build/Release/conpty.node` 与已验证的构建一致。安装包用户不需要编译工具链。
 
 Linux 编译 node-pty 需要 Python 3、make、C++ 工具链。桌面测试需要 X11；无 `DISPLAY` 时，`npm run test:e2e` 自动通过 Xvfb 启动 1920×1080 虚拟桌面，需先安装 `xvfb` 和 `xauth`（Ubuntu/Debian：`sudo apt-get install xvfb xauth`）。已有 `DISPLAY` 时复用现有桌面；Windows/macOS 直接运行。测试不再回退到会导致当前 Electron 普通窗口崩溃的 Ozone headless 后端。打包验证仍使用 `xvfb-run -a npm run test:packaged`。macOS/Linux 的 postinstall 保留 node-pty macOS spawn-helper 执行权限修复，不编译 Windows 模块。所有打包命令显式关闭自动发布。
 

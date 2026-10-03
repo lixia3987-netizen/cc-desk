@@ -3,6 +3,7 @@ export * from './run-store.js';
 export * from './context-maintenance.js';
 export * from './native-model.js';
 export * from './chat-completions-model.js';
+export * from './anthropic-model.js';
 export * from './tools/index.js';
 export * from './process-supervisor.js';
 export * from './project-instructions.js';

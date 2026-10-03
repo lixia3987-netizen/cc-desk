@@ -41,6 +41,8 @@ import { createInRunCompaction } from './in-run-compaction';
 import { buildNativeContextContinuity } from './context-continuity';
 import { nativeCompactionPreview, unavailableCompactionPreview } from './compaction-preview';
 import { estimateNativeCost } from '../../../shared/native-cost';
+import type { NativeModelCapabilityService } from './model-capabilities';
+import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -69,6 +71,7 @@ interface ContextOperation {
 }
 export interface NativeExecutorOptions {
   mcpConnections?: NativeMcpConnectionStore;
+  modelCapabilities?: NativeModelCapabilityService;
   worker?: typeof runNativeWorker;
   supervisor?: ProcessSupervisor;
   /** Supplied by the host's directory coordinator where available. */
@@ -339,7 +342,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       void active.imageSnapshot.catch(() => {});
       await this.hydration.get(id);
       this.assertActive(id, active);
-      const session = this.session(id), config = parseNativeConfig(session.engineConfig);
+      const session = this.session(id), requestedConfig = parseNativeConfig(session.engineConfig);
+      let config = requestedConfig;
       // Receipt lookup precedes credential resolution and worker creation. Retries cannot execute again.
       let ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId! });
       active.store = ledger;
@@ -370,6 +374,15 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
+      const metadataTime = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
+      if (metadataTime < 1) throw new Error('本次执行时长预算已耗尽，未发起模型请求。');
+      const capabilitySnapshot = await this.options.modelCapabilities?.resolve(connection, { timeoutMs: Math.min(3000, metadataTime) });
+      this.assertActive(id, active);
+      if (this.connections.resolve(requestedConfig.connectionId, requestedConfig.model || undefined).revision !== connection.revision) throw new Error('模型连接已更新，请重新发送。');
+      if (performance.now() - startedAt >= config.maxActiveMs) throw new Error('本次执行时长预算已耗尽，未发起模型请求。');
+      const modelCapabilities = capabilitySnapshot?.connectionId === connection.connectionId && capabilitySnapshot.revision === connection.revision
+        ? nativeModelCapabilityUsage(capabilitySnapshot, connection.model) : undefined;
+      config = nativeModelBudget(requestedConfig, modelCapabilities?.capabilities);
       const mcpConnections = config.mcpConnections.map(id => {
         if (!this.options.mcpConnections) throw new Error('MCP 连接管理尚未就绪。');
         return this.options.mcpConnections.resolve(id);
@@ -511,7 +524,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         }]);
       };
       let tools = active.tasks.wrapTools(createTools(), active.taskId, identity);
-      const model = { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
+      const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
       for (const secret of forbiddenValues) assertNoModelCredential({ input: active.input, instructions: modelInstructions, tools: tools.definitions, context: ledger.loadContext() }, secret);
       const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, images: active.images, imageAttachments: active.imageAttachments, config, model, instructions: modelInstructions, forbiddenValues,
         signal: active.abort.signal, startedAt, assertOwnership, worker: this.options.worker,
@@ -557,7 +570,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.phase = undefined;
       this.changed(id, 'starting');
       const run = await (this.options.worker ?? runNativeWorker)({
-        request: { identity, input: active.input, ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: config, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const waitingAt = performance.now();
@@ -834,16 +847,23 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   compactContext(id: string, expectedHead: string): Promise<void> {
     return this.contextOperation(id, 'compact', expectedHead, async operation => {
+      const startedAt = performance.now();
       let ledger = operation.store!;
       if (ledger.getLastCompaction()?.expectedHash === expectedHead) return;
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error('请先核查恢复状态，再压缩上下文。');
       const source = ledger.getCompactionSource();
       if (source.expectedHash !== expectedHead) throw new Error('上下文已改变，请刷新后重新压缩。');
-      const config = parseNativeConfig(this.session(id).engineConfig);
-      const connection = this.connections.resolve(config.connectionId, config.model || undefined);
+      const requestedConfig = parseNativeConfig(this.session(id).engineConfig);
+      const connection = this.connections.resolve(requestedConfig.connectionId, requestedConfig.model || undefined);
+      const capabilitySnapshot = await this.options.modelCapabilities?.resolve(connection, { timeoutMs: Math.min(3000, requestedConfig.maxActiveMs) });
+      this.assertContextOperation(id, operation);
+      if (this.connections.resolve(requestedConfig.connectionId, requestedConfig.model || undefined).revision !== connection.revision) throw new Error('模型连接已更新，请重新压缩。');
+      const modelCapabilities = capabilitySnapshot?.connectionId === connection.connectionId && capabilitySnapshot.revision === connection.revision
+        ? nativeModelCapabilityUsage(capabilitySnapshot, connection.model) : undefined;
+      const config = nativeModelBudget(requestedConfig, modelCapabilities?.capabilities);
       const previous = ledger.listRuns().at(-1)?.configuration;
       if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
-      const model = { protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
+      const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
       // Manual maintenance has no current task/tool catalog. Check the retained
       // context itself here; sending rechecks the complete request with its rules.
       const minimum = { ...source.retainedContext, items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] };
@@ -857,9 +877,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (ledger.getCompactionSource().expectedHash !== expectedHead) throw new Error('上下文已改变，请刷新后重新压缩。');
       const identity: RunIdentity = { sessionId: id, conversationId: ledger.conversationId, runId: randomUUID(), requestId: `compact:${expectedHead}`, workerGeneration: Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1 };
       operation.identity = identity;
+      const maxActiveMs = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
+      if (maxActiveMs < 1) throw new Error('上下文压缩时长预算已耗尽，未发起摘要请求。');
       const result = await summarizeNativeContext({ identity, context: source.context,
         model,
-        maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, maxActiveMs: config.maxActiveMs,
+        maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, maxActiveMs,
         signal: operation.abort.signal, worker: this.options.worker });
       this.assertContextOperation(id, operation);
       const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: expectedHead, usage: result.usage });

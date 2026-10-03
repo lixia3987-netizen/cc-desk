@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { ResponsesModelError } from '@cc-desk/agent-node/responses-model';
 import { ChatCompletionsModelError } from '@cc-desk/agent-node/chat-completions-model';
+import { AnthropicModelError } from '@cc-desk/agent-node/anthropic-model';
 import { createNativeModel, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
 import { estimateNativeCost } from '../../../shared/native-cost';
 import type { ModelResponse, Usage } from '@cc-desk/agent-core';
@@ -47,7 +48,7 @@ function responseCode(response: ModelResponse): NativeConnectionTestCode {
 
 /** Never serialize the original error, its message/cause, or any provider data. */
 function failure(error: unknown): Pick<NativeConnectionTestResult, 'code' | 'httpStatus'> {
-  if (!(error instanceof ResponsesModelError) && !(error instanceof ChatCompletionsModelError)) return { code: 'transport' };
+  if (!(error instanceof ResponsesModelError) && !(error instanceof ChatCompletionsModelError) && !(error instanceof AnthropicModelError)) return { code: 'transport' };
   if (error.code === 'http') {
     const status = error.httpStatus;
     if (typeof status !== 'number' || !Number.isInteger(status) || status < 100 || status > 599) return { code: 'http' };
@@ -129,7 +130,7 @@ export class NativeConnectionDiagnostics {
     const common = { requestId: entry.input.requestId };
     try {
       const model = createNativeModel({
-        protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey,
+        protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey,
         allowLoopbackHttp: connection.allowLoopbackHttp, timeoutMs: this.options.timeoutMs ?? nativeConnectionProbe.timeoutMs,
         maxRequestBytes: 4096, maxResponseBytes: 256 * 1024,
       });

@@ -1,5 +1,6 @@
 import type { ContextUsage } from '../shared/execution';
 import type { NativeContextMaintenance } from '../shared/chat';
+import { ModelCapabilityInfo } from './components/ModelCapabilityInfo';
 
 const count = (value: number) => value.toLocaleString();
 interface ContextMeterProps {
@@ -75,7 +76,8 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
       </>}
       {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · {maintenance.lastCompaction.trigger === 'in_turn' ? '回合内自动' : maintenance.lastCompaction.trigger === 'automatic' ? '自动' : '手动'} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
       {maintenance?.inTurn && <InTurnReceipt receipt={maintenance.inTurn} compacting={!!compacting && inTurn} historical={!!currentRunId && currentRunId !== maintenance.inTurn.runId}/>}
-      <span>这是本地运行预算，不是模型的真实上下文窗口或计费用量。预算按输入估算与上下文字节两项中较高的占比显示。</span>
+      <ModelCapabilityInfo capabilities={context?.modelCapabilities?.capabilities} conservative={context?.modelCapabilities?.conservative}/>
+      <span>运行预算取用户设置与已知模型限制的较小值，并为输出预留窗口空间。预算按输入估算与上下文字节两项中较高的占比显示。</span>
       <span>按已保存历史、项目指令和工具定义的 UTF-8 字节保守估算，不等于服务端实际 token 计数。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}
       {budget?.status === 'near_limit' && <span>接近预算上限；超过上限时会在下一次模型请求前停止。</span>}

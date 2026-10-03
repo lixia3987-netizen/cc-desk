@@ -10,6 +10,7 @@
     "./responses-model": { "types": "./dist/responses-model.d.ts", "default": "./dist/responses-model.js" },
     "./native-model": { "types": "./dist/native-model.d.ts", "default": "./dist/native-model.js" },
     "./chat-completions-model": { "types": "./dist/chat-completions-model.d.ts", "default": "./dist/chat-completions-model.js" },
+    "./anthropic-model": { "types": "./dist/anthropic-model.d.ts", "default": "./dist/anthropic-model.js" },
     "./context-maintenance": { "types": "./dist/context-maintenance.d.ts", "default": "./dist/context-maintenance.js" },
     "./task-store": { "types": "./dist/task-store.d.ts", "default": "./dist/task-store.js" },
     "./run-store": { "types": "./dist/run-store.d.ts", "default": "./dist/run-store.js" },

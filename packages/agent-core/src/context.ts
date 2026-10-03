@@ -4,7 +4,7 @@ import type { JsonObject, ModelContext, RunBudget } from './types.js'
 export function contextHasUserImages(context: ModelContext): boolean {
   return context.items.some(item => item !== null && typeof item === 'object' && !Array.isArray(item) && item.role === 'user' &&
     Array.isArray(item.content) && item.content.some(part => part !== null && typeof part === 'object' && !Array.isArray(part) &&
-      ['input_image', 'image_url'].includes((part as JsonObject).type as string)))
+      ['input_image', 'image_url', 'image'].includes((part as JsonObject).type as string)))
 }
 
 export interface ContextBudgetUsage {

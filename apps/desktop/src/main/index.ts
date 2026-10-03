@@ -9,8 +9,12 @@ import { ConnectionStore } from './engines/native/connections';
 import { NativeCredentialStore } from './engines/native/credentials';
 import { NativeMcpConnectionStore } from './engines/native/mcp-connections';
 import { NativeConnectionDiagnostics } from './engines/native/connection-diagnostics';
+import { NativeConnectionModelCatalog } from './engines/native/connection-models';
+import { NativeModelCapabilityService } from './engines/native/model-capabilities';
 import type { NativeStructuredExecutor } from './engines/native/structured-executor';
 import { registerNativeHandlers } from './ipc/native-handlers';
+import { ClaudeModelImporter } from './claude-model-import';
+import { registerClaudeModelImportHandlers } from './ipc/claude-model-import-handlers';
 import { registerNativeSkillHandlers } from './ipc/native-skill-handlers';
 import { registerNativeMcpHandlers } from './ipc/native-mcp-handlers';
 import { registerNativeTaskHandlers } from './ipc/native-task-handlers';
@@ -44,6 +48,9 @@ let nativeExecutor: NativeStructuredExecutor;
 let connections: ConnectionStore;
 let mcpConnections: NativeMcpConnectionStore;
 let connectionDiagnostics: NativeConnectionDiagnostics;
+let connectionModelCatalog: NativeConnectionModelCatalog;
+let modelCapabilities: NativeModelCapabilityService;
+let claudeModelImporter: ClaudeModelImporter;
 let sessionCreation: SessionCreation;
 let projectDirectories: ProjectDirectoryRegistry;
 let services: SessionService;
@@ -87,7 +94,8 @@ function handle<T>(name: string, schema: z.ZodType<T>, action: (data: T) => unkn
   ipcMain.handle(name, (event, input) => { assertSender(event); return action(schema.parse(input)); });
 }
 function registerIPC() {
-  registerNativeHandlers(handle, connections, notify, connectionDiagnostics);
+  registerNativeHandlers(handle, connections, notify, connectionDiagnostics, connectionModelCatalog, modelCapabilities);
+  registerClaudeModelImportHandlers(handle, claudeModelImporter);
   registerNativeSkillHandlers(handle, store);
   registerNativeMcpHandlers(handle, mcpConnections, notify);
   registerNativeTaskHandlers(handle, (id, input) => services.maintainNativeContext(id, false, () => nativeExecutor.reviewTask(id, input)));
@@ -214,10 +222,10 @@ function createWindow() {
   });
   window.webContents.on('will-navigate',event => event.preventDefault());
   window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
-    if (isMainFrame && !isInPlace) connectionDiagnostics.cancelAll();
+    if (isMainFrame && !isInPlace) { connectionDiagnostics.cancelAll(); connectionModelCatalog.cancelAll(); modelCapabilities.cancelAll(); }
   });
-  window.webContents.on('render-process-gone', () => connectionDiagnostics.cancelAll());
-  window.webContents.on('destroyed', () => connectionDiagnostics.cancelAll());
+  window.webContents.on('render-process-gone', () => { connectionDiagnostics.cancelAll(); connectionModelCatalog.cancelAll(); modelCapabilities.cancelAll(); });
+  window.webContents.on('destroyed', () => { connectionDiagnostics.cancelAll(); connectionModelCatalog.cancelAll(); modelCapabilities.cancelAll(); });
   window.webContents.session.setPermissionCheckHandler((contents,permission,_origin,details) => allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl));
   window.webContents.session.setPermissionRequestHandler((contents,permission,callback,details) => callback(allowsLocalFonts(permission,contents === window?.webContents,details,rendererFile,devUrl)));
   window.on('close',event => { if (!allowQuit) { event.preventDefault(); if(store.state.settings.closeToTray && tray) window?.hide(); else void requestQuit(); } });
@@ -247,12 +255,15 @@ async function requestQuit() {
     if (result.response === 0) { closing=false; return; }
   }
   try {
-    await connectionDiagnostics?.shutdown();
+    claudeModelImporter?.dispose();
+    await Promise.all([connectionDiagnostics?.shutdown(), connectionModelCatalog?.shutdown(), modelCapabilities?.shutdown()]);
     await services?.shutdown();
     store?.flush();
     allowQuit = true; app.quit();
   } catch {
     connectionDiagnostics?.resumeAfterFailedShutdown();
+    connectionModelCatalog?.resumeAfterFailedShutdown();
+    modelCapabilities?.resumeAfterFailedShutdown();
     closing=false;showWindow();reportPersistenceError();
     // Keep the app open so the user can fix storage and retry; resources have
     // already been stopped independently of the failing persistence operation.
@@ -272,15 +283,21 @@ else {
       fonts = new FontLibrary(store.directory);
       connections = new ConnectionStore(store.directory, { safeStorage, platform: process.platform,
         isConnectionActive: id => nativeExecutor?.isConnectionActive(id) ?? false,
-        isConnectionTesting: id => connectionDiagnostics?.isConnectionTesting(id) ?? false,
+        isConnectionTesting: id => (connectionDiagnostics?.isConnectionTesting(id) ?? false) || (connectionModelCatalog?.isConnectionListing(id) ?? false),
         isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && session.engineConfig.options.connectionId === id),
       });
       connectionDiagnostics = new NativeConnectionDiagnostics(connections, { onChanged: notify });
+      connectionModelCatalog = new NativeConnectionModelCatalog(connections, { onChanged: notify });
+      modelCapabilities = new NativeModelCapabilityService(connections, connectionModelCatalog, { onChanged: notify });
+      claudeModelImporter = new ClaudeModelImporter(connections, { onChanged: notify, chooseFile: async () => {
+        const result = await dialog.showOpenDialog(window!, { properties: ['openFile'], title: '选择 Claude 模型配置文件', filters: [{ name: 'JSON 配置文件', extensions: ['json'] }] });
+        return result.canceled || !result.filePaths[0] ? null : result.filePaths[0];
+      } });
       mcpConnections = new NativeMcpConnectionStore(store.directory, new NativeCredentialStore(safeStorage), {
         isConnectionActive: id => nativeExecutor?.isMcpConnectionActive(id) ?? false,
         isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && Array.isArray(session.engineConfig.options.mcpConnections) && session.engineConfig.options.mcpConnections.includes(id)),
       });
-      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, mcpConnections, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
+      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, mcpConnections, modelCapabilities, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
       await nativeExecutor.initialize();
       services = new SessionService(store,executors,notify,()=>window,{
         history:(cwd,options)=>historySources.query(cwd,options), diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),

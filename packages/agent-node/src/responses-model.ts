@@ -108,6 +108,16 @@ function usageFrom(value: JsonValue | undefined): Usage | null {
 
 type ProtectedValues = string | readonly (string | undefined)[] | undefined
 const protectedValues = (value: ProtectedValues): string[] => [...new Set((Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === 'string' && item.length > 0))]
+// Scan every combination so unrelated private fields cannot separate pieces
+// of a credential carried by another pair of content fields.
+const contentCredentialGroups = [
+  ['text'], ['thinking'], ['signature'], ['data'],
+  ['text', 'thinking'], ['text', 'signature'], ['text', 'data'], ['thinking', 'signature'], ['thinking', 'data'], ['signature', 'data'],
+  ['text', 'thinking', 'signature'], ['text', 'thinking', 'data'], ['text', 'signature', 'data'], ['thinking', 'signature', 'data'],
+  ['text', 'thinking', 'signature', 'data']
+]
+const contentStrings = (items: JsonObject[], fields: string[]): string => items.flatMap(item => Array.isArray(item.content)
+  ? item.content.flatMap(part => object(part) ? fields.flatMap(field => typeof part[field] === 'string' ? [part[field] as string] : []) : []) : []).join('')
 
 /** Fail closed if protected credentials occur in model inputs, outputs, or host RPC data. */
 export function assertNoModelCredential(value: unknown, secrets: ProtectedValues): void {
@@ -126,13 +136,13 @@ export function assertNoModelCredential(value: unknown, secrets: ProtectedValues
     }
     if (Array.isArray(current)) {
       for (const child of current) pending.push(child)
-      const messages = current.filter(item => object(item) && item.type === 'message')
-      if (messages.length) pending.push(messages.flatMap(item => Array.isArray(item.content) ? item.content.filter((part: unknown) => object(part) && typeof part.text === 'string').map((part: unknown) => (part as JsonObject).text) : []).join(''))
+      const messages = current.filter(item => object(item) && (item.type === 'message' || item.type === undefined && ['user', 'assistant'].includes(item.role as string)))
+      if (messages.length) pending.push(...contentCredentialGroups.map(fields => contentStrings(messages as JsonObject[], fields)))
     }
     else if (object(current)) {
       for (const [key, child] of Object.entries(current)) { pending.push(key, child) }
-      if (current.type === 'message' && Array.isArray(current.content)) {
-        pending.push(current.content.filter(part => object(part) && typeof part.text === 'string').map(part => (part as JsonObject).text).join(''))
+      if ((current.type === 'message' || current.type === undefined && ['user', 'assistant'].includes(current.role as string)) && Array.isArray(current.content)) {
+        pending.push(...contentCredentialGroups.map(fields => contentStrings([current], fields)))
       }
     }
   }

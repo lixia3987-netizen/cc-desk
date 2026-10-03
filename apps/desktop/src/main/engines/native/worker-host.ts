@@ -306,7 +306,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       }
       let providerCalls: ToolCall[];
       try { providerCalls = nativeResponseCalls(adapter.protocol, response.outputItems); } catch { return invalid(); }
-      if (adapter.protocol.id === 'openai-chat-completions' && response.continuation !== undefined) invalid();
+      if (adapter.protocol.id !== 'openai-responses' && response.continuation !== undefined) invalid();
       if (!equal(providerCalls, response.toolCalls) || new Set(response.toolCalls.map(item => item.id)).size !== response.toolCalls.length) invalid();
       return response;
     }

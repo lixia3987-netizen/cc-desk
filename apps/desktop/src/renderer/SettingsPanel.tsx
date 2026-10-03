@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Bell, Check, FolderCog, FolderOpen, Layers, Loader2, Palette, Plug, RefreshCw, Trash2, Upload } from 'lucide-react';
+import { Bell, Bot, Check, FolderCog, FolderOpen, Layers, Loader2, Palette, Plug, RefreshCw, Terminal, Trash2, Upload } from 'lucide-react';
 import type { Capabilities, Settings } from '../shared/types';
 import { DEFAULT_TYPOGRAPHY, fontFamily, systemFontFamily, typography, type FontId, type ImportedFont, type SystemFont } from '../shared/fonts';
 import { listSystemFonts } from './system-fonts';
@@ -14,12 +14,16 @@ import type { ReactNode } from 'react';
 
 const pages = [
   { id: 'appearance', title: '外观与字体', icon: Palette, description: '选择主题，分别调整聊天内容与菜单界面的阅读体验。' },
-  { id: 'connection', title: '连接与终端', icon: Plug, description: '管理 Claude Code、Native 模型与 MCP 连接，设置 Shell 与终端显示。' },
-  { id: 'sessions', title: '会话与权限', icon: Layers, description: '管理并发数量和各引擎的新会话默认配置。' },
+  { id: 'models', title: '模型配置', icon: Bot, description: '配置自研 Agent 的模型连接。Claude 配置可导入为自研 Agent 连接，Claude Code 的模型由 CLI 配置管理。' },
+  { id: 'terminal', title: '终端配置', icon: Terminal, description: '设置 Claude Code 与 Shell 路径，调整终端显示并检测 CLI。' },
+  { id: 'mcp', title: 'MCP 连接', icon: Plug, description: '管理 Native 会话使用的 MCP 工具服务与认证。' },
+  { id: 'sessions', title: '会话与权限', icon: Layers, description: '管理并发数量、默认权限和会话运行限制。' },
   { id: 'workspace', title: '工作区与 IDE', icon: FolderCog, description: '选择 Worktree 位置，以及打开项目的编辑器。' },
   { id: 'system', title: '通知与后台', icon: Bell, description: '设置任务通知、窗口关闭行为，并查看数据位置。' },
 ] as const;
 export type SettingsPage = typeof pages[number]['id'];
+const modelOptionKeys = new Set(['connectionId', 'model', 'effort']);
+const nativeModelOptionKeys = new Set(['connectionId', 'model']);
 interface Props {
   value: Settings; saved: Settings; onChange(value: Settings): void;
   page: SettingsPage; onPage(page: SettingsPage): void;
@@ -27,6 +31,24 @@ interface Props {
   busy: boolean; error: string; capabilities: Capabilities; platform: string; dataPath: string;
   onSave(detect: boolean): void; onClose(): void; onChooseIde(): void; onChooseWorktree(): void;
   cliUpdate: ReactNode; executors: ExecutionDescriptor[]; cliBusy?: boolean;
+}
+
+function EngineDefaultsGroup({ value, onChange, executors, group, disabled }: {
+  value: Settings; onChange(value: Settings): void; executors: ExecutionDescriptor[];
+  group: 'models' | 'sessions'; disabled: boolean;
+}) {
+  const defaults = [...new Map(executors.filter(item => item.configuration?.fields.length).map(item => [item.providerId, item])).values()];
+  return <>{defaults.map(descriptor => {
+    const fields = descriptor.configuration!.fields.filter(field => group === 'models'
+      ? descriptor.providerId === 'native' && nativeModelOptionKeys.has(field.key) : !modelOptionKeys.has(field.key));
+    if (!fields.length) return null;
+    const config = engineDefaults(descriptor, value);
+    const controls = configurationSupported(descriptor, config) ? <EngineConfigFields value={config} fields={fields} prefix="默认" disabled={disabled || descriptor.maintenance} onChange={engineConfig => onChange({ ...value, engineDefaults: { ...value.engineDefaults, [descriptor.providerId]: engineConfig } })} /> : <p className="hint">已保存的默认配置版本暂不受支持，原值已保留。</p>;
+    return <section className="settings-section" key={descriptor.providerId}>{group === 'models'
+      ? <details className="native-model-defaults"><summary>新会话默认模型</summary>{controls}<p className="hint">用于自研 Agent 新建会话，可在创建时调整。已有会话保留自己的模型配置。</p></details>
+      : <><h4>{descriptor.displayName ?? descriptor.providerId} 默认会话配置</h4>{controls}<p className="hint">用于此引擎的新建和首次导入会话，可在创建时调整。已有会话保留自己的配置，创建分支时继承原会话配置。</p></>}
+    </section>;
+  })}</>;
 }
 
 function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoaded, disabled, onChange}: {scope: 'chat' | 'ui'; value: Settings; fonts: ImportedFont[]; systemFonts: SystemFont[]; systemQuery: string; systemLoaded: boolean; disabled: boolean; onChange(value: Settings): void}) {
@@ -55,7 +77,6 @@ function FontControl({scope, value, fonts, systemFonts, systemQuery, systemLoade
 
 export function SettingsPanel(props: Props) {
   const {value, saved, onChange, page, onPage, fonts, busy, error, capabilities: cap, platform, dataPath} = props;
-  const defaults = [...new Map(props.executors.filter(item => item.configuration?.fields.length).map(item => [item.providerId, item])).values()];
   const [validation, setValidation] = useState('');
   const [systemFonts, setSystemFonts] = useState<SystemFont[]>([]);
   const [systemQuery, setSystemQuery] = useState('');
@@ -83,7 +104,7 @@ export function SettingsPanel(props: Props) {
     const result = settingsSchema.safeParse(value);
     if (!result.success) {
       const issue = result.error.issues[0], key = String(issue.path[0]);
-      const target: SettingsPage = /^(chatFont|uiFont|theme)/.test(key) ? 'appearance' : /^(worktree|ide)/.test(key) ? 'workspace' : /^(maxSessions|engineDefaults)/.test(key) ? 'sessions' : /^(notifications|closeToTray)/.test(key) ? 'system' : 'connection';
+      const target: SettingsPage = /^(chatFont|uiFont|theme)/.test(key) ? 'appearance' : /^(worktree|ide)/.test(key) ? 'workspace' : key === 'engineDefaults' && issue.path[1] === 'native' && nativeModelOptionKeys.has(String(issue.path[3])) ? 'models' : /^(maxSessions|engineDefaults)/.test(key) ? 'sessions' : /^(notifications|closeToTray)/.test(key) ? 'system' : 'terminal';
       const sizeHints: Record<string, string> = {chatFontSize:'聊天字号须为 11–28 的整数。',uiFontSize:'菜单字号须为 11–20 的整数。',fontSize:'终端字号须为 11–24 的整数。',maxSessions:'并发会话数须为 1–12 的整数。',scrollback:'终端回滚行数须为 1000–50000 的整数。'};
       setValidation(sizeHints[key] || issue.message); changePage(target); return;
     }
@@ -117,14 +138,17 @@ export function SettingsPanel(props: Props) {
           </section>
           <ThemePicker value={normalizeThemeId(value.theme)} disabled={busy} onChange={theme => onChange({...value, theme})}/>
         </>}
-        {page === 'connection' && <>
+        {page === 'models' && <>
           <NativeConnections disabled={busy}/>
-          <NativeMcpConnections disabled={busy}/>
+          <EngineDefaultsGroup value={value} onChange={onChange} executors={props.executors} group="models" disabled={busy}/>
+        </>}
+        {page === 'mcp' && <NativeMcpConnections disabled={busy}/>}
+        {page === 'terminal' && <>
           {props.cliUpdate}
           <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy || props.cliBusy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
             <p className="hint">{value.claudePath !== saved.claudePath ? '路径尚未保存；点击“保存并检测”以检查当前输入。' : '检测路径：' + (saved.claudePath || '自动查找')}</p>
             <div className={'connection-box ' + (cap.available ? 'connected' : '')}><div><span className={'dot ' + (cap.available ? 'running' : 'error')}/><strong>{busy ? '正在保存并检查设置…' : cap.available ? cap.version : '未检测到 CLI'}</strong></div><p>{busy ? '请稍候…' : cap.available ? cap.executable : cap.error || '保存设置后自动检测 CLI。'}</p>{cap.available && <small>可用强度：{cap.efforts.filter(value => value !== 'default').join(' / ') || '跟随 CLI'}</small>}</div>
-            <p className="hint">在终端完成 Claude 登录。API Key、MCP 与 provider 沿用 Claude Code 配置；客户端不保存凭据。路径变更用于后续启动的进程。</p>
+            <p className="hint">在终端完成 Claude 登录。Claude 会话的 API Key、MCP 与 provider 沿用 Claude Code 配置；其登录凭据由 CLI 管理。路径变更用于后续启动的进程。</p>
           </section>
           <section className="settings-section"><h4>Shell 与终端显示</h4><label>Shell 可执行文件<input aria-label="Shell 可执行文件" disabled={busy} value={value.shellPath} placeholder="留空自动使用 PowerShell / Bash / Zsh" onChange={event => onChange({...value,shellPath:event.target.value})}/></label>
             <div className="form-grid"><label>终端字号<input aria-label="终端字号" type="number" min={11} max={24} disabled={busy} value={value.fontSize} onChange={event => onChange({...value,fontSize:Number(event.target.value)})}/></label><label>终端回滚行数<input aria-label="终端回滚行数" type="number" min={1000} max={50000} step={1000} disabled={busy} value={value.scrollback} onChange={event => onChange({...value,scrollback:Number(event.target.value)})}/></label></div>
@@ -133,13 +157,7 @@ export function SettingsPanel(props: Props) {
         </>}
         {page === 'sessions' && <>
           <section className="settings-section"><h4>并发任务</h4><label>最大并发会话<input aria-label="最大并发会话" type="number" min={1} max={12} disabled={busy} value={value.maxSessions} onChange={event => onChange({...value,maxSessions:Number(event.target.value)})}/></label><p className="hint">限制同时连接的会话数量。降低上限不会停止已有任务。</p></section>
-          {defaults.map(descriptor => {
-            const config = engineDefaults(descriptor, value);
-            return <section className="settings-section" key={descriptor.providerId}><h4>{descriptor.displayName ?? descriptor.providerId} 默认配置</h4>
-              {configurationSupported(descriptor, config) ? <EngineConfigFields value={config} fields={descriptor.configuration!.fields} prefix="默认" disabled={busy || descriptor.maintenance} onChange={engineConfig => onChange({ ...value, engineDefaults: { ...value.engineDefaults, [descriptor.providerId]: engineConfig } })} /> : <p className="hint">已保存的默认配置版本暂不受支持，原值已保留。</p>}
-              <p className="hint">用于此引擎的新建和首次导入会话，可在创建时调整。已有会话保留自己的配置，创建分支时继承原会话配置。</p>
-            </section>;
-          })}
+          <EngineDefaultsGroup value={value} onChange={onChange} executors={props.executors} group="sessions" disabled={busy}/>
         </>}
         {page === 'workspace' && <>
           <section className="settings-section worktree-preferences"><h4>Worktree 位置</h4><label>Worktree 位置<select aria-label="Worktree 位置" aria-describedby="worktree-location-help" disabled={busy} value={value.worktreeLocation ?? 'project'} onChange={event => onChange({...value,worktreeLocation:event.target.value as 'project' | 'custom'})}><option value="project">项目目录内（.claude/worktrees）</option><option value="custom">统一目录</option></select></label>
@@ -156,7 +174,7 @@ export function SettingsPanel(props: Props) {
     </div>
     <footer className="settings-footer">
       {(validation || error) && <div className="settings-error" role="alert">{validation || error}</div>}
-      <div className="settings-footer-actions"><span className="settings-save-state">{busy ? '正在处理…' : dirty ? '有未保存的更改' : '设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={props.onClose}>取消</button>{page === 'connection' && <button type="button" className="secondary" disabled={busy || props.cliBusy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}<button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button></div>
+      <div className="settings-footer-actions"><span className="settings-save-state">{busy ? '正在处理…' : dirty ? '有未保存的更改' : '设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={props.onClose}>取消</button>{page === 'terminal' && <button type="button" className="secondary" disabled={busy || props.cliBusy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}<button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button></div>
     </footer>
   </form>;
 }

@@ -8,7 +8,7 @@ const require = createRequire(import.meta.url);
 export const nodePtyPatch = Object.freeze({
   version: '1.1.0', nodeGypVersion: '12.4.0',
   files: Object.freeze({
-    'src/win/conpty.cc': Object.freeze({ before: '52c893b689ab3210c0961e2a6aa805a82350003767b21069b164926b5becd4e2', after: 'ba5e9dc31012b4539ee14267b2582de434523848200adf25dcb71fb11acf4f56' }),
+    'src/win/conpty.cc': Object.freeze({ before: '52c893b689ab3210c0961e2a6aa805a82350003767b21069b164926b5becd4e2', after: 'f3c7829eb91ec4062dfc7bc10e8be32b1a19e5f2620b69611e125654333eedf2' }),
     'lib/windowsPtyAgent.js': Object.freeze({ before: '8636d16b38266112204061a22b135734177c242837982fd3a4055be726efa64a', after: '2c24fe608aa036af41836f8314c50cc5ad3a252dde5b36452aeceebf127981a9' }),
     'lib/windowsTerminal.js': Object.freeze({ before: 'c3a65716f53fed0135a8a633373d5f9c2ab092544d651f27ef0a67096dd3bcd9', after: '3fcca67eda34ec8ea44dc1949135c88f8fef392cab5f86fb13706ca78393b28b' }),
   }),
@@ -101,6 +101,11 @@ export function verifyBuiltConpty(root, executable = process.execPath, electron 
   }
 }
 
+export function windowsNodePtyBuildArguments(gyp, arch = process.arch, nodeVersion = process.versions.node) {
+  return [gyp, 'clean', 'configure', 'build', 'conpty', 'conpty_console_list', '--release',
+    `--arch=${arch}`, `--target=${nodeVersion}`, '--dist-url=https://nodejs.org/download/release'];
+}
+
 export async function prepareWindowsNodePty(root) {
   if (process.platform !== 'win32') throw new Error('The Windows node-pty build must run on Windows.');
   if (!['x64', 'arm64'].includes(process.arch)) throw new Error(`Unsupported Windows node-pty build architecture: ${process.arch}`);
@@ -111,7 +116,10 @@ export async function prepareWindowsNodePty(root) {
   console.log(`Building node-pty ${nodePtyPatch.version} with the cc-desk ConPTY fix (node-gyp ${gypMetadata.version}).`);
   // node-pty uses N-API: this build is loaded by both Node tests and Electron.
   // Always rebuild so a leftover prebuilt or partially built binary cannot pass.
-  const result = spawnSync(process.execPath, [gyp, 'rebuild', '--release', `--arch=${process.arch}`, `--target=${process.versions.node}`, '--dist-url=https://nodejs.org/download/release'], {
+  // The patched backend needs only these two targets. The default rebuild also
+  // compiles legacy winpty sources that the ConPTY backend never loads; retain
+  // upstream's prebuilt winpty fallback and all existing compiler diagnostics.
+  const result = spawnSync(process.execPath, windowsNodePtyBuildArguments(gyp), {
     cwd: root, stdio: 'inherit', windowsHide: true, timeout: 300_000,
   });
   if (result.error || result.status !== 0) {

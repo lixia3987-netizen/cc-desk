@@ -1,11 +1,26 @@
 import type { NativeModelPricing } from './native-cost';
+import type { ModelTokenCapabilities } from '@cc-desk/contracts/execution';
+export type NativeModelCapabilities = ModelTokenCapabilities;
+export interface NativeModelCapabilityInput { id: string; revision: number; model?: string }
+export interface NativeModelCapabilitySnapshot {
+  connectionId: string;
+  revision: number;
+  model: string;
+  capabilities: NativeModelCapabilities;
+  resolvedAt: string;
+  expiresAt: string;
+  code: NativeConnectionModelListCode;
+  conservative?: boolean;
+}
+export interface NativeModelMetadata { id: string; name?: string; capabilities?: NativeModelCapabilities }
 /** Only references and connection metadata may cross the renderer boundary. */
 export type NativeConnectionAuth = { mode: 'env'; variable: string } | { mode: 'memory' } | { mode: 'encrypted' };
 export interface NativeConnection {
   id: string;
   revision: number;
   name: string;
-  protocol: 'responses' | 'chat-completions';
+  protocol: 'responses' | 'chat-completions' | 'anthropic';
+  authHeader?: 'x-api-key' | 'authorization';
   baseURL: string;
   model: string;
   allowLoopbackHttp: boolean;
@@ -34,6 +49,18 @@ export interface NativeConnectionTestResult {
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   estimatedCostUSD?: number;
 }
+export interface NativeConnectionModelListInput { id: string; revision: number; requestId: string }
+export type NativeConnectionModelListCode = 'ok' | 'configuration' | 'busy' | 'cancelled' | 'timeout' | 'authentication' | 'permission' | 'endpoint' | 'rate_limit' | 'service' | 'http' | 'redirect' | 'protocol' | 'credential_echo' | 'transport' | 'response_limit';
+/** Only validated model metadata crosses IPC; results remain tied to the saved connection revision. */
+export interface NativeConnectionModelListResult {
+  requestId: string;
+  connectionId: string;
+  revision: number;
+  code: NativeConnectionModelListCode;
+  models?: NativeModelMetadata[];
+  durationMs: number;
+  httpStatus?: number;
+}
 export interface NativeConnectionsAPI {
   list(): Promise<NativeConnectionList>;
   upsert(input: NativeConnectionInput): Promise<NativeConnectionView>;
@@ -42,4 +69,7 @@ export interface NativeConnectionsAPI {
   readiness(input: { id: string; model?: string }): Promise<NativeConnectionReadiness>;
   test(input: NativeConnectionTestInput): Promise<NativeConnectionTestResult>;
   cancelTest(input: { requestId: string }): Promise<void>;
+  listModels(input: NativeConnectionModelListInput): Promise<NativeConnectionModelListResult>;
+  cancelListModels(input: { requestId: string }): Promise<void>;
+  modelCapabilities(input: NativeModelCapabilityInput): Promise<NativeModelCapabilitySnapshot>;
 }

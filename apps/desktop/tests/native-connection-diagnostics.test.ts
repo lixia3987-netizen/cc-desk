@@ -102,6 +102,37 @@ test('connection diagnostics: selected Chat Completions protocol and model price
   } finally { await f.dispose(); }
 });
 
+test('connection diagnostics: imported Anthropic token uses Messages without exposing provider text or errors', async () => {
+  const f = await fixture();
+  try {
+    const connection = f.store.upsert({ ...metadata(f.connection), protocol: 'anthropic', authHeader: 'authorization' });
+    const sse = (type: string, fields: object = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
+    f.handler((request, response) => {
+      assert.equal(request.headers['anthropic-version'], '2023-06-01');
+      assert.equal(request.headers['x-api-key'], undefined);
+      response.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      response.end(sse('message_start', { message: { id: 'msg_probe', type: 'message', role: 'assistant', model: 'fixture-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 0 } } })
+        + sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
+        + sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: responseText } })
+        + sse('content_block_stop', { index: 0 })
+        + sse('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 1 } })
+        + sse('message_stop'));
+    });
+    const result = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
+    assert.equal(result.code, 'ok');
+    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 1, totalTokens: 13 });
+    assert.equal(f.requests[0].url, '/v1/messages');
+    assert.equal(f.requests[0].authorization, `Bearer ${sentinel}`);
+    assert.equal(f.requests[0].body.max_tokens, 256);
+    assert.equal(f.requests[0].body.stream, true);
+    assert.ok(!JSON.stringify(result).includes(responseText));
+    f.handler((_request, response) => { response.writeHead(401); response.end(sentinel + responseText); });
+    const failed = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
+    assert.equal(failed.code, 'authentication'); assert.equal(failed.httpStatus, 401);
+    assert.ok(!JSON.stringify(failed).includes(sentinel));
+  } finally { await f.dispose(); }
+});
+
 test('connection diagnostics: HTTP and redirect errors are fixed classifications without bodies or locations', async () => {
   const f = await fixture();
   try {
@@ -147,10 +178,10 @@ test('connection diagnostics: pending test locks edits, credentials, deletion an
     const pending = f.diagnostics.test(input);
     assert.equal(f.diagnostics.isConnectionTesting(f.connection.id), true);
     assert.equal(f.store.readiness(f.connection.id).ready, false);
-    assert.throws(() => f.store.resolve(f.connection.id), /正在测试/);
-    assert.throws(() => f.store.upsert(metadata(f.connection)), /正在测试/);
-    assert.throws(() => f.store.remove({ id: f.connection.id, revision: f.connection.revision }), /正在测试/);
-    assert.throws(() => f.store.setCredential({ id: f.connection.id, revision: f.connection.revision, mode: 'memory', secret: sentinel }), /正在测试/);
+    assert.throws(() => f.store.resolve(f.connection.id), /正在读取模型或测试/);
+    assert.throws(() => f.store.upsert(metadata(f.connection)), /正在读取模型或测试/);
+    assert.throws(() => f.store.remove({ id: f.connection.id, revision: f.connection.revision }), /正在读取模型或测试/);
+    assert.throws(() => f.store.setCredential({ id: f.connection.id, revision: f.connection.revision, mode: 'memory', secret: sentinel }), /正在读取模型或测试/);
     assert.equal((await f.diagnostics.test(f.input())).code, 'busy');
     assert.equal(f.diagnostics.test(input), pending);
     await received;

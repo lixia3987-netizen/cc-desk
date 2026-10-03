@@ -15,17 +15,20 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 import { nativeCompactionPreview, unavailableCompactionPreview } from '../src/main/engines/native/compaction-preview';
 
 const image = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC';
-const protocols = ['openai-responses', 'openai-chat-completions'] as const;
+const protocols = ['openai-responses', 'openai-chat-completions', 'anthropic-messages'] as const;
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 const unavailable = (reason: Extract<NativeContextCompactionPreview, { status: 'unavailable' }>['reason']) => ({ status: 'unavailable', reason });
 
 function userItems(protocol: ProtocolVersion, input: string, images = 0): JsonValue[] {
   const chat = protocol.id === 'openai-chat-completions';
+  if (protocol.id === 'anthropic-messages') return [{ role: 'user', content: [{ type: 'text', text: input },
+    ...Array.from({ length: images }, (): JsonValue => ({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: image.split(',')[1] } }))] }];
   return [{ role: 'user', content: images ? [{ type: chat ? 'text' : 'input_text', text: input },
     ...Array.from({ length: images }, (): JsonValue => chat ? { type: 'image_url', image_url: { url: image, detail: 'auto' } }
       : { type: 'input_image', image_url: image, detail: 'auto' })] : input }];
 }
 function assistantItems(protocol: ProtocolVersion, text: string): JsonValue[] {
+  if (protocol.id === 'anthropic-messages') return [{ role: 'assistant', content: [{ type: 'text', text }] }];
   return protocol.id === 'openai-chat-completions' ? [{ role: 'assistant', content: text }]
     : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] }];
 }

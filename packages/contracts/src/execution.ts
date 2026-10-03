@@ -66,6 +66,15 @@ export interface ExecutionDescriptor {
   history?: boolean;
 }
 
+export type ModelCapabilitySource = 'provider' | 'catalog' | 'fallback';
+export interface ModelCapabilityValue<T> { value: T; source: ModelCapabilitySource }
+/** Missing limits remain unknown; sources apply to each field independently. */
+export interface ModelTokenCapabilities {
+  contextWindow?: ModelCapabilityValue<number>;
+  maxInputTokens?: ModelCapabilityValue<number>;
+  maxOutputTokens?: ModelCapabilityValue<number>;
+}
+
 /** Provider measurements and local budgets stay separate; model windows are never guessed. */
 export interface ContextUsage {
   model?: string;
@@ -77,6 +86,7 @@ export interface ContextUsage {
   contextWindow?: number;
   measuredAt?: string;
   source?: 'request' | 'context-command';
+  modelCapabilities?: { model: string; capabilities: ModelTokenCapabilities; resolvedAt?: string; conservative?: boolean };
   /** Local pre-request limits. This is neither a provider measurement nor the model's window. */
   budget?: {
     estimatedInputTokens: number;

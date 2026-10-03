@@ -97,7 +97,7 @@ function harness(script: (worker: FakeWorker) => Promise<void>, overrides: Parti
 }
 
 async function begin(worker: FakeWorker, protocol = { id: 'openai-responses', version: 1 }): Promise<ModelContext> {
-  const initial = { input: run.input, userItems: [{ role: 'user', content: run.input }], protocol, configuration: run.configuration, policyRevision: run.policyRevision };
+  const initial = { input: run.input, userItems: [{ role: 'user', content: protocol.id === 'anthropic-messages' ? [{ type: 'text', text: run.input }] : run.input }], protocol, configuration: run.configuration, policyRevision: run.policyRevision };
   const request: BeginRunRequest = { ...initial, identity: run.identity, inputDigest: digest(initial) };
   const admission = await worker.rpc<{ kind: 'accepted'; context: ModelContext }>('store.beginRun', request);
   await worker.rpc('store.checkpoint', { identity: run.identity, context: admission.context });
@@ -588,6 +588,57 @@ for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation', '
   }, { model: chatModel });
   await assert.rejects(h.promise, { code: 'protocol' });
   assert.equal(h.journal.length, forgery === 'responses_result' ? 2 : 1);
+});
+
+const anthropicProtocol = { id: 'anthropic-messages', version: 1 };
+const anthropicModel = { protocol: 'anthropic' as const, authHeader: 'authorization' as const, baseURL: 'http://127.0.0.1:1', model: 'local', allowLoopbackHttp: true, apiKey: 'secret-key-sentinel' };
+const anthropicCallMessage = () => ({ role: 'assistant', content: [{ type: 'tool_use', id: requestCall.id, name: requestCall.name, input: JSON.parse(requestCall.arguments) }] });
+test('Anthropic worker host binds complete tool blocks, approval and native tool results', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker, anthropicProtocol);
+    await startAttempt(worker);
+    const response: ModelResponse = { outputItems: [anthropicCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    const prepared = await worker.rpc<PreparedTool>('tools.prepare', { call: requestCall, context: executionContext() });
+    const approval = await worker.rpc('approval', approvalRequest(prepared));
+    await worker.rpc('tools.validate', { prepared, context: executionContext() });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+    const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+    const resultItems = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: requestCall.id, content: JSON.stringify(result), is_error: false }] }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  }, { model: anthropicModel });
+  const result = await h.promise;
+  assert.equal(result.context.protocol.id, anthropicProtocol.id); assert.equal(result.toolCalls, 1);
+  assert.equal(h.worker.scriptError, undefined);
+});
+
+for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation'] as const) test(`Anthropic worker rejects ${forgery} before accepting effects`, async () => {
+  const h = harness(async worker => {
+    await begin(worker, anthropicProtocol); await startAttempt(worker);
+    const response: ModelResponse = { outputItems: [anthropicCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
+    if (forgery === 'mismatched_calls') response.toolCalls = [{ ...requestCall, name: 'different' }];
+    if (forgery === 'hidden_reasoning') (response.outputItems[0] as { content: unknown[] }).content.unshift({ type: 'thinking', thinking: 'opaque', signature: 'unknown' });
+    if (forgery === 'continuation') response.continuation = { unknown: true };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+  }, { model: anthropicModel });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.length, 1);
+});
+
+test('Anthropic worker cannot journal credentials split across visible text blocks without stream deltas', async () => {
+  const h = harness(async worker => {
+    await begin(worker, anthropicProtocol); await startAttempt(worker);
+    const response: ModelResponse = { outputItems: [{ role: 'assistant', content: [
+      { type: 'text', text: 'secret-key-' }, { type: 'text', text: 'sentinel' },
+    ] }], toolCalls: [], usage: null, finishReason: 'completed' };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+  }, { model: anthropicModel });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.length, 1); assert.equal(h.events.length, 0);
 });
 
 const maintenanceBudget = { ...DEFAULT_RUN_BUDGET, maxInputTokens: 1024 };

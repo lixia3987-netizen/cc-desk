@@ -398,6 +398,98 @@ test('experience: the new-session form creates structured agents, including fork
   }finally{await app.close();await f.dispose();}
 });
 
+test('experience: native model and terminal settings retain shared drafts and preserve CLI-managed Claude defaults',async()=>{
+  const f=await workspace(2);
+  let app=await f.launch();
+  try{
+    let page=await app.firstWindow();
+    await page.evaluate(async()=>{
+      const {state}=await window.desktop.snapshot();
+      await window.desktop.saveSettings({...state.settings,engineDefaults:{...state.settings.engineDefaults,
+        claude:{...state.settings.engineDefaults.claude,options:{...state.settings.engineDefaults.claude.options,model:'claude-cli-existing',effort:'high'}}
+      }});
+    });
+    // Reopen the renderer from the persisted fixture before beginning a preferences draft.
+    await page.reload();
+    const open=async()=>{
+      await page.getByRole('button',{name:'设置与连接',exact:true}).click();
+      return page.getByRole('dialog',{name:'设置与连接',exact:true});
+    };
+    let settings=await open();
+    await settings.getByRole('tab',{name:'模型配置',exact:true}).click();
+    await expect(settings.getByRole('region',{name:'Native 模型连接',exact:true})).toBeVisible();
+    await expect(settings.getByLabel('Claude Code 路径',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认推理强度',{exact:true})).toHaveCount(0);
+    await expect(settings.getByRole('region',{name:'Native MCP 连接',exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toBeHidden();
+    await expect(settings.getByLabel('默认模型连接',{exact:true})).toBeHidden();
+    await settings.getByText('新会话默认模型',{exact:true}).click();
+    await settings.getByLabel('默认模型覆盖',{exact:true}).fill('native-ui-choice');
+
+    await settings.getByRole('tab',{name:'会话与权限',exact:true}).click();
+    await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认推理强度',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认模型连接',{exact:true})).toHaveCount(0);
+    await settings.getByLabel('默认权限模式',{exact:true}).selectOption('plan');
+    await settings.getByLabel('默认每回合工具调用上限',{exact:true}).fill('25');
+    await settings.getByLabel('最大并发会话',{exact:true}).fill('6');
+    await settings.getByRole('tab',{name:'模型配置',exact:true}).click();
+    await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toBeHidden();
+    await settings.getByText('新会话默认模型',{exact:true}).click();
+    await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toHaveValue('native-ui-choice');
+
+    await settings.getByRole('tab',{name:'终端配置',exact:true}).click();
+    await expect(settings.getByLabel('Claude Code 路径',{exact:true})).toBeVisible();
+    await expect(settings.getByRole('button',{name:'保存并检测',exact:true})).toBeVisible();
+    await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认推理强度',{exact:true})).toHaveCount(0);
+    await expect(settings.getByRole('region',{name:'Native 模型连接',exact:true})).toHaveCount(0);
+    await settings.getByLabel('终端字号',{exact:true}).fill('18');
+    await settings.getByRole('tab',{name:'会话与权限',exact:true}).click();
+    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveValue('plan');
+    await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
+    await expect(settings.getByRole('button',{name:'保存并检测',exact:true})).toHaveCount(0);
+    await settings.getByRole('button',{name:'保存设置',exact:true}).click();
+    await expect(settings.getByText('设置已同步',{exact:true})).toBeVisible();
+    const saved=(await page.evaluate(()=>window.desktop.snapshot())).state;
+    expect(saved.settings.engineDefaults.claude.options).toMatchObject({model:'claude-cli-existing',effort:'high',permissionMode:'plan'});
+    expect(saved.settings.engineDefaults.native.options).toMatchObject({model:'native-ui-choice',maxToolCalls:25});
+    expect(saved.settings).toMatchObject({fontSize:18,maxSessions:6});
+    expect(saved.sessions[0].engineConfig.options.model).toBe('');
+    expect(saved.sessions[0].engineConfig.options.permissionMode).toBe('default');
+    await page.keyboard.press('Escape');
+    settings=await open();
+    await settings.getByRole('tab',{name:'模型配置',exact:true}).click();
+    await settings.getByText('新会话默认模型',{exact:true}).click();
+    await settings.getByLabel('默认模型覆盖',{exact:true}).fill('cancelled-choice');
+    await settings.getByRole('tab',{name:'终端配置',exact:true}).click();
+    await settings.getByLabel('终端字号',{exact:true}).fill('20');
+    await settings.getByRole('button',{name:'取消',exact:true}).click();
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings).toEqual(saved.settings);
+
+    await app.close();app=await f.launch();page=await app.firstWindow();settings=await open();
+    await settings.getByRole('tab',{name:'模型配置',exact:true}).click();
+    await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
+    await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toBeHidden();
+    await settings.getByText('新会话默认模型',{exact:true}).click();
+    await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toHaveValue('native-ui-choice');
+    await settings.getByRole('tab',{name:'会话与权限',exact:true}).click();
+    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveValue('plan');
+    await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
+    await settings.getByRole('tab',{name:'终端配置',exact:true}).click();
+    await expect(settings.getByLabel('终端字号',{exact:true})).toHaveValue('18');
+    expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options).toMatchObject({model:'claude-cli-existing',effort:'high'});
+    await settings.getByLabel('终端字号',{exact:true}).fill('99');
+    await settings.getByRole('tab',{name:'模型配置',exact:true}).click();
+    await settings.getByRole('button',{name:'保存设置',exact:true}).click();
+    await expect(settings.getByRole('tab',{name:'终端配置',exact:true})).toHaveAttribute('aria-selected','true');
+    await expect(settings.getByRole('alert')).toContainText('11–24');
+  }finally{await app.close();await f.dispose();}
+});
+
 test('experience: permission defaults persist while sessions, forks and import overrides keep their own modes',async()=>{
   const f=await workspace(2),probe=await cliProbe(f.directory,'permission-fixture');
   const file=path.join(f.data,'workspace.json'),initial=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
@@ -481,7 +573,7 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
   // Count only save-and-detect probes; the updater legitimately performs its own version check.
   const app=await f.launch({DISABLE_UPDATES:'1'});
   try{
-    const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'连接与终端',exact:true}).click();
+    const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'终端配置',exact:true}).click();
     await expect(page.locator('.connection-box')).toContainText('fixture-A');
     await page.getByLabel('Claude Code 路径').fill(b.cli);await expect(page.getByText(/路径尚未保存/)).toBeVisible();
     await page.getByRole('button',{name:'保存并检测',exact:true}).click();await expect(page.locator('.connection-box')).toContainText('fixture-B');

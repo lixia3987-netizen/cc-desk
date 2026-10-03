@@ -16,6 +16,7 @@ import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
 import type { ExecutionEvents } from '../../execution/events';
 import { parseNativeConfig } from './config';
+import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
 import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 
@@ -285,11 +286,13 @@ export class NativeProjection {
       const instructions = typeof configuration.modelInstructions === 'string' ? configuration.modelInstructions : '';
       const definitions = Array.isArray(configuration.toolDefinitions) ? configuration.toolDefinitions as unknown as ToolDefinition[] : [];
       const model = typeof configuration.model === 'string' ? configuration.model : undefined;
+      const modelCapabilities = model ? nativeModelCapabilityUsage(configuration.modelCapabilities, model) : undefined;
       let budget;
-      try { budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: options.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }); }
+      try { budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: nativeModelBudget(options, modelCapabilities?.capabilities).maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }); }
       catch { /* Unknown protocol records remain readable, with no invented budget. */ }
       projected.push({ seq: latest.seq, event: { type: 'context', context: {
         ...(model ? { model, requestModel: model } : {}),
+        ...(modelCapabilities ? { modelCapabilities, ...(modelCapabilities.capabilities.contextWindow ? { contextWindow: modelCapabilities.capabilities.contextWindow.value } : {}) } : {}),
         ...(inputTokens !== undefined ? { inputTokens } : {}),
         ...(measuredAt ? { measuredAt } : {}), source: 'request', status: inputTokens === undefined ? 'unknown' : 'ready',
         ...(budget ? { budget } : {}),

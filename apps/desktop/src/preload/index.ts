@@ -33,6 +33,13 @@ const api: DesktopAPI = {
     readiness: input => ipcRenderer.invoke('native:connections-readiness', input),
     test: input => ipcRenderer.invoke('native:connections-test', input),
     cancelTest: input => ipcRenderer.invoke('native:connections-test-cancel', input),
+    listModels: input => ipcRenderer.invoke('native:connections-models', input),
+    cancelListModels: input => ipcRenderer.invoke('native:connections-models-cancel', input),
+    modelCapabilities: input => ipcRenderer.invoke('native:connections-model-capabilities', input),
+  },
+  claudeModelImport: {
+    preview: input => ipcRenderer.invoke('claude:model-import-preview', input),
+    import: input => ipcRenderer.invoke('claude:model-import', input),
   },
   confirmNativeRecovery: id => ipcRenderer.invoke('native:confirm-recovery', id),
   resumeNativeRecovery: (id, expectedHead) => ipcRenderer.invoke('native:resume-recovery', { id, expectedHead }),

@@ -10,14 +10,14 @@ export function nativeCompactionPreview(source: ContextCompactionSource): Native
   try {
     const { context, retainedContext } = source;
     const supported = (value: ModelContext) => value?.protocol?.version === 1
-      && ['openai-responses', 'openai-chat-completions'].includes(value.protocol.id)
+      && ['openai-responses', 'openai-chat-completions', 'anthropic-messages'].includes(value.protocol.id)
       && Array.isArray(value.items) && value.items.length > 0;
     if (!supported(context) || !supported(retainedContext) || context.protocol.id !== retainedContext.protocol.id
       || source.scope !== 'prefix' || contextHasUserImages(context)) return unavailable();
     const summarizableBytes = Buffer.byteLength(JSON.stringify(context));
     const retainedBytes = Buffer.byteLength(JSON.stringify(retainedContext));
     let retainedImages = 0;
-    const imageType = retainedContext.protocol.id === 'openai-chat-completions' ? 'image_url' : 'input_image';
+    const imageType = retainedContext.protocol.id === 'openai-chat-completions' ? 'image_url' : retainedContext.protocol.id === 'anthropic-messages' ? 'image' : 'input_image';
     for (const item of retainedContext.items) {
       if (!object(item)) return unavailable();
       if (item.role === 'user' && Array.isArray(item.content)) {

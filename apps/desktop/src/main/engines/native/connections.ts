@@ -17,7 +17,7 @@ const auth = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('encrypted') }).strict(),
 ]);
 const fields = {
-  name: text, protocol: z.enum(['responses', 'chat-completions']), baseURL: z.string().trim().min(1).max(2048), model, pricing: pricing.optional(),
+  name: text, protocol: z.enum(['responses', 'chat-completions', 'anthropic']), authHeader: z.enum(['x-api-key', 'authorization']).optional(), baseURL: z.string().trim().min(1).max(2048), model, pricing: pricing.optional(),
   allowLoopbackHttp: z.boolean(), enabled: z.boolean(), auth,
 };
 export const nativeConnectionInputSchema = z.object({ id: id.optional(), revision: revision.optional(), ...fields }).strict();
@@ -46,7 +46,8 @@ export interface NativeConnectionStoreOptions {
 export interface ResolvedNativeConnection {
   readonly connectionId: string;
   readonly revision: number;
-  readonly protocol: 'responses' | 'chat-completions';
+  readonly protocol: 'responses' | 'chat-completions' | 'anthropic';
+  readonly authHeader?: 'x-api-key' | 'authorization';
   readonly baseURL: string;
   readonly model: string;
   readonly apiKey: string;
@@ -124,6 +125,25 @@ export class ConnectionStore {
     return this.view(item);
   }
 
+  /** Imports create independent connections and commit metadata and credentials together. */
+  import(input: NativeConnectionInput, credential?: { mode: 'memory' | 'encrypted'; secret: string }): NativeConnectionView {
+    this.assertLoaded();
+    const parsed = nativeConnectionInputSchema.safeParse(input);
+    if (!parsed.success || parsed.data.id !== undefined || parsed.data.revision !== undefined) throw new Error('导入的模型连接配置无效。');
+    if (this.connections.length >= 100) throw new Error('连接数量已达上限。');
+    const { id: _id, revision: _revision, ...metadata } = parsed.data;
+    const baseURL = validateNativeBaseURL(metadata.baseURL, metadata.allowLoopbackHttp);
+    const item: StoredConnection = { ...metadata, baseURL, id: randomUUID(), revision: 1 };
+    if (credential) {
+      const checked = nativeCredentialMutationSchema.safeParse({ id: item.id, revision: item.revision, ...credential });
+      if (!checked.success || metadata.auth.mode !== credential.mode) throw new Error('导入的凭据配置无效。');
+      if (credential.mode === 'encrypted') item.ciphertext = this.credentials.encrypt(checked.data.secret);
+    }
+    this.commit([...this.connections, item]);
+    if (credential?.mode === 'memory') this.credentials.set(item.id, credential.secret);
+    return this.view(item);
+  }
+
   remove(input: { id: string; revision: number }): void {
     this.assertLoaded();
     const parsed = nativeConnectionReferenceSchema.safeParse(input);
@@ -147,7 +167,7 @@ export class ConnectionStore {
     const parsed = nativeConnectionReadinessSchema.safeParse({ id: connectionId, ...(modelOverride !== undefined ? { model: modelOverride } : {}) });
     if (!parsed.success) throw new Error('请选择有效的 native 模型连接和模型。');
     const item = this.current(connectionId);
-    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在测试，请等待完成或取消测试后再使用。');
+    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在读取模型或测试，请等待完成或取消请求后再使用。');
     if (!item.enabled) throw new Error('此模型连接已禁用，请在设置中启用或选择其他连接。');
     const baseURL = validateNativeBaseURL(item.baseURL, item.allowLoopbackHttp);
     let apiKey: string | undefined;
@@ -156,7 +176,7 @@ export class ConnectionStore {
     else if (item.ciphertext) apiKey = this.credentials.decrypt(item.ciphertext);
     if (!apiKey) throw new Error(item.auth.mode === 'env' ? '主进程未找到此连接指定的环境变量，请设置后重启应用。' : '此连接尚无可用凭据，请重新设置（本次内存凭据不会跨重启保留）。');
     if (!nativeCredentialMutationSchema.shape.secret.safeParse(apiKey).success) throw new Error('此连接的凭据格式无效，请重新设置。');
-    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
+    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, ...(item.authHeader ? { authHeader: item.authHeader } : {}), baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
   }
 
   /** Synchronous revision / activity check before a diagnostic acquires its lock. */
@@ -185,7 +205,7 @@ export class ConnectionStore {
 
   private assertLoaded(): void { if (this.loadError) throw new Error(this.loadError); }
   private assertInactive(connectionId: string): void {
-    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在测试，请等待完成或取消测试后再修改。');
+    if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在读取模型或测试，请等待完成或取消请求后再修改。');
     if (this.options.isConnectionActive?.(connectionId)) throw new Error('此连接正被运行中的回合使用，请先停止相关回合并等待清理完成。');
   }
 

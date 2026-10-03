@@ -75,6 +75,21 @@ test('native connections: env values are resolved in main only and one missing k
   } finally { f.dispose(); }
 });
 
+test('native connections: Anthropic authentication header survives edits and restart independently from secrets', () => {
+  const f = fixture({ environment: { ANTHROPIC_AUTH_TOKEN: sentinel } });
+  try {
+    const connection = f.store.upsert({ ...baseline, protocol: 'anthropic', authHeader: 'authorization', auth: { mode: 'env', variable: 'ANTHROPIC_AUTH_TOKEN' } });
+    assert.equal(f.store.resolve(connection.id).authHeader, 'authorization');
+    const edited = f.store.upsert({ ...edit(connection), name: '已编辑' });
+    const restarted = new ConnectionStore(f.directory, { environment: { ANTHROPIC_AUTH_TOKEN: sentinel } });
+    assert.equal(restarted.resolve(edited.id).protocol, 'anthropic');
+    assert.equal(restarted.resolve(edited.id).authHeader, 'authorization');
+    assert.equal(restarted.resolve(edited.id).apiKey, sentinel);
+    assert.ok(!JSON.stringify(restarted.list()).includes(sentinel));
+    assert.ok(!fs.readFileSync(f.file, 'utf8').includes(sentinel));
+  } finally { f.dispose(); }
+});
+
 test('native connections: verified OS storage survives restart without returning ciphertext or plaintext', () => {
   const safeStorage = storage(), f = fixture({ safeStorage, platform: 'linux' });
   try {
@@ -178,7 +193,7 @@ test('native connections IPC: separate write-only mutation has no credential rea
     const result = handlers.get('native:connections-credential')!({ id: created.id, revision: created.revision, mode: 'memory', secret: sentinel });
     assert.ok(!JSON.stringify(result).includes(sentinel));
     assert.ok(!JSON.stringify(handlers.get('native:connections-list')!()).includes(sentinel));
-    assert.deepEqual([...handlers.keys()].sort(), ['native:connections-credential', 'native:connections-list', 'native:connections-readiness', 'native:connections-remove', 'native:connections-test', 'native:connections-test-cancel', 'native:connections-upsert']);
+    assert.deepEqual([...handlers.keys()].sort(), ['native:connections-credential', 'native:connections-list', 'native:connections-models', 'native:connections-models-cancel', 'native:connections-readiness', 'native:connections-remove', 'native:connections-test', 'native:connections-test-cancel', 'native:connections-upsert']);
     for (const malformed of [{ [sentinel]: 'extra' }, { id: created.id, revision: 2, mode: 'memory', secret: sentinel + '\n' }]) {
       assert.throws(() => handlers.get('native:connections-credential')!(malformed), error => error instanceof Error && !error.message.includes(sentinel));
     }

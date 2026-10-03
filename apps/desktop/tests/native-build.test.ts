@@ -6,19 +6,46 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 // @ts-expect-error Build scripts are plain ESM and have no TypeScript declarations.
-import { applyPinnedNodePtyPatch, conptyVerificationSource, nodePtyPatch, sha256 } from '../scripts/prepare-node-pty-windows.mjs';
+import { applyExactPatch, applyPinnedNodePtyPatch, conptyVerificationSource, nodePtyPatch, sha256, windowsNodePtyBuildArguments } from '../scripts/prepare-node-pty-windows.mjs';
 
 const require = createRequire(import.meta.url);
 const installedRoot = path.dirname(require.resolve('node-pty/package.json'));
 const files = Object.keys(nodePtyPatch.files);
 
+test('Windows rebuild cleans stale binaries and builds both ConPTY modules without legacy winpty', () => {
+  const gyp = require('node-gyp/lib/node-gyp.js')();
+  const args = windowsNodePtyBuildArguments('node-gyp.js', 'arm64', '22.12.0');
+  gyp.parseArgv([process.execPath, ...args]);
+  assert.deepEqual(gyp.todo, [
+    { name: 'clean', args: [] },
+    { name: 'configure', args: [] },
+    { name: 'build', args: ['conpty', 'conpty_console_list'] },
+  ]);
+  assert.equal(gyp.opts.arch, 'arm64');
+  assert.equal(gyp.opts.target, '22.12.0');
+  assert.equal(gyp.opts.debug, false);
+  assert.equal(gyp.opts['dist-url'], 'https://nodejs.org/download/release');
+});
+
 async function fixture(t: TestContext) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-native-build-'));
   t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }));
   await fs.writeFile(path.join(root, 'package.json'), JSON.stringify({ name: 'node-pty', version: '1.1.0' }));
+  const patch = (await fs.readFile(new URL('../../../patches/node-pty-1.1.0-conpty.patch', import.meta.url), 'utf8')).replace(/\r\n/g, '\n');
   for (const relative of files) {
     await fs.mkdir(path.dirname(path.join(root, relative)), { recursive: true });
-    await fs.copyFile(path.join(installedRoot, relative), path.join(root, relative));
+    let source = await fs.readFile(path.join(installedRoot, relative), 'utf8');
+    if (sha256(source) === nodePtyPatch.files[relative].after) {
+      const section = patch.split(/(?=^--- a\/)/m).find(value => value.startsWith(`--- a/${relative}\n`));
+      assert.ok(section, `missing pinned patch section: ${relative}`);
+      const reverse = section.replace(/^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@/gm, '@@ -$3$4 +$1$2 @@')
+        .split('\n').map(line => line[0] === '+' ? `-${line.slice(1)}` : line[0] === '-' ? `+${line.slice(1)}` : line).join('\n');
+      source = applyExactPatch(source, reverse);
+    }
+    // Exercise fresh upstream inputs even after postinstall has patched the
+    // installed dependency; otherwise repeatability can skip every patch hunk.
+    assert.equal(sha256(source), nodePtyPatch.files[relative].before, relative);
+    await fs.writeFile(path.join(root, relative), source);
   }
   return root;
 }

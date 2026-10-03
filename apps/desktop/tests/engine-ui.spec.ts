@@ -140,12 +140,18 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await expect(page.locator('.engine-unavailable')).toHaveCount(0);
 
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+    const claudeDefaults = (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude;
+    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await expect(page.getByLabel('默认模型', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('默认推理强度', { exact: true })).toHaveCount(0);
+    await expect(page.getByLabel('默认路由', { exact: true })).toHaveCount(0);
     await page.getByRole('tab', { name: '会话与权限', exact: true }).click();
-    const defaults = page.locator('.settings-section').filter({ has: page.getByRole('heading', { name: '测试 Native 默认配置', exact: true }) });
+    const defaults = page.locator('.settings-section').filter({ has: page.getByRole('heading', { name: '测试 Native 默认会话配置', exact: true }) });
     await defaults.getByLabel('默认路由', { exact: true }).fill('new-default');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await expect(page.getByText('设置已保存', { exact: true })).toBeVisible();
     await expect(page.locator('.settings-save-state')).toHaveText('设置已同步');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude).toEqual(claudeDefaults);
     await page.evaluate(async () => {
       const { state } = await window.desktop.snapshot(), config = state.settings.engineDefaults['test.native'];
       // A semantically identical re-save may reconstruct both provider and option order.

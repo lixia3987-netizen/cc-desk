@@ -11,6 +11,7 @@ import type { SessionTitleSource } from './session-title';
 import type { ImportedFont, TypographySettings } from './fonts';
 import type { CLIUpdateState } from './cli-update';
 import type { NativeConnectionsAPI } from './native-connections';
+import type { ClaudeModelImportAPI } from './claude-model-import';
 import type { NativeSkillsAPI } from './native-skills';
 import type { NativeMcpConnectionsAPI } from './native-mcp';
 import type { NativeImagePreviewRequest, NativeImagePreview, NativePastedImage } from './native-images';
@@ -49,6 +50,7 @@ export interface GitInfo { branch: string; status: string; diff: string; error?:
 export interface DesktopAPI {
   previewNativeImage(input: NativeImagePreviewRequest): Promise<NativeImagePreview>;
   nativeConnections: NativeConnectionsAPI;
+  claudeModelImport: ClaudeModelImportAPI;
   nativeSkills: NativeSkillsAPI;
   nativeMcp: NativeMcpConnectionsAPI;
   confirmNativeRecovery(id: string): Promise<void>;
