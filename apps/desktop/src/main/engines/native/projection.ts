@@ -19,6 +19,8 @@ import { parseNativeConfig } from './config';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
 import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
+import { loadNativeAgents, nativeAgentReceiptDirectory, NativeAgentProjection } from './agent-projection';
+import type { NativeDelegationReceipt } from './agent-delegation';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
 
@@ -59,6 +61,7 @@ interface ProjectionEntry {
   currentTerminal?: boolean;
   pending: ChatApproval[];
   commands?: NativeCommandSnapshot;
+  agents?: NativeAgentProjection;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string };
 }
@@ -329,8 +332,12 @@ export class NativeProjection {
     if (this.isActive(id)) snapshot.taskState = finalState;
     const stream = old.stream && (streamEpochs.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
+    const agents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity) : undefined;
+    // A receipt callback can arrive while the ledger projection awaits file I/O.
+    // Keep that newest host fact when publishing the rebuilt snapshot.
+    agents?.merge(this.entry(id).agents);
     this.missingContext.delete(id);
-    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records) });
+    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records), agents });
     this.archive.forget(id);
     if (old.seq && old.conversationId === store.conversationId) for (const item of projected) if (item.seq > old.seq) this.journal(id, item.event);
     this.changed(id);
@@ -354,6 +361,13 @@ export class NativeProjection {
 
   hasMissingContext(id: string): boolean { return this.missingContext.has(id); }
   notifyTask(id: string): void { this.changed(id); }
+  /** The executor calls this only after the bound child receipt is durably saved. */
+  nativeAgent(id: string, receipt: NativeDelegationReceipt): void {
+    const entry = this.entry(id), parent = receipt.parentIdentity;
+    if (parent.sessionId !== id || entry.currentIdentity && (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => parent[key] !== entry.currentIdentity![key])) throw new Error('子 Agent 不属于当前父回合。');
+    if (!entry.agents || entry.agents.parent.runId !== parent.runId) entry.agents = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(this.dataDirectory, parent));
+    entry.agents.record(receipt); this.changed(id);
+  }
 
   snapshot(id: string): ChatSnapshot {
     const entry = this.entry(id);
@@ -364,6 +378,8 @@ export class NativeProjection {
     const terminalOverride = !!entry.override && ['completed', 'interrupted', 'error'].includes(entry.override.taskState);
     if (entry.commands?.items.length) snapshot.nativeCommands = snapshotNativeCommands(entry.commands,
       this.isActive(id) && !entry.currentTerminal && !terminalOverride ? entry.currentIdentity?.runId : undefined);
+    const agents = entry.agents?.snapshot(this.isActive(id) && !entry.currentTerminal && !terminalOverride);
+    if (agents && (agents.items.length || agents.incomplete)) snapshot.nativeAgents = agents;
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
     else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';

@@ -11,7 +11,9 @@ export interface WorkerStart {
   definitions: ToolDefinition[];
   contextMaintenance?: boolean;
   sharedBudget?: boolean;
+  activePaused?: boolean;
 }
+export interface WorkerActivePause { type: 'active_pause'; version: 1; identity: RunIdentity; paused: boolean }
 export interface WorkerEnvelope { version: 1; identity: RunIdentity; seq: number }
 export interface WorkerRequest extends WorkerEnvelope { type: 'request'; requestId: string; method: string; args: unknown }
 export interface WorkerReply extends WorkerEnvelope { type: 'reply'; requestId: string; value?: unknown; error?: string }

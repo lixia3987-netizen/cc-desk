@@ -15,6 +15,8 @@ export interface ExecutionLifecycle {
   whenReleased?(id: string): Promise<void>;
   /** Persisted uncertain effects/cleanup quarantine, including after application restart. */
   recoveryRequired?(id: string): boolean;
+  /** Additional retained child workspaces protected by the parent's recovery barrier. */
+  recoveryDirectories?(id: string): Promise<readonly string[]>;
   stopIdle(id: string): Promise<void>;
   forget(id: string): void;
   setMaintenance(value: boolean): void;

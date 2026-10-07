@@ -24,6 +24,9 @@ import { isMissingTranscriptError } from '../shared/session-recovery';
 import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
 import { NativeCommandPanel } from './NativeCommandPanel';
+import { NativeAgentPanel } from './NativeAgentPanel';
+import { NativeChildApprovalContext } from './NativeChildApprovalContext';
+import './native-agent.css';
 import './native-command.css';
 import { NativeChangeSetPreview, NativeChangeSetResult, nativeChangeSetCanApprove, nativeChangeSetResultLabel } from './NativeChangeSetPreview';
 import './native-task.css';
@@ -52,6 +55,7 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
   const questions=approval.questions??[];
   return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={question?'等待回答':'工具审批'}>
     <header><ShieldCheck size={17}/><strong>{question?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
+    {isNative&&<NativeChildApprovalContext scope={approval.nativeDelegation}/>}
     {question?questions.map((q,index)=><fieldset key={index} disabled={busy}><legend>{q.question}</legend><div className="question-options">{q.options.map((option,i)=>{
       const selected=q.multiSelect?(answers[q.question]??'').split(', ').includes(option.label):answers[q.question]===option.label;
       return <button key={i} type="button" className={selected?'chosen':''} aria-pressed={selected} onClick={()=>setAnswers(value=>{
@@ -265,7 +269,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
-    <SubtaskPanel session={session}/>
+    {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}
+    {session.execution.providerId==='native'&&<NativeAgentPanel agents={snapshot?.nativeAgents} loadError={syncState.error}/>}
     {session.execution.providerId==='native'&&<NativeCommandPanel commands={snapshot?.nativeCommands} currentRunId={snapshot?.nativeRun?.runId} loadError={syncState.error}/>}
     {session.execution.providerId==='native'&&<NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}

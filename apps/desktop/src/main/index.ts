@@ -297,7 +297,7 @@ else {
         isConnectionActive: id => nativeExecutor?.isMcpConnectionActive(id) ?? false,
         isConnectionReferenced: id => store.state.sessions.some(session => session.execution.providerId === 'native' && Array.isArray(session.engineConfig.options.mcpConnections) && session.engineConfig.options.mcpConnections.includes(id)),
       });
-      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, mcpConnections, modelCapabilities, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id) });
+      executors = createExecutors(store,()=>capabilities,reportPersistenceError, { connections, mcpConnections, modelCapabilities, onNative: executor => { nativeExecutor = executor; }, assertNativeOwnership: id => services.assertExecutionOwnership(id), acquireNativeChildOwnership: (parentId, identity, cwd) => services.acquireNativeChildOwnership(parentId, identity, cwd) });
       await nativeExecutor.initialize();
       services = new SessionService(store,executors,notify,()=>window,{
         history:(cwd,options)=>historySources.query(cwd,options), diagnose:cwd=>diagnoseEnvironment(cwd,store.state.settings.claudePath),

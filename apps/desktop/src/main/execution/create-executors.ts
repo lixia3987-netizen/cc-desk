@@ -11,7 +11,7 @@ import { claudeCapabilities, validateClaudeSession } from '../engines/claude/cap
 import { claudeExports } from '../engines/claude/exports';
 import { ShellTerminalLauncher } from '../engines/shell/terminal-launcher';
 import { Runtime } from '../runtime';
-import { NativeStructuredExecutor } from '../engines/native/structured-executor';
+import { NativeStructuredExecutor, type NativeExecutorOptions } from '../engines/native/structured-executor';
 import { ConnectionStore } from '../engines/native/connections';
 import type { NativeMcpConnectionStore } from '../engines/native/mcp-connections';
 import type { NativeModelCapabilityService } from '../engines/native/model-capabilities';
@@ -29,7 +29,7 @@ const shellCapabilities: ExecutionCapabilities = {
 };
 
 /** The only place that chooses and wires concrete execution providers. */
-export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; mcpConnections?: NativeMcpConnectionStore; modelCapabilities?: NativeModelCapabilityService; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void } = {}) {
+export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; mcpConnections?: NativeMcpConnectionStore; modelCapabilities?: NativeModelCapabilityService; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void; acquireNativeChildOwnership?: NativeExecutorOptions['acquireChildOwnership'] } = {}) {
   const registry = new ExecutionRegistry(id => {
     const session = store.state.sessions.find(session => session.id === id);
     if (!session) throw new Error('会话不存在。');
@@ -86,7 +86,7 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
     },
     createIdentity: () => ({ providerId: 'shell', mode: 'terminal' }) });
   const connections = options.connections ?? new ConnectionStore(store.directory);
-  const native = new NativeStructuredExecutor(store, connections, registry.events, { onError, mcpConnections: options.mcpConnections, modelCapabilities: options.modelCapabilities, assertOwnership: id => options.assertNativeOwnership?.(id) });
+  const native = new NativeStructuredExecutor(store, connections, registry.events, { onError, mcpConnections: options.mcpConnections, modelCapabilities: options.modelCapabilities, assertOwnership: id => options.assertNativeOwnership?.(id), acquireChildOwnership: options.acquireNativeChildOwnership });
   options.onNative?.(native);
   registry.register({
     providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { runAgent, type AgentEvent, type AgentPorts, type RunIdentity } from '@cc-desk/agent-core';
 import { createNativeModel } from '@cc-desk/agent-node/native-model';
 import { checkedMessage, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL, type WorkerReply, type WorkerStart } from './worker-protocol';
+import { NativeActiveClock } from './active-pause';
 
 const port = process.parentPort;
 if (!port) throw new Error('Native worker requires an Electron utilityProcess parent.');
@@ -10,6 +11,7 @@ process.report.reportOnFatalError = false;
 process.report.reportOnSignal = false;
 process.report.reportOnUncaughtException = false;
 const abort = new AbortController();
+const activeClock = new NativeActiveClock();
 const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; dispose(): void }>();
 let identity: RunIdentity | undefined, sequence = 0, replySequence = 0, started = false, completed = false;
 let eventChain: Promise<unknown> = Promise.resolve(), eventBytes = 0;
@@ -48,6 +50,8 @@ function emit(event: AgentEvent): Promise<void> {
 }
 async function start(message: WorkerStart) {
   identity = message.request.identity;
+  if (message.activePaused !== undefined && typeof message.activePaused !== 'boolean') throw new Error('Invalid native active clock state.');
+  activeClock.setPaused(message.activePaused ?? false);
   const context = <T extends { signal: AbortSignal }>(value: T) => { const { signal: _signal, ...rest } = value; return rest; };
   const ports: AgentPorts = {
     model: createNativeModel({ ...message.model, toolDefinitions: message.definitions }),
@@ -74,15 +78,9 @@ async function start(message: WorkerStart) {
     host: {
       ...(message.sharedBudget ? { consumeBudget: (kind: 'model' | 'tool', run: RunIdentity) => rpc<boolean>('host.consumeBudget', { kind, identity: run }) } : {}),
       now: () => Date.now(),
+      activeNow: () => activeClock.now(),
       digest: value => createHash('sha256').update(value).digest('hex'),
-      deadline: (milliseconds, parent) => {
-        const controller = new AbortController();
-        const cancel = () => controller.abort(parent.reason);
-        const timer = setTimeout(() => controller.abort(new Error('Native deadline exceeded.')), milliseconds);
-        parent.addEventListener('abort', cancel, { once: true });
-        if (parent.aborted) cancel();
-        return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent.removeEventListener('abort', cancel); } };
-      },
+      deadline: (milliseconds, parent) => activeClock.deadline(milliseconds, parent),
       wait: (milliseconds, signal) => new Promise<void>((resolve, reject) => {
         const cancelled = () => { clearTimeout(timer); signal.removeEventListener('abort', cancelled); const error = new Error('Native retry cancelled.'); error.name = 'AbortError'; reject(error); };
         const timer = setTimeout(() => { signal.removeEventListener('abort', cancelled); resolve(); }, milliseconds);
@@ -110,6 +108,10 @@ port.on('message', event => {
     }
     if (!identity || !message.identity || !sameRun(message.identity as RunIdentity, identity)) throw new Error('Native worker identity mismatch.');
     if (message.type === 'cancel') { abort.abort(); return; }
+    if (message.type === 'active_pause') {
+      if (typeof message.paused !== 'boolean' || Object.keys(message).some(key => !['type', 'version', 'identity', 'paused'].includes(key))) throw new Error('Invalid native active clock state.');
+      activeClock.setPaused(message.paused); return;
+    }
     if (message.type === 'finish' && completed) { process.exit(0); }
     if (message.type !== 'reply') throw new Error('Unexpected native worker message.');
     const reply = message as unknown as WorkerReply;

@@ -19,6 +19,7 @@ import { gitWorktreeRoot } from './git';
 import { isSessionBusy } from '../shared/session-activity';
 import { canonicalDirectory, DirectoryExecutionCoordinator, type DirectoryLease } from './directory-execution';
 import type { ExecutionSubmission } from './execution/ports';
+import type { RunIdentity } from '@cc-desk/agent-core';
 
 import type { Register } from './ipc/registration';
 import { registerSessionHandlers } from './ipc/session-handlers';
@@ -192,7 +193,8 @@ export class SessionService {
   private async assertRecoveryDirectories(keys: readonly string[]): Promise<void> {
     for (const session of this.store.state.sessions) {
       if (!this.recoveryRequired(session.id)) continue;
-      const roots = await this.executionRoots(session);
+      const extra = await this.execution.registration(session).executor.recoveryDirectories?.(session.id) ?? [];
+      const roots = [...await this.executionRoots(session), ...extra.map(value => this.pathKey(value))];
       if (keys.some(key => roots.some(root => this.overlaps(key, root)))) {
         throw new Error(`工作目录存在需要核查的操作（会话 ${session.id}），请先确认未知副作用和进程清理结果。`);
       }
@@ -245,6 +247,32 @@ export class SessionService {
       throw new Error('工具所属执行代次或工作目录授权已失效。');
     }
     this.assertDirectoriesUnlocked([...lease.roots]);
+  }
+  /** Independent implementation children lease their own worktree without creating sidebar sessions. */
+  async acquireNativeChildOwnership(parentId: string, identity: RunIdentity, cwd: string) {
+    const binding = { ...identity };
+    const assertIdentity = () => {
+      if ((['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => identity[key] !== binding[key])) throw new Error('子 Agent 执行身份已改变。');
+    };
+    this.assertExecutionOwnership(parentId);
+    const parentLease = this.executionLeases.get(parentId)!;
+    if (parentLease.owner.providerId !== 'native' || identity.sessionId === parentId || !Number.isSafeInteger(identity.workerGeneration) || identity.workerGeneration < 1) throw new Error('子 Agent 执行身份无效。');
+    const roots = [this.pathKey(cwd)];
+    await this.assertRecoveryDirectories(roots);
+    this.assertExecutionOwnership(parentId); this.assertDirectoriesUnlocked(roots); assertIdentity();
+    if (this.executionLeases.get(parentId) !== parentLease) throw new Error('父 Agent 执行代次已改变。');
+    const childLease = this.directoryExecution.acquire({ sessionId: identity.sessionId, providerId: 'native', generation: identity.workerGeneration }, roots);
+    let released = false;
+    return {
+      assert: () => {
+        assertIdentity();
+        this.assertExecutionOwnership(parentId);
+        if (released || this.executionLeases.get(parentId) !== parentLease || !this.directoryExecution.owns(childLease) ||
+            childLease.roots[0] !== this.pathKey(cwd)) throw new Error('子 Agent 工作目录授权已失效。');
+        this.assertDirectoriesUnlocked([...childLease.roots]);
+      },
+      release: () => { if (released) return; this.directoryExecution.release(childLease); released = true; },
+    };
   }
   /** Outer orchestration calls this only after its durable ACK/terminal commit. */
   async refreshDirectoryRelease(id: string): Promise<void> {

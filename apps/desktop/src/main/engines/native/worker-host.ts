@@ -7,6 +7,7 @@ import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/
 import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
 import { verifyNativeImageAttachments } from '../../native-image-attachments';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
+import type { NativeActivePauseSource } from './active-pause';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
   destroyed?: boolean;
@@ -39,6 +40,7 @@ export interface NativeWorkerOptions {
   contextMaintenance?: ContextMaintenancePort;
   /** Host-owned aggregate capacity, shared by workflow/delegation workers. */
   consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>;
+  activePause?: NativeActivePauseSource;
   onEvent(event: AgentEvent): void | Promise<void>;
   signal: AbortSignal;
   workerPath?: string;
@@ -146,12 +148,24 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
   catch { throw new NativeWorkerError('credential', 'Native worker input contained a protected credential.'); }
   const runIdentity = run.identity;
   const budget = { ...DEFAULT_RUN_BUDGET, ...run.budget };
+  let pausedAt = options.activePause?.paused ? startedAt : undefined, pausedMs = 0;
+  let notifyPause: ((paused: boolean) => void) | undefined;
+  const activeElapsed = () => {
+    const now = performance.now();
+    return Math.max(0, now - startedAt - pausedMs - (pausedAt === undefined ? 0 : now - pausedAt));
+  };
+  const unsubscribePause = options.activePause?.subscribe(paused => {
+    const now = performance.now();
+    if (paused && pausedAt === undefined) pausedAt = now;
+    else if (!paused && pausedAt !== undefined) { pausedMs += Math.max(0, now - pausedAt); pausedAt = undefined; }
+    notifyPause?.(paused);
+  });
   let child: NativeWorkerChild;
   try {
     child = await (options.fork ?? defaultFork)(options.workerPath ?? path.join(__dirname, '../native/worker.cjs'), [], {
       env: workerEnvironment(forbiddenValues), stdio: 'pipe', serviceName: 'cc-desk native agent', execArgv: [],
     });
-  } catch { throw new NativeWorkerError('spawn', 'Native worker could not start.'); }
+  } catch { unsubscribePause?.(); throw new NativeWorkerError('spawn', 'Native worker could not start.'); }
 
   return await new Promise<RunResult>((resolve, reject) => {
     const abort = new AbortController();
@@ -195,6 +209,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       else resolve(done);
     }
     function cleanup(): void {
+      notifyPause = undefined; unsubscribePause?.();
       clearTimeout(startupTimer);
       clearTimeout(shutdownTimer);
       clearTimeout(hardTimer);
@@ -593,13 +608,15 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (failure || abort.signal.aborted) return;
           // Worker-local timing begins only after startup. Charge host preparation,
           // fork and readiness to this same run before passing on its remainder.
-          budget.maxActiveMs = Math.floor(budget.maxActiveMs - (performance.now() - startedAt));
+          budget.maxActiveMs = Math.floor(budget.maxActiveMs - activeElapsed());
           if (budget.maxActiveMs < 1) {
             stop(new NativeWorkerError('active_time_budget', 'Native worker startup exhausted the active time budget.'));
             return;
           }
           run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
-          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}) });
+          const paused = options.activePause?.paused ?? false;
+          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}), ...(paused ? { activePaused: true } : {}) });
+          if (paused) post({ type: 'active_pause', version: WORKER_PROTOCOL, identity: runIdentity, paused: true });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
         }
@@ -660,6 +677,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         }).finally(() => { inFlight.delete(requestId); checkFinished(); });
       } catch { stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.')); }
     }
+    notifyPause = paused => { if (started && !failure && !done) post({ type: 'active_pause', version: WORKER_PROTOCOL, identity: runIdentity, paused }); };
     child.on('message', onMessage);
     child.on('exit', onExit);
     child.on('error', onError);

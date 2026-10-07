@@ -182,6 +182,8 @@ export type AgentEvent =
   | { type: 'run_finished'; identity: RunIdentity; result: RunResult }
 export interface Deadline { signal: AbortSignal; dispose(): void }
 export interface RuntimeHost {
+  /** Optional host-coordinated active clock excluding shared nested approvals. now() remains wall time for expiry. */
+  activeNow?(): number
   /** Epoch milliseconds, shared with the approval/tool host; must not move backwards within a run. */
   now(): number
   /** Stable cryptographic digest supplied by the host; input is canonical JSON. */

@@ -61,7 +61,8 @@ function sameBinding(a: ApprovalBinding, b: ApprovalBinding): boolean {
 /** Sequential, framework-free loop. Host promises own durable storage and resource release. */
 export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Promise<RunResult> {
   const { model, tools, store, approvals, host } = ports
-  const startedAt = host.now()
+  const activeNow = () => host.activeNow?.() ?? host.now()
+  const startedAt = activeNow()
   const budget: RunBudget = { ...DEFAULT_RUN_BUDGET, ...request.budget }
   checkBudget(budget)
   if (request.modelRetry !== undefined && !['off', 'safe_transient'].includes(request.modelRetry)) throw new Error('Invalid model retry policy')
@@ -99,7 +100,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   let batchResults: { call: ToolCall; result: ToolResult }[] = []
   let lastStalledBatch: string | undefined
   let stalledBatches = 0
-  const activeMs = (): number => Math.max(0, host.now() - startedAt - pausedMs)
+  const activeMs = (): number => Math.max(0, activeNow() - startedAt - pausedMs)
   const makeResult = (status: RunStatus, reason: string, committed: boolean): RunResult => ({
     identity, status, reason, modelRequests, toolCalls, usage: usageUnknown ? null : usage,
     context: clone(context), committed,
@@ -130,7 +131,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     if (!host.consumeBudget) return
     let accepted: boolean
     try { accepted = await host.consumeBudget(kind, clone(identity)) }
-    catch { throw new Stop('failed', 'shared_budget_unavailable') }
+    catch { checkStopped(); throw new Stop('failed', 'shared_budget_unavailable') }
     checkStopped()
     if (accepted !== true) throw new Stop('budget_exhausted', `shared_${kind}_budget`)
   }
@@ -350,6 +351,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
       const binding: ApprovalBinding = { ...identity, toolCallId: call.id, inputDigest: prepared.inputDigest, policyRevision: prepared.policyRevision }
       const pauseStart = host.now()
+      const activePauseStart = activeNow()
       const expiresAt = pauseStart + budget.approvalTimeoutMs
       const deadline = host.deadline(budget.approvalTimeoutMs, request.signal)
       try {
@@ -362,7 +364,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
         await completeTool(call, { status: 'denied', output: { error: 'approval_expired_or_failed', executed: false } })
         return
       } finally {
-        pausedMs += Math.max(0, host.now() - pauseStart)
+        pausedMs += Math.max(0, activeNow() - activePauseStart)
         deadline.dispose()
       }
       checkStopped()

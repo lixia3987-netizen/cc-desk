@@ -1,0 +1,22 @@
+.native-agent-panel{flex-shrink:0;margin:8px 18px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:calc(11px * var(--ui-font-scale));line-height:1.6;min-width:0;max-height:36vh;overflow:auto;overflow-wrap:anywhere}
+.native-agent-panel summary{cursor:pointer;color:var(--text-secondary);user-select:none}
+.native-agent-panel summary:focus-visible,.native-agent-reference:focus-visible,.native-agent-panel div[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+.native-agent-note,.native-agent-state{color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale))}
+.native-agent-warning,.native-agent-state.unknown,.native-agent-state.failed{color:var(--warning)}
+.native-agent-state.running{color:var(--accent)}
+.native-agent-entry{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+.native-agent-entry>summary{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
+.native-agent-entry nav{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0}
+.native-agent-entry a{color:var(--accent)}
+.native-agent-panel p{margin:6px 0}
+.native-agent-panel code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.native-agent-reference{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;margin:8px 0}
+.native-agent-reference strong{color:var(--text-secondary)}
+.native-agent-reference code{flex:1;min-width:120px;user-select:all}
+.native-agent-reference button{flex-shrink:0;font-size:calc(10px * var(--ui-font-scale));padding:3px 7px}
+.native-agent-summary{white-space:pre-wrap;max-height:180px;overflow:auto}
+.native-agent-command{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+.native-child-approval-context{margin:8px 0;padding:8px 10px;border:1px solid var(--border);border-radius:5px;overflow-wrap:anywhere;color:var(--text-secondary)}
+.native-child-approval-context p{margin:2px 0}
+.native-child-approval-context code{white-space:pre-wrap;font-size:inherit}
+@media(max-width:650px){.native-agent-panel{margin:8px;max-height:30vh}}

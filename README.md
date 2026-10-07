@@ -18,6 +18,8 @@ cc-desk 默认封装本机 Claude Code CLI，沿用本机 CLI 的登录、模型
 
 ## v1.0.0 更新：双引擎与桌面流程集成
 
+当前开发分支进一步增加[模型错误诊断与真实服务回归](docs/NATIVE-AGENT-MODEL-DIAGNOSTICS.md)、[工作流阶段验收与累计预算](docs/NATIVE-WORKFLOW-GATES.md)，以及 [Native 独立子 Agent 审阅与隔离实现](docs/NATIVE-AGENT-DELEGATION.md)。规划和审阅阶段可由宿主强制只读；父任务、摘要和子任务共享预算。子任务产物、分支与证据保留供审阅，验收通过后再推进阶段。
+
 - **自研 Agent Alpha**：Responses / Chat Completions / Anthropic Messages 模型连接、独立 worker、持久任务计划与证据、本地上下文、逐次文件/命令审批、图片输入与串行队列/工作流。可从 Claude 配置预览并导入模型连接。未知副作用保持只读并隔离目录；不自动重放。三平台及真实模型验收状态见 [阶段三记录](docs/NATIVE-AGENT-PHASE-3-VALIDATION.md)。
 - **阶段四工具扩展**：项目 `AGENTS.md`/`CLAUDE.md`、显式项目 Skills，以及 MCP HTTP / 本地 stdio 工具。HTTP 默认 `2026-07-28`，可显式选择 `2025-11-25` Streamable HTTP；stdio 固定 `2025-11-25`，使用已安装程序的绝对路径与字面参数，无自动安装或协议回退。每回合启动本地服务前审批，每次工具调用另行审批；默认引擎保持 Claude。共用范围见 [MCP 说明](docs/NATIVE-AGENT-PHASE-4C-MCP.md)，本批使用与验证见 [stdio 说明](docs/NATIVE-AGENT-PHASE-4C-MCP-STDIO.md)。相关功能已在源码实现，图形、三平台与真实服务验收仍待执行。
 - **引擎边界**：Claude 运行代码移入私有 `@cc-desk/engine-claude` 包，桌面保留会话、队列、工作流和 PTY 调度。应用仍默认使用 Claude，已有原生终端和 Shell 会话继续可用；Native Alpha 按会话显式选择，当前源码的正式验收状态见对应记录。
