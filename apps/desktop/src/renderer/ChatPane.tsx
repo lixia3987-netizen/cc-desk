@@ -4,7 +4,7 @@ import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
 import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot, NativeImageAttachment } from '../shared/chat';
 import { MessageText } from './MessageText';
-import { ChatAttachmentChips, NativeImageAttachments, NativeImageNotice } from './NativeImageAttachments';
+import { ChatAttachmentChips, NativeImageAttachments } from './NativeImageAttachments';
 import { NativeImagePreview } from './NativeImagePreview';
 import { isNativeImagePreviewCurrent, nativeImagePreviewKey, type NativeImagePreviewSelection } from './native-image-preview-state';
 import { ChatSearch } from './ChatSearch';
@@ -291,7 +291,6 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     <div className="composer chat-composer">
       {unavailable&&<p className="inline-warning engine-unavailable" role="status">{unavailable}</p>}
       <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={session.execution.providerId==='native'&&session.execution.conversationId?file=>setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId!,source:{kind:'draft',path:file.path}},expected:{name:file.name,bytes:file.bytes}}):undefined}/>
-      {session.execution.providerId==='native'&&descriptor?.capabilities.attachments&&<NativeImageNotice/>}
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
         onPasteFiles={pasteAvailable.current&&!attachmentsBlocked&&onPasteImages?files=>onPasteImages(files,()=>mounted.current&&!nativeOperation.current&&pasteAvailable.current):undefined}

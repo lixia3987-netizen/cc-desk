@@ -193,7 +193,7 @@ test('native connections IPC: separate write-only mutation has no credential rea
     const result = handlers.get('native:connections-credential')!({ id: created.id, revision: created.revision, mode: 'memory', secret: sentinel });
     assert.ok(!JSON.stringify(result).includes(sentinel));
     assert.ok(!JSON.stringify(handlers.get('native:connections-list')!()).includes(sentinel));
-    assert.deepEqual([...handlers.keys()].sort(), ['native:connections-credential', 'native:connections-list', 'native:connections-models', 'native:connections-models-cancel', 'native:connections-readiness', 'native:connections-remove', 'native:connections-test', 'native:connections-test-cancel', 'native:connections-upsert']);
+    assert.deepEqual([...handlers.keys()].sort(), ['native:connections-credential', 'native:connections-list', 'native:connections-model-capabilities', 'native:connections-models', 'native:connections-models-cancel', 'native:connections-readiness', 'native:connections-remove', 'native:connections-test', 'native:connections-test-cancel', 'native:connections-upsert']);
     for (const malformed of [{ [sentinel]: 'extra' }, { id: created.id, revision: 2, mode: 'memory', secret: sentinel + '\n' }]) {
       assert.throws(() => handlers.get('native:connections-credential')!(malformed), error => error instanceof Error && !error.message.includes(sentinel));
     }

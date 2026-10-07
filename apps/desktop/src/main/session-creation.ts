@@ -56,10 +56,19 @@ export class SessionCreation {
     const location = this.store.state.settings.worktreeLocation ?? 'project';
     const customRoot = this.store.state.settings.worktreeRoot;
     const now = new Date().toISOString();
+    let configured = input.engineConfig ?? source?.engineConfig ?? this.store.state.settings.engineDefaults[providerId];
+    if (providerId === 'native' && !input.engineConfig && !source?.engineConfig) {
+      const freshDefaults = this.services.execution.defaultConfig(providerId, mode);
+      const savedDefaults = this.store.state.settings.engineDefaults[providerId];
+      configured = {
+        schemaVersion: savedDefaults?.schemaVersion ?? freshDefaults.schemaVersion,
+        options: { ...freshDefaults.options, inputBudgetMode: 'model', ...savedDefaults?.options, runtimePolicy: 'defaults' },
+      };
+    }
     const session: Session = {
       id, projectId: project.id, ...title, cwd: sourcePath, kind: input.kind, execution,
       started: !!execution.imported,
-      engineConfig: this.services.execution.defaultConfig(providerId, mode, input.engineConfig ?? source?.engineConfig ?? this.store.state.settings.engineDefaults[providerId]),
+      engineConfig: this.services.execution.defaultConfig(providerId, mode, configured),
       taskState: 'idle', draft, status: 'idle', archived: false, createdAt: now, updatedAt: now,
     };
     this.services.execution.validateSession(session);

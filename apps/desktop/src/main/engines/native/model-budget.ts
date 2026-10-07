@@ -21,11 +21,15 @@ export function nativeModelCapabilityUsage(value: unknown, model: string): Conte
   };
 }
 
-/** Model metadata may lower configured budgets, but never increases them. */
-export function nativeModelBudget<T extends { maxInputTokens: number; maxOutputTokens: number }>(configured: T, capabilities?: ModelTokenCapabilities): T {
+/** Custom ceilings only decrease; model mode uses known capacity and retains a bounded unknown fallback. */
+export function nativeModelBudget<T extends { maxInputTokens: number; maxOutputTokens: number; inputBudgetMode?: 'custom' | 'model' }>(configured: T, capabilities?: ModelTokenCapabilities): T {
   const maxOutputTokens = Math.min(configured.maxOutputTokens, capabilities?.maxOutputTokens?.value ?? configured.maxOutputTokens);
-  const maxInputTokens = Math.min(configured.maxInputTokens, capabilities?.maxInputTokens?.value ?? configured.maxInputTokens,
-    capabilities?.contextWindow ? capabilities.contextWindow.value - maxOutputTokens : configured.maxInputTokens);
+  const knownInputLimits = [
+    ...(capabilities?.maxInputTokens ? [capabilities.maxInputTokens.value] : []),
+    ...(capabilities?.contextWindow ? [capabilities.contextWindow.value - maxOutputTokens] : []),
+  ];
+  const maxInputTokens = Math.min(...knownInputLimits,
+    configured.inputBudgetMode === 'model' && knownInputLimits.length ? Number.POSITIVE_INFINITY : configured.maxInputTokens);
   if (!Number.isSafeInteger(maxInputTokens) || maxInputTokens < 1 || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1) {
     throw new Error('模型窗口不足以容纳当前输出预算，未发起模型请求。请降低输出上限或检查模型窗口信息。');
   }

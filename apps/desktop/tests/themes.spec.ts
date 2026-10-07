@@ -124,11 +124,12 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     await page.getByLabel('聊天字号', { exact: true }).fill('22');
     await page.getByLabel('菜单字号', { exact: true }).fill('16');
     await page.getByLabel('菜单字体', { exact: true }).selectOption(font.id);
-    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
     expect(await terminal!.evaluate(element => element.isConnected && element === document.querySelector('.terminal-host .xterm'))).toBe(true);
     const mainBackgrounds = new Set<string>();
     for (const choice of choices) {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '主题', exact: true }).click();
       const radio = page.getByRole('radio', { name: choice.name, exact: true });
       await radio.check();
       await expect(radio).toBeChecked();
@@ -189,6 +190,7 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     }
     expect(mainBackgrounds.size).toBe(5);
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+    await page.getByRole('tab', { name: '主题', exact: true }).click();
     await page.getByRole('radio', { name: '云白靛', exact: true }).check();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'cloud');
     await page.keyboard.press('Escape');

@@ -1,3 +1,4 @@
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -65,20 +66,29 @@ async function send(page: Page, sessionId: string, text: string) {
   return result;
 }
 async function seedHistory(page: Page, sessionId: string) {
+  await openSessionSettings(page, 'compaction');
   await expect(page.getByLabel('会话自动压缩', { exact: true })).toHaveValue('off');
+  await closeSessionSettings(page);
   await send(page, sessionId, firstGoal);
   await send(page, sessionId, 'AUTO_MIDDLE_TURN_继续分析，并保留原始约束。');
   await send(page, sessionId, recentGoal);
 }
 async function saveAutomaticCompaction(page: Page, sessionId: string, enabled: boolean) {
   const value = enabled ? 'before_send' : 'off', maxInputTokens = enabled ? 50_000 : 128_000;
+  await openSessionSettings(page, 'compaction');
+  await page.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
   await page.getByLabel('会话自动压缩', { exact: true }).selectOption(value);
+  await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!.engineConfig.options.autoCompact, sessionId)).toBe(value);
+  await openSessionSettings(page, 'context');
+  await page.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
   await page.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill(String(maxInputTokens));
   await page.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect.poll(() => page.evaluate(async id => {
     const options = (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!.engineConfig.options;
     return { autoCompact: options.autoCompact, maxInputTokens: options.maxInputTokens };
   }, sessionId)).toEqual({ autoCompact: value, maxInputTokens });
+  await closeSessionSettings(page);
 }
 async function noWorker(app: ElectronApplication) {
   await expect.poll(() => app.evaluate(({ app }) => app.getAppMetrics().some(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent'))).toBe(false);
@@ -105,8 +115,11 @@ test('native opt-in auto compaction persists UI settings and sends one summary b
     // Enabling the option and relaunching never starts a request on their own.
     await closeNativeApp(app); app = await f.launch(); page = await ready(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await openSessionSettings(page, 'compaction');
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toHaveValue('before_send');
+    await openSessionSettings(page, 'context');
     await expect(page.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('50000');
+    await closeSessionSettings(page);
     await restoreCredential(page);
     expect(fixture.requests).toHaveLength(4);
 
@@ -164,7 +177,9 @@ test('native cancelling an automatic summary keeps the queued message and origin
     const meter = page.locator('details.context-meter');
     if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
     await expect(meter).toContainText('正在自动压缩，完成后继续本次发送');
+    await openSessionSettings(page, 'compaction');
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toBeDisabled();
+    await closeSessionSettings(page);
     await meter.getByRole('button', { name: '取消压缩', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => {
       const snapshot = await window.desktop.chatSnapshot(id);

@@ -616,12 +616,41 @@ test('Anthropic worker host binds complete tool blocks, approval and native tool
   assert.equal(h.worker.scriptError, undefined);
 });
 
-for (const forgery of ['mismatched_calls', 'hidden_reasoning', 'continuation'] as const) test(`Anthropic worker rejects ${forgery} before accepting effects`, async () => {
+test('Anthropic worker preserves private thinking and redacted blocks through a completed tool round', { timeout: 10_000 }, async () => {
+  const message = anthropicCallMessage();
+  (message as { content: unknown[] }).content.unshift({ type: 'thinking', thinking: 'Check the request.', signature: 'signed-original-state' });
+  (message as { content: unknown[] }).content.push({ type: 'thinking', thinking: 'Unsigned continuation.' }, { type: 'redacted_thinking', data: 'encrypted-original-state' });
+  const response: ModelResponse = { outputItems: [message], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
+  const h = harness(async worker => {
+    const context = await begin(worker, anthropicProtocol);
+    await startAttempt(worker);
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    const prepared = await worker.rpc<PreparedTool>('tools.prepare', { call: requestCall, context: executionContext() });
+    const approval = await worker.rpc('approval', approvalRequest(prepared));
+    await worker.rpc('tools.validate', { prepared, context: executionContext() });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+    const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+    const resultItems = [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: requestCall.id, content: JSON.stringify(result), is_error: false }] }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  }, { model: anthropicModel });
+  const result = await h.promise;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.toolCalls, 1);
+  assert.deepEqual(result.context.items[1], message);
+  assert.deepEqual(h.journal.find(event => (event as { type: string }).type === 'model_response'), { type: 'model_response', response });
+  assert.equal(h.worker.scriptError, undefined);
+});
+
+for (const forgery of ['mismatched_calls', 'invalid_thinking', 'continuation'] as const) test(`Anthropic worker rejects ${forgery} before accepting effects`, { timeout: 10_000 }, async () => {
   const h = harness(async worker => {
     await begin(worker, anthropicProtocol); await startAttempt(worker);
     const response: ModelResponse = { outputItems: [anthropicCallMessage()], toolCalls: [requestCall], usage: null, finishReason: 'tool_calls' };
     if (forgery === 'mismatched_calls') response.toolCalls = [{ ...requestCall, name: 'different' }];
-    if (forgery === 'hidden_reasoning') (response.outputItems[0] as { content: unknown[] }).content.unshift({ type: 'thinking', thinking: 'opaque', signature: 'unknown' });
+    if (forgery === 'invalid_thinking') (response.outputItems[0] as { content: unknown[] }).content.unshift({ type: 'thinking', thinking: 'opaque', signature: 123 });
     if (forgery === 'continuation') response.continuation = { unknown: true };
     await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
   }, { model: anthropicModel });

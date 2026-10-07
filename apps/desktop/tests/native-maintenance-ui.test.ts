@@ -90,7 +90,7 @@ test('native automatic compaction explains opt-in billing, limits and cancellati
 test('blocked automatic compaction gives manual recovery guidance and retains the explicit manual action', () => {
   const blocked = renderContext({ ...maintenance, autoCompact: { enabled: true, thresholdPercent: 90, blocked: true } });
   assert.match(blocked, /role="status">当前上下文的自动压缩未完成，已停止自动重试/);
-  assert.match(blocked, /请先手动压缩，或在运行配置中关闭自动压缩后调整输入预算或新建会话/);
+  assert.match(blocked, /请先手动压缩，或在设置中关闭自动压缩后调整输入预算或新建会话/);
   assert.match(blocked, />压缩上下文（可能计费）</);
   assert.doesNotMatch(blocked, /disabled=""|>取消压缩</);
   const result = { beforeBytes: 24000, afterBytes: 8000, createdAt: '2026-09-27T00:00:00Z' };

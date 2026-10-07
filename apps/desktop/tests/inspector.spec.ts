@@ -118,9 +118,9 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expect(page.getByRole('button', { name: /^(收起|展开)右侧面板$/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^(折叠|展开)(上下文|变更|工作流|诊断)面板$/ })).toHaveCount(0);
     const chat = page.locator('.chat-pane'), toggle = panelToggle(page, '上下文');
-    await page.getByLabel('会话模型', { exact: true }).fill('unsaved-model');
+    await expect(page.getByLabel('会话模型', { exact: true })).toHaveCount(0);
     await page.getByLabel('提示词编辑器', { exact: true }).fill('这段提示词还没有发送。');
-    const modelNode = (await page.getByLabel('会话模型', { exact: true }).elementHandle())!;
+    const modelNode = (await page.getByRole('button', { name: '会话设置', exact: true }).elementHandle())!;
     const chatNode = (await chat.elementHandle())!;
     const initialWidth = (await chat.boundingBox())!.width;
     await page.screenshot({ path: testInfo.outputPath('tool-window-open.png') });
@@ -138,12 +138,12 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await page.screenshot({ path: testInfo.outputPath('tool-window-closed.png') });
     await page.keyboard.press('Space');
     await expectOpenPanels(page, ['上下文']);
-    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('unsaved-model');
-    expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
+    await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
+    expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('这段提示词还没有发送。');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(session => session.id === f.first.id)!.engineConfig.options.model).toBe('');
 
-    await page.getByLabel('会话模型', { exact: true }).focus();
+    await page.getByRole('button', { name: '会话设置', exact: true }).focus();
     await page.keyboard.press('Escape');
     await expectOpenPanels(page, ['上下文']);
     await page.keyboard.press('Shift+Escape');
@@ -151,7 +151,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expect(toggle).toBeFocused();
     await page.keyboard.press('Space');
     await expectOpenPanels(page, ['上下文']);
-    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('unsaved-model');
+    await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
     await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
     await expectOpenPanels(page, []);
     await expect(toggle).toBeFocused();
@@ -188,8 +188,8 @@ test('inspector: panels open vertically before adding an equal-width column, pre
     await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width).toBeGreaterThanOrEqual(1100);
     await expectOpenPanels(page, ['上下文']);
     await expectPanelGeometry(page, ['上下文'], 1);
-    await page.getByLabel('会话模型', { exact: true }).fill('independent-unsaved-model');
-    const modelNode = (await page.getByLabel('会话模型', { exact: true }).elementHandle())!;
+    await expect(page.getByLabel('会话模型', { exact: true })).toHaveCount(0);
+    const modelNode = (await page.getByRole('button', { name: '会话设置', exact: true }).elementHandle())!;
     await panelToggle(page, '工作流').click();
     await expectOpenPanels(page, ['上下文', '工作流']);
     await expectPanelGeometry(page, ['上下文', '工作流'], 1);
@@ -213,8 +213,8 @@ test('inspector: panels open vertically before adding an equal-width column, pre
       await expectPanelGeometry(page, all, width === 1600 ? 2 : 1);
       await expect(workflow).toBeFocused();
       await expect(workflow).toHaveValue('同时打开面板和重启之后仍然保留。');
-      await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('independent-unsaved-model');
-      expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
+      await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
+      expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
       expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     }
@@ -252,8 +252,8 @@ test('inspector: panels open vertically before adding an equal-width column, pre
     await modelNode.evaluate(element => (element as HTMLElement).focus());
     await expect(panelToggle(page, '上下文')).toBeFocused();
     await panelToggle(page, '上下文').click();
-    await expect(page.getByLabel('会话模型', { exact: true })).toHaveValue('independent-unsaved-model');
-    expect(await modelNode.evaluate(element => element === document.querySelector('[aria-label="会话模型"]'))).toBe(true);
+    await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
+    expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
     await panelToggle(page, '变更').click();
     const remaining: PanelName[] = ['诊断', '工作流', '上下文'];
     await expectOpenPanels(page, remaining);

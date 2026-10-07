@@ -82,7 +82,7 @@ function session(providerId = 'native'): Session {
 function descriptor(providerId = 'native'): ExecutionDescriptor {
   return { providerId, mode: 'structured', displayName: 'Native', capabilities: { available: true, structured: true, terminal: false, approvals: true, resume: true, fork: false, commands: false, contextUsage: true, liveConfig: true, attachments: false }, configuration: { schemaVersion: 1, defaults: { schemaVersion: 1, options: {} }, fields: [] } };
 }
-const renderConfig = (value = session(), executor = descriptor()) => renderToStaticMarkup(createElement(SessionConfig, { session: value, descriptor: executor, onError: fail }));
+const renderConfig = (value = session(), executor = descriptor()) => renderToStaticMarkup(createElement(SessionConfig, { session: value, descriptor: executor, group: 'tools', onError: fail }));
 
 test('MCP session selector only appears for native structured sessions and shares config persistence', () => {
   const markup = renderConfig();

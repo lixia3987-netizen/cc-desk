@@ -4,6 +4,7 @@ import { parseNativeModelMetadata, readNativeModelMetadata } from '../src/main/e
 import type { ResolvedNativeConnection } from '../src/main/engines/native/connections';
 import { localNativeModelCapabilities } from '../src/main/engines/native/local-model-capabilities';
 import { mergeNativeModelCapabilities } from '../src/main/engines/native/model-capabilities';
+import { nativeModelBudget } from '../src/main/engines/native/model-budget';
 
 test('model metadata normalizes token fields with per-field source and keeps unsupported capabilities private', () => {
   assert.deepEqual(parseNativeModelMetadata({ id: 'concrete-id', display_name: 'Display', max_input_tokens: 200_000, max_tokens: 64_000,
@@ -44,16 +45,62 @@ test('local model capabilities use exact verified Claude IDs only on the officia
   }
 });
 
-test('local Kimi fallback is an explicit conservative account ceiling and never claims 1M access', () => {
-  for (const host of ['api.kimi.com', 'api.kimi.ai']) for (const model of ['k3', 'k3-256k']) for (const protocol of ['anthropic', 'chat-completions'] as const) {
-    assert.deepEqual(localNativeModelCapabilities({ protocol, baseURL: `https://${host}/coding/v1`, model }), {
-      capabilities: { contextWindow: { value: 262_144, source: 'fallback' }, maxInputTokens: { value: 262_144, source: 'fallback' } }, conservative: true,
+test('local Kimi fallback distinguishes official model windows without inferring output limits or account ceilings', () => {
+  for (const host of ['api.kimi.com', 'api.kimi.ai']) for (const [model, context] of [['k3', 1_048_576], ['k3-256k', 262_144]] as const) {
+    for (const protocol of ['anthropic', 'chat-completions'] as const) for (const path of ['/coding', '/coding/v1', '/coding/v1/messages']) {
+      for (const trailingSlash of ['', '/']) {
+        assert.deepEqual(localNativeModelCapabilities({ protocol, baseURL: `https://${host}${path}${trailingSlash}`, model }), {
+          capabilities: { contextWindow: { value: context, source: 'fallback' }, maxInputTokens: { value: context, source: 'fallback' } },
+        });
+      }
+    }
+  }
+});
+
+test('local Kimi fallback rejects unknown IDs, protocols, hosts and paths', () => {
+  const known = { protocol: 'anthropic' as const, baseURL: 'https://api.kimi.com/coding/v1', model: 'k3' };
+  for (const replacement of [{ model: 'k3[1m]' }, { model: 'k3-custom' }, { model: 'k3-256k-custom' }, { model: 'K3' }, { model: '__proto__' },
+    { protocol: 'responses' as const }, { baseURL: 'https://api.kimi.com' }, { baseURL: 'https://api.kimi.ai/v1' },
+    { baseURL: 'https://proxy.test/coding' }, { baseURL: 'https://api.kimi.com.gateway.test/coding' }, { baseURL: 'https://api.kimi.com/proxy/coding' },
+    { baseURL: 'https://api.kimi.com/coding/v1/chat/completions' }, { baseURL: 'https://api.kimi.com:8443/coding' },
+    { baseURL: 'http://api.kimi.com/coding' }, { baseURL: 'https://api.kimi.com/coding?model=k3' },
+    { baseURL: 'https://api.kimi.com/coding#model' }, { baseURL: 'https://user:password@api.kimi.com/coding' }]) {
+    assert.deepEqual(localNativeModelCapabilities({ ...known, ...replacement }), { capabilities: {} });
+  }
+});
+
+test('Kimi provider and catalog metadata override local limits per field whether smaller or larger', () => {
+  for (const model of ['k3', 'k3-256k']) {
+    const fallback = localNativeModelCapabilities({ protocol: 'anthropic', baseURL: 'https://api.kimi.com/coding', model }).capabilities;
+    for (const value of [128_000, 2_000_000]) {
+      assert.deepEqual(mergeNativeModelCapabilities({ contextWindow: { value, source: 'provider' }, maxOutputTokens: { value: 8192, source: 'provider' } }, {
+        contextWindow: { value: value === 128_000 ? 2_000_000 : 128_000, source: 'catalog' },
+        maxInputTokens: { value, source: 'catalog' }, maxOutputTokens: { value: 4096, source: 'catalog' },
+      }, fallback), {
+        contextWindow: { value, source: 'provider' }, maxInputTokens: { value, source: 'catalog' }, maxOutputTokens: { value: 8192, source: 'provider' },
+      });
+    }
+    assert.deepEqual(mergeNativeModelCapabilities(undefined, { maxOutputTokens: { value: 4096, source: 'catalog' } }, fallback), {
+      ...fallback, maxOutputTokens: { value: 4096, source: 'catalog' },
     });
   }
-  for (const input of [{ protocol: 'anthropic' as const, baseURL: 'https://api.kimi.com/coding', model: 'k3[1m]' },
-    { protocol: 'responses' as const, baseURL: 'https://api.kimi.com/coding/v1', model: 'k3' },
-    { protocol: 'anthropic' as const, baseURL: 'https://api.kimi.com', model: 'k3' },
-    { protocol: 'anthropic' as const, baseURL: 'https://proxy.test/coding', model: 'k3' }]) assert.deepEqual(localNativeModelCapabilities(input), { capabilities: {} });
+});
+
+test('Kimi windows keep smaller configured budgets and reserve output space when constraining input', () => {
+  const configured = { maxInputTokens: 128_000, maxOutputTokens: 8192 };
+  for (const [model, context] of [['k3', 1_048_576], ['k3-256k', 262_144]] as const) {
+    const fallback = localNativeModelCapabilities({ protocol: 'anthropic', baseURL: 'https://api.kimi.com/coding', model }).capabilities;
+    assert.deepEqual(nativeModelBudget(configured, fallback), configured);
+    assert.deepEqual(nativeModelBudget({ maxInputTokens: 2_000_000, maxOutputTokens: 8192 }, fallback), {
+      maxInputTokens: context - 8192, maxOutputTokens: 8192,
+    });
+    const outputLimited = mergeNativeModelCapabilities({ maxOutputTokens: { value: 4096, source: 'provider' } }, undefined, fallback);
+    assert.deepEqual(nativeModelBudget({ maxInputTokens: 2_000_000, maxOutputTokens: 8192 }, outputLimited), {
+      maxInputTokens: context - 4096, maxOutputTokens: 4096,
+    });
+    const metadata = mergeNativeModelCapabilities({ maxInputTokens: { value: 100_000, source: 'provider' }, maxOutputTokens: { value: 4096, source: 'provider' } }, undefined, fallback);
+    assert.deepEqual(nativeModelBudget({ maxInputTokens: 2_000_000, maxOutputTokens: 8192 }, metadata), { maxInputTokens: 100_000, maxOutputTokens: 4096 });
+  }
 });
 
 test('detail metadata transport encodes one model path segment and retains GET-only authentication and validated projection', async () => {

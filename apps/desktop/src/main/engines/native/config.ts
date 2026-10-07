@@ -11,6 +11,8 @@ export const NATIVE_MODEL_RETRY_FIELD: EngineConfigField = {
 const optionsSchema = z.object({
   connectionId: z.string().trim().max(100).default(''),
   model: z.string().trim().max(200).default(''),
+  runtimePolicy: z.enum(['custom', 'defaults']).default('custom'),
+  inputBudgetMode: z.enum(['custom', 'model']).default('custom'),
   maxModelRequests: z.number().int().min(1).max(100).default(30),
   maxToolCalls: z.number().int().min(1).max(200).default(60),
   maxActiveMs: z.number().int().min(1000).max(30 * 60_000).default(10 * 60_000),
@@ -31,4 +33,9 @@ export function parseNativeConfig(config: EngineConfig) {
 }
 export function createNativeConfig(config: EngineConfig = { schemaVersion: 1, options: {} }): EngineConfig {
   return { schemaVersion: 1, options: parseNativeConfig(config) };
+}
+
+/** Fresh installations follow known model capacity; legacy configs keep their saved custom ceiling. */
+export function createNativeDefaultConfig(): EngineConfig {
+  return createNativeConfig({ schemaVersion: 1, options: { inputBudgetMode: 'model' } });
 }

@@ -67,7 +67,7 @@ test('startup checks each launch; postpone and cancel never stop a live workspac
     await expect(banner(page)).toContainText('2.1.10'); expect((await f.calls()).map(call => call.kind)).toEqual(['npm']);
     await banner(page).getByRole('button', { name: '暂不更新 CLI' }).click(); await expect(banner(page)).toHaveCount(0);
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
-    await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '终端配置' }).click();
+    await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '终端与CLI' }).click();
     await confirmation(app, 0); await banner(page).getByRole('button', { name: '更新 CLI…' }).click();
     await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(s => s.id === id)?.status, f.sessions[2].id)).toBe('running');
@@ -145,7 +145,7 @@ test('offline startup check does not interrupt normal use and can be retried fro
   try {
     const page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible(); await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'error' }); await expect(banner(page)).toHaveCount(0);
     await page.evaluate(id => window.desktop.startSession(id), f.sessions[2].id);
-    await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '终端配置' }).click();
+    await page.getByRole('button', { name: '设置与连接' }).click(); await page.getByRole('tab', { name: '终端与CLI' }).click();
     await expect(banner(page)).toContainText('检查更新失败');
     await fs.writeFile(f.mode, 'success'); await banner(page).getByRole('button', { name: '重新检查' }).click(); await expect.poll(() => updateState(app, page)).toMatchObject({ phase: 'available' });
     await page.setViewportSize({ width: 980, height: 680 });

@@ -1,3 +1,4 @@
+import { openNewSessionOptions } from './helpers/session-ui';
 import { desktopRoot } from './helpers/paths';
 import { sessionAction, stubChatSubmission, submitNewSession } from './helpers/session-ui';
 import { electronLaunchArgs } from './helpers/electron-launch';
@@ -37,7 +38,7 @@ async function workspace() {
 
 async function openSettings(page: Page) {
   await page.getByRole('button', { name: '设置与连接', exact: true }).click();
-  await page.getByRole('tab', { name: '工作区与 IDE', exact: true }).click();
+  await page.getByRole('tab', { name: '工作区与IDE', exact: true }).click();
   return page.getByRole('dialog', { name: '设置与连接', exact: true });
 }
 
@@ -192,8 +193,10 @@ test('worktree location: UI creates named trees in both locations and preserves 
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
     let form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('title-derived');
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveCount(0);
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveValue('');
     await expect(form.locator('#new-worktree-location-hint')).toContainText('.claude/worktrees');
@@ -234,7 +237,9 @@ test('worktree location: UI creates named trees in both locations and preserves 
 
     await page.getByRole('button', { name: /新建会话/ }).click();
     form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Custom display title');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await expect(form.locator('#new-worktree-location-hint')).toContainText(root);
     await form.getByLabel('Worktree 名称', { exact: true }).fill('named-tree');
@@ -257,6 +262,7 @@ test('worktree location: UI creates named trees in both locations and preserves 
 
     await page.getByRole('button', { name: /新建会话/ }).click();
     form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await expect(form.getByLabel('Worktree 名称', { exact: true })).toHaveValue('');
     await page.locator('.session-row').filter({ hasText: 'Custom display title' }).click();
@@ -314,7 +320,9 @@ test('worktree branches: UI selects local or remote starts, refreshes remote ref
     const page = await app.firstWindow();
     await page.getByRole('button', { name: /新建会话/ }).click();
     let form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Start from local branch');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     let branches = form.getByLabel('起始分支', { exact: true });
     await expect(branches).toBeEnabled();
@@ -336,7 +344,9 @@ test('worktree branches: UI selects local or remote starts, refreshes remote ref
 
     await page.getByRole('button', { name: /新建会话/ }).click();
     form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Start from newly published remote branch');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     branches = form.getByLabel('起始分支', { exact: true });
     await expect(branches).toBeEnabled();
@@ -392,7 +402,9 @@ test('worktree branches: changing projects resets the selected start branch befo
     await page.getByRole('button', { name: /新建会话/ }).click();
     const form = page.getByRole('region', { name: '新建会话', exact: true });
     await form.getByLabel('工作空间', { exact: true }).selectOption(f.project.id);
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Create in the second project');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     const branches = form.getByLabel('起始分支', { exact: true });
     await branches.selectOption('refs/heads/feature/only-first-project');
@@ -419,7 +431,9 @@ test('worktree location: blocked cleanup explains why and record-only deletion p
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
     const form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Retain my worktree');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'Retain my worktree', exact: true })).toBeVisible();
@@ -474,7 +488,9 @@ test('worktree location: force deletion requires a typed second confirmation, ca
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(980, 680));
     await page.getByRole('button', { name: /新建会话/ }).click();
     const form = page.getByRole('region', { name: '新建会话', exact: true });
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('Force delete temporary tree');
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await submitNewSession(page);
     await expect(page.getByRole('heading', { name: 'Force delete temporary tree', exact: true })).toBeVisible();
@@ -554,7 +570,9 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
       await page.getByRole('button', { name: /新建会话/ }).click();
       const form = page.getByRole('region', { name: '新建会话', exact: true });
       const title = 'Damaged external tree ' + damage;
+      await openNewSessionOptions(page);
       await form.getByLabel('会话名称', { exact: true }).fill(title);
+      await openNewSessionOptions(page);
       await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
       await submitNewSession(page);
       await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();

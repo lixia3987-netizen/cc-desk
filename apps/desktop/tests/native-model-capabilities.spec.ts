@@ -1,3 +1,4 @@
+import { openNewSessionOptions } from './helpers/session-ui';
 import { test, expect, _electron as electron, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -9,6 +10,8 @@ import type { AddressInfo } from 'node:net';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
+import { submitNewSession } from './helpers/session-ui';
 // @ts-expect-error Test-only ESM fixture has no declarations.
 import { anthropicEvents, anthropicSse } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
 
@@ -22,7 +25,7 @@ async function fixture() {
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3,
     projects: [{ id: projectId, name: '模型能力本地测试', path: project, createdAt: now }], sessions: [], settings: {
       claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000,
-      engineDefaults: { native: { schemaVersion: 1, options: { maxInputTokens: 24000, maxOutputTokens: 128 } },
+      engineDefaults: { native: { schemaVersion: 1, options: { inputBudgetMode: 'custom', maxInputTokens: 24000, maxOutputTokens: 128 } },
         claude: { schemaVersion: 1, options: { model: 'existing-cli-model', effort: 'high' } } },
     } }));
   const requests: Array<{ method?: string; path: string; authorization?: string; body?: { max_tokens: number } }> = [];
@@ -66,7 +69,7 @@ async function seed(page: Page, baseURL: string, model: string) {
 }
 async function openModels(page: Page) {
   await page.getByRole('button', { name: '设置与连接', exact: true }).click();
-  await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+  await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
   return page.getByRole('region', { name: 'Native 模型连接', exact: true });
 }
 async function assertPrivate(page: Page, data: string) {
@@ -90,7 +93,7 @@ test('automatic partial metadata displays field sources and survives a real thin
     await expect(info).toHaveText(capabilityText);
     expect(f.requests.filter(item => item.method === 'GET')).toHaveLength(2);
     await page.screenshot({ path: testInfo.outputPath('model-capabilities-card.png') });
-    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByRole('button', { name: '关闭', exact: true }).click();
     const session = await page.evaluate(async ({ projectId, connectionId }) => {
       const session = await window.desktop.createSession({ projectId, title: '能力与 thinking 本地测试', kind: 'agent', providerId: 'native', mode: 'structured', isolated: false,
         engineConfig: { schemaVersion: 1, options: { connectionId, maxInputTokens: 24000, maxOutputTokens: 128 } } });
@@ -135,5 +138,61 @@ test('unknown, missing and timed-out capability metadata stays unknown using onl
     const count = f.requests.length;
     await page.evaluate(values => Promise.all(values.map(item => window.desktop.nativeConnections.modelCapabilities({ id: item.id, revision: item.revision }))), connections);
     expect(f.requests).toHaveLength(count); await assertPrivate(page, f.data);
+  } finally { await closeNativeApp(app); await f.dispose(); }
+});
+
+test('session policy uses saved defaults and isolates custom budgets from an unsaved global draft', async () => {
+  const f = await fixture(), app = await f.launch();
+  try {
+    const page = await app.firstWindow(); await ready(page);
+    const connection = await seed(page, f.baseURL, 'fixture-partial');
+    await page.getByRole('button', { name: '新建会话', exact: false }).click();
+    const nativeName = await page.evaluate(async () => (await window.desktop.snapshot()).executors.find(item => item.providerId === 'native' && item.mode === 'structured')!.displayName!);
+    await page.getByRole('button', { name: nativeName, exact: true }).click();
+    const form = page.getByRole('region', { name: '新建会话', exact: true });
+    await form.getByLabel('模型连接', { exact: true }).selectOption(connection.id);
+    await expect(form.getByLabel('输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
+    await expect(form.getByLabel('自动压缩', { exact: true })).toHaveCount(0);
+    await expect(form.getByRole('button', { name: '新会话设置', exact: true })).toBeVisible();
+    await openNewSessionOptions(page);
+    await form.getByLabel('会话名称', { exact: true }).fill('独立预算与默认草稿');
+    await submitNewSession(page, 'Establish the local policy session.');
+    const sessionId = (await page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId!;
+    await expect.poll(async () => (await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId)).taskState).toBe('completed');
+    const dialog = await openSessionSettings(page, 'context');
+    await expect(dialog.getByLabel('会话配置来源', { exact: true })).toHaveValue('defaults');
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('24000');
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toBeDisabled();
+    await dialog.getByRole('radio', { name: '新会话默认', exact: true }).click();
+    await dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true }).fill('30000');
+    await dialog.getByLabel('默认输入预算方式', { exact: true }).selectOption('model');
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
+    await dialog.getByLabel('默认输入预算方式', { exact: true }).selectOption('custom');
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
+    await dialog.getByRole('radio', { name: '当前会话', exact: true }).click();
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('24000');
+    const inheritedResult = await page.evaluate(id => window.desktop.sendChat(id, 'Use the saved defaults while global edits remain unsaved.'), sessionId);
+    expect(inheritedResult.success).toBe(true);
+    const inheritedSnapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
+    expect(inheritedSnapshot.context?.budget?.maxInputTokens).toBe(24000);
+    await dialog.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
+    await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('model');
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
+    await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
+    await dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill('22000');
+    await dialog.getByRole('button', { name: '保存配置', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(item => item.id === sessionId)!.engineConfig.options).toMatchObject({ runtimePolicy: 'custom', inputBudgetMode: 'custom', maxInputTokens: 22000 });
+    await dialog.getByRole('radio', { name: '新会话默认', exact: true }).click();
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
+    const result = await page.evaluate(id => window.desktop.sendChat(id, 'Use the saved custom budget only.'), sessionId);
+    expect(result.success).toBe(true);
+    const snapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
+    expect(snapshot.context?.budget?.maxInputTokens).toBe(22000);
+    expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(3);
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
+    await closeSessionSettings(page);
+    await assertPrivate(page, f.data);
   } finally { await closeNativeApp(app); await f.dispose(); }
 });

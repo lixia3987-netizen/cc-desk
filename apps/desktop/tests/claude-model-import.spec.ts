@@ -17,8 +17,12 @@ async function fixture() {
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [], sessions: [], settings: {
     claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: { claude: claudeDefaults },
   } }));
-  let requests = 0;
-  const server = createServer((_request, response) => { requests++; response.writeHead(503); response.end(); });
+  const requests: Array<{ method?: string; pathname: string }> = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url ?? '', 'http://localhost');
+    requests.push({ method: request.method, pathname: url.pathname });
+    response.writeHead(503); response.end();
+  });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/gateway`;
   const launch = () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: {
@@ -32,7 +36,7 @@ async function fixture() {
 
 async function openModels(page: Page) {
   await page.getByRole('button', { name: '设置与连接', exact: true }).click();
-  await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+  await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
   return page.getByRole('region', { name: 'Native 模型连接', exact: true });
 }
 
@@ -74,17 +78,17 @@ test('Claude model import previews multiple default models privately, cancels wi
     let page = await app.firstWindow(), region = await openModels(page);
     const initialSettings = (await page.evaluate(() => window.desktop.snapshot())).state.settings;
     expect(initialSettings.engineDefaults.claude).toEqual(claudeDefaults);
-    const modelPage = page.getByRole('tabpanel', { name: '模型配置', exact: true });
+    const modelPage = page.getByRole('tabpanel', { name: '模型与上下文', exact: true });
     await expect(modelPage.getByRole('heading', { name: '自研 Agent 模型连接', exact: true })).toBeVisible();
     await expect(modelPage.getByRole('heading', { name: /Claude.*默认.*模型/ })).toHaveCount(0);
     await expect(modelPage.getByLabel('默认模型', { exact: true })).toHaveCount(0);
     await expect(modelPage.getByLabel('默认推理强度', { exact: true })).toHaveCount(0);
     await expect(modelPage.locator('details').filter({ hasText: '新会话默认模型' })).toHaveJSProperty('open', false);
     await expect(region.locator('details').filter({ hasText: '连接与测试说明' })).toHaveJSProperty('open', false);
-    await page.getByRole('tab', { name: '终端配置', exact: true }).click();
+    await page.getByRole('tab', { name: '终端与CLI', exact: true }).click();
     await expect(page.getByRole('button', { name: '从 Claude 默认配置导入', exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '选择 Claude 配置文件', exact: true })).toHaveCount(0);
-    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     await region.getByRole('button', { name: '从 Claude 默认配置导入', exact: true }).click();
     const preview = page.getByRole('region', { name: 'Claude 模型导入预览', exact: true });
     await expect(preview).toBeVisible();
@@ -99,7 +103,7 @@ test('Claude model import previews multiple default models privately, cancels wi
     await models.selectOption('fixture-opus');
     await expect(preview.getByLabel('允许导入本地回环 HTTP', { exact: true })).not.toBeChecked();
     await expect(preview.getByRole('button', { name: '确认导入模型连接', exact: true })).toBeDisabled();
-    expect(f.requests()).toBe(0);
+    expect(f.requests()).toHaveLength(0);
     expect((await page.evaluate(() => window.desktop.nativeConnections.list())).connections).toEqual([]);
     await expect(fs.stat(path.join(f.data, 'native', 'connections.json'))).rejects.toMatchObject({ code: 'ENOENT' });
     const previewMetadata = await page.evaluate(() => window.desktop.claudeModelImport.preview({ source: 'default' }));
@@ -129,7 +133,7 @@ test('Claude model import previews multiple default models privately, cancels wi
     const state = (await page.evaluate(() => window.desktop.snapshot())).state;
     expect(state.settings).toEqual(initialSettings);
     expect(state.settings.engineDefaults.claude).toEqual(claudeDefaults);
-    expect(f.requests()).toBe(0);
+    expect(f.requests().every(request => request.method === 'GET' && /^\/gateway\/v1\/models(?:\/[^/]+)?$/.test(request.pathname))).toBe(true);
     expect(await fs.readFile(sourcePath, 'utf8')).toBe(source);
     await assertPrivate(page, f.data, [secret, unusedKey]);
     await page.screenshot({ path: testInfo.outputPath('claude-imported-model.png') });
@@ -138,7 +142,7 @@ test('Claude model import previews multiple default models privately, cancels wi
     await expect(region.locator('.connection-box')).toContainText('未就绪');
     const restarted = (await page.evaluate(() => window.desktop.nativeConnections.list())).connections;
     expect(restarted[0]).toMatchObject({ id: imported[0].id, model: 'fixture-opus', protocol: 'anthropic', authHeader: 'authorization', ready: false, credentialConfigured: false });
-    expect(f.requests()).toBe(0);
+    expect(f.requests().every(request => request.method === 'GET' && /^\/gateway\/v1\/models(?:\/[^/]+)?$/.test(request.pathname))).toBe(true);
     await assertPrivate(page, f.data, [secret, unusedKey]);
   } finally { await app.close(); await f.dispose(); }
 });
@@ -165,7 +169,7 @@ test('Claude model file selection imports API-key authentication and preserves i
     await preview.getByLabel('导入凭据保存方式', { exact: true }).selectOption('memory');
     await preview.getByLabel('允许导入本地回环 HTTP', { exact: true }).check();
     await assertPrivate(page, f.data, [secret]);
-    expect(f.requests()).toBe(0);
+    expect(f.requests()).toHaveLength(0);
     await preview.getByRole('button', { name: '确认导入模型连接', exact: true }).click();
     await expect(region.locator('.connection-box')).toHaveCount(1);
     expect((await page.evaluate(() => window.desktop.nativeConnections.list())).connections[0]).toMatchObject({ protocol: 'anthropic', authHeader: 'x-api-key', model: 'fixture-file-model', ready: true });
@@ -182,7 +186,7 @@ test('Claude model file selection imports API-key authentication and preserves i
     await region.getByRole('button', { name: '启用', exact: true }).click();
     await expect.poll(() => page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0].ready)).toBe(true);
     expect((await page.evaluate(() => window.desktop.nativeConnections.list())).connections[0].authHeader).toBe('x-api-key');
-    expect(f.requests()).toBe(0);
+    expect(f.requests().every(request => request.method === 'GET' && /^\/gateway\/v1\/models(?:\/[^/]+)?$/.test(request.pathname))).toBe(true);
     expect(await fs.readFile(sourcePath, 'utf8')).toBe(source);
     await assertPrivate(page, f.data, [secret]);
   } finally { await app.close(); await f.dispose(); }
@@ -213,7 +217,7 @@ test('Claude model import consumes a failed preview and allows rereading configu
     await expect(preview.getByLabel('导入模型', { exact: true })).toHaveValue('fixture-retry-model');
     await expect(region.getByRole('alert')).toHaveCount(0);
     await expect(preview.getByLabel('允许导入本地回环 HTTP', { exact: true })).not.toBeChecked();
-    expect(f.requests()).toBe(0);
+    expect(f.requests()).toHaveLength(0);
   } finally { await app.close(); await f.dispose(); }
 });
 
@@ -245,7 +249,7 @@ test('Claude import opens the editor only when a converted self-developed Agent 
     await expect.poll(() => page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0].ready)).toBe(true);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings).toEqual(initialSettings);
     expect(await fs.readFile(sourcePath, 'utf8')).toBe(source);
-    expect(f.requests()).toBe(0);
+    expect(f.requests().every(request => request.method === 'GET' && /^\/gateway\/v1\/models(?:\/[^/]+)?$/.test(request.pathname))).toBe(true);
     await assertPrivate(page, f.data, [secret]);
   } finally { await app.close(); await f.dispose(); }
 });

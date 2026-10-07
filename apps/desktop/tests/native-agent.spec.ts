@@ -1,3 +1,4 @@
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -103,6 +104,7 @@ test('native utilityProcess completes approved patch/command, persists selected 
     let page = await readyWindow(app);
     const configured = await connection(page, fixture.baseURL);
     const session = await nativeSession(page, f.projectId, configured.id);
+    await openSessionSettings(page, 'tools');
     const skills = page.getByRole('region', { name: '项目 Skills', exact: true });
     await expect(skills).toBeVisible();
     await expect(skills.getByRole('checkbox')).toHaveCount(0);
@@ -115,15 +117,19 @@ test('native utilityProcess completes approved patch/command, persists selected 
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath, claudeSkillPath]);
     expect(fixture.requests).toHaveLength(0);
+    await closeSessionSettings(page);
     const requestId = randomUUID(), text = 'Read the file, apply the approved update, then run the approved command.';
     const result = page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     await pendingTool(page, session.id, 'apply_patch');
     await expect(page.getByRole('region', { name: '工具审批' })).toContainText('apply_patch');
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('before native\n');
     expect(await app.evaluate(({ app }) => app.getAppMetrics().some(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent'))).toBe(true);
+    await openSessionSettings(page, 'model');
     await expect(page.getByLabel('会话模型连接', { exact: true })).toBeDisabled();
+    await openSessionSettings(page, 'tools');
     await expect(skills.getByRole('checkbox', { name: agentSkillPath, exact: true })).toBeDisabled();
-    await expect(skills.getByRole('button', { name: '刷新项目 Skills', exact: true })).toBeDisabled();
+    await expect(skills.getByRole('button', { name: '读取项目 Skills', exact: true })).toBeDisabled();
+    await closeSessionSettings(page);
     const competing = await page.evaluate(projectId => window.desktop.createSession({ projectId, title: '同目录 Shell', kind: 'shell', providerId: 'shell', mode: 'terminal', isolated: false }), f.projectId);
     await expect(page.evaluate(id => window.desktop.startSession(id), competing.id)).rejects.toThrow(/目录|占用/);
     await expect(page.evaluate(item => window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret: 'cannot-change-active' }), configured)).rejects.toThrow(/运行|停止/);
@@ -144,11 +150,13 @@ test('native utilityProcess completes approved patch/command, persists selected 
     await cleanupApp(app); app = await f.launch(); page = await readyWindow(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
     await expect(page.locator('.chat-message.assistant').last()).toContainText('本地任务完成');
+    await openSessionSettings(page, 'tools');
     const restoredSkills = page.getByRole('region', { name: '项目 Skills', exact: true });
     await expect(restoredSkills.getByRole('checkbox', { name: agentSkillPath, exact: true })).toBeChecked();
     await expect(restoredSkills.getByRole('checkbox', { name: claudeSkillPath, exact: true })).toBeChecked();
     await expect(restoredSkills.getByRole('button', { name: '读取项目 Skills', exact: true })).toBeVisible();
     expect(await page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath, claudeSkillPath]);
+    await closeSessionSettings(page);
     const restarted = await page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0]);
     expect(restarted.credentialConfigured).toBe(false);
     // A durable receipt may be queried without restoring a credential or starting a worker.
@@ -167,11 +175,13 @@ test('native utilityProcess completes approved patch/command, persists selected 
     expect(fixture.requests.length).toBe(count + 1); expect(fixture.errors).toEqual([]);
     expectProjectInstructions(fixture.requests[count], updatedClaudeRule);
     expect(fixture.requests[count].instructions).not.toContain(claudeRule);
+    await openSessionSettings(page, 'tools');
     await restoredSkills.getByRole('button', { name: '读取项目 Skills', exact: true }).click();
     await restoredSkills.getByRole('checkbox', { name: claudeSkillPath, exact: true }).uncheck();
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.projectSkills, session.id)).toEqual([agentSkillPath]);
     expect(fixture.requests).toHaveLength(count + 1);
+    await closeSessionSettings(page);
     await noSavedSecret(f.data);
   } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
@@ -214,6 +224,9 @@ test('native incremental edit uses approved file identity and exposes measured u
   try {
     const page = await readyWindow(app), configured = await connection(page, fixture.baseURL);
     const session = await nativeSession(page, f.projectId, configured.id, '阶段四增量编辑');
+    await openSessionSettings(page, 'context');
+    await page.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
+    await page.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
     const inputBudget = page.getByLabel('会话输入预算（估算 tokens）', { exact: true });
     await expect(inputBudget).toHaveValue('64000');
     await inputBudget.fill('1');
@@ -223,6 +236,7 @@ test('native incremental edit uses approved file identity and exposes measured u
     await inputBudget.fill('64010');
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.maxInputTokens, session.id)).toBe(64_010);
+    await closeSessionSettings(page);
     const result = page.evaluate(id => window.desktop.sendChat(id, 'Replace only the unique before native phrase, preserving the other line.'), session.id);
     await pendingTool(page, session.id, 'edit_file');
     const approval = page.getByRole('region', { name: '工具审批' });
@@ -232,7 +246,9 @@ test('native incremental edit uses approved file identity and exposes measured u
     const pending = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
     expect(pending.context?.budget?.maxInputTokens).toBe(64_010);
     expect(pending.context?.budget?.estimatedInputTokens).toBeGreaterThan(0);
+    await openSessionSettings(page, 'context');
     await expect(inputBudget).toBeDisabled();
+    await closeSessionSettings(page);
     await expect(page.locator('.context-meter')).toContainText('运行预算');
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     expect((await result).success).toBe(true);

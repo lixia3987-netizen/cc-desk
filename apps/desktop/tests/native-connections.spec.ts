@@ -1,3 +1,5 @@
+import { openNewSessionOptions } from './helpers/session-ui';
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { sessionRow, stubChatSubmission, submitNewSession } from './helpers/session-ui';
 import { test, expect, _electron as electron } from '@playwright/test';
 import fs from 'node:fs/promises';
@@ -28,6 +30,7 @@ test('native MCP settings persist explicit protocol choices locally and clear wr
     let page = await app.firstWindow();
     const open = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '工具与扩展', exact: true }).click();
       await page.getByRole('tab', { name: 'MCP 连接', exact: true }).click();
       return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
     };
@@ -107,6 +110,7 @@ test('native stdio settings persist literal program configuration without launch
     let page = await app.firstWindow();
     const open = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
+      await page.getByRole('tab', { name: '工具与扩展', exact: true }).click();
       await page.getByRole('tab', { name: 'MCP 连接', exact: true }).click();
       return page.getByRole('region', { name: 'Native MCP 连接', exact: true });
     };
@@ -192,6 +196,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
       const disabled = await window.desktop.nativeMcp.upsert({ name: '禁用服务', endpoint: 'https://mcp-unused.example.test/disabled', auth: { mode: 'none' }, allowLoopbackHttp: false, enabled: false });
       return { ready, disabled };
     }, sessionIds);
+    await openSessionSettings(page, 'tools');
     const choices = page.getByRole('region', { name: '会话 MCP 工具', exact: true });
     await expect(choices).toContainText('已选 1 / 4');
     await choices.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
@@ -203,9 +208,9 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await missing.click();
     await expect(missing).toHaveCount(0);
     await choices.getByLabel(`MCP 可选服务 (${connections.ready.id})`, { exact: true }).check();
-    await page.locator('form.session-config').getByRole('button', { name: '保存配置', exact: true }).click();
+    await page.locator('.session-config').getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.mcpConnections, sessionIds[0])).toEqual([connections.ready.id]);
-    await page.locator('.session-row').filter({ hasText: 'MCP 会话 2' }).click();
+    await page.evaluate(id => window.desktop.setSelection(id), sessionIds[1]);
     await expect(choices).toContainText('已选 0 / 4');
     await expect(choices.getByRole('checkbox')).toHaveCount(0);
 
@@ -217,7 +222,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
     });
     await choices.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
     await expect(choices.getByRole('button', { name: '正在读取 MCP 连接…', exact: true })).toBeDisabled();
-    await page.locator('.session-row').filter({ hasText: 'MCP 会话 1' }).click();
+    await page.evaluate(id => window.desktop.setSelection(id), sessionIds[0]);
     await app.evaluate(() => {
       const state = globalThis as typeof globalThis & { finishMcpList?: (value: unknown) => void };
       state.finishMcpList?.({ connections: [{ id: 'late', name: '迟到的服务', endpoint: 'https://late.example.test/mcp', protocolVersion: '2025-11-25', revision: 1, enabled: true, ready: true, credentialConfigured: true, auth: { mode: 'none' }, allowLoopbackHttp: false }], storage: { persistentAvailable: false } });
@@ -228,6 +233,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await expect(choices.getByRole('button', { name: '读取 MCP 连接', exact: true })).toBeEnabled();
     const saved = await page.evaluate(async () => (await window.desktop.snapshot()).state.sessions);
     expect(saved.find(item => item.id === sessionIds[1])?.engineConfig.options.mcpConnections).toEqual([]);
+    await closeSessionSettings(page);
   } finally { await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
@@ -243,9 +249,9 @@ test('native connections UI keeps model settings compact, saves metadata separat
   try {
     let page = await app.firstWindow();
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     const connections = page.getByRole('region', { name: 'Native 模型连接', exact: true });
-    const modelPage = page.getByRole('tabpanel', { name: '模型配置', exact: true });
+    const modelPage = page.getByRole('tabpanel', { name: '模型与上下文', exact: true });
     await expect(modelPage.getByRole('heading', { name: '自研 Agent 模型连接', exact: true })).toBeVisible();
     await expect(modelPage.getByRole('heading', { name: /Claude.*默认.*模型/ })).toHaveCount(0);
     await expect(page.getByLabel('Claude Code 路径', { exact: true })).toHaveCount(0);
@@ -296,7 +302,7 @@ test('native connections UI keeps model settings compact, saves metadata separat
     await expect.poll(() => page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0].ready)).toBe(true);
     await app.close(); app = await launch(); page = await app.firstWindow();
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     const restarted = page.getByRole('region', { name: 'Native 模型连接', exact: true });
     await expect(restarted.locator('.connection-box')).toContainText('UI 内存连接');
     await expect(restarted.locator('.connection-box')).toContainText('未就绪');
@@ -359,10 +365,12 @@ test('native readiness is per session, preserves saved history and Claude defaul
     });
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     // The transition adds an opt-in provider; the default remains Claude.
-    await expect(page.getByLabel('权限模式', { exact: true })).toBeVisible();
+    await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: '新会话设置', exact: true })).toBeVisible();
     const descriptor = await page.evaluate(async () => (await window.desktop.snapshot()).executors.find(item => item.providerId === 'native' && item.mode === 'structured')!);
     await page.getByRole('button', { name: descriptor.displayName ?? 'native', exact: true }).click();
     await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
+    await openNewSessionOptions(page);
     await page.getByLabel('会话名称', { exact: true }).fill('有可用连接的 Native');
     const connectionField = descriptor.configuration!.fields.find(field => field.key === 'connectionId')!;
     if (connectionField.type === 'select') await page.getByLabel(connectionField.label, { exact: true }).selectOption(connection.id);
@@ -370,7 +378,9 @@ test('native readiness is per session, preserves saved history and Claude defaul
     await stubChatSubmission(app);
     await submitNewSession(page, '只检查 UI 就绪状态');
     await expect(page.getByRole('heading', { name: '有可用连接的 Native', exact: true })).toBeVisible();
+    await openSessionSettings(page, 'model');
     await expect(page.getByLabel('会话模型连接', { exact: true })).toHaveValue(connection.id);
+    await closeSessionSettings(page);
     await expect(page.locator('.chat-composer .engine-unavailable')).toHaveCount(0);
     await page.getByLabel('提示词编辑器', { exact: true }).fill('只检查 UI 就绪状态');
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('只检查 UI 就绪状态');
@@ -400,6 +410,11 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
   let requests = 0, disconnected = 0;
   const bodies: Record<string, unknown>[] = [];
   const server = createServer(async (request, response) => {
+    if (request.method === 'GET' && request.url?.startsWith('/v1/models')) {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(request.url.includes('/models/') ? { id: 'fixture-model' } : { data: [] }));
+      return;
+    }
     const chunks: Buffer[] = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     requests++; bodies.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
@@ -418,7 +433,7 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     const page = await app.firstWindow();
     const openSettings = async () => {
       await page.getByRole('button', { name: '设置与连接', exact: false }).click();
-      await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+      await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     };
     await openSettings();
     const region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
@@ -472,9 +487,9 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     await expect(run).toBeEnabled();
 
     await run.click(); await expect.poll(() => requests).toBe(4);
-    await page.getByRole('tab').filter({ hasNotText: '模型配置' }).first().click();
+    await page.getByRole('tab').filter({ hasNotText: '模型与上下文' }).first().click();
     await expect.poll(() => disconnected).toBe(2);
-    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     await expect(run).toBeEnabled();
     await expect(region.locator('.native-connection-test-result')).toHaveCount(0);
 

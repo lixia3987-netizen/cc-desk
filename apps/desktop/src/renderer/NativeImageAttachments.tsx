@@ -5,10 +5,6 @@ import type { Attachment } from '../shared/types';
 const size = (bytes: number) => `${(bytes / 1024).toFixed(1)} KiB`;
 const selectedType = (name: string) => /\.png$/i.test(name) ? 'PNG' : /\.jpe?g$/i.test(name) ? 'JPEG' : '不支持的格式';
 
-export function NativeImageNotice() {
-  return <p className="panel-note native-image-notice">Native 仅支持 PNG / JPEG，最多 4 张，合计不超过 1 MiB，每边不超过 4096 像素。可在输入框按 Ctrl / ⌘ + V 粘贴图片；不会自动读取剪贴板。选中的图片点击发送后才会交给模型，并保存在本机会话及原始记录中。服务的图片能力尚未验证。图片按编码字节保守计入输入预算，较大图片可能需要提高输入预算。压缩仅处理首个含图回合之前的纯文本历史；首个含图回合及之后的记录完整保留。首轮就含图或保留内容超预算时，压缩无法释放所需空间。</p>;
-}
-
 /** Read-only receipt: never resolves a historical filename into a filesystem URL. */
 export function NativeImageAttachments({ images, onPreview }: { images: NativeImageAttachment[]; onPreview?: (index: number, image: NativeImageAttachment) => void }) {
   return <section className="native-image-history" aria-label="已提交图片记录">

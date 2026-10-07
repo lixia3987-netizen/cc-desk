@@ -1,3 +1,5 @@
+import { openNewSessionOptions } from './helpers/session-ui';
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { sessionAction, sessionRow, submitNewSession } from './helpers/session-ui';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { build } from 'esbuild';
@@ -74,14 +76,22 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
   try {
     let page = await app.firstWindow();
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
-    await expect(page.getByLabel('权限模式', { exact: true })).toHaveValue('plan');
+    await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
     await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('模型', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('交互方式')).toHaveCount(0);
+    await openNewSessionOptions(page);
     await page.getByLabel('会话名称').fill('异构引擎会话');
-    await page.getByLabel('路由', { exact: true }).fill('project-route');
-    await page.getByLabel('回复风格', { exact: true }).selectOption('expanded');
+    await expect(page.getByLabel('路由', { exact: true })).toHaveCount(0);
+    await page.getByRole('button', { name: '新会话设置', exact: true }).click();
+    await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
+    const nativeDefaults = page.locator('.settings-engine-defaults').filter({ has: page.getByRole('heading', { name: '测试 Native', exact: true }) });
+    await nativeDefaults.getByLabel('默认路由', { exact: true }).fill('project-route');
+    await nativeDefaults.getByLabel('默认回复风格', { exact: true }).selectOption('expanded');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect(page.locator('.settings-save-state')).toHaveText('全局设置已同步');
+    await closeSessionSettings(page);
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('hello');
     await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
@@ -126,9 +136,11 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(2);
     await page.getByRole('button', { name: '继续', exact: true }).click();
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
+    await openSessionSettings(page, 'limits');
     await page.getByLabel('会话路由', { exact: true }).fill('saved-route');
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
     await expect.poll(async () => (await active(page)).engineConfig.options.route).toBe('saved-route');
+    await closeSessionSettings(page);
 
     await app.evaluate(() => { const controls = (globalThis as unknown as { __p2EngineFixture: FixtureControls }).__p2EngineFixture; controls.available = false; controls.refresh(); });
     await expect(page.locator('.engine-unavailable')).toContainText('测试引擎暂时离线');
@@ -141,16 +153,16 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
 
     await page.getByRole('button', { name: '设置与连接', exact: false }).click();
     const claudeDefaults = (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude;
-    await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
     await expect(page.getByLabel('默认模型', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('默认推理强度', { exact: true })).toHaveCount(0);
     await expect(page.getByLabel('默认路由', { exact: true })).toHaveCount(0);
-    await page.getByRole('tab', { name: '会话与权限', exact: true }).click();
-    const defaults = page.locator('.settings-section').filter({ has: page.getByRole('heading', { name: '测试 Native 默认会话配置', exact: true }) });
+    await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
+    const defaults = page.locator('.settings-engine-defaults').filter({ has: page.getByRole('heading', { name: '测试 Native', exact: true }) });
     await defaults.getByLabel('默认路由', { exact: true }).fill('new-default');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await expect(page.getByText('设置已保存', { exact: true })).toBeVisible();
-    await expect(page.locator('.settings-save-state')).toHaveText('设置已同步');
+    await expect(page.locator('.settings-save-state')).toHaveText('全局设置已同步');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude).toEqual(claudeDefaults);
     await page.evaluate(async () => {
       const { state } = await window.desktop.snapshot(), config = state.settings.engineDefaults['test.native'];
@@ -159,15 +171,19 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
         'test.native': { schemaVersion: config.schemaVersion, options: Object.fromEntries(Object.entries(config.options).reverse()) },
       } });
     });
-    await expect(page.locator('.settings-save-state')).toHaveText('设置已同步');
+    await expect(page.locator('.settings-save-state')).toHaveText('全局设置已同步');
     await page.keyboard.press('Escape');
     expect((await active(page)).engineConfig.options.route).toBe('saved-route');
     await stopAndClose(app); app = await f.launch(); page = await app.firstWindow();
+    await openSessionSettings(page, 'limits');
     await expect(page.getByLabel('会话路由', { exact: true })).toHaveValue('saved-route');
+    await closeSessionSettings(page);
     await expect(page.locator('.chat-message.assistant').filter({ hasText: '测试审批已完成' })).toHaveCount(1);
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
-    await expect(page.getByLabel('路由', { exact: true })).toHaveValue('new-default');
+    await expect(page.getByLabel('路由', { exact: true })).toHaveCount(0);
+    await submitNewSession(page, 'Verify the saved independent-engine defaults');
+    expect((await active(page)).engineConfig.options.route).toBe('new-default');
     await sessionRow(page, '异构引擎会话').click();
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await stopAndClose(app); await f.dispose(); }
@@ -255,7 +271,9 @@ test('engine history ignores stale source results and unknown configurations ret
     await expect(page.locator('.history-list')).toContainText('Archive 原始历史');
     await app.evaluate(() => (globalThis as unknown as { __p2EngineFixture: FixtureControls }).__p2EngineFixture.releaseHistory('delayed-error'));
     await page.locator('.history-list button').click();
+    await openSessionSettings(page, 'limits');
     await expect(page.getByLabel('会话路由', { exact: true })).toBeVisible();
+    await closeSessionSettings(page);
     expect((await active(page)).execution).toMatchObject({ providerId: 'test.archive', conversationId: 'opaque/shared:history', imported: true });
     await expect(page.locator('.error-banner')).toHaveCount(0);
     await expect(page.locator('.modal-error')).toHaveCount(0);
@@ -277,6 +295,7 @@ test('CLI maintenance keeps the other engine reachable through the actual UI', a
     const page = await app.firstWindow();
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
+    await openNewSessionOptions(page);
     await page.getByLabel('会话名称').fill('维护期间独立运行');
     await submitNewSession(page, 'prepare maintenance session');
     await expect(page.locator('.chat-message.assistant')).toContainText('测试引擎完成：prepare maintenance session');

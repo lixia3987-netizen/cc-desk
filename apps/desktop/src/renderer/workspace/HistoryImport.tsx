@@ -1,7 +1,7 @@
 import { ArrowUpRight, History } from 'lucide-react';
 import type { AppState, HistoryEntry } from '../../shared/types';
 import type { ExecutionDescriptor } from '../../shared/execution';
-import { EngineConfigFields, configurationSupported, engineDefaults } from '../EngineConfiguration';
+import { EngineConfigFields, configurationSupported, newSessionEngineDefaults } from '../EngineConfiguration';
 import type { Dispatch, SetStateAction } from 'react';
 import { time } from './presentation';
 import type { SessionDraft } from './types';
@@ -24,7 +24,7 @@ export function HistoryImport({ state, executors, draft, setDraft, busy, history
     <p>{state.projects.find(p => p.id === draft.projectId)?.name} · 最近的本地会话</p>
     {sources.length > 1 && <label>历史来源<select aria-label="历史来源" disabled={busy} value={draft.providerId} onChange={event => {
       const source = executors.find(item => item.providerId === event.target.value && item.history && item.mode === 'structured') ?? sources.find(item => item.providerId === event.target.value);
-      if (source) setDraft({ ...draft, providerId: source.providerId, mode: source.mode, conversationId: undefined, engineConfig: engineDefaults(source, state.settings) });
+      if (source) setDraft({ ...draft, providerId: source.providerId, mode: source.mode, conversationId: undefined, engineConfig: newSessionEngineDefaults(source, state.settings) });
     }}>{sources.map(source => <option key={source.providerId} value={source.providerId}>{source.displayName ?? source.providerId}</option>)}</select></label>}
     <EngineConfigFields value={draft.engineConfig} fields={descriptor?.configuration?.fields ?? []} prefix="导入会话" disabled={blocked} onChange={engineConfig => setDraft({ ...draft, engineConfig })} />
     {descriptor?.maintenance && <p className="hint">{name} 正在维护，完成后可以导入。</p>}

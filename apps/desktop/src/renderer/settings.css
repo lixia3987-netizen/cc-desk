@@ -1,3 +1,4 @@
+@import './settings-organization.css';
 .modal.preferences{width:min(1020px,calc(100vw - 50px));height:min(790px,calc(100vh - 50px));padding:0;overflow:hidden;max-width:100%;display:flex;flex-direction:column}
 .preferences .close-modal{z-index:2;right:22px;top:24px}
 .settings-form{display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden}

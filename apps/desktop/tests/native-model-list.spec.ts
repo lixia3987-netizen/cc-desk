@@ -61,7 +61,7 @@ async function seed(page: Page, baseURL: string) {
 
 async function openModels(page: Page) {
   await page.getByRole('button', { name: '设置与连接', exact: true }).click();
-  await page.getByRole('tab', { name: '模型配置', exact: true }).click();
+  await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
   const region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
   await expect(region.locator('.model-connection-card')).toHaveCount(1);
   await expect(region.getByLabel('模型窗口信息', { exact: true })).toContainText(/64[,.]?000/);

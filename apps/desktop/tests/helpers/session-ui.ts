@@ -41,3 +41,8 @@ export async function submitNewSession(page: Page, text = 'Verify this prepared 
   await form.getByRole('button', { name: '发送任务', exact: true }).click();
   await expect(form).toHaveCount(0);
 }
+
+export async function openNewSessionOptions(page: Page) {
+  const options = page.getByRole('region', { name: '新建会话', exact: true }).locator('details.new-session-more-options');
+  if (!(await options.evaluate(element => (element as HTMLDetailsElement).open))) await options.locator('summary').click();
+}

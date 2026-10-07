@@ -70,12 +70,13 @@ test('fonts: independent live previews, category drafts, cancellation and persis
     await expect(settings.getByLabel('菜单字体',{exact:true})).toHaveValue('system');
     expect(await fontLoaded(page,importedFamily(font.id),'A')).toBe(true);
     await expect(page.locator('.message-markdown').first()).toHaveCSS('font-family',new RegExp(importedFamily(font.id)));
-    await settings.getByRole('tab',{name:'终端配置',exact:true}).click();
+    await settings.getByRole('tab',{name:'终端与CLI',exact:true}).click();
+    await settings.getByRole('tab',{name:'Shell 与终端',exact:true}).click();
     await settings.getByLabel('终端字号',{exact:true}).fill('17');
     await settings.getByRole('tab',{name:'外观与字体',exact:true}).click();
     await expect(settings.getByLabel('聊天字号',{exact:true})).toHaveValue('18');
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontSize).toBe(12);
-    await settings.getByRole('button',{name:'取消',exact:true}).click();
+    await settings.getByRole('button',{name:'关闭',exact:true}).click();
     await expect.poll(chatSize).toBe('12px'); await expect.poll(menuSize).toBe('13px');
 
     settings = await openSettings(page);
@@ -124,7 +125,7 @@ test('fonts: installed system fonts enumerate, filter, preview independently and
     await settings.getByLabel('搜索系统字体').fill('');
     await settings.getByLabel('菜单字体',{exact:true}).selectOption(ui.id);
     await expect.poll(()=>page.locator('html').evaluate(el=>getComputedStyle(el).fontFamily)).toContain(ui.name);
-    await settings.getByRole('button',{name:'取消',exact:true}).click();
+    await settings.getByRole('button',{name:'关闭',exact:true}).click();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.chatFontFamily).toBe('system');
     await expect.poll(()=>page.locator('html').evaluate(el=>getComputedStyle(el).fontFamily)).not.toContain(ui.name);
     settings = await openSettings(page);
@@ -222,7 +223,7 @@ test('fonts: corrupted glyph data is rolled back, and invalid sizes return to th
     expect(await page.evaluate(()=>window.desktop.listFonts())).toEqual([]);
     expect(await fs.readFile(source)).toEqual(invalid);
     await settings.getByLabel('聊天字号',{exact:true}).fill('99');
-    await settings.getByRole('tab',{name:'通知与后台',exact:true}).click();
+    await settings.getByRole('tab',{name:'应用与数据',exact:true}).click();
     await settings.getByRole('button',{name:'保存设置',exact:true}).click();
     await expect(settings.getByRole('tab',{name:'外观与字体',exact:true})).toHaveAttribute('aria-selected','true');
     await expect(settings.getByRole('alert')).toContainText('11–28');
@@ -238,19 +239,19 @@ test('fonts: large sizes and category keyboard navigation remain usable in a sma
     await settings.getByLabel('聊天字号',{exact:true}).fill('28');
     await settings.getByLabel('菜单字号',{exact:true}).fill('20');
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(980,680));
-    for(const name of ['外观与字体','模型配置','终端配置','MCP 连接','会话与权限','工作区与 IDE','通知与后台']) {
+    for(const name of ['外观与字体','模型与上下文','终端与CLI','工具与扩展','运行与权限','工作区与IDE','应用与数据']) {
       await settings.getByRole('tab',{name,exact:true}).click();
       await expect(settings.getByRole('button',{name:'保存设置',exact:true})).toBeInViewport({ratio:1});
       expect(await settings.locator('.settings-content').evaluate(el=>el.scrollWidth<=el.clientWidth+1)).toBe(true);
     }
-    const last=settings.getByRole('tab',{name:'通知与后台',exact:true}); await last.focus();
+    const last=settings.getByRole('tab',{name:'应用与数据',exact:true}); await last.focus();
     await page.keyboard.press('Home');
     await expect(settings.getByRole('tab',{name:'外观与字体',exact:true})).toBeFocused();
     await expect(settings.getByLabel('聊天字号',{exact:true})).toHaveValue('28');
     await page.keyboard.press('ArrowDown');
-    await expect(settings.getByRole('tab',{name:'模型配置',exact:true})).toBeFocused();
+    await expect(settings.getByRole('tab',{name:'模型与上下文',exact:true})).toBeFocused();
     await page.screenshot({path:testInfo.outputPath('settings-small-large-font.png')});
-    await settings.getByRole('button',{name:'取消',exact:true}).click();
+    await settings.getByRole('button',{name:'关闭',exact:true}).click();
     await expect(page.locator('html')).toHaveCSS('font-size','13px');
   } finally {await app.close();await f.dispose();}
 });

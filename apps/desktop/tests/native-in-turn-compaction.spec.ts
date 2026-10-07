@@ -1,3 +1,4 @@
+import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -60,12 +61,19 @@ async function configure(app: ElectronApplication, projectId: string, fixture: F
     const session = await window.desktop.createSession({ projectId, title: '回合内维护界面验证', kind: 'agent', providerId: 'native', mode: 'structured', isolated: false, engineConfig: { schemaVersion: 1, options: { connectionId: connection.id, model: '' } } });
     await window.desktop.setSelection(session.id); return session;
   }, { projectId, baseURL });
+  await openSessionSettings(page, 'compaction');
+  await page.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
   const setting = page.getByLabel('会话自动压缩', { exact: true });
   await expect(setting).toHaveValue('off');
   await setting.selectOption('before_send_and_during_run');
+  await page.getByRole('button', { name: '保存配置', exact: true }).click();
+  await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!.engineConfig.options.autoCompact, session.id)).toBe('before_send_and_during_run');
+  await openSessionSettings(page, 'context');
+  await page.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
   await page.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill(String(maxInputTokens));
   await page.getByRole('button', { name: '保存配置', exact: true }).click();
   await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)!.engineConfig.options.autoCompact, session.id)).toBe('before_send_and_during_run');
+  await closeSessionSettings(page);
   await page.evaluate(({ id, goal }) => window.desktop.submitChat(id, goal), { id: session.id, goal });
   await expect.poll(async () => (await snapshot(page, session.id)).nativeContextMaintenance?.compactionTrigger).toBe('in_turn');
   // The host exposes its phase before the summary worker reaches HTTP. Wait
@@ -75,7 +83,9 @@ async function configure(app: ElectronApplication, projectId: string, fixture: F
   const meter = page.locator('details.context-meter');
   if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
   await expect(meter).toContainText('持久保存后继续当前任务；取消会停止本回合');
+  await openSessionSettings(page, 'compaction');
   await expect(setting).toBeDisabled();
+  await closeSessionSettings(page);
   return { page, session, meter };
 }
 
@@ -105,7 +115,9 @@ test('native in-turn compaction exposes the host phase across reload and persist
     expect(continuation.filter(item => item.type === 'function_call_output' && item.call_id === 'in-turn-read-2')).toHaveLength(1);
     await closeNativeApp(app); app = await f.launch(); page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible();
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await openSessionSettings(page, 'compaction');
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toHaveValue('before_send_and_during_run');
+    await closeSessionSettings(page);
     expect((await snapshot(page, session.id)).nativeContextMaintenance?.inTurn).toEqual(after.nativeContextMaintenance?.inTurn);
     const meter = page.locator('details.context-meter'); await meter.locator('summary').click();
     await expect(meter).toContainText('回合内压缩已持久保存');

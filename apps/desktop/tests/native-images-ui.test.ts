@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import { isMessage } from '../src/main/chat-history';
-import { ChatAttachmentChips, NativeImageAttachments, NativeImageNotice } from '../src/renderer/NativeImageAttachments';
+import { ChatAttachmentChips, NativeImageAttachments } from '../src/renderer/NativeImageAttachments';
 
 const image: NativeImageAttachment = { name: '提交时的图片.png', mimeType: 'image/png', bytes: 1024, sha256: 'a'.repeat(64) };
 
@@ -29,12 +29,6 @@ test('Claude attachment chips retain generic file behavior and contain no Native
   assert.match(html, /title="\/staging\/document.pdf"/); assert.match(html, /notes.pdf/);
   assert.doesNotMatch(html, /不支持|PNG|KiB/);
   assert.equal(renderToStaticMarkup(createElement(ChatAttachmentChips, { attachments: [], isNative: true, disabled: false, onRemove: () => {} })), '');
-});
-
-test('Native image notice explains explicit send, retention, capacity and pending compatibility without adding consent controls', () => {
-  const html = renderToStaticMarkup(createElement(NativeImageNotice));
-  for (const text of ['PNG / JPEG', '最多 4 张', '1 MiB', '点击发送后', '保存在本机会话及原始记录中', '图片能力尚未验证', '编码字节', '提高输入预算', '首个含图回合之前的纯文本历史', '之后的记录完整保留', '首轮就含图或保留内容超预算']) assert.ok(html.includes(text), text);
-  assert.doesNotMatch(html, /<input|<button|<img|src=/);
 });
 
 test('image history renders immutable version metadata with escaped text and no image or file access', () => {

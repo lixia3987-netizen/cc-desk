@@ -93,6 +93,14 @@ export async function startResponsesFixture(options = {}) {
   };
   const server = http.createServer(async (request, response) => {
     try {
+      // Desktop context summaries may read optional model metadata independently
+      // of a generation. Keep those bounded GETs out of the POST replay ledger.
+      if (request.method === 'GET' && (request.url === '/v1/models' || request.url?.startsWith('/v1/models?') || request.url?.startsWith('/v1/models/'))) {
+        const url = new URL(request.url, 'http://localhost');
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify(url.pathname === '/v1/models' ? { data: [] } : { id: decodeURIComponent(url.pathname.slice('/v1/models/'.length)) }));
+        return;
+      }
       assert.equal(request.method, 'POST');
       assert.equal(request.url, '/v1/responses');
       let bytes = 0;

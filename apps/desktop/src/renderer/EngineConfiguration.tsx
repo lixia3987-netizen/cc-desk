@@ -3,7 +3,21 @@ import type { EngineConfig, EngineConfigField, ExecutionDescriptor, JsonValue } 
 import type { Session, Settings } from '../shared/types';
 
 export function engineDefaults(descriptor: ExecutionDescriptor | undefined, settings: Settings | undefined): EngineConfig {
-  return structuredClone((descriptor && settings?.engineDefaults[descriptor.providerId]) ?? descriptor?.configuration?.defaults ?? { schemaVersion: 1, options: {} });
+  const config = structuredClone((descriptor && settings?.engineDefaults[descriptor.providerId]) ?? descriptor?.configuration?.defaults ?? { schemaVersion: 1, options: {} });
+  if (descriptor?.providerId === 'native' && config.schemaVersion === 1 && descriptor.configuration?.defaults.schemaVersion === 1) {
+    config.options = { ...structuredClone(descriptor.configuration.defaults.options), ...config.options };
+  }
+  return config;
+}
+
+/** Only newly created Native sessions opt into following the settings policy. */
+export function newSessionEngineDefaults(descriptor: ExecutionDescriptor | undefined, settings: Settings | undefined): EngineConfig {
+  const config = engineDefaults(descriptor, settings);
+  if (descriptor?.providerId === 'native' && config.schemaVersion === 1) {
+    config.options.runtimePolicy = 'defaults';
+    config.options.inputBudgetMode ??= 'model';
+  }
+  return config;
 }
 
 function sameJsonValue(left: JsonValue, right: JsonValue): boolean {

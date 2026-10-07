@@ -1,3 +1,4 @@
+import { openNewSessionOptions } from './helpers/session-ui';
 import { desktopRoot } from './helpers/paths';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import type { IpcMainInvokeEvent } from 'electron';
@@ -119,9 +120,18 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await expect(page.locator('.session-group')).toHaveCount(0);
     await picker(app, f.projectPath + path.sep + '.'); await form.getByRole('button', { name: '选择目录', exact: true }).click();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.projects.map(project => project.id)).toEqual([selected.id]);
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('目录内的第一项任务');
-    await form.getByLabel('模型', { exact: true }).fill('sonnet');
-    await form.getByLabel('权限模式', { exact: true }).selectOption('plan');
+    await expect(form.getByLabel('模型', { exact: true })).toHaveCount(0);
+    await expect(form.getByRole('button', { name: '新会话设置', exact: true })).toBeVisible();
+    await form.getByRole('button', { name: '新会话设置', exact: true }).click();
+    await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
+    await page.getByRole('tab', { name: '权限与审批', exact: true }).click();
+    await page.getByLabel('默认权限模式', { exact: true }).selectOption('plan');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('plan');
+    await page.getByRole('dialog', { name: '设置与连接', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+    await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await form.getByLabel('起始分支', { exact: true }).selectOption('refs/heads/main');
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).uncheck();
@@ -129,7 +139,7 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await editor.fill('第一条真实提交');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
     expect(f.git('worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
-    const configBounds = (await form.getByLabel('模型', { exact: true }).boundingBox())!, composerBounds = (await editor.boundingBox())!;
+    const configBounds = (await form.getByRole('button', { name: '新会话设置', exact: true }).boundingBox())!, composerBounds = (await editor.boundingBox())!;
     expect(configBounds.y + configBounds.height).toBeLessThanOrEqual(composerBounds.y);
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.holdCreate());
     await editor.evaluate(element => {
@@ -141,11 +151,11 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseCreate());
     await expect(form).toHaveCount(0);
     const first = (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0];
-    expect(first).toMatchObject({ projectId: selected.id, title: '目录内的第一项任务', engineConfig: { schemaVersion: 1, options: { model: 'sonnet', permissionMode: 'plan' } }, kind: 'agent', execution: { providerId: 'claude', mode: 'structured' } });
+    expect(first).toMatchObject({ projectId: selected.id, title: '目录内的第一项任务', engineConfig: { schemaVersion: 1, options: { model: '', permissionMode: 'plan' } }, kind: 'agent', execution: { providerId: 'claude', mode: 'structured' } });
     const records = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
     expect(records.creates).toBe(1); expect(records.submissions).toHaveLength(1);
     expect(records.submissions[0]).toMatchObject({ id: first.id, text: '第一条真实提交' });
-    await openNew(page); await form.getByLabel('会话名称', { exact: true }).fill('同目录的第二项任务');
+    await openNew(page); await openNewSessionOptions(page); await form.getByLabel('会话名称', { exact: true }).fill('同目录的第二项任务');
     await submitNewSession(page, '第二条提交');
     await expect(page.locator('.session-group')).toHaveCount(1);
     await expect(page.locator(`[data-project-id="${selected.id}"] .session-row`)).toHaveCount(2);
@@ -159,13 +169,16 @@ test('new session: editing and switching create no record, and delayed first-sen
   try {
     const { page, app } = f;
     const form = await openNew(page);
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('延迟创建的任务');
     await form.getByLabel('提示词编辑器', { exact: true }).fill('尚未发送的任务草稿');
-    await form.getByLabel('模型', { exact: true }).fill('sonnet');
+    await expect(form.getByLabel('模型', { exact: true })).toHaveCount(0);
+    await expect(form.getByRole('button', { name: '新会话设置', exact: true })).toBeVisible();
     await sessionRow(page, f.existing.title).click(); await expect(form).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.map(session => session.id)).toEqual([f.existing.id]);
     expect((await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records())).creates).toBe(0);
     await openNew(page);
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('延迟创建的任务');
     await form.getByLabel('提示词编辑器', { exact: true }).fill('延迟提交期间切换会话');
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.holdCreate());
@@ -190,6 +203,7 @@ test('new session: retrying a failed first submission reuses its session and req
   try {
     const { page, app } = f;
     const form = await openNew(page);
+    await openNewSessionOptions(page);
     await form.getByLabel('会话名称', { exact: true }).fill('失败后原位重试');
     await form.getByLabel('提示词编辑器', { exact: true }).fill('只应该创建一次的任务');
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.failNextSubmission());
@@ -199,7 +213,8 @@ test('new session: retrying a failed first submission reuses its session and req
     expect(before).toHaveLength(2);
     const created = before.find(session => session.title === '失败后原位重试')!;
     await expect(form.getByLabel('工作空间', { exact: true })).toBeDisabled();
-    await expect(form.getByLabel('模型', { exact: true })).toBeDisabled();
+    await expect(form.getByLabel('模型', { exact: true })).toHaveCount(0);
+    await expect(form.getByLabel('会话名称', { exact: true })).toBeDisabled();
     await expect(form.getByLabel('提示词编辑器', { exact: true })).toHaveValue('只应该创建一次的任务');
     await form.getByRole('button', { name: '发送任务', exact: true }).click();
     await expect(form).toHaveCount(0);

@@ -4,8 +4,9 @@ import type { AppState, Attachment } from '../../shared/types';
 import type { ExecutionDescriptor } from '../../shared/execution';
 import type { SessionDraft } from './types';
 import type { WorktreeBranch } from '../../shared/git';
-import { configurationSupported, EngineConfigFields, engineDefaults } from '../EngineConfiguration';
-import { ChatAttachmentChips, NativeImageNotice } from '../NativeImageAttachments';
+import { configurationSupported, EngineConfigFields, newSessionEngineDefaults } from '../EngineConfiguration';
+import { engineFieldsForGroup } from '../settings-organization';
+import { ChatAttachmentChips } from '../NativeImageAttachments';
 import { PromptEditor } from '../PromptEditor';
 import { useChatFileDrop } from '../useChatFileDrop';
 import './new-session.css';
@@ -13,13 +14,14 @@ import './new-session.css';
 interface Props {
   state: AppState; executors: ExecutionDescriptor[]; draft: SessionDraft; setDraft: Dispatch<SetStateAction<SessionDraft>>;
   busy: boolean; text: string; onText: (value: string) => void; onSend: () => void; onChooseDirectory: () => void;
+  onOpenSettings: () => void;
   created?: boolean; attachments: Attachment[]; attachmentBusy: boolean;
   onPreviewAttachment?: (file: Attachment) => void;
   onPasteImages?: (files: File[], canContinue: () => boolean) => void;
   onAttach: () => void; onDropFiles: (files: File[]) => void; onRemoveAttachment: (path: string) => void;
 }
 
-export function NewSessionForm({ state, executors, draft, setDraft, busy, text, onText, onSend, onChooseDirectory, created = false, attachments, attachmentBusy, onAttach, onDropFiles, onRemoveAttachment, onPasteImages, onPreviewAttachment }: Props) {
+export function NewSessionForm({ state, executors, draft, setDraft, busy, text, onText, onSend, onChooseDirectory, onOpenSettings, created = false, attachments, attachmentBusy, onAttach, onDropFiles, onRemoveAttachment, onPasteImages, onPreviewAttachment }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -37,7 +39,7 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
   const chooseProvider = (providerId: string) => {
     const next = providers.find(item => item.providerId === providerId);
     if (!next || busy || created || attachmentBusy || draft.fork || attachments.length) return;
-    setDraft({ ...draft, kind: 'agent', providerId, mode: 'structured', engineConfig: engineDefaults(next, state.settings), conversationId: undefined, fork: false });
+    setDraft({ ...draft, kind: 'agent', providerId, mode: 'structured', engineConfig: newSessionEngineDefaults(next, state.settings), conversationId: undefined, fork: false });
   };
   const [branches, setBranches] = useState<{ projectId: string; values: WorktreeBranch[] }>();
   const [branchError, setBranchError] = useState('');
@@ -99,8 +101,9 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
           {providers.map(item => <button key={item.providerId} type="button" disabled={configurationBlocked || !!draft.fork || attachments.length > 0} className={draft.providerId === item.providerId ? 'chosen' : ''} onClick={() => chooseProvider(item.providerId)}><Sparkles size={16} />{item.displayName ?? item.providerId}</button>)}
         </div>
         {attachments.length > 0 && <p className="new-session-note">移除待发送附件后可以切换执行引擎。</p>}
-        <div className="new-session-options-grid"><EngineConfigFields value={draft.engineConfig} fields={descriptor?.configuration?.fields ?? []} disabled={configurationBlocked || engineBlocked} onChange={engineConfig => setDraft({ ...draft, engineConfig })} /></div>
-        {draft.providerId === 'claude' && draft.engineConfig.options.effort === 'ultracode' && <p className="new-session-note">ultracode 由 CLI 定义，模型是否支持仍由 CLI 校验。</p>}
+        {isNative && <div className="new-session-options-grid"><EngineConfigFields value={draft.engineConfig} fields={engineFieldsForGroup(descriptor, 'model', draft.engineConfig)} disabled={configurationBlocked || engineBlocked} onChange={engineConfig => setDraft({ ...draft, engineConfig })} /></div>}
+        <div className="new-session-workspace"><p className="new-session-note">{isNative ? '上下文、自动压缩与运行限制在设置中管理。' : '运行权限与默认配置在设置中管理。'}</p><button type="button" className="secondary compact" disabled={busy || attachmentBusy} onClick={onOpenSettings}>新会话设置</button></div>
+        <details className="new-session-more-options" open={draft.isolated || !!draft.title || !!draft.worktreeName}><summary>更多选项</summary>
         <div className="new-session-extra-options">
           <label>会话名称 <span className="new-session-optional">可选</span><input maxLength={120} aria-label="会话名称" disabled={configurationBlocked} placeholder={isNative ? '留空使用默认名称，可稍后重命名' : '留空，由 agent 总结首条消息命名'} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
           <label className="new-session-worktree-toggle"><input type="checkbox" disabled={configurationBlocked} checked={draft.isolated} onChange={event => setDraft({ ...draft, isolated: event.target.checked })} /><span>创建独立 Git worktree<small>在独立目录中工作</small></span></label>
@@ -121,11 +124,11 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
           <p className="new-session-note" id="new-worktree-name-help">可选；留空使用随机 ID。自定义名称不要包含 /、\ 或 ..，目录名会自动追加短标识。</p>
           <p className="new-session-note" id="new-worktree-location-hint">{state.settings.worktreeLocation === 'custom' ? <>统一目录：<code>{state.settings.worktreeRoot}</code>，按「项目名-短标识 / 随机 ID 或自定义名称-短标识」创建。</> : <>项目目录内：<code>{'.claude/worktrees/<随机 ID 或自定义名称-短标识>'}</code>（相对于 Git 根目录）。</>}可在设置中调整。</p>
         </div>}
+        </details>
       </div>
       {!descriptor && <p className="new-session-note">所选执行引擎尚未安装，请选择已安装的引擎。</p>}
       {descriptor && !supported && <p className="new-session-note">此引擎不支持当前配置版本，原配置已保留。</p>}
       {descriptor?.maintenance ? <p className="new-session-note">{descriptor.displayName ?? descriptor.providerId} 正在维护，请等待完成后再发送。</p> : descriptor && !descriptor.capabilities.available && <p className="new-session-note">尚未连接 {descriptor.displayName ?? descriptor.providerId}。消息可以提交到队列；执行前请在设置中连接，失败后可重试。</p>}
-      {isNative && <NativeImageNotice /> }
       <div className="composer chat-composer new-session-composer">
         <ChatAttachmentChips attachments={attachments} isNative={isNative} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={isNative ? onPreviewAttachment : undefined} previewTitle="本地预览当前选择版本（尚未保存）" />
         {attachmentBusy && <p className="attachment-import-status" role="status"><Loader2 size={12} className="spin" />正在添加待发送附件…可以继续编辑消息。</p>}

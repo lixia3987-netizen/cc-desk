@@ -111,14 +111,14 @@ function descriptor(providerId = 'native'): ExecutionDescriptor {
     capabilities: { available: true, structured: true, terminal: false, approvals: true, resume: true, fork: false, commands: false, contextUsage: true, liveConfig: true, attachments: false },
     configuration: { schemaVersion: 1, defaults: { schemaVersion: 1, options: {} }, fields: [] } };
 }
-const renderConfig = (value = session(), executor = descriptor()) => renderToStaticMarkup(createElement(SessionConfig, { session: value, descriptor: executor, onError: fail }));
+const renderConfig = (value = session(), executor = descriptor()) => renderToStaticMarkup(createElement(SessionConfig, { session: value, descriptor: executor, group: 'tools', onError: fail }));
 
 test('project Skills are scoped to native structured session settings and use the existing save and task lock', () => {
   const idle = renderConfig();
   assert.match(idle, /aria-label="项目 Skills"/);
   assert.match(idle, /保存配置/);
   assert.doesNotMatch(idle, /type="checkbox"[^>]*disabled=""/);
-  assert.doesNotMatch(idle, /<button[^>]*class="secondary compact full"[^>]*disabled=""/);
+  assert.match(idle, /<button[^>]*class="secondary compact full"[^>]*disabled=""/, 'unchanged session settings cannot be saved again');
   for (const provider of ['claude', 'shell', 'future-provider']) {
     assert.doesNotMatch(renderConfig(session(provider), descriptor(provider)), /aria-label="项目 Skills"/);
   }

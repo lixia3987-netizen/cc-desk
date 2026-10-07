@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorktreeBranch } from '../../shared/git';
 import type { AppState } from '../../shared/types';
 import type { ExecutionDescriptor } from '../../shared/execution';
-import { EngineConfigFields, configurationSupported, engineDefaults } from '../EngineConfiguration';
+import { EngineConfigFields, configurationSupported, newSessionEngineDefaults } from '../EngineConfiguration';
 import { SessionContinuation } from '../components/SessionContinuation';
 
 import type { Dispatch, SetStateAction } from 'react';
@@ -25,7 +25,7 @@ export function ContinuationSessionForm({ state, executors, draft, setDraft, bus
     const next = eligible.find(item => item.providerId === providerId);
     if (!next || draft.fork) return;
     setDraft({ ...draft, kind: 'agent', providerId, mode: next.mode,
-      engineConfig: engineDefaults(next, state.settings), conversationId: undefined, fork: false });
+      engineConfig: newSessionEngineDefaults(next, state.settings), conversationId: undefined, fork: false });
   };
   const [branches, setBranches] = useState<WorktreeBranch[]>([]);
   const [branchError, setBranchError] = useState(''), [branchesLoading, setBranchesLoading] = useState(false);

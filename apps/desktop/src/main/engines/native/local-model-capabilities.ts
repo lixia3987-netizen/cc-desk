@@ -1,11 +1,14 @@
 import type { NativeModelCapabilities } from '../../../shared/native-connections';
 import type { ResolvedNativeConnection } from './connections';
 
-/** Verified 2026-10-02. Exact official API hosts, paths and IDs only; proxy names confer no capability.
+/** Exact official API hosts, paths and IDs only; proxy names confer no capability.
+ * Claude verified 2026-10-02.
  * Claude: https://platform.claude.com/docs/en/models/overview (Models API remains authoritative).
  * Dateless IDs from 4.6 onward are pinned: https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions .
- * Kimi: https://www.kimi.com/code/docs/kimi-code/models.html . K3 Plus accounts may have only 256K;
- * the fallback deliberately uses that conservative account ceiling, never the advertised 1M entitlement.
+ * Kimi verified 2026-10-07: https://www.kimi.com/code/docs/kimi-code/models.html .
+ * K3 has a 1M window; k3-256k has 256K. These are model specifications, not account entitlements:
+ * Plus/Moderato accounts may still limit k3 to 256K. Provider/catalog limits take precedence,
+ * and model capabilities never raise user-configured budgets. Maximum output remains unknown.
  */
 const claude: Readonly<Record<string, { context: number; output: number }>> = Object.freeze({
   'claude-fable-5-1': { context: 1_000_000, output: 128_000 },
@@ -23,7 +26,8 @@ export function localNativeModelCapabilities(connection: Pick<ResolvedNativeConn
   }
   if (['anthropic', 'chat-completions'].includes(connection.protocol) && ['api.kimi.com', 'api.kimi.ai'].includes(url.hostname) && ['/coding', '/coding/v1', '/coding/v1/messages'].includes(pathname)
     && ['k3', 'k3-256k'].includes(connection.model)) {
-    return { capabilities: { contextWindow: { value: 262_144, source: 'fallback' }, maxInputTokens: { value: 262_144, source: 'fallback' } }, conservative: true };
+    const context = connection.model === 'k3' ? 1_048_576 : 262_144;
+    return { capabilities: { contextWindow: { value: context, source: 'fallback' }, maxInputTokens: { value: context, source: 'fallback' } } };
   }
   return { capabilities: {} };
 }

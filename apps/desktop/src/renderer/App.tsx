@@ -6,7 +6,8 @@ import type { ExecutionDescriptor } from '../shared/execution';
 import { isSessionBusy } from '../shared/session-activity';
 import type { AppState, Attachment, Capabilities, Session } from '../shared/types';
 import { ChatPane } from './ChatPane';
-import { configurationSupported, engineDefaults, executionUnavailable } from './EngineConfiguration';
+import { configurationSupported, newSessionEngineDefaults, executionUnavailable } from './EngineConfiguration';
+import type { EngineSettingsGroup, SettingsScope } from './settings-organization';
 import type { SessionDraft } from './workspace/types';
 import { CLIUpdateNotice } from './CLIUpdateNotice';
 import { Dialog } from './Dialog';
@@ -63,6 +64,7 @@ export function App() {
   const [search, setSearch] = useState('');
   const [archived, setArchived] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
+  const [settingsTarget, setSettingsTarget] = useState<{ scope: SettingsScope; group?: EngineSettingsGroup; subpage?: string }>({ scope: 'defaults' });
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [operationBusy, setBusy] = useState(false);
@@ -87,6 +89,27 @@ export function App() {
   const [, redrawBlank] = useState(0);
   const changedBlank = () => redrawBlank(value => value + 1);
   const blank = blankKey ? blankSessions.current.get(blankKey) : undefined;
+  useEffect(() => {
+    if (!state) return;
+    let changed = false;
+    for (const pending of blankSessions.current.values()) {
+      if (pending.input.fork || pending.submission.session || pending.sending || pending.importing) continue;
+      const engine = executors.find(item => item.providerId === pending.input.providerId && item.mode === pending.input.mode);
+      const defaults = newSessionEngineDefaults(engine, state.settings);
+      if (!engine || defaults.schemaVersion !== pending.input.engineConfig.schemaVersion) continue;
+      const options = { ...pending.input.engineConfig.options, ...defaults.options };
+      if (engine.providerId === 'native') {
+        // Connection/model choices are owned by the draft, while its policy follows settings.
+        options.connectionId = pending.input.engineConfig.options.connectionId ?? '';
+        options.model = pending.input.engineConfig.options.model ?? '';
+      }
+      const engineConfig = { ...pending.input.engineConfig, options };
+      if (JSON.stringify(engineConfig) !== JSON.stringify(pending.input.engineConfig)) {
+        pending.input = { ...pending.input, engineConfig }; changed = true;
+      }
+    }
+    if (changed) redrawBlank(value => value + 1);
+  }, [state?.settings, executors, blank?.importing]);
   const [blankImagePreview, setBlankImagePreview] = useState<NewSessionImagePreviewSelection>();
   const currentBlankImagePreview = blankImagePreview && blank && !blank.sending && !blank.importing
     && isNewSessionImagePreviewCurrent(blankImagePreview, blank.token, blank.input.providerId, blank.files) ? blankImagePreview : undefined;
@@ -203,7 +226,7 @@ export function App() {
       // staging, whose saveDraft would replace the host-generated handoff text.
       const engine = executors.find(item => item.providerId === 'claude' && item.mode === 'structured');
       setDraft({ projectId: continuation.projectId, title: '', kind: 'agent', providerId: 'claude',
-        mode: 'structured', engineConfig: engineDefaults(engine, state?.settings), isolated: false,
+        mode: 'structured', engineConfig: newSessionEngineDefaults(engine, state?.settings), isolated: false,
         continuation: { sourceSessionId: continuation.id, snapshotHash: '', messageIds: [] } });
       setError(''); setModal('continuation'); return;
     }
@@ -216,7 +239,7 @@ export function App() {
       const selectedEngine = executors.find(item => item.providerId === providerId && item.mode === 'structured');
       const input: SessionDraft = {
         projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind: 'agent',
-        providerId, engineConfig: fork ? structuredClone(fork.engineConfig) : engineDefaults(selectedEngine, state?.settings),
+        providerId, engineConfig: fork ? structuredClone(fork.engineConfig) : newSessionEngineDefaults(selectedEngine, state?.settings),
         isolated: false, worktreeName: '', mode: 'structured', conversationId: fork?.execution.conversationId, fork: !!fork,
       };
       pending = { key, token: crypto.randomUUID(), input, text: '', files: [], sending: false, importing: false, error: '', submission: new NewSessionSubmission({
@@ -301,14 +324,19 @@ export function App() {
       if (latestBlankKey.current === owner.key && blankSessions.current.get(owner.key) === owner) report(error);
     } finally { owner.sending = false; changedBlank(); }
   };
-  const openSettings = () => { if (state) { preferences.begin(); setModal('settings'); } };
+  const openSettings = () => { if (state) { setSettingsTarget({ scope: 'defaults' }); preferences.begin(); setModal('settings'); } };
+  const openSessionSettings = () => { if (state && active) {
+    setSettingsTarget({ scope: 'session', group: active.execution.providerId === 'native' ? 'context' : 'permissions' });
+    preferences.begin(active.execution.providerId === 'native' ? 'models' : 'sessions'); setModal('settings');
+  } };
+  const openDefaultContextSettings = () => { if (state) { setSettingsTarget({ scope: 'defaults', group: 'context' }); preferences.begin('models'); setModal('settings'); } };
   const openPalette = () => { setPaletteQuery(''); setModal('palette'); };
   const start = (session: Session) => perform(async () => { await window.desktop.startSession(session.id); });
   const openIde = () => {
     const target = active?.id ?? project?.id;
     if (!target || !state) return;
     if (!state.settings.idePath?.trim()) {
-      setError(''); preferences.begin('workspace', true); setModal('settings'); return;
+      setError(''); setSettingsTarget({ scope: 'defaults', subpage: 'ide' }); preferences.begin('workspace', true); setModal('settings'); return;
     }
     void perform(async () => { await window.desktop.openIde(target); setNotice('已发送到指定 IDE'); });
   };
@@ -317,7 +345,7 @@ export function App() {
     if (!id) { const project = await window.desktop.chooseProject(); if (!project) return; id = project.id; await refresh(); }
     const source = historySources.find(item => item.providerId === active?.execution.providerId && item.mode === 'structured') ?? historySources.find(item => item.providerId === 'claude' && item.mode === 'structured') ?? historySources[0];
     if (!source) throw new Error('没有已安装的外部历史来源。');
-    setDraft({ projectId: id, title: '', kind: 'agent', providerId: source.providerId, mode: source.mode, engineConfig: engineDefaults(source, state?.settings), isolated: false }); resetHistory(); setModal('history');
+    setDraft({ projectId: id, title: '', kind: 'agent', providerId: source.providerId, mode: source.mode, engineConfig: newSessionEngineDefaults(source, state?.settings), isolated: false }); resetHistory(); setModal('history');
   });
   const importHistory = (id: string, title: string, providerId = draft.providerId) => perform(async () => {
     if (providerId !== draft.providerId) throw new Error('历史来源已改变，请重新选择记录。');
@@ -391,7 +419,7 @@ export function App() {
         } }}
         busy={busy || blank.sending} created={!!blank.submission.session} text={blank.text}
         onText={text => { blank.text = text; if (blank.submission.session) saveDraftFor(blank.submission.session.id, text); changedBlank(); }}
-        onSend={() => void sendBlank(blank)} onChooseDirectory={() => void chooseBlankDirectory(blank)}
+        onSend={() => void sendBlank(blank)} onChooseDirectory={() => void chooseBlankDirectory(blank)} onOpenSettings={blank.input.providerId === 'native' ? openDefaultContextSettings : openSettings}
         attachments={blank.files} attachmentBusy={blank.importing}
         onAttach={() => void addBlankAttachments(blank, () => window.desktop.chooseDraftAttachments())}
         onDropFiles={files => void addBlankAttachments(blank, () => window.desktop.addDroppedDraftAttachments(files))}
@@ -444,7 +472,7 @@ export function App() {
           </SessionViewport>
           <SessionInspector executors={executors} sessions={state.sessions} connectionUnavailable={connectionUnavailable} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} executionCapabilities={executionCapabilities} active={active} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
             perform={perform} report={report} setNotice={setNotice} openNew={openNew} selectSession={selectSession}
-            flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} />
+            flushDrafts={flushDrafts} appendReview={appendReview} activePanels={activePanels} updatePanel={updatePanel} settings={state.settings} onOpenSessionSettings={openSessionSettings} />
         </div>
       </>}
       <footer className="statusbar">
@@ -470,6 +498,7 @@ export function App() {
         onSelect={session => { setProjectId('all'); setArchived(session.archived); setSearch(''); selectSession(session.id); setModal(null); }} />}
       {modal === 'continuation' && <ContinuationSessionForm state={state} executors={executors} draft={draft} setDraft={setDraft} busy={busy} perform={perform} onCreated={id => { selectSession(id); setArchived(false); setModal(null); }} />}
       {modal === 'settings' && draftSettings && <SettingsPanel executors={executors} cliBusy={cliActionBusy || cliUpdateBusy(cliUpdate)} value={draftSettings} saved={state.settings} {...preferences.editor}
+        activeSession={active} onSessionError={report} initialScope={settingsTarget.scope} initialGroup={settingsTarget.group} initialSubpage={settingsTarget.subpage}
         cliUpdate={<CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} disabled={busy || cliActionBusy || draftSettings.claudePath !== state.settings.claudePath} />}
         busy={busy} error={error} capabilities={cap} platform={platform} dataPath={dataPath} onClose={() => setModal(null)} />}
       {modal === 'history' && <HistoryImport state={state} executors={executors} draft={draft} setDraft={setDraft} busy={busy} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery}

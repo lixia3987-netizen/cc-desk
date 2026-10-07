@@ -1,0 +1,23 @@
+.settings-subnav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 20px;padding:0 0 12px;border-bottom:1px solid var(--border)}
+.settings-subnav>button{padding:7px 12px;border:1px solid transparent;border-radius:7px;color:var(--text-muted);font-size:calc(11px * var(--ui-font-scale));line-height:1.6}
+.settings-subnav>button[aria-selected=true]{background:var(--selected);border-color:var(--selected-border);color:var(--accent);font-weight:600}
+.settings-subnav>button:not(:disabled):hover{background:var(--hover);color:var(--text)}
+.settings-subpage{min-width:0}
+.settings-policy-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.settings-policy-heading h4{margin:0}
+.settings-scope{display:flex;gap:2px;padding:3px;background:var(--surface);border:1px solid var(--border);border-radius:8px;flex-wrap:wrap}
+.settings-scope>button{padding:6px 10px;border:0;border-radius:5px;color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale));line-height:1.6}
+.settings-scope>button[aria-checked=true]{color:var(--accent);background:var(--selected);font-weight:600}
+.settings-scope-description,.settings-resource-note,.settings-save-help{font-size:calc(10px * var(--ui-font-scale));line-height:1.8;color:var(--text-muted);overflow-wrap:anywhere}
+.settings-scope-description{margin:0 0 18px}
+.settings-resource-note{margin:0 0 18px;padding:10px 12px;border:1px solid var(--border);border-radius:7px;background:var(--surface)}
+.settings-resource-note>span,.settings-global-badge{display:inline-block;margin-right:8px;color:var(--text-secondary);font-size:calc(10px * var(--ui-font-scale));font-weight:500}
+.settings-engine-defaults{margin:0 0 18px}
+.settings-engine-defaults:last-child{margin-bottom:0}
+.settings-engine-defaults h5{margin:0 0 14px;font-size:calc(11px * var(--ui-font-scale));font-weight:500;color:var(--text-secondary);line-height:1.7}
+.settings-save-help{margin:0 0 10px}
+.settings-policy-section .session-config{padding:0;border:0;margin:0}
+.settings-policy-section .session-config>h4{display:none}
+.settings-policy-section .panel-actions{display:flex;gap:10px;flex-wrap:wrap;justify-content:flex-end}
+.settings-subnav>button:focus-visible,.settings-scope>button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+@media(max-width:760px){.settings-policy-heading{align-items:flex-start;flex-direction:column}.settings-scope{max-width:100%}.settings-subnav{gap:4px}.settings-subnav>button{padding:6px 9px}.settings-save-help{font-size:calc(9px * var(--ui-font-scale))}}
