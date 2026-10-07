@@ -1,8 +1,8 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
 import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { anthropicPendingCalls, nativeToolResultItems } from './context-maintenance.js'
-import { classifyNativeModelFailure } from './model-failure.js'
+import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 
 export type AnthropicAuthHeader = 'x-api-key' | 'authorization'
 /** A service root, gateway prefix, /v1 base, or complete /v1/messages endpoint. */
@@ -16,7 +16,10 @@ export class AnthropicModelError extends Error {
   }
 }
 const rejectedHttpRequests = new WeakMap<AnthropicModelError, number>()
-const failure = (code: string, message: string): never => { throw new AnthropicModelError(code, message) }
+const failure = (code: string, message: string, reason: ModelFailureReason | undefined = defaultModelFailureReason(code)): never => {
+  const error = new AnthropicModelError(code, message)
+  throw reason === undefined ? error : describeNativeModelFailure(error, { reason })
+}
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value)
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const positive = (value: number | undefined, fallback: number, maximum: number): number => {
@@ -30,8 +33,8 @@ const guard = (value: unknown, credential: string | undefined): void => {
     throw error
   }
 }
-function supported(value: JsonObject, fields: readonly string[]): void {
-  if (Object.entries(value).some(([key, child]) => !fields.includes(key) && child !== null && child !== undefined)) failure('unsupported', 'The model returned unsupported continuation state.')
+function supported(value: JsonObject, fields: readonly string[], reason: ModelFailureReason = 'unsupported_content'): void {
+  if (Object.entries(value).some(([key, child]) => !fields.includes(key) && child !== null && child !== undefined)) failure('unsupported', 'The model returned unsupported continuation state.', reason)
 }
 
 /** Byte limits are enforced before feeding the CR/LF/CRLF and multiline SSE parser. */
@@ -51,7 +54,7 @@ class EventStreamParser {
     }
   }
   finish(): void {
-    if (this.line.length || this.data.length || this.event.length) failure('interrupted', 'The model stream ended inside an event.')
+    if (this.line.length || this.data.length || this.event.length) failure('interrupted', 'The model stream ended inside an event.', 'truncated_event')
   }
   private consumeLine(): void {
     const line = this.line
@@ -135,14 +138,24 @@ export class AnthropicModel implements ModelPort {
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof AnthropicModelError)) return { category: 'unknown', retryable: false }
     const status = rejectedHttpRequests.get(error)
-    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus) : classifyNativeModelFailure('http', status, true)
+    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus, false, nativeModelFailureDetails(error)) : classifyNativeModelFailure('http', status, true, nativeModelFailureDetails(error))
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
-    if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
-    try {
-      if (anthropicPendingCalls(request.context).length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.')
-    } catch { return failure('protocol', 'The saved conversation contains unsupported or incomplete model messages.') }
+    let stage: ModelFailureStage = 'request'
+    try { return await this.generateResponse(request, value => { stage = value }) }
+    catch (error) {
+      if (error instanceof AnthropicModelError) throw describeNativeModelFailure(error, { protocol: 'anthropic-messages', stage })
+      throw error
+    }
+  }
+
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
+    if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
+    let pendingCalls: ToolCall[]
+    try { pendingCalls = anthropicPendingCalls(request.context) }
+    catch { return failure('protocol', 'The saved conversation contains unsupported or incomplete model messages.', 'invalid_history') }
+    if (pendingCalls.length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.', 'pending_tool_calls')
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(anthropicTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
     const body = JSON.stringify({
@@ -163,6 +176,7 @@ export class AnthropicModel implements ModelPort {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'anthropic-version': '2023-06-01' }
       if (this.#apiKey) headers[this.#authHeader] = this.#authHeader === 'authorization' ? `Bearer ${this.#apiKey}` : this.#apiKey
       const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'error' })
+      setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
         const error = new AnthropicModelError('http', `Model service returned HTTP ${response.status}.`, response.status)
@@ -171,8 +185,9 @@ export class AnthropicModel implements ModelPort {
       }
       if (!response.body || !/^text\/event-stream(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel()
-        return failure('schema', 'Model service did not return an event stream.')
+        return failure('schema', 'Model service did not return an event stream.', 'unexpected_content_type')
       }
+      setStage('message_start')
       reader = response.body.getReader()
       const decoder = new TextDecoder('utf-8', { fatal: true })
       let bytes = 0
@@ -181,16 +196,23 @@ export class AnthropicModel implements ModelPort {
       let stopReason: StopReason | undefined
       const blocks: StreamingBlock[] = []
       const callIds = new Set<string>()
-      const tokenCounts = new Map<string, number>()
+      let tokenCounts = new Map<string, number>()
       const updateUsage = (value: JsonValue | undefined): void => {
         if (value === undefined || value === null) return
-        if (!object(value)) return failure('schema', 'Invalid model usage record.')
+        if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
+        const nextCounts = new Map(tokenCounts)
         for (const name of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
           const count = value[name]
           if (count === undefined || count === null) continue
-          if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0 || count < (tokenCounts.get(name) ?? 0)) return failure('schema', 'Invalid model usage count.')
-          tokenCounts.set(name, count)
+          if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
+          nextCounts.set(name, count)
         }
+        // Input counters may be reclassified as cache hits at completion. Merge
+        // the whole usage update before comparing the cumulative input total.
+        const inputTotal = (counts: Map<string, number>): number => ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].reduce((total, name) => total + (counts.get(name) ?? 0), 0)
+        const nextInput = inputTotal(nextCounts)
+        if (!Number.isSafeInteger(nextInput) || nextInput < inputTotal(tokenCounts) || (nextCounts.get('output_tokens') ?? 0) < (tokenCounts.get('output_tokens') ?? 0)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
+        tokenCounts = nextCounts
       }
       const deltas = new SafeModelDeltas(this.#apiKey, event => {
         try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
@@ -200,14 +222,15 @@ export class AnthropicModel implements ModelPort {
       const protectedDeltas = new SafeModelDeltas(this.#apiKey, () => {})
       const scanDelta = (text: string): void => protectedDeltas.push({ type: 'text_delta', text })
       const parser = new EventStreamParser((data, eventName) => {
-        if (done) return failure('schema', 'Model sent data after the completed stream.')
+        if (done) return failure('schema', 'Model sent data after the completed stream.', 'invalid_sequence')
         let event: unknown
-        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.') }
+        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.', 'invalid_json') }
         guard(event, this.#apiKey)
         if (!object(event) || !nonempty(event.type) || eventName && eventName !== event.type) return failure('schema', 'Invalid model stream event.')
         if (event.type === 'error') return failure('provider', 'Model service reported a failed response.')
         if (event.type === 'ping') return
         if (event.type === 'message_start') {
+          setStage('message_start')
           if (started || !object(event.message)) return failure('schema', 'Invalid model message start.')
           const message = event.message
           supported(message, ['id', 'type', 'role', 'content', 'model', 'stop_reason', 'stop_sequence', 'usage'])
@@ -216,8 +239,10 @@ export class AnthropicModel implements ModelPort {
           updateUsage(message.usage)
           return
         }
-        if (!started) return failure('schema', 'Model sent content before message start.')
+        if (!started) return failure('schema', 'Model sent content before message start.', 'invalid_sequence')
         if (event.type === 'content_block_start') {
+          setStage(object(event.content_block) && ['thinking', 'redacted_thinking'].includes(event.content_block.type as string) ? 'thinking'
+            : object(event.content_block) && event.content_block.type === 'tool_use' ? 'tool_call' : 'content')
           if (stopReason || !Number.isSafeInteger(event.index) || event.index !== blocks.length || blocks.length >= 256 || blocks.some(block => !block.stopped) || !object(event.content_block)) return failure('schema', 'Invalid model content block start.')
           const block = event.content_block
           if (block.type === 'text') {
@@ -227,19 +252,19 @@ export class AnthropicModel implements ModelPort {
             scanDelta(block.text)
             deltas.push({ type: 'text_delta', text: block.text })
           } else if (block.type === 'thinking') {
-            supported(block, ['type', 'thinking', 'signature'])
-            if (typeof block.thinking !== 'string' || block.signature !== undefined && typeof block.signature !== 'string') return failure('schema', 'Invalid model thinking block.')
+            supported(block, ['type', 'thinking', 'signature'], 'invalid_thinking')
+            if (typeof block.thinking !== 'string' || block.signature !== undefined && typeof block.signature !== 'string') return failure('schema', 'Invalid model thinking block.', 'invalid_thinking')
             blocks.push({ block: { type: 'thinking', thinking: block.thinking, ...(block.signature === undefined ? {} : { signature: block.signature }) }, stopped: false, signatureStarted: nonempty(block.signature) })
             scanDelta(block.thinking)
             if (typeof block.signature === 'string') scanDelta(block.signature)
           } else if (block.type === 'redacted_thinking') {
-            supported(block, ['type', 'data'])
-            if (!nonempty(block.data)) return failure('schema', 'Invalid redacted model thinking block.')
+            supported(block, ['type', 'data'], 'invalid_thinking')
+            if (!nonempty(block.data)) return failure('schema', 'Invalid redacted model thinking block.', 'invalid_thinking')
             blocks.push({ block: { type: 'redacted_thinking', data: block.data }, stopped: false })
             scanDelta(block.data)
           } else if (block.type === 'tool_use') {
             supported(block, ['type', 'id', 'name', 'input'])
-            if (!nonempty(block.id) || !nonempty(block.name) || !object(block.input) || callIds.has(block.id)) return failure('schema', 'Invalid or duplicate model tool block.')
+            if (!nonempty(block.id) || !nonempty(block.name) || !object(block.input) || callIds.has(block.id)) return failure('schema', 'Invalid or duplicate model tool block.', 'invalid_tool_call')
             callIds.add(block.id)
             blocks.push({ block: structuredClone(block), stopped: false })
           } else return failure('unsupported', 'The model returned an unsupported content block.')
@@ -248,12 +273,13 @@ export class AnthropicModel implements ModelPort {
         if (event.type === 'content_block_delta' || event.type === 'content_block_stop') {
           if (stopReason || !Number.isSafeInteger(event.index) || (event.index as number) < 0) return failure('schema', 'Invalid model content block index.')
           const current = blocks[event.index as number]
+          if (current) setStage(['thinking', 'redacted_thinking'].includes(current.block.type as string) ? 'thinking' : current.block.type === 'tool_use' ? 'tool_call' : 'content')
           if (!current || current.stopped) return failure('schema', 'Model changed a completed or absent content block.')
           if (event.type === 'content_block_stop') {
             if (current.block.type === 'tool_use' && current.partialJson !== undefined) {
               let input: unknown
-              try { input = JSON.parse(current.partialJson) } catch { return failure('schema', 'Invalid completed model tool JSON.') }
-              if (!object(input)) return failure('schema', 'Model tool input must be a JSON object.')
+              try { input = JSON.parse(current.partialJson) } catch { return failure('schema', 'Invalid completed model tool JSON.', 'invalid_tool_call') }
+              if (!object(input)) return failure('schema', 'Model tool input must be a JSON object.', 'invalid_tool_call')
               current.block.input = input
             }
             guard(current.block, this.#apiKey)
@@ -267,27 +293,28 @@ export class AnthropicModel implements ModelPort {
               scanDelta(event.delta.text)
               deltas.push({ type: 'text_delta', text: event.delta.text })
             } else if (current.block.type === 'thinking' && event.delta.type === 'thinking_delta') {
-              supported(event.delta, ['type', 'thinking'])
-              if (typeof event.delta.thinking !== 'string' || current.signatureStarted) return failure('schema', 'Invalid model thinking delta.')
+              supported(event.delta, ['type', 'thinking'], 'invalid_thinking')
+              if (typeof event.delta.thinking !== 'string' || current.signatureStarted) return failure('schema', 'Invalid model thinking delta.', 'invalid_thinking')
               current.block.thinking = (current.block.thinking as string) + event.delta.thinking
               scanDelta(event.delta.thinking)
             } else if (current.block.type === 'thinking' && event.delta.type === 'signature_delta') {
-              supported(event.delta, ['type', 'signature'])
-              if (typeof event.delta.signature !== 'string') return failure('schema', 'Invalid model thinking signature delta.')
+              supported(event.delta, ['type', 'signature'], 'invalid_thinking')
+              if (typeof event.delta.signature !== 'string') return failure('schema', 'Invalid model thinking signature delta.', 'invalid_thinking')
               current.signatureStarted = true
               current.block.signature = (current.block.signature as string | undefined ?? '') + event.delta.signature
               scanDelta(event.delta.signature)
             } else if (current.block.type === 'tool_use' && event.delta.type === 'input_json_delta') {
               supported(event.delta, ['type', 'partial_json'])
-              if (typeof event.delta.partial_json !== 'string' || Object.keys(current.block.input as JsonObject).length) return failure('schema', 'Invalid model tool input delta.')
+              if (typeof event.delta.partial_json !== 'string' || Object.keys(current.block.input as JsonObject).length) return failure('schema', 'Invalid model tool input delta.', 'invalid_tool_call')
               current.partialJson = (current.partialJson ?? '') + event.delta.partial_json
               scanDelta(event.delta.partial_json)
               deltas.push({ type: 'tool_arguments_delta', callId: current.block.id as string, delta: event.delta.partial_json })
-            } else return failure('unsupported', 'The model returned an unsupported content delta.')
+            } else return failure('unsupported', 'The model returned an unsupported content delta.', current.block.type === 'thinking' ? 'invalid_thinking' : 'unsupported_content')
           }
           return
         }
         if (event.type === 'message_delta') {
+          setStage('completion')
           if (!object(event.delta) || blocks.some(block => !block.stopped)) return failure('schema', 'Invalid model message delta.')
           supported(event.delta, ['stop_reason', 'stop_sequence'])
           const reason = event.delta.stop_reason
@@ -301,12 +328,13 @@ export class AnthropicModel implements ModelPort {
           return
         }
         if (event.type === 'message_stop') {
+          setStage('completion')
           if (!stopReason || !blocks.length || blocks.some(block => !block.stopped)) return failure('interrupted', 'Model stream ended without a completed response.')
-          if ((stopReason === 'tool_use') !== (callIds.size > 0)) return failure('schema', 'Model tool calls differ from the completion reason.')
+          if ((stopReason === 'tool_use') !== (callIds.size > 0)) return failure('schema', 'Model tool calls differ from the completion reason.', 'invalid_tool_call')
           done = true
           return
         }
-        return failure('unsupported', 'The model returned an unsupported stream event.')
+        return failure('unsupported', 'The model returned an unsupported stream event.', 'unsupported_event')
       })
       while (true) {
         const chunk = await reader.read()
@@ -325,11 +353,11 @@ export class AnthropicModel implements ModelPort {
       const usage: Usage = {}
       if (tokenCounts.has('input_tokens')) {
         usage.inputTokens = (tokenCounts.get('input_tokens') ?? 0) + (tokenCounts.get('cache_creation_input_tokens') ?? 0) + (tokenCounts.get('cache_read_input_tokens') ?? 0)
-        if (!Number.isSafeInteger(usage.inputTokens)) return failure('schema', 'Invalid model usage count.')
+        if (!Number.isSafeInteger(usage.inputTokens)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
       }
       if (tokenCounts.has('output_tokens')) usage.outputTokens = tokenCounts.get('output_tokens')!
       if (usage.inputTokens !== undefined && usage.outputTokens !== undefined) {
-        if (!Number.isSafeInteger(usage.inputTokens + usage.outputTokens)) return failure('schema', 'Invalid model usage count.')
+        if (!Number.isSafeInteger(usage.inputTokens + usage.outputTokens)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
         usage.totalTokens = usage.inputTokens + usage.outputTokens
       }
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')

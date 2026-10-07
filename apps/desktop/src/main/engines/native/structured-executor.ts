@@ -706,7 +706,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           summary = extractNativeAssistantText(event.response.outputItems); foundResponse = true;
         } else if (event.type === 'model_request_started') startedAttempts.add(event.attempt);
         else if (event.type === 'model_request_failed') {
-          if (details.modelFailure === undefined) { details.modelFailure = event.failure.category; details.partial = event.partial; }
+          if (details.modelFailure === undefined) { details.modelFailure = event.failure.category; details.diagnostic = event.failure; details.partial = event.partial; }
           // A scheduled delay cancelled before the next durable attempt is not
           // an executed retry. Backward replay has already seen later starts.
           if (event.retryDelayMs !== undefined && startedAttempts.has(event.attempt + 1)) details.retries!++;

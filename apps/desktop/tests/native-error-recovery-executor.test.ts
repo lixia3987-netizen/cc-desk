@@ -16,9 +16,11 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 import { startResponsesFixture, functionCall, assistantMessage, responseEvents } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 // @ts-expect-error Local protocol fixture has no declarations.
 import { startChatCompletionsFixture, chatChunk } from '../../../packages/agent-node/tests/fixtures/chat-completions-server.mjs';
+// @ts-expect-error Local protocol fixture has no declarations.
+import { startAnthropicFixture } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
 
-type Protocol = 'responses' | 'chat-completions';
-type Scenario = 'recover' | 'unavailable' | 'authentication' | 'partial' | 'repeat-read' | 'repeat-failure';
+type Protocol = 'responses' | 'chat-completions' | 'anthropic';
+type Scenario = 'recover' | 'unavailable' | 'authentication' | 'partial' | 'repeat-read' | 'repeat-failure' | 'cached-continuation';
 const secret = 'sk-error-recovery-fixture-only';
 const unfinished = 'PARTIAL_NOT_A_COMPLETE_RESPONSE '.repeat(10);
 
@@ -26,8 +28,16 @@ async function fixture(protocol: Protocol, scenario: Scenario, options: { modelR
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-error-recovery-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
   await fs.writeFile(path.join(project, 'fixture.txt'), 'unchanged source\n');
-  const server = await (protocol === 'responses' ? startResponsesFixture : startChatCompletionsFixture)({ assertReplay: false,
+  const server = await (protocol === 'responses' ? startResponsesFixture : protocol === 'anthropic' ? startAnthropicFixture : startChatCompletionsFixture)({ assertReplay: false,
     handler: ({ index }: { index: number }) => {
+      if (scenario === 'cached-continuation') {
+        if (index === 0) return { content: [{ type: 'thinking', thinking: 'Read the original source.' },
+          { type: 'tool_use', id: 'only-read', name: 'read_file', input: { path: 'fixture.txt' } }] };
+        if (index === 1) return { content: [{ type: 'text', text: 'Read completed.' }] };
+        return { content: [{ type: 'text', text: 'Saved context continued with a cache hit.' }],
+          startMessage: { usage: { input_tokens: 213, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+          usage: { input_tokens: 0, output_tokens: 59, cache_read_input_tokens: 213, cache_creation_input_tokens: 0 } };
+      }
       if (scenario === 'unavailable') return { httpStatus: 503, raw: 'untrusted service body must not reach diagnostics' };
       if (scenario === 'authentication') return { httpStatus: 401, raw: secret };
       if (scenario === 'partial') return protocol === 'responses'
@@ -78,7 +88,7 @@ async function fixture(protocol: Protocol, scenario: Scenario, options: { modelR
   });
   let executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize();
   return { id, project, server, waits, waiting, get executor() { return executor; },
-    send: () => executor.send(id, 'Inspect the source once; do not change files.', [], undefined, { requestId: 'error-recovery-submission' }),
+    send: (requestId = 'error-recovery-submission') => executor.send(id, 'Inspect the source once; do not change files.', [], undefined, { requestId }),
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
       try { return { runs: ledger.listRuns(), records: ledger.replay(), context: ledger.loadContext(), recovery: ledger.getRecoveryReport() }; } finally { await ledger.close(); }
@@ -104,6 +114,31 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'unchanged source\n');
     await f.restart(); assert.equal((await f.send()).success, true); assert.equal(f.server.requests.length, 4);
     assert.deepEqual((await f.ledger()).context, ledger.context);
+  } finally { await f.dispose(); }
+});
+
+test('Anthropic: a saved thinking/tool conversation resumes after restart with input reclassified as a cache hit', async () => {
+  const f = await fixture('anthropic', 'cached-continuation');
+  try {
+    const first = await f.send(); assert.equal(first.success, true, JSON.stringify(first));
+    assert.equal(f.server.requests.length, 2);
+    const saved = await f.ledger();
+    assert.ok(saved.context);
+    assert.equal(saved.records.filter(record => record.event.type === 'tool_completed').length, 1);
+    await f.restart();
+    const continued = await f.send('cached-follow-up');
+    assert.equal(continued.success, true, JSON.stringify(continued));
+    assert.equal(f.server.requests.length, 3, 'cached usage must not cause retries or probes');
+    assert.deepEqual(f.server.requests[2].messages.slice(0, saved.context.items.length), saved.context.items);
+    const ledger = await f.ledger(), run = ledger.runs.at(-1)!.result!;
+    assert.equal(run.status, 'completed');
+    assert.deepEqual(run.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272 });
+    assert.equal(run.modelRequests, 1); assert.equal(run.toolCalls, 0);
+    assert.equal(ledger.records.filter(record => record.event.type === 'model_request_failed').length, 0);
+    assert.equal(ledger.records.filter(record => record.event.type === 'tool_completed').length, 1);
+    assert.deepEqual(f.waits, []); assert.deepEqual(f.server.errors, []);
+    await f.restart(); assert.equal((await f.send('cached-follow-up')).success, true); assert.equal(f.server.requests.length, 3);
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'unchanged source\n');
   } finally { await f.dispose(); }
 });
 
@@ -143,6 +178,14 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(JSON.stringify(f.executor.snapshot(f.id)).includes('PARTIAL_NOT_A_COMPLETE_RESPONSE'), false);
     const failure = ledger.records.find(record => record.event.type === 'model_request_failed');
     assert.ok(failure && failure.event.type === 'model_request_failed' && failure.event.partial);
+    assert.deepEqual(failure.event.failure, { category: 'protocol', retryable: false,
+      protocol: protocol === 'responses' ? 'openai-responses' : 'openai-chat-completions', stage: 'content', reason: 'missing_terminal' });
+    assert.match(result.error ?? '', /协议 (Responses|Chat Completions).*阶段 内容流.*未收到完整响应终态/);
+    await f.restart();
+    const replayed = await f.send();
+    assert.equal(replayed.success, false); assert.equal(f.server.requests.length, 1);
+    assert.match(replayed.error ?? '', /协议 (Responses|Chat Completions).*阶段 内容流.*未收到完整响应终态/);
+    assert.doesNotMatch(replayed.error ?? '', /PARTIAL_NOT_A_COMPLETE_RESPONSE|sk-error-recovery/);
   } finally { await f.dispose(); }
 });
 

@@ -116,6 +116,46 @@ test('max tokens, refusal and context limits never enable tools; cache tokens co
   assert.equal((await model.generate(request(model))).usage, null);
 });
 
+test('cumulative usage atomically reclassifies the initial input into cache counters', async t => {
+  for (const usage of [
+    { input_tokens: 0, output_tokens: 59, cache_read_input_tokens: 213, cache_creation_input_tokens: 0 },
+    { input_tokens: 13, output_tokens: 59, cache_read_input_tokens: 100, cache_creation_input_tokens: 100 },
+  ]) {
+    const { model, fixture } = await fixtureTest(t, {
+      startMessage: { usage: { input_tokens: 213, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, usage,
+    });
+    const response = await model.generate(request(model));
+    assert.deepEqual(response.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272 });
+    assert.equal(response.finishReason, 'completed');
+    assert.equal(fixture.requests.length, 1, 'usage reclassification needs no retry or protocol downgrade');
+    assert.deepEqual(fixture.errors, []);
+  }
+});
+
+test('partial cumulative usage updates preserve unspecified input and cache counters', async t => {
+  const events = anthropicEvents(undefined, { startMessage: { usage: { input_tokens: 13, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 100 } } });
+  events.splice(-2, 0, messageDelta(null, { output_tokens: 3 }));
+  const { model } = await fixtureTest(t, { events });
+  assert.deepEqual((await model.generate(request(model))).usage, { inputTokens: 213, outputTokens: 7, totalTokens: 220 });
+});
+
+for (const [name, usage] of [
+  ['input aggregate regression after cache reclassification', { input_tokens: 0, output_tokens: 59, cache_read_input_tokens: 212, cache_creation_input_tokens: 0 }],
+  ['output regression despite a stable input aggregate', { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 213, cache_creation_input_tokens: 0 }],
+  ['negative cache count', { cache_read_input_tokens: -1 }],
+  ['fractional cache count', { cache_read_input_tokens: 0.5 }],
+  ['input aggregate overflow', { input_tokens: Number.MAX_SAFE_INTEGER, cache_read_input_tokens: 1 }],
+  ['total usage overflow', { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 1 }],
+]) test(`usage rejects ${name} with finite completion diagnostics`, async t => {
+  const { model } = await fixtureTest(t, {
+    startMessage: { usage: { input_tokens: 213, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, usage,
+  });
+  await assert.rejects(model.generate(request(model)), error => {
+    assert.deepEqual(model.classifyError(error), { category: 'protocol', retryable: false, protocol: 'anthropic-messages', stage: 'completion', reason: 'invalid_usage' });
+    return true;
+  });
+});
+
 const faults = [
   ['truncated event', { raw: 'event: message_start\ndata: {"type":' }, 'interrupted'],
   ['missing message stop', { events: anthropicEvents().slice(0, -1) }, 'interrupted'],
@@ -232,7 +272,7 @@ test('socket loss while tool JSON is still streaming cannot return a tool call o
   const visible = [];
   await assert.rejects(model.generate(request(model, { onEvent: event => visible.push(event) })), error => {
     assert.equal(error.code, 'transport');
-    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false });
+    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false, protocol: 'anthropic-messages', stage: 'tool_call', reason: 'stream_disconnected' });
     return true;
   });
   assert.equal(fixture.requests.length, 1);
@@ -246,7 +286,7 @@ test('redirect:error never forwards credentials to a redirect target', async t =
     assert.equal(error.code, 'transport');
     assert.equal(error.cause, undefined);
     assert.equal(error.message, 'Model transport failed or returned invalid UTF-8.');
-    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false });
+    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false, protocol: 'anthropic-messages', stage: 'request', reason: 'stream_disconnected' });
     return true;
   });
   assert.equal(fixture.requests.length, 1);
@@ -258,7 +298,7 @@ test('only actual pre-stream HTTP 429 and temporary service failures grant retry
     const { model, fixture } = await fixtureTest(t, { httpStatus, raw: 'private-error-content' });
     await assert.rejects(model.generate(request(model)), error => {
       assert.equal(error.message, `Model service returned HTTP ${httpStatus}.`);
-      assert.deepEqual(model.classifyError(error), { category, httpStatus, retryable: [429, 502, 503, 504].includes(httpStatus) });
+      assert.deepEqual(model.classifyError(error), { category, httpStatus, retryable: [429, 502, 503, 504].includes(httpStatus), protocol: 'anthropic-messages', stage: 'response_headers' });
       return true;
     });
     assert.equal(fixture.requests.length, 1);
@@ -275,7 +315,7 @@ test('non-SSE, invalid UTF-8 and callback failures expose only fixed diagnostics
   const { model } = await fixtureTest(t);
   await assert.rejects(model.generate(request(model, { onEvent: () => { throw new AnthropicModelError('http', 'private-callback', 429); } })), error => {
     assert.equal(error.code, 'transport');
-    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false });
+    assert.deepEqual(model.classifyError(error), { category: 'network', retryable: false, protocol: 'anthropic-messages', stage: 'content', reason: 'stream_disconnected' });
     assert.equal(error.cause, undefined);
     assert.ok(!error.message.includes('private'));
     return true;

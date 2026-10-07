@@ -1,6 +1,6 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
 import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
-import { classifyNativeModelFailure } from './model-failure.js'
+import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 import { validateResponsesImageInputs } from './context-maintenance.js'
 
 export interface ResponsesModelOptions {
@@ -30,7 +30,10 @@ export class ResponsesModelError extends Error {
 // arbitrary exceptions, including a manually constructed adapter error.
 const rejectedHttpRequests = new WeakMap<ResponsesModelError, number>()
 
-const failure = (code: string, message: string): never => { throw new ResponsesModelError(code, message) }
+const failure = (code: string, message: string, reason: ModelFailureReason | undefined = defaultModelFailureReason(code)): never => {
+  const error = new ResponsesModelError(code, message)
+  throw reason === undefined ? error : describeNativeModelFailure(error, { reason })
+}
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value)
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const positive = (value: number | undefined, fallback: number, maximum: number): number => {
@@ -60,7 +63,7 @@ class EventStreamParser {
   }
   finish(): void {
     // An unterminated event is not a complete protocol response.
-    if (this.line.length || this.data.length) failure('interrupted', 'The model stream ended inside an event.')
+    if (this.line.length || this.data.length) failure('interrupted', 'The model stream ended inside an event.', 'truncated_event')
   }
   private consumeLine(): void {
     const line = this.line
@@ -95,12 +98,12 @@ function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
 
 function usageFrom(value: JsonValue | undefined): Usage | null {
   if (value === null || value === undefined) return null
-  if (!object(value)) return failure('schema', 'Invalid model usage record.')
+  if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
   const result: Usage = {}
   for (const [provider, local] of [['input_tokens', 'inputTokens'], ['output_tokens', 'outputTokens'], ['total_tokens', 'totalTokens']] as const) {
     const count = value[provider]
     if (count === undefined || count === null) continue
-    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.')
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
     result[local] = count
   }
   return Object.keys(result).length ? result : null
@@ -221,7 +224,7 @@ function completeResponse(response: JsonObject): ModelResponse {
     if (item.status !== undefined && item.status !== 'completed') return failure('incomplete', 'The model returned an incomplete output item.')
     if (item.type === 'function_call') {
       if (!nonempty(item.call_id) || !nonempty(item.name) || typeof item.arguments !== 'string' || ids.has(item.call_id)) {
-        return failure('schema', 'Invalid or duplicate model tool call.')
+        return failure('schema', 'Invalid or duplicate model tool call.', 'invalid_tool_call')
       }
       // Preserve even an unknown function name or malformed argument string.
       // Core durably records the complete response before rejecting that call;
@@ -300,13 +303,22 @@ export class ResponsesModel implements ModelPort {
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof ResponsesModelError)) return { category: 'unknown', retryable: false }
     const status = rejectedHttpRequests.get(error)
-    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus)
-      : classifyNativeModelFailure('http', status, true)
+    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus, false, nativeModelFailureDetails(error))
+      : classifyNativeModelFailure('http', status, true, nativeModelFailureDetails(error))
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
+    let stage: ModelFailureStage = 'request'
+    try { return await this.generateResponse(request, value => { stage = value }) }
+    catch (error) {
+      if (error instanceof ResponsesModelError) throw describeNativeModelFailure(error, { protocol: 'openai-responses', stage })
+      throw error
+    }
+  }
+
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
-      return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
+      return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
     }
     try { validateResponsesImageInputs(request.context) } catch {
       return failure('protocol', 'The saved conversation contains unsupported image inputs.')
@@ -339,6 +351,7 @@ export class ResponsesModel implements ModelPort {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
       if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`
       const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
         const error = new ResponsesModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
@@ -347,8 +360,9 @@ export class ResponsesModel implements ModelPort {
       }
       if (!response.body || !/^text\/event-stream(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel()
-        return failure('schema', 'Model service did not return an event stream.')
+        return failure('schema', 'Model service did not return an event stream.', 'unexpected_content_type')
       }
+      setStage('message_start')
       reader = response.body.getReader()
       const decoder = new TextDecoder('utf-8', { fatal: true })
       let bytes = 0
@@ -361,44 +375,50 @@ export class ResponsesModel implements ModelPort {
       const calls = new Map<number, { itemId: string; callId: string }>()
       const parser = new EventStreamParser((data, eventName) => {
         if (data === '[DONE]') {
+          setStage('completion')
           if (!result) failure('interrupted', 'Model stream ended without a completed response.')
           return
         }
         let event: unknown
-        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.') }
+        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.', 'invalid_json') }
         assertNoModelCredential(event, this.#apiKey)
         if (!object(event) || !nonempty(event.type) || (eventName && eventName !== 'message' && eventName !== event.type)) return failure('schema', 'Invalid model stream event.')
-        if (result) return failure('schema', 'Model sent data after the completed response.')
+        if (result) return failure('schema', 'Model sent data after the completed response.', 'invalid_sequence')
         if (event.type === 'error' || event.type === 'response.failed') return failure('provider', 'Model service reported a failed response.')
-        if (event.type === 'response.incomplete') return failure('incomplete', 'Model response was incomplete.')
+        if (event.type === 'response.incomplete') { setStage('completion'); return failure('incomplete', 'Model response was incomplete.') }
         if (event.type === 'response.refusal.delta' || event.type === 'response.refusal.done') {
           const refusal = event.type === 'response.refusal.delta' ? event.delta : event.refusal
           if (typeof refusal !== 'string') return failure('schema', 'Invalid model refusal event.')
           refused = true
         }
         if (event.type === 'response.created' || event.type === 'response.in_progress') {
+          setStage('message_start')
           if (!object(event.response) || !nonempty(event.response.id)) return failure('schema', 'Invalid model response identity.')
-          if (responseId && responseId !== event.response.id) return failure('schema', 'Model response identity changed.')
+          if (responseId && responseId !== event.response.id) return failure('schema', 'Model response identity changed.', 'invalid_sequence')
           responseId = event.response.id
         }
         if (event.response_id !== undefined && (!nonempty(event.response_id) || (responseId && event.response_id !== responseId))) return failure('schema', 'Model event response identity mismatch.')
         if (event.type === 'response.output_item.added') {
+          setStage(object(event.item) && event.item.type === 'function_call' ? 'tool_call' : object(event.item) && event.item.type === 'reasoning' ? 'thinking' : 'content')
           if (!Number.isSafeInteger(event.output_index) || (event.output_index as number) < 0 || !object(event.item) || !nonempty(event.item.type)) return failure('schema', 'Invalid added model output item.')
           if (event.item.type === 'function_call') {
-            if (!nonempty(event.item.id) || !nonempty(event.item.call_id) || calls.has(event.output_index as number)) return failure('schema', 'Invalid streaming model tool call.')
+            if (!nonempty(event.item.id) || !nonempty(event.item.call_id) || calls.has(event.output_index as number)) return failure('schema', 'Invalid streaming model tool call.', 'invalid_tool_call')
             calls.set(event.output_index as number, { itemId: event.item.id, callId: event.item.call_id })
           }
         }
         if (event.type === 'response.output_text.delta') {
+          setStage('content')
           if (typeof event.delta !== 'string') return failure('schema', 'Invalid model text delta.')
           deltas.push({ type: 'text_delta', text: event.delta })
         }
         if (event.type === 'response.function_call_arguments.delta') {
+          setStage('tool_call')
           const call = calls.get(event.output_index as number)
-          if (!call || event.item_id !== call.itemId || typeof event.delta !== 'string') return failure('schema', 'Invalid model tool argument delta.')
+          if (!call || event.item_id !== call.itemId || typeof event.delta !== 'string') return failure('schema', 'Invalid model tool argument delta.', 'invalid_tool_call')
           deltas.push({ type: 'tool_arguments_delta', callId: call.callId, delta: event.delta })
         }
         if (event.type === 'response.completed') {
+          setStage('completion')
           if (!object(event.response) || (responseId && event.response.id !== responseId)) return failure('schema', 'Invalid completed model response identity.')
           result = completeResponse(event.response)
           const displayText: string[] = []
@@ -417,7 +437,7 @@ export class ResponsesModel implements ModelPort {
           if (refused) result.finishReason = 'refused'
           for (const [index, call] of calls) {
             const item = result.outputItems[index]
-            if (!object(item) || item.type !== 'function_call' || item.id !== call.itemId || item.call_id !== call.callId) return failure('schema', 'Completed tool calls differ from the model stream.')
+            if (!object(item) || item.type !== 'function_call' || item.id !== call.itemId || item.call_id !== call.callId) return failure('schema', 'Completed tool calls differ from the model stream.', 'invalid_tool_call')
           }
         }
         // Unknown event types are forward-compatible display metadata. Only a

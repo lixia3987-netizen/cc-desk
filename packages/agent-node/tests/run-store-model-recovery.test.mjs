@@ -33,6 +33,20 @@ test('model attempts record each failed paid possibility without fake response o
   assert.deepEqual(result.usage, null); assert.equal(result.modelRequests, 2);
 });
 
+test('finite protocol diagnostics survive durable failure and reopening without remote content or retry permission', async t => {
+  const f = await fixture(t), diagnostic = { category: 'protocol', retryable: false, protocol: 'openai-responses', stage: 'content', reason: 'invalid_json' };
+  await f.append(started(1));
+  for (const key of ['reason', 'stage', 'protocol']) await assert.rejects(f.append(failed(1, { failure: { ...diagnostic, [key]: 'private-response-key-url' } })), { code: 'invalid_record' });
+  await f.append(failed(1, { failure: diagnostic, partial: true }));
+  await f.finish(1, { status: 'failed', reason: 'model_protocol', usage: null });
+  await f.reopen();
+  const recorded = f.store.replay().find(record => record.event.type === 'model_request_failed');
+  assert.deepEqual(recorded.event.failure, diagnostic);
+  assert.equal(f.store.lookupSubmission(f.req.identity.requestId).result.status, 'failed');
+  assert.equal(f.store.recoveryRequired, false);
+  assert.ok(!JSON.stringify(f.store.replay()).includes('private-response-key-url'));
+});
+
 test('strict attempts reject reused identity, mismatched outcome, concurrent request and forged terminal', async t => {
   const f = await fixture(t);
   await assert.rejects(f.append(started(2)), { code: 'invalid_record' });

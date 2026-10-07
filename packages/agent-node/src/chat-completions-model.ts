@@ -1,8 +1,8 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
+import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
 import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { chatCompletionsPendingCalls } from './context-maintenance.js'
-import { classifyNativeModelFailure } from './model-failure.js'
+import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 
 /** API base excludes /chat/completions. Limits and credential policy match Responses. */
 export type ChatCompletionsModelOptions = ResponsesModelOptions
@@ -17,7 +17,10 @@ export class ChatCompletionsModelError extends Error {
 
 const rejectedHttpRequests = new WeakMap<ChatCompletionsModelError, number>()
 
-const failure = (code: string, message: string): never => { throw new ChatCompletionsModelError(code, message) }
+const failure = (code: string, message: string, reason: ModelFailureReason | undefined = defaultModelFailureReason(code)): never => {
+  const error = new ChatCompletionsModelError(code, message)
+  throw reason === undefined ? error : describeNativeModelFailure(error, { reason })
+}
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value)
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0
 const positive = (value: number | undefined, fallback: number, maximum: number): number => {
@@ -49,7 +52,7 @@ class EventStreamParser {
     }
   }
   finish(): void {
-    if (this.line.length || this.data.length) failure('interrupted', 'The model stream ended inside an event.')
+    if (this.line.length || this.data.length) failure('interrupted', 'The model stream ended inside an event.', 'truncated_event')
   }
   private consumeLine(): void {
     const line = this.line
@@ -83,12 +86,12 @@ function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
 }
 
 function usageFrom(value: JsonValue): Usage | null {
-  if (!object(value)) return failure('schema', 'Invalid model usage record.')
+  if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
   const result: Usage = {}
   for (const [provider, local] of [['prompt_tokens', 'inputTokens'], ['completion_tokens', 'outputTokens'], ['total_tokens', 'totalTokens']] as const) {
     const count = value[provider]
     if (count === undefined || count === null) continue
-    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.')
+    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
     result[local] = count
   }
   return Object.keys(result).length ? result : null
@@ -158,19 +161,27 @@ export class ChatCompletionsModel implements ModelPort {
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof ChatCompletionsModelError)) return { category: 'unknown', retryable: false }
     const status = rejectedHttpRequests.get(error)
-    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus)
-      : classifyNativeModelFailure('http', status, true)
+    return status === undefined ? classifyNativeModelFailure(error.code, error.httpStatus, false, nativeModelFailureDetails(error))
+      : classifyNativeModelFailure('http', status, true, nativeModelFailureDetails(error))
   }
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
+    let stage: ModelFailureStage = 'request'
+    try { return await this.generateResponse(request, value => { stage = value }) }
+    catch (error) {
+      if (error instanceof ChatCompletionsModelError) throw describeNativeModelFailure(error, { protocol: 'openai-chat-completions', stage })
+      throw error
+    }
+  }
+
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
-      return failure('protocol', 'The saved conversation uses an incompatible model protocol.')
+      return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
     }
-    try {
-      if (chatCompletionsPendingCalls(request.context).length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.')
-    } catch {
-      return failure('protocol', 'The saved conversation contains unsupported or incomplete model messages.')
-    }
+    let pendingCalls: ToolCall[]
+    try { pendingCalls = chatCompletionsPendingCalls(request.context) }
+    catch { return failure('protocol', 'The saved conversation contains unsupported or incomplete model messages.', 'invalid_history') }
+    if (pendingCalls.length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.', 'pending_tool_calls')
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(chatTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
     const body = JSON.stringify({
@@ -193,6 +204,7 @@ export class ChatCompletionsModel implements ModelPort {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
       if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`
       const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
         const error = new ChatCompletionsModelError(response.status >= 300 && response.status < 400 ? 'redirect' : 'http', `Model service returned HTTP ${response.status}.`, response.status)
@@ -201,8 +213,9 @@ export class ChatCompletionsModel implements ModelPort {
       }
       if (!response.body || !/^text\/event-stream(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
         await response.body?.cancel()
-        return failure('schema', 'Model service did not return an event stream.')
+        return failure('schema', 'Model service did not return an event stream.', 'unexpected_content_type')
       }
+      setStage('message_start')
       reader = response.body.getReader()
       const decoder = new TextDecoder('utf-8', { fatal: true })
       let bytes = 0
@@ -218,21 +231,22 @@ export class ChatCompletionsModel implements ModelPort {
         try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
       })
       const parser = new EventStreamParser((data, eventName) => {
-        if (done) failure('schema', 'Model sent data after the completed stream.')
+        if (done) failure('schema', 'Model sent data after the completed stream.', 'invalid_sequence')
         if (data === '[DONE]') {
+          setStage('completion')
           if (!finished) failure('interrupted', 'Model stream ended without a completed response.')
           done = true
           return
         }
         let event: unknown
-        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.') }
+        try { event = JSON.parse(data) } catch { return failure('schema', 'Invalid model event JSON.', 'invalid_json') }
         guard(event, this.#apiKey)
         if (!object(event)) return failure('schema', 'Invalid model stream event.')
         if (event.error !== undefined || eventName === 'error') return failure('provider', 'Model service reported a failed response.')
         if ((eventName && eventName !== 'message') || event.object !== 'chat.completion.chunk' || !nonempty(event.id) || !Array.isArray(event.choices)) {
           return failure('schema', 'Invalid model stream event.')
         }
-        if (responseId && responseId !== event.id) return failure('schema', 'Model response identity changed.')
+        if (responseId && responseId !== event.id) return failure('schema', 'Model response identity changed.', 'invalid_sequence')
         responseId = event.id
         if (event.choices.length > 1) return failure('schema', 'The model returned multiple choices.')
         if (event.choices.length) {
@@ -240,6 +254,9 @@ export class ChatCompletionsModel implements ModelPort {
           const choice = event.choices[0]
           if (!object(choice) || choice.index !== 0 || !object(choice.delta)) return failure('schema', 'Invalid model choice.')
           const delta = choice.delta
+          setStage(delta.tool_calls !== undefined && delta.tool_calls !== null ? 'tool_call'
+            : delta.content !== undefined && delta.content !== null || delta.refusal !== undefined && delta.refusal !== null ? 'content'
+              : delta.role !== undefined ? 'message_start' : 'content')
           assertSupportedFields(delta, supportedDelta)
           if (delta.role !== undefined && delta.role !== 'assistant') return failure('schema', 'Invalid model message role.')
           if (delta.content !== undefined && delta.content !== null) {
@@ -253,29 +270,29 @@ export class ChatCompletionsModel implements ModelPort {
             guard(refusal, this.#apiKey)
           }
           if (delta.tool_calls !== undefined && delta.tool_calls !== null) {
-            if (!Array.isArray(delta.tool_calls)) return failure('schema', 'Invalid model tool call deltas.')
+            if (!Array.isArray(delta.tool_calls)) return failure('schema', 'Invalid model tool call deltas.', 'invalid_tool_call')
             for (const item of delta.tool_calls) {
-              if (!object(item) || !Number.isSafeInteger(item.index) || (item.index as number) < 0 || (item.index as number) >= 256) return failure('schema', 'Invalid model tool call index.')
+              if (!object(item) || !Number.isSafeInteger(item.index) || (item.index as number) < 0 || (item.index as number) >= 256) return failure('schema', 'Invalid model tool call index.', 'invalid_tool_call')
               assertSupportedFields(item, supportedCall)
               const index = item.index as number
               let call = calls.get(index)
               if (!call) {
-                if (!nonempty(item.id) || item.type !== 'function') return failure('schema', 'Invalid streaming model tool identity.')
+                if (!nonempty(item.id) || item.type !== 'function') return failure('schema', 'Invalid streaming model tool identity.', 'invalid_tool_call')
                 call = { id: item.id, name: '', arguments: '', type: 'function' }
                 calls.set(index, call)
               } else if ((item.id !== undefined && item.id !== call.id) || (item.type !== undefined && item.type !== 'function')) {
-                return failure('schema', 'Model tool identity changed.')
+                return failure('schema', 'Model tool identity changed.', 'invalid_tool_call')
               }
               if (item.function !== undefined) {
-                if (!object(item.function)) return failure('schema', 'Invalid streaming model function.')
+                if (!object(item.function)) return failure('schema', 'Invalid streaming model function.', 'invalid_tool_call')
                 assertSupportedFields(item.function, supportedFunction)
                 if (item.function.name !== undefined) {
-                  if (typeof item.function.name !== 'string') return failure('schema', 'Invalid streaming model function name.')
+                  if (typeof item.function.name !== 'string') return failure('schema', 'Invalid streaming model function name.', 'invalid_tool_call')
                   call.name += item.function.name
                   guard(call.name, this.#apiKey)
                 }
                 if (item.function.arguments !== undefined) {
-                  if (typeof item.function.arguments !== 'string') return failure('schema', 'Invalid model tool argument delta.')
+                  if (typeof item.function.arguments !== 'string') return failure('schema', 'Invalid model tool argument delta.', 'invalid_tool_call')
                   call.arguments += item.function.arguments
                   deltas.push({ type: 'tool_arguments_delta', callId: call.id, delta: item.function.arguments })
                 }
@@ -283,12 +300,14 @@ export class ChatCompletionsModel implements ModelPort {
             }
           }
           if (choice.finish_reason !== undefined && choice.finish_reason !== null) {
+            setStage('completion')
             if (!['stop', 'tool_calls', 'length', 'content_filter'].includes(choice.finish_reason as string)) return failure('unsupported', 'The model returned an unsupported completion reason.')
             finished = choice.finish_reason as ChatFinishReason
           }
-        } else if (!finished || event.usage === undefined || event.usage === null) return failure('schema', 'Invalid model usage chunk.')
+        } else if (!finished || event.usage === undefined || event.usage === null) return failure('schema', 'Invalid model usage chunk.', 'invalid_usage')
         if (event.usage !== undefined && event.usage !== null) {
-          if (!finished || seenUsage) return failure('schema', 'Invalid repeated or premature model usage.')
+          setStage('completion')
+          if (!finished || seenUsage) return failure('schema', 'Invalid repeated or premature model usage.', 'invalid_usage')
           usage = usageFrom(event.usage)
           seenUsage = true
         }
@@ -308,11 +327,11 @@ export class ChatCompletionsModel implements ModelPort {
       const ordered = [...calls].sort(([left], [right]) => left - right)
       const ids = new Set<string>()
       const toolCalls: ToolCall[] = ordered.map(([index, call], ordinal) => {
-        if (index !== ordinal || !nonempty(call.name) || ids.has(call.id)) return failure('schema', 'Invalid or duplicate completed model tool call.')
+        if (index !== ordinal || !nonempty(call.name) || ids.has(call.id)) return failure('schema', 'Invalid or duplicate completed model tool call.', 'invalid_tool_call')
         ids.add(call.id)
         return { id: call.id, name: call.name, arguments: call.arguments }
       })
-      if ((finished === 'tool_calls' && !toolCalls.length) || (finished === 'stop' && toolCalls.length)) return failure('schema', 'Model tool calls differ from the completion reason.')
+      if ((finished === 'tool_calls' && !toolCalls.length) || (finished === 'stop' && toolCalls.length)) return failure('schema', 'Model tool calls differ from the completion reason.', 'invalid_tool_call')
       const message: JsonObject = { role: 'assistant', content: text }
       if (refusal !== null) message.refusal = refusal
       if (toolCalls.length) message.tool_calls = toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }))

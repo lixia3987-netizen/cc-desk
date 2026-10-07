@@ -57,10 +57,20 @@ export interface ModelResponse {
   usage: Usage | null
 }
 /** Sanitized transport classification; never contains provider text, URLs or headers. */
+export type ModelFailureProtocol = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages'
+export type ModelFailureStage = 'request' | 'response_headers' | 'message_start' | 'content' | 'thinking' | 'tool_call' | 'completion'
+export type ModelFailureReason =
+  | 'protocol_mismatch' | 'invalid_history' | 'pending_tool_calls' | 'invalid_json' | 'invalid_event' | 'invalid_sequence'
+  | 'unsupported_event' | 'unsupported_content' | 'invalid_thinking' | 'invalid_tool_call' | 'invalid_usage'
+  | 'missing_terminal' | 'truncated_event' | 'stream_disconnected' | 'unexpected_content_type' | 'incomplete_response' | 'response_limit'
 export interface ModelFailureDiagnostic {
   category: 'authentication' | 'configuration' | 'rate_limit' | 'service_unavailable' | 'service_error' | 'protocol' | 'network' | 'timeout' | 'security' | 'unknown'
   httpStatus?: number
   retryable: boolean
+  /** Optional for legacy journals; adapter-owned finite values only. */
+  protocol?: ModelFailureProtocol
+  stage?: ModelFailureStage
+  reason?: ModelFailureReason
 }
 export interface ToolResult {
   status: 'completed' | 'failed' | 'denied' | 'cancelled' | 'not_executed' | 'unknown'
@@ -180,6 +190,8 @@ export interface RuntimeHost {
   deadline(timeoutMs: number, parent: AbortSignal): Deadline
   /** Cancellable backoff. Without this capability automatic retries stay disabled. */
   wait?(milliseconds: number, signal: AbortSignal): Promise<void>
+  /** Reserve shared parent capacity before model-request/tool-preparation journal records; false means exhausted. */
+  consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>
   emit(event: AgentEvent): void | Promise<void>
 }
 export interface AgentRunRequest {

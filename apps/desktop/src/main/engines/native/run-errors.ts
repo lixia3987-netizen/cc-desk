@@ -1,4 +1,4 @@
-import type { ModelFailureDiagnostic } from '@cc-desk/agent-core';
+import { validateModelFailureDiagnostic, type ModelFailureDiagnostic } from '@cc-desk/agent-core';
 
 type ModelFailureCategory = ModelFailureDiagnostic['category'];
 const MODEL_FAILURE_LABELS: Record<ModelFailureCategory, string> = {
@@ -19,6 +19,29 @@ const MODEL_FAILURE_MESSAGES: Record<ModelFailureCategory, string> = {
   unknown: '模型请求发生无法确认原因的错误，已停止本回合。请核查连接与原始记录，再决定后续操作；不会自动重试或重放工具。',
 };
 const PARTIAL_OUTPUT_MESSAGE = '本次未完成的模型输出已丢弃，不会与后续响应拼接。';
+const PROTOCOL_LABELS: Record<NonNullable<ModelFailureDiagnostic['protocol']>, string> = {
+  'openai-responses': 'Responses', 'openai-chat-completions': 'Chat Completions', 'anthropic-messages': 'Anthropic Messages',
+};
+const STAGE_LABELS: Record<NonNullable<ModelFailureDiagnostic['stage']>, string> = {
+  request: '请求准备与发送', response_headers: '响应头', message_start: '消息开始', content: '内容流',
+  thinking: 'thinking / 签名', tool_call: '工具调用与参数', completion: '响应终态',
+};
+const REASON_LABELS: Record<NonNullable<ModelFailureDiagnostic['reason']>, string> = {
+  protocol_mismatch: '历史协议与当前连接不一致', invalid_history: '历史消息不完整或含不支持内容', pending_tool_calls: '历史工具调用尚未闭合',
+  invalid_json: '流事件 JSON 无效', invalid_event: '响应字段或事件格式无效', invalid_sequence: '响应事件顺序或身份不一致',
+  unsupported_event: '流事件类型不受支持', unsupported_content: '响应内容或字段不受支持', invalid_thinking: 'thinking 或签名格式、顺序无效',
+  invalid_tool_call: '工具调用身份或参数格式无效', invalid_usage: '服务用量格式无效', missing_terminal: '未收到完整响应终态',
+  truncated_event: '连接在完整流事件结束前关闭', stream_disconnected: '连接、解码或流回调中断', unexpected_content_type: '服务未返回 SSE 响应',
+  incomplete_response: '服务标记响应未完成', response_limit: '响应超过本地字节上限',
+};
+function diagnosticMessage(value: unknown): string {
+  if (!validateModelFailureDiagnostic(value)) return '';
+  const details: string[] = [];
+  if (value.protocol) details.push(`协议 ${PROTOCOL_LABELS[value.protocol]}`);
+  if (value.stage) details.push(`阶段 ${STAGE_LABELS[value.stage]}`);
+  if (value.reason) details.push(`原因：${REASON_LABELS[value.reason]}`);
+  return details.length ? `诊断：${details.join('；')}。` : '';
+}
 function modelFailureCategory(value: unknown): ModelFailureCategory {
   return typeof value === 'string' && Object.hasOwn(MODEL_FAILURE_LABELS, value) ? value as ModelFailureCategory : 'unknown';
 }
@@ -28,6 +51,7 @@ export interface NativeRunErrorDetails {
   modelRequests?: number;
   toolCalls?: number;
   modelFailure?: string;
+  diagnostic?: ModelFailureDiagnostic;
   retries?: number;
   partial?: boolean;
 }
@@ -39,8 +63,9 @@ export function nativeModelFailureMessage(failure: ModelFailureDiagnostic, parti
     ((category === 'rate_limit' && failure.httpStatus === 429) ||
       (category === 'service_unavailable' && [502, 503, 504].includes(failure.httpStatus ?? 0))) &&
     (retryDelayMs === 500 || retryDelayMs === 1500);
-  if (safeRetry) return `模型请求失败：${MODEL_FAILURE_LABELS[category]}。将在 ${retryDelayMs} 毫秒后进行本回合有界重试，等待期间可取消；整个回合最多额外请求 2 次。每次请求可能计费，计入模型请求次数与执行时长；不会重放本地工具。`;
-  return `${MODEL_FAILURE_MESSAGES[category]}${partial ? PARTIAL_OUTPUT_MESSAGE : ''}`;
+  const diagnostic = diagnosticMessage(failure);
+  if (safeRetry) return `模型请求失败：${MODEL_FAILURE_LABELS[category]}。将在 ${retryDelayMs} 毫秒后进行本回合有界重试，等待期间可取消；整个回合最多额外请求 2 次。每次请求可能计费，计入模型请求次数与执行时长；不会重放本地工具。${diagnostic}`;
+  return `${MODEL_FAILURE_MESSAGES[category]}${diagnostic}${partial ? PARTIAL_OUTPUT_MESSAGE : ''}`;
 }
 
 /** Stable runtime reasons remain in the native ledger; the desktop shows actionable explanations. */
@@ -73,7 +98,9 @@ export function nativeRunError(reason: string, details?: NativeRunErrorDetails):
     store_model_request_failed_failed: '模型请求失败回执未可靠保存，已暂停执行，请核查原始记录与恢复状态。请求结果和费用可能尚未确认，不会自动重试或重放工具。',
   };
   let message = Object.hasOwn(messages, reason) ? messages[reason] : reason;
-  if (details?.modelFailure !== undefined) message += `最近一次模型错误：${MODEL_FAILURE_LABELS[modelFailureCategory(details.modelFailure)]}。`;
+  if (validateModelFailureDiagnostic(details?.diagnostic)) {
+    message += `最近一次模型错误：${MODEL_FAILURE_LABELS[details.diagnostic.category]}。${diagnosticMessage(details.diagnostic)}`;
+  } else if (details?.modelFailure !== undefined) message += `最近一次模型错误：${MODEL_FAILURE_LABELS[modelFailureCategory(details.modelFailure)]}。`;
   const counts: string[] = [];
   if (validCount(details?.modelRequests)) counts.push(`模型请求 ${details.modelRequests} 次`);
   if (validCount(details?.toolCalls)) counts.push(`工具调用 ${details.toolCalls} 次`);

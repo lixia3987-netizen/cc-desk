@@ -88,6 +88,18 @@ test('blocking summaries only include stable categories and valid durable counte
   assert.doesNotMatch(nativeRunError('model_retry_exhausted', { retries: 3 }), /已执行有限重试/);
 });
 
+test('adapter diagnostics explain protocol, thinking, tool continuation and terminal failures without accepting raw detail', () => {
+  const base: ModelFailureDiagnostic = { category: 'protocol', retryable: false, protocol: 'anthropic-messages', stage: 'thinking', reason: 'invalid_thinking' };
+  assert.match(nativeModelFailureMessage(base, false), /协议 Anthropic Messages；阶段 thinking \/ 签名；原因：thinking 或签名格式、顺序无效/);
+  assert.match(nativeRunError('model_protocol', { diagnostic: { ...base, stage: 'tool_call', reason: 'pending_tool_calls' } }), /历史工具调用尚未闭合/);
+  assert.match(nativeRunError('model_protocol', { diagnostic: { ...base, stage: 'completion', reason: 'missing_terminal' } }), /未收到完整响应终态/);
+  for (const key of ['protocol', 'stage', 'reason']) {
+    const unsafe = { ...base, [key]: 'https://private.invalid/sk-private-body' };
+    assert.doesNotMatch(nativeModelFailureMessage(unsafe, false), /private|诊断：/);
+    assert.doesNotMatch(nativeRunError('model_protocol', { diagnostic: unsafe }), /private|诊断：/);
+  }
+});
+
 test('tool and persistence blockers keep unknown effects under explicit user control', () => {
   for (const reason of ['tool_failure_repeated', 'tool_no_progress']) {
     assert.match(nativeRunError(reason), /已停止本回合/);

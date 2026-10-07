@@ -652,6 +652,19 @@ test('model diagnostics reject raw fields, inconsistent HTTP classes and unsafe 
     { category: 'network', retryable: false }, { category: 'unknown', retryable: false }]) assert.equal(validateModelFailureDiagnostic(value), true)
 })
 
+test('diagnostic details accept bounded adapter enums and reject remote content in every new field', () => {
+  const diagnostic = { category: 'protocol', retryable: false, protocol: 'anthropic-messages', stage: 'thinking', reason: 'invalid_thinking' }
+  assert.equal(validateModelFailureDiagnostic(diagnostic), true)
+  assert.equal(validateModelFailureDiagnostic({ category: 'network', retryable: false, protocol: 'openai-responses', stage: 'tool_call', reason: 'stream_disconnected' }), true)
+  for (const key of ['protocol', 'stage', 'reason']) {
+    for (const value of ['https://private.invalid/key', 'sk-private-body', '', '__proto__', 1, null, {}, []]) {
+      assert.equal(validateModelFailureDiagnostic({ ...diagnostic, [key]: value }), false)
+    }
+  }
+  for (const key of ['message', 'url', 'body', 'headers', 'credential']) assert.equal(validateModelFailureDiagnostic({ ...diagnostic, [key]: 'private' }), false)
+  assert.equal(validateModelFailureDiagnostic({ ...diagnostic, retryable: true }), false, 'details cannot authorize protocol retries')
+})
+
 test('model attempt is durable before network and failed attempts have unknown aggregate usage', async () => {
   const f = retryFixture()
   let count = 0
