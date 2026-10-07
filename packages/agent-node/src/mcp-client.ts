@@ -79,6 +79,31 @@ class SseParser {
 
 interface Operation { signal: AbortSignal; sentCall: boolean; bytes: number; serverPings: number }
 
+/** Explicitly join body cancellation even when fetch does not forward its abort. */
+function responseReader(response: Response, signal: AbortSignal): {
+  reader: ReadableStreamDefaultReader<Uint8Array>
+  close(): Promise<void>
+} | undefined {
+  const reader = response.body?.getReader()
+  if (!reader) return undefined
+  let cancellation: Promise<void> | undefined
+  const cancel = (): void => { cancellation ??= reader.cancel().catch(() => undefined) }
+  signal.addEventListener('abort', cancel, { once: true })
+  // Abort can occur between fetch resolving and this body acquiring its reader.
+  if (signal.aborted) cancel()
+  return {
+    reader,
+    async close() {
+      signal.removeEventListener('abort', cancel)
+      cancel()
+      // A second reader.cancel() may resolve while the first upstream cleanup
+      // is still pending. Join the original promise before releasing ownership.
+      await cancellation
+      reader.releaseLock()
+    },
+  }
+}
+
 export class McpHttpClient {
   readonly #endpoint: string
   readonly #bearerToken: string | undefined
@@ -299,17 +324,18 @@ export class McpHttpClient {
     if (Buffer.byteLength(body) > LIMIT.requestBytes) fail('request_limit')
     const response = await fetch(this.#endpoint, { method: 'POST', headers: this.headers(typeof message.method === 'string' ? message.method : undefined),
       body, signal, redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
-    const reader = response.body?.getReader()
+    const bodyReader = responseReader(response, signal)
+    const reader = bodyReader?.reader
     try {
       this.checkSession(response)
       if (response.status !== 202) fail('http_error')
       if (reader) {
         const first = await reader.read()
+        if (signal.aborted) fail('cancelled')
         if (!first.done) fail('response_schema')
       }
     } finally {
-      await reader?.cancel().catch(() => undefined)
-      reader?.releaseLock()
+      await bodyReader?.close()
     }
   }
 
@@ -335,11 +361,13 @@ export class McpHttpClient {
     // Once fetch receives a call, transport failures cannot prove whether it executed.
     if (method === 'tools/call') operation.sentCall = true
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+    let bodyReader: ReturnType<typeof responseReader>
     let received = false
     try {
       const response = await fetch(this.#endpoint, { method: 'POST', headers: this.headers(method, extraHeaders), body, signal: operation.signal,
         redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
-      reader = response.body?.getReader()
+      bodyReader = responseReader(response, operation.signal)
+      reader = bodyReader?.reader
       this.checkSession(response, method === 'initialize')
       if (!reader) fail('response_empty')
       const contentType = response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase()
@@ -364,6 +392,7 @@ export class McpHttpClient {
       }) : undefined
       while (true) {
         const chunk = await reader.read()
+        if (operation.signal.aborted) fail('cancelled')
         if (chunk.done) break
         bytes += chunk.value.byteLength
         operation.bytes += chunk.value.byteLength
@@ -383,8 +412,7 @@ export class McpHttpClient {
       received = true
       return result
     } finally {
-      await reader?.cancel().catch(() => undefined)
-      reader?.releaseLock()
+      await bodyReader?.close()
       if (this.legacy && method !== 'initialize' && !received && operation.signal.aborted && !this.#invalid) await this.cancelRequest(id)
     }
   }

@@ -1,5 +1,6 @@
 import http from 'node:http';
 import assert from 'node:assert/strict';
+import { listenOnFetchLoopback } from './fetch-loopback.mjs';
 
 export const functionCall = (id, name, input) => ({
   type: 'function_call', id: `fc_${id}`, call_id: id, name,
@@ -79,7 +80,7 @@ function taskResponse(body, task) {
  * startResponsesFixture({ task?: {path, content, command}, handler?, assertReplay? })
  * returns {baseURL, requests, errors, close}. requests contains bodies only.
  * handler({body,index,request}) -> {output,events?,raw?,usage?,status?,httpStatus?,
- * headers?,splitBytes?,disconnect?,hang?}; never makes a remote request.
+ * headers?,splitBytes?,disconnect?,beforeDisconnect?,hang?}; never makes a remote request.
  */
 export async function startResponsesFixture(options = {}) {
   const requests = [];
@@ -141,7 +142,7 @@ export async function startResponsesFixture(options = {}) {
         await new Promise(resolve => setImmediate(resolve));
         response.write(encoded.subarray(split));
       }
-      if (result.disconnect) response.destroy();
+      if (result.disconnect) { await result.beforeDisconnect?.(); response.destroy(); }
       else response.end();
     } catch (error) {
       errors.push(error);
@@ -150,7 +151,7 @@ export async function startResponsesFixture(options = {}) {
     }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  await listenOnFetchLoopback(server);
   return {
     baseURL: `http://127.0.0.1:${server.address().port}/v1`, requests, errors,
     close: async () => {

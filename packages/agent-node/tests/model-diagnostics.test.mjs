@@ -65,9 +65,22 @@ for (const protocol of protocols) {
     }
   });
   test(`${protocol.id} socket loss during tool input stays a nonretryable tool-stage network failure`, async t => {
-    const { model, fixture } = await setup(t, protocol, { events: protocol.toolPartial, splitBytes: 1, disconnect: true });
-    assert.deepEqual(await diagnose(model), { category: 'network', retryable: false, protocol: protocol.id, stage: 'tool_call', reason: 'stream_disconnected' });
-    assert.equal(fixture.requests.length, 1); assert.deepEqual(fixture.errors, []);
+    let parsed;
+    const toolParsed = new Promise(resolve => { parsed = resolve; });
+    const { model, fixture } = await setup(t, protocol, { events: protocol.toolPartial, splitBytes: 1, disconnect: true,
+      beforeDisconnect: () => toolParsed });
+    let argumentsSeen = '';
+    try {
+      const diagnostic = await diagnose(model, { onEvent: event => {
+        if (event.type === 'tool_arguments_delta') {
+          argumentsSeen += event.delta;
+          if (argumentsSeen === '{"path":') parsed();
+        }
+      } });
+      assert.equal(argumentsSeen, '{"path":', 'the real client must parse the partial tool input before the fixture cuts its socket');
+      assert.deepEqual(diagnostic, { category: 'network', retryable: false, protocol: protocol.id, stage: 'tool_call', reason: 'stream_disconnected' });
+      assert.equal(fixture.requests.length, 1); assert.deepEqual(fixture.errors, []);
+    } finally { parsed(); }
   });
 }
 

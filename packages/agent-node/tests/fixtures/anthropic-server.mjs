@@ -1,5 +1,6 @@
 import http from 'node:http';
 import assert from 'node:assert/strict';
+import { listenOnFetchLoopback } from './fetch-loopback.mjs';
 
 export const anthropicSse = event => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`;
 export const messageStart = (overrides = {}) => ({ type: 'message_start', message: {
@@ -79,7 +80,7 @@ export async function startAnthropicFixture(options = {}) {
           await new Promise(resolve => setImmediate(resolve));
         }
       } else response.write(encoded);
-      if (result.disconnect) response.destroy();
+      if (result.disconnect) { await result.beforeDisconnect?.(); response.destroy(); }
       else response.end();
     } catch (error) {
       errors.push(error);
@@ -88,7 +89,7 @@ export async function startAnthropicFixture(options = {}) {
     }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  await listenOnFetchLoopback(server);
   const origin = `http://127.0.0.1:${server.address().port}`;
   return { baseURL: origin, origin, requests, requestHeaders, requestPaths, errors,
     close: async () => {

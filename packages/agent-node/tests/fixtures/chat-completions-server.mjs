@@ -1,5 +1,6 @@
 import http from 'node:http';
 import assert from 'node:assert/strict';
+import { listenOnFetchLoopback } from './fetch-loopback.mjs';
 
 export const chatSse = event => `data: ${typeof event === 'string' ? event : JSON.stringify(event)}\r\n\r\n`;
 export const chatChunk = (delta, finish_reason = null, extra = {}) => ({
@@ -61,7 +62,7 @@ export async function startChatCompletionsFixture(options = {}) {
           await new Promise(resolve => setImmediate(resolve));
         }
       } else response.write(encoded);
-      if (result.disconnect) response.destroy();
+      if (result.disconnect) { await result.beforeDisconnect?.(); response.destroy(); }
       else response.end();
     } catch (error) {
       errors.push(error);
@@ -70,7 +71,7 @@ export async function startChatCompletionsFixture(options = {}) {
     }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  await listenOnFetchLoopback(server);
   return {
     baseURL: `http://127.0.0.1:${server.address().port}/v1`, requests, errors,
     close: async () => {
