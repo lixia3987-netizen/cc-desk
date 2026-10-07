@@ -3,7 +3,7 @@ import type { NativeTaskView } from '@cc-desk/contracts/native-task';
 import type { NativeTaskReviewInput } from './native-task';
 import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult, WorktreeBranch } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
-import type { WorkflowRun, NewWorkflow } from './workflows';
+import type { WorkflowRun, NewWorkflow, WorkflowConfirmation, WorkflowVerification } from './workflows';
 import type { ThemeId } from './theme';
 import type { PanelDrafts } from './panel-drafts';
 import type { SubtaskActivity } from './subtasks';
@@ -107,6 +107,8 @@ export interface DesktopAPI {
   createWorkflow(input: NewWorkflow): Promise<WorkflowRun>;
   startWorkflow(id: string): Promise<WorkflowRun>;
   continueWorkflow(id: string): Promise<WorkflowRun>;
+  confirmWorkflowStage(input: WorkflowConfirmation): Promise<WorkflowRun>;
+  verifyWorkflowStage(input: WorkflowVerification): Promise<WorkflowRun>;
   retryWorkflow(id: string): Promise<WorkflowRun>;
   cancelWorkflow(id: string): Promise<WorkflowRun>;
   deleteWorkflow(id: string): Promise<void>;

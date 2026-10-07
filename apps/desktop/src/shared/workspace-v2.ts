@@ -47,6 +47,9 @@ export const panelDraftsSchema = z.object({
   workflow: z.object({
     goal: z.string().max(20000), pauseAfterEachStage: z.boolean(), maxAttempts: z.number().int().min(1).max(3),
     editing: z.string().max(256), instructions: draftEntries(256, 20000), allRuns: z.boolean(),
+    stageGates: z.record(z.string().max(128), z.enum(['none', 'manual', 'native_task'])).optional(),
+    stageToolPolicies: z.record(z.string().max(128), z.enum(['read_only', 'standard'])).optional(),
+    budget: z.object({ maxModelRequests: z.number().int().min(1).max(1000), maxToolCalls: z.number().int().min(1).max(2000), maxActiveMs: z.number().int().min(1000).max(7_200_000) }).strict().optional(),
   }).optional(),
   git: z.object({ selected: z.string().max(4096), staged: z.boolean(), feedback: draftEntries(4096, 60000) }).optional(),
 }).refine(value => JSON.stringify(value).length <= 2 * 1024 * 1024, '面板草稿过大，请先处理已有草稿。');

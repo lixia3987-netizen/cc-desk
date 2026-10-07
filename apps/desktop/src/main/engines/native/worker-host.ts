@@ -37,6 +37,8 @@ export interface NativeWorkerOptions {
   store: RunStore;
   approvals: ApprovalPort;
   contextMaintenance?: ContextMaintenancePort;
+  /** Host-owned aggregate capacity, shared by workflow/delegation workers. */
+  consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>;
   onEvent(event: AgentEvent): void | Promise<void>;
   signal: AbortSignal;
   workerPath?: string;

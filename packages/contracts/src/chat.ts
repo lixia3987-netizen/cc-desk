@@ -158,7 +158,7 @@ export interface QueuedChatMessage {
 export interface ChatSendOptions { nativeTaskId?: string }
 export interface ChatQueueSnapshot { items: QueuedChatMessage[]; paused: boolean; error?: string }
 export interface ChatSubmission { messageId: string }
-export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean }
+export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean; nativeReceipt?: import('./native-task.js').NativeExecutionReceipt }
 
 export interface ChatPageOptions { before?: string; after?: string; around?: string; query?: string }
 export interface ChatPage {

@@ -8,7 +8,7 @@ import type { WorkflowEngine } from '../workflows';
 import type { Register } from './registration';
 
 interface WorkflowPorts {
-  workflows: Pick<WorkflowEngine, 'list' | 'create' | 'start' | 'continue' | 'retry' | 'cancel' | 'remove' | 'exportRun' | 'reviseStage'>;
+  workflows: Pick<WorkflowEngine, 'list' | 'create' | 'start' | 'continue' | 'retry' | 'cancel' | 'remove' | 'exportRun' | 'reviseStage' | 'confirmStage' | 'verifyStage'>;
   structured(id: string): Session;
   defaultWorkflowError(id: string): string | undefined;
   assertUnlocked(session: Session): void;
@@ -36,6 +36,9 @@ export function registerWorkflowHandlers(handle: Register, ports: WorkflowPorts)
   handle('workflow:start', idSchema, id => { workflowReady(id); return ports.workflows.start(id); });
   handle('workflow:continue', idSchema, id => { workflowReady(id); return ports.workflows.continue(id); });
   handle('workflow:retry', idSchema, id => { workflowReady(id); return ports.workflows.retry(id); });
+  const verification = z.object({ id: idSchema, stageId: shortId, expectedAttempt: z.number().int().min(1).max(3) }).strict();
+  handle('workflow:verify', verification, input => { workflowReady(input.id); return ports.workflows.verifyStage(input); });
+  handle('workflow:confirm', verification.extend({ decision: z.enum(['approve', 'reject']), reason: z.string().trim().min(1).max(4000) }), input => { workflowReady(input.id); return ports.workflows.confirmStage(input); });
   handle('workflow:cancel', idSchema, async id => {
     const run = ports.workflows.list().find(run => run.id === id);
     let failure: unknown;

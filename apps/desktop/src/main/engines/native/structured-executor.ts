@@ -5,7 +5,7 @@ import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type ApprovalDec
 import { NativeRunStore, nativeSubmissionInputDigest } from '@cc-desk/agent-node/run-store';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { isNativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
-import type { NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
+import type { NativeExecutionReceipt, NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
 import { toNativeTaskView, type NativeTaskReviewInput } from '../../../shared/native-task';
 import { NativeTaskSession } from './task-session';
 import { createNativeTaskTool } from './task-tool';
@@ -44,6 +44,7 @@ import { nativeCompactionPreview, unavailableCompactionPreview } from './compact
 import { estimateNativeCost } from '../../../shared/native-cost';
 import type { NativeModelCapabilityService } from './model-capabilities';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
+import { nativeExecutionReceipt, readNativeExecutionReceipt, saveNativeExecutionReceipt } from './execution-receipt';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -227,6 +228,18 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     catch (error) { if (owner) this.taskLeaseFailures.add(owner); throw error; }
     if (owner && ![...this.taskLedgers.values()].includes(owner)) this.taskLeaseFailures.delete(owner);
   }
+  async inspectTaskReceipt(receipt: NativeExecutionReceipt) {
+    const id = receipt.identity.sessionId, session = this.session(id);
+    if (!receipt.taskId || session.execution.conversationId !== receipt.identity.conversationId || this.isBusy(id) || this.taskReviews.has(id)) throw new Error('阶段任务身份已变化或会话仍在执行，请刷新后核查。');
+    await this.hydrate(id);
+    if (this.isBusy(id) || this.taskReviews.has(id) || this.recoveryRequired(id)) throw new Error('阶段任务当前无法安全核查。');
+    const tasks = await this.openTaskSession(id);
+    try {
+      const task = await tasks.inspect(receipt.taskId);
+      if (!task || !sameRun(task.identity, receipt.identity)) throw new Error('阶段成果不属于该任务执行记录。');
+      return toNativeTaskView(task);
+    } finally { await this.closeTaskStore(tasks.store); }
+  }
   private async refreshTaskView(id: string, ledger: NativeRunStore) {
     // The run owns its writer. Idle refreshes own a short-lived writer, serialized by hydrate().
     const active = this.active.get(id);
@@ -378,7 +391,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (duplicate.request.input !== active.input || canonicalJson(duplicate.request.configuration.imageAttachments ?? []) !== canonicalJson(json(active.imageAttachments)) || canonicalJson(json(priorOptions)) !== active.options || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
-        result = this.turnResult(duplicate.result, ledger);
+        result = await this.turnResult(duplicate.result, ledger);
       } else if (priorStartup) {
         receiptOnly = true;
         if (priorStartup.inputDigest !== submissionDigest || priorStartup.optionsDigest !== digest(active.options)) throw new Error('此提交标识已用于不同的输入或配置。');
@@ -611,7 +624,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.refreshProjection(id, ledger);
       try { if (!this.taskErrors.has(id)) await active.tasks.refresh(ledger); }
       catch { this.taskErrors.set(id, '本轮执行已结束，但任务记录未能完成核查，验收状态未知。'); this.projection.notifyTask(id); }
-      result = this.turnResult(run, ledger);
+      result = await this.turnResult(run, ledger, active.tasks.store.read(active.taskId), performance.now() - startedAt);
       }
     } catch (error) {
       failure = error;
@@ -688,7 +701,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const message = error instanceof Error ? error.message : '';
     return /^[\u3400-\u9fff]/.test(message) && message.length < 1000 ? message : '自研 agent 执行失败，请检查连接、项目权限和本地记录。';
   }
-  private turnResult(result: RunResult, ledger: NativeRunStore): ChatTurnResult {
+  private async turnResult(result: RunResult, ledger: NativeRunStore, task?: NativeTaskSnapshot | null, activeMs?: number): Promise<ChatTurnResult> {
     // Compacted context contains host-authored historical assistant data. Only
     // the current run's latest durable model response may become its workflow
     // artifact; a tool-only or empty response deliberately produces no summary.
@@ -715,7 +728,28 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (end === 0) break;
       end = start;
     }
-    return { success: result.status === 'completed' && result.committed, summary, ...(result.status !== 'completed' ? { error: nativeRunError(result.reason, details), interrupted: result.status === 'cancelled' } : {}) };
+    let receipt: NativeExecutionReceipt | undefined;
+    try {
+      receipt = await readNativeExecutionReceipt(this.store.directory, result) ?? undefined;
+      if (!receipt) {
+        if (task === undefined) {
+          const snapshots = await NativeTaskStore.readAllSnapshots({ rootDirectory: path.join(this.store.directory, 'native'),
+            sessionId: result.identity.sessionId, conversationId: result.identity.conversationId });
+          task = snapshots.find(item => sameRun(item.identity, result.identity)) ?? null;
+        }
+        // Older completed runs have no elapsed receipt. Charge a conservative saved ceiling rather than invent zero time.
+        const savedOptions = ledger.getRun(result.identity.runId)?.configuration.sessionOptions;
+        const savedTime = savedOptions && typeof savedOptions === 'object' && !Array.isArray(savedOptions) ? savedOptions.maxActiveMs : undefined;
+        const savedCeiling = typeof savedTime === 'number' && Number.isSafeInteger(savedTime) && savedTime > 0 ? savedTime : DEFAULT_RUN_BUDGET.maxActiveMs;
+        receipt = nativeExecutionReceipt(result, task, activeMs ?? savedCeiling);
+        await saveNativeExecutionReceipt(this.store.directory, receipt);
+      }
+    } catch {
+      // A receipt metadata failure cannot turn a committed operation into a queue replay.
+      receipt = undefined; this.options.onError?.(new Error('Native execution receipt metadata is unavailable; workflow verification must pause.'));
+    }
+    return { success: result.status === 'completed' && result.committed, summary, ...(receipt ? { nativeReceipt: receipt } : {}),
+      ...(result.status !== 'completed' ? { error: nativeRunError(result.reason, details), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal): Promise<ApprovalDecision> {
     this.assertActive(id, active);

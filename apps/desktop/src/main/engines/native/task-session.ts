@@ -253,6 +253,9 @@ export class NativeTaskSession {
     });
   }
   /** Idle refresh rechecks external edits and repairs only metadata, never execution. */
+  inspect(taskId: string): Promise<NativeTaskSnapshot | undefined> {
+    return this.enqueue(async () => { await this.workspace(taskId); return this.store.read(taskId) ?? undefined; });
+  }
   refresh(ledger: NativeRunStore, activeIdentity?: RunIdentity): Promise<void> {
     return this.enqueue(async () => {
       for (const task of this.store.list()) {

@@ -81,6 +81,11 @@ export class SessionService {
     this.workflows = new WorkflowEngine(store.directory,{
       getSession:id => { const s = this.structured(id); if(s.archived) throw new Error('请先取消会话归档。'); this.assertUnlocked(s); return {sessionId:s.id,projectId:s.projectId,cwd:s.cwd,worktree:s.worktree,providerId:s.execution.providerId,executionMode:'structured'}; },
       runStage:(id,prompt,titlePrompt,submission) => this.runChat(id,prompt,[],titlePrompt,false,submission),
+      inspectNativeTask: receipt => {
+        const executor = this.execution.structured(receipt.identity.sessionId);
+        if (!executor.inspectTaskReceipt) throw new Error('该执行器不支持 Native 阶段证据核查。');
+        return executor.inspectTaskReceipt(receipt);
+      },
       settled:id => this.refreshDirectoryRelease(id),
       cancelSession:id => {
         this.cancellations.set(id, (this.cancellations.get(id) ?? 0) + 1);

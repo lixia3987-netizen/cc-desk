@@ -60,6 +60,24 @@ export interface NativeTaskSnapshot extends NativeTaskPlan {
   history: NativeTaskHistoryEntry[];
   createdAt: string; updatedAt: string;
 }
+/** Host-authored, bounded execution receipt. Operational completion and acceptance stay separate. */
+export interface NativeExecutionReceipt {
+  version: 1;
+  identity: NativeTaskIdentity;
+  taskId?: string;
+  taskRevision?: number;
+  planRevision?: number;
+  acceptanceRevision?: number;
+  verification?: NativeTaskVerification;
+  workspace?: { fingerprint: string; complete: boolean; capturedAt: string };
+  changes?: NativeTaskChangeSummary;
+  criteria: NativeTaskCriterion[];
+  evidence: Array<Pick<NativeTaskEvidence, 'id' | 'identity' | 'source' | 'status' | 'criterionIds' | 'stepIds' |
+    'planRevision' | 'acceptanceRevision' | 'workspaceFingerprint' | 'workspaceComplete' | 'toolCallId' |
+    'command' | 'exitCode' | 'outputDigest' | 'truncated' | 'stale'>>;
+  usage: { modelRequests: number; toolCalls: number; activeMs: number };
+  truncated: boolean;
+}
 export type NativeTaskMutation =
   | { type: 'plan'; plan: NativeTaskPlan; explanation?: string }
   | { type: 'evidence'; evidence: NativeTaskEvidence }

@@ -1,3 +1,4 @@
+import type { WorkflowBudget, WorkflowGate, WorkflowToolPolicy } from './workflows';
 export interface WorkflowDraft {
   goal: string;
   pauseAfterEachStage: boolean;
@@ -5,6 +6,9 @@ export interface WorkflowDraft {
   editing: string;
   instructions: Record<string, string>;
   allRuns: boolean;
+  stageGates?: Record<string, WorkflowGate>;
+  stageToolPolicies?: Record<string, WorkflowToolPolicy>;
+  budget?: WorkflowBudget;
 }
 
 export interface GitReviewDraft {
