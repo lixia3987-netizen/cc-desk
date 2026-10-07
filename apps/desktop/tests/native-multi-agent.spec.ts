@@ -27,7 +27,7 @@ const final = (id: string, text: string): Response => ({ output: [assistantMessa
 function gate() { let release!: () => void; const promise = new Promise<void>(resolve => { release = resolve; }); return { promise, release }; }
 
 async function workspace() {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-multi-电子 空格-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-multi-电子 空格-')));
   const data = path.join(directory, '应用 数据'), cwd = path.join(directory, '项目 空格'), projectId = randomUUID();
   await fs.mkdir(data); await fs.mkdir(cwd);
   await fs.writeFile(path.join(cwd, 'fixture.txt'), 'committed parent\n');

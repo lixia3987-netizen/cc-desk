@@ -21,7 +21,7 @@ function tools(...calls: ToolCall[]): ModelResponse { return { outputItems: call
 const call = (name: string, input: unknown): ToolCall => ({ id: randomUUID(), name, arguments: JSON.stringify(input) });
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-child-runner-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-child-runner-')));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, 'project'), dataDirectory = path.join(directory, 'data'); await fs.mkdir(cwd);
   await fs.writeFile(path.join(cwd, 'file.txt'), 'initial\n');

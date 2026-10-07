@@ -9,11 +9,12 @@ import { promisify } from 'node:util';
 import type { ApprovalDecision, ToolExecutionContext } from '@cc-desk/agent-core';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeDelegationBudget, type NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline } from '../src/main/engines/native/agent-worktrees';
+import { ensureWorktreeParent } from '../src/main/worktree-paths';
 
 const execute = promisify(execFile);
 async function git(cwd: string, ...args: string[]) { return (await execute('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })).stdout; }
 async function repository(t: { after(fn: () => Promise<void>): void }) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-delegation-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-delegation-')));
   t.after(async () => { await fs.rm(directory, { recursive: true, force: true }); });
   const cwd = path.join(directory, 'repo'); await fs.mkdir(cwd);
   await git(cwd, 'init', '-b', 'main');
@@ -69,6 +70,19 @@ test('one review batch starts separate child contexts concurrently and retains b
   assert.equal(receipts.length, 3); assert.ok(receipts.every(r => r.status === 'completed' && r.result?.committed));
   assert.ok(receipts.every(r => r.parentTaskId === inputs[0].parentTaskId));
   assert.deepEqual(await f.tool.execute(prepared, f.context), result); assert.equal(starts, 3, 'exact retries never start another child');
+});
+
+test('canonical temporary roots support Git worktrees while unnormalized symbolic ancestors remain blocked', async t => {
+  const repo = await repository(t), realTemp = path.join(repo.directory, 'real-temp'), aliasTemp = path.join(repo.directory, 'temp-alias');
+  await fs.mkdir(realTemp);
+  await fs.symlink(realTemp, aliasTemp, process.platform === 'win32' ? 'junction' : 'dir');
+  const aliasedFixture = await fs.mkdtemp(path.join(aliasTemp, 'fixture-'));
+  await assert.rejects(ensureWorktreeParent(path.join(aliasedFixture, 'worktrees'), []), /符号链接/);
+  const canonicalFixture = await fs.realpath(aliasedFixture), baseline = await prepareAgentBaseline(repo.cwd, 'head');
+  const worktree = await createAgentWorktree(baseline, path.join(canonicalFixture, 'worktrees'), baseline.parentHead, randomUUID());
+  assert.equal(worktree.path, await fs.realpath(worktree.path));
+  assert.equal(await fs.readFile(path.join(worktree.cwd, 'file.txt'), 'utf8'), 'initial\n');
+  assert.equal((await git(repo.cwd, 'rev-parse', 'HEAD')).trim(), baseline.parentHead);
 });
 
 test('read-only parents cannot register or invoke implementation and forged bindings are rejected', async t => {
@@ -251,7 +265,7 @@ test('worktree creation skips repository hooks and never removes pre-existing de
   await fs.writeFile(path.join(tree.cwd, 'keep.txt'), 'keep user work');
   await assert.rejects(createAgentWorktree(baseline, repo.worktreeRoot, commit, id));
   assert.equal(await fs.readFile(path.join(tree.cwd, 'keep.txt'), 'utf8'), 'keep user work');
-  await assert.rejects(materializeAgentBaseline(baseline, path.join(repo.cwd, 'nested-worktrees')), /之外/);
+  await assert.rejects(materializeAgentBaseline(baseline, path.join(repo.cwd, 'nested-worktrees')), { code: 'nested_worktree_root' });
 });
 
 test('credential-bearing child output is omitted from durable receipts and model output', async t => {

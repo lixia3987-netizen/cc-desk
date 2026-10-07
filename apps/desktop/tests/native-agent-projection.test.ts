@@ -26,7 +26,7 @@ const complete = (value: NativeDelegationReceipt): NativeDelegationReceipt => ({
     evidence: { taskSnapshotPath: path.join(value.cwd, 'native', 'tasks', value.identity.conversationId, 'tasks.json'),
       runJournalPath: path.join(value.cwd, 'native', 'conversations', value.identity.conversationId, 'journal.jsonl'), commandReceipts: [] } } });
 async function temporary(t: { after(fn: () => Promise<void>): void }) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-agent-projection-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-agent-projection-')));
   t.after(() => fs.rm(directory, { recursive: true, force: true })); return directory;
 }
 
@@ -97,7 +97,7 @@ test('recovery reads only current parent run and refuses forged references or di
 });
 
 test('real parent ledger callbacks, terminal ownership and restart preserve child receipts without trusting model output', async t => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-agent-projection-')), parent = newIdentity(), errors: Error[] = [], events = new ExecutionEvents();
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-agent-projection-'))), parent = newIdentity(), errors: Error[] = [], events = new ExecutionEvents();
   const session: Session = { id: parent.sessionId, projectId: 'project', title: '父 Agent', kind: 'agent', cwd: directory,
     execution: { providerId: 'native', mode: 'structured', conversationId: parent.conversationId }, started: true, engineConfig: { schemaVersion: 1, options: {} },
     status: 'running', archived: false, createdAt: at, updatedAt: at };

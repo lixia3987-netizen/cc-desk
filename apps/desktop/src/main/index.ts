@@ -1,9 +1,9 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, Tray, Menu, nativeImage, nativeTheme, net, safeStorage } from 'electron';
-import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import { StateStore } from './store';
+import { prepareStartupDataDirectory } from './startup-data-directory';
 import { createExecutors } from './execution/create-executors';
 import { ConnectionStore } from './engines/native/connections';
 import { NativeCredentialStore } from './engines/native/credentials';
@@ -37,11 +37,15 @@ import { FontLibrary } from './font-library';
 import { IMPORTED_FONT_ID } from '../shared/fonts';
 import { allowsLocalFonts, isTrustedRendererUrl } from './renderer-permissions';
 
-const profileDirectory=app.commandLine.getSwitchValue('user-data-dir');
-if(profileDirectory) {
-  if(!path.isAbsolute(profileDirectory)||profileDirectory.length>4096)throw new Error('自定义数据目录必须是有效的绝对路径。');
-  mkdirSync(profileDirectory,{recursive:true,mode:0o700});app.setPath('userData',path.resolve(profileDirectory));
-} else if (!app.isPackaged && process.env.WORKBENCH_DATA_DIR) app.setPath('userData', path.resolve(process.env.WORKBENCH_DATA_DIR));
+let startupDirectoryFailure: { error: unknown } | undefined;
+try {
+  app.setPath('userData', prepareStartupDataDirectory({
+    defaultDirectory: app.getPath('userData'),
+    profileDirectory: app.commandLine.getSwitchValue('user-data-dir'),
+    developmentDirectory: process.env.WORKBENCH_DATA_DIR,
+    isPackaged: app.isPackaged,
+  }));
+} catch (error) { startupDirectoryFailure = { error }; }
 let window: BrowserWindow | null = null;
 let executors: ExecutionRegistry;
 let nativeExecutor: NativeStructuredExecutor;
@@ -271,7 +275,13 @@ async function requestQuit() {
 }
 // Isolated E2E instances use a disposable data directory and do not acquire the OS singleton socket.
 const isolatedTest = !app.isPackaged && process.env.WORKBENCH_TEST_MODE === '1' && !!process.env.WORKBENCH_DATA_DIR;
-if (!isolatedTest && !app.requestSingleInstanceLock()) app.quit();
+function failStartup(error: unknown): void {
+  allowQuit = true;
+  try { dialog.showErrorBox('启动失败', error instanceof Error ? error.message : String(error)); }
+  finally { app.quit(); }
+}
+if (startupDirectoryFailure) failStartup(startupDirectoryFailure.error);
+else if (!isolatedTest && !app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance',showWindow);
   app.on('activate',showWindow);
@@ -321,6 +331,6 @@ else {
       registerIPC(); createWindow();
       await refreshCapabilities();
       void cliUpdates.check();
-    } catch (error) { dialog.showErrorBox('启动失败',String((error as Error).message));allowQuit=true;app.quit(); }
+    } catch (error) { failStartup(error); }
   });
 }

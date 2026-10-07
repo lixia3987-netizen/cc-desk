@@ -30,7 +30,7 @@ import { startResponsesFixture, functionCall, assistantMessage } from '../../../
 const execute = promisify(execFile);
 async function git(cwd: string, ...args: string[]) { return (await execute('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })).stdout; }
 async function repository(t: { after(fn: () => Promise<void>): void }) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-agent-audit-'));
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-native-agent-audit-')));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   const cwd = path.join(directory, 'repo'); await fs.mkdir(path.join(cwd, 'nested'), { recursive: true });
   await git(cwd, 'init', '-b', 'main');

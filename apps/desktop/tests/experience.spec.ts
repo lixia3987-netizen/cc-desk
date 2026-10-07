@@ -186,6 +186,7 @@ test('experience: panel drafts keep session/file identity, open panels and unsav
     await page.getByLabel('工作流目标').fill('下一项任务的草稿');
     await page.getByLabel('每阶段结束后由我确认继续').uncheck();await page.getByLabel('最大尝试次数').selectOption('3');
     await page.getByRole('button',{name:'编辑阶段指令',exact:true}).first().click();await page.getByLabel('阶段指令').fill('尚未保存的阶段指令');
+    await expect(page.getByRole('button',{name:'保存指令',exact:true})).toBeEnabled();
     await fs.writeFile(path.join(f.projects[1].path,'one.txt'),'changed one\n');await fs.writeFile(path.join(f.projects[1].path,'two.txt'),'changed two\n');
     await openPanel(page,'变更');await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();
     await page.getByLabel('代码审阅反馈').fill('one 的审阅意见');
@@ -212,7 +213,9 @@ test('experience: panel drafts keep session/file identity, open panels and unsav
     await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
     await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
     await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
+    await expect(page.getByRole('button',{name:'保存指令',exact:true})).toBeEnabled();
     await page.getByRole('button',{name:'保存指令',exact:true}).click();await expect(page.getByLabel('阶段指令')).toHaveCount(0);
+    await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
     const saved=await page.evaluate(async id=>(await window.desktop.workflows(id))[0].stages[0].instruction,f.sessions[0].id);
     expect(saved).toBe('尚未保存的阶段指令');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
     await select(page,'短对话 B');await expect(page.getByLabel('工作流目标')).toHaveValue('另一个会话的草稿');
