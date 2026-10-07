@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { runAgent } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
@@ -20,6 +19,8 @@ import { NativeModelCapabilityService } from '../src/main/engines/native/model-c
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 // @ts-expect-error Local test-only ESM fixture has no declarations.
 import { startAnthropicFixture } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
 type Block = { type: string; text?: string; thinking?: string; signature?: string; data?: string; id?: string; tool_use_id?: string; content?: string };
@@ -71,7 +72,7 @@ async function fixture(metadata?: { context_window: number; max_input_tokens: nu
       response.writeHead(upstream.status, { 'Content-Type': upstream.headers.get('Content-Type')! }); response.end(Buffer.from(await upstream.arrayBuffer()));
     } catch (error) { gatewayErrors.push(error); response.writeHead(500); response.end('local fixture failed'); }
   }) : undefined;
-  if (gateway) { gateway.listen(0, '127.0.0.1'); await once(gateway, 'listening'); }
+  if (gateway) await listenOnFetchLoopback(gateway);
   const baseURL = gateway ? `http://127.0.0.1:${(gateway.address() as AddressInfo).port}` : server.baseURL;
   let store = new StateStore(data), connections = new ConnectionStore(data, { environment: { THINKING_FIXTURE_KEY: secret } });
   const connection = connections.upsert({ name: 'local thinking fixture', protocol: 'anthropic', authHeader: 'authorization',

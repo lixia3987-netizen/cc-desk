@@ -5,7 +5,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
@@ -14,6 +13,8 @@ import { openSessionSettings, closeSessionSettings } from './helpers/session-set
 import { submitNewSession } from './helpers/session-ui';
 // @ts-expect-error Test-only ESM fixture has no declarations.
 import { anthropicEvents, anthropicSse } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const secret = 'native-capability-ui-artificial-main-key';
 const privateThinking = 'native-capability-private-unsigned-thinking';
@@ -52,7 +53,7 @@ async function fixture() {
     ], has_more: false, last_id: 'fixture-unknown' }));
     else response.end(JSON.stringify(model === 'fixture-partial' ? { id: model, context_window: 48000, max_output_tokens: 1024 } : { id: model, context_window: null, max_input_tokens: 0 }));
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return { data, projectId, baseURL, requests, cancelled: () => cancelled,
     launch: () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env,

@@ -12,6 +12,8 @@ import { NativeConnectionModelCatalog } from '../src/main/engines/native/connect
 import { NativeConnectionDiagnostics } from '../src/main/engines/native/connection-diagnostics';
 import { registerNativeHandlers } from '../src/main/ipc/native-handlers';
 import type { NativeConnectionModelListResult, NativeConnectionView } from '../src/shared/native-connections';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const secret = 'sk-FICTIONAL-model-list-secret-never-display';
 function metadata(item: NativeConnectionView) { const { credentialConfigured: _configured, ready: _ready, error: _error, ...value } = item; return value; }
@@ -30,7 +32,7 @@ async function fixture(protocol: NativeConnectionView['protocol'] = 'responses',
     requests.push({ method: request.method, url: request.url, authorization: request.headers.authorization, apiKey: request.headers['x-api-key'] as string | undefined, version: request.headers['anthropic-version'] as string | undefined, body: Buffer.concat(body).toString('utf8') });
     handler(request, response); server.emit('catalog-request');
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   let active = false, catalog: NativeConnectionModelCatalog, diagnostics: NativeConnectionDiagnostics;
   const store = new ConnectionStore(directory, { isConnectionActive: () => active,

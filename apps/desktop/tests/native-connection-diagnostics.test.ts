@@ -11,6 +11,8 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeConnectionDiagnostics, nativeConnectionProbe } from '../src/main/engines/native/connection-diagnostics';
 import { registerNativeHandlers } from '../src/main/ipc/native-handlers';
 import type { NativeConnectionView } from '../src/shared/native-connections';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const sentinel = 'sk-diagnostic-SECRET-DO-NOT-RETURN';
 const responseText = 'provider-response-DO-NOT-RETURN';
@@ -33,7 +35,7 @@ async function fixture(timeoutMs = 2000) {
     handler(request, response);
     server.emit('probe-received');
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
   let diagnostics: NativeConnectionDiagnostics;
   const store = new ConnectionStore(directory, { isConnectionActive: () => active, isConnectionTesting: id => diagnostics?.isConnectionTesting(id) ?? false });

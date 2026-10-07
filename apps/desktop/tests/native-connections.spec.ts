@@ -13,6 +13,8 @@ import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest } from '@cc-desk/agent-core';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 test('native MCP settings persist explicit protocol choices locally and clear write-only credentials on metadata changes, close and restart', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-native-mcp-ui-'));
@@ -426,7 +428,7 @@ test('native connection diagnostics are opt-in, private, cancellable, and aborte
     }
     response.end(`data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_ui_probe', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: privateText }] }], usage: { input_tokens: 12, output_tokens: 1, total_tokens: 13 } } })}\n\n`);
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
   let closed = false;
   try {

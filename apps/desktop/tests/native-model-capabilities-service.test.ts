@@ -4,11 +4,12 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer, type ServerResponse } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeConnectionModelCatalog } from '../src/main/engines/native/connection-models';
 import { NativeModelCapabilityService, mergeNativeModelCapabilities } from '../src/main/engines/native/model-capabilities';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const secret = 'model-capability-service-artificial-main-key';
 const model = 'fixture-capability-model';
@@ -37,7 +38,7 @@ async function fixture(timeoutMs = 150) {
     }], has_more: false, last_id: model }));
     else { response.end(JSON.stringify({ id: decodeURIComponent(url.pathname.slice('/v1/models/'.length)), context_window: 32000, max_input_tokens: 30000, max_output_tokens: 1024 })); }
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const connections = new ConnectionStore(directory, { environment: { MODEL_CAPABILITY_FIXTURE_KEY: secret } });
   const connection = connections.upsert({ name: 'capability fixture', protocol: 'anthropic', authHeader: 'authorization', baseURL, model,

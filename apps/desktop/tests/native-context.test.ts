@@ -18,7 +18,8 @@ test('native context UI separates local budgets, actual request input and unknow
   const known = render({ budget, inputTokens: 0, status: 'ready', source: 'request' });
   assert.match(known, /95\.0%/); assert.match(known, /接近预算上限/);
   assert.match(known, /最近一次请求输入：0 tokens/); assert.match(known, /非累计/);
-  assert.match(known, /运行预算取用户设置与已知模型限制的较小值/);
+  assert.match(known, /运行预算按所选输入预算方式计算，并受已知模型限制约束/);
+  assert.match(known, /为输出预留窗口空间/);
   assert.match(known, /窗口信息未知，沿用用户预算/);
   assert.doesNotMatch(known, /\/compact|CLI/);
   const unknown = render({ budget: { ...budget, status: 'exceeded', contextBytes: 20000 }, status: 'unknown' });

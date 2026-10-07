@@ -3,10 +3,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const secret = 'native-model-list-ui-main-only-token';
 const privateBody = 'native-model-list-provider-error-DO-NOT-DISPLAY';
@@ -40,7 +41,7 @@ async function fixture() {
       { id: 'fixture-beta', display_name: 'Fixture Beta', type: 'model' },
     ], has_more: false, first_id: mode === 'empty' ? null : 'fixture-alpha', last_id: mode === 'empty' ? null : 'fixture-beta' }));
   });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const baseURL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   const launch = () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: {
     ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, MODEL_LIST_UI_TOKEN: secret,
