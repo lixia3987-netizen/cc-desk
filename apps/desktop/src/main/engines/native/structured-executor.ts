@@ -17,7 +17,7 @@ import { composeToolPorts, createMcpToolPort, type ManagedMcpToolPort } from '@c
 import { createNativeModel, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
 import { contextSummaryItem } from '@cc-desk/agent-node/context-maintenance';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
-import type { ExecutionSubmission } from '@cc-desk/contracts/execution-ports';
+import type { ExecutionSubmission, NativeExecutionPolicy } from '@cc-desk/contracts/execution-ports';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
 import { readNativeImageAttachments } from '../../native-image-attachments';
 import type { ChatDecision, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '../../../shared/chat';
@@ -45,6 +45,8 @@ import { estimateNativeCost } from '../../../shared/native-cost';
 import type { NativeModelCapabilityService } from './model-capabilities';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
 import { nativeExecutionReceipt, readNativeExecutionReceipt, saveNativeExecutionReceipt } from './execution-receipt';
+import { parseNativeExecutionPolicy, restrictNativeTools } from './execution-policy';
+import { NativeAggregateBudget } from './aggregate-budget';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -62,6 +64,7 @@ interface ActiveRun {
   abort: AbortController; promise: Promise<ChatTurnResult>; identity?: RunIdentity;
   store?: NativeRunStore; cleanupUnconfirmed: boolean; released: boolean;
   phase?: 'compacting' | 'compacting_in_turn';
+  executionPolicy?: NativeExecutionPolicy;
   questions?: NativeQuestionTool;
   taskId: string; continuedTaskId?: string; tasks?: NativeTaskSession;
   taskCleanupOnly?: boolean;
@@ -323,6 +326,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (this.taskLeaseFailures.has(id)) return Promise.reject(new Error('任务记录仍持有写入资源，请先停止会话以重试释放。'));
     if (!requestId || requestId.length > 256 || requestId.includes('\0')) return Promise.reject(new Error('无效提交标识。'));
     const continuedTaskId = submission?.nativeTaskId;
+    const executionPolicy = parseNativeExecutionPolicy(submission?.nativeExecutionPolicy);
     if (continuedTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(continuedTaskId)) return Promise.reject(new Error('无效任务标识。'));
     const expectedImageAttachments = submission?.imageAttachments;
     if (expectedImageAttachments !== undefined && !isNativeImageAttachments(expectedImageAttachments) ||
@@ -330,7 +334,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const sourceOptions = canonicalJson(json(sourceConfig));
     const previous = this.active.get(id);
     if (previous) {
-      if (previous.requestId !== requestId || previous.input !== text || previous.sourceOptions !== sourceOptions || previous.continuedTaskId !== continuedTaskId || canonicalJson(json(previous.expectedImageAttachments ?? [])) !== canonicalJson(json(expectedImageAttachments ?? []))) return Promise.reject(new Error('此会话仍持有执行资源，请等待停止完成。'));
+      if (previous.requestId !== requestId || previous.input !== text || previous.sourceOptions !== sourceOptions || previous.continuedTaskId !== continuedTaskId || canonicalJson(json(previous.executionPolicy ?? null)) !== canonicalJson(json(executionPolicy ?? null)) || canonicalJson(json(previous.expectedImageAttachments ?? [])) !== canonicalJson(json(expectedImageAttachments ?? []))) return Promise.reject(new Error('此会话仍持有执行资源，请等待停止完成。'));
       if (!previous.attachmentPaths.length && !attachments.length) return previous.promise;
       // Re-read the selected manifest entries for duplicate submissions. The
       // running request retains its original snapshot even if a file changes.
@@ -346,7 +350,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const config = this.runtimeConfig(session.engineConfig), encoded = canonicalJson(json(config));
     let resolve!: (value: ChatTurnResult) => void, reject!: (error: unknown) => void;
     const promise = new Promise<ChatTurnResult>((yes, no) => { resolve = yes; reject = no; });
-    const active: ActiveRun = { ...(expectedImageAttachments === undefined ? {} : { expectedImageAttachments: json(expectedImageAttachments) }), attachmentPaths: [...attachments], images: [], imageAttachments: [], requestId, input: text, options: encoded, sourceOptions, runtimeConfig: config, connectionId: config.connectionId, mcpConnections: config.mcpConnections, abort: new AbortController(), promise, cleanupUnconfirmed: false, released: false, taskId: continuedTaskId ?? randomUUID(), continuedTaskId };
+    const active: ActiveRun = { executionPolicy, ...(expectedImageAttachments === undefined ? {} : { expectedImageAttachments: json(expectedImageAttachments) }), attachmentPaths: [...attachments], images: [], imageAttachments: [], requestId, input: text, options: encoded, sourceOptions, runtimeConfig: config, connectionId: config.connectionId, mcpConnections: executionPolicy?.toolPolicy === 'read_only' ? [] : config.mcpConnections, abort: new AbortController(), promise, cleanupUnconfirmed: false, released: false, taskId: continuedTaskId ?? randomUUID(), continuedTaskId };
     this.active.set(id, active);
     void this.execute(id, active).then(resolve, reject);
     return promise;
@@ -368,7 +372,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.hydration.get(id);
       this.assertActive(id, active);
       const session = this.session(id), requestedConfig = active.runtimeConfig;
-      let config = requestedConfig;
+      const boundedConfig = { ...requestedConfig, ...(active.executionPolicy?.budget ? {
+        maxModelRequests: Math.min(requestedConfig.maxModelRequests, active.executionPolicy.budget.maxModelRequests),
+        maxToolCalls: Math.min(requestedConfig.maxToolCalls, active.executionPolicy.budget.maxToolCalls),
+        maxActiveMs: Math.min(requestedConfig.maxActiveMs, active.executionPolicy.budget.maxActiveMs),
+      } : {}) };
+      let config = boundedConfig;
+      const optionsDigest = digest(active.options + (active.executionPolicy ? canonicalJson(json(active.executionPolicy)) : ''));
       // Receipt lookup precedes credential resolution and worker creation. Retries cannot execute again.
       let ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId! });
       active.store = ledger;
@@ -388,13 +398,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (duplicate) {
         receiptOnly = true;
         const priorOptions = parseNativeConfig({ schemaVersion: 1, options: duplicate.request.configuration.sessionOptions as EngineConfig['options'] });
-        if (duplicate.request.input !== active.input || canonicalJson(duplicate.request.configuration.imageAttachments ?? []) !== canonicalJson(json(active.imageAttachments)) || canonicalJson(json(priorOptions)) !== active.options || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
+        if (duplicate.request.input !== active.input || canonicalJson(duplicate.request.configuration.imageAttachments ?? []) !== canonicalJson(json(active.imageAttachments)) || canonicalJson(json(priorOptions)) !== active.options || canonicalJson(duplicate.request.configuration.nativeExecutionPolicy ?? null) !== canonicalJson(json(active.executionPolicy ?? null)) || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
         result = await this.turnResult(duplicate.result, ledger);
       } else if (priorStartup) {
         receiptOnly = true;
-        if (priorStartup.inputDigest !== submissionDigest || priorStartup.optionsDigest !== digest(active.options)) throw new Error('此提交标识已用于不同的输入或配置。');
+        if (priorStartup.inputDigest !== submissionDigest || priorStartup.optionsDigest !== optionsDigest) throw new Error('此提交标识已用于不同的输入或配置。');
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
@@ -407,8 +417,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (performance.now() - startedAt >= config.maxActiveMs) throw new Error('本次执行时长预算已耗尽，未发起模型请求。');
       const modelCapabilities = capabilitySnapshot?.connectionId === connection.connectionId && capabilitySnapshot.revision === connection.revision
         ? nativeModelCapabilityUsage(capabilitySnapshot, connection.model) : undefined;
-      config = nativeModelBudget(requestedConfig, modelCapabilities?.capabilities);
-      const mcpConnections = config.mcpConnections.map(id => {
+      config = nativeModelBudget(boundedConfig, modelCapabilities?.capabilities);
+      const mcpConnections = (active.executionPolicy?.toolPolicy === 'read_only' ? [] : config.mcpConnections).map(id => {
         if (!this.options.mcpConnections) throw new Error('MCP 连接管理尚未就绪。');
         return this.options.mcpConnections.resolve(id);
       });
@@ -432,6 +442,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.assertActive(id, active);
       let modelInstructions = modelInstructionsFor(instructions.text);
       const assertOwnership = async () => { this.assertActive(id, active); await this.options.assertOwnership?.(id, identity); this.assertActive(id, active); };
+      const sharedBudget = new NativeAggregateBudget(config, active.abort.signal, () => config.maxActiveMs - (performance.now() - startedAt),
+        { modelRequests: ledger.lookupAutoCompaction(identity.requestId) ? 1 : 0, toolCalls: 0 });
+      const worker: typeof runNativeWorker = async options => {
+        const unregister = sharedBudget.register(options.request.identity);
+        try { return await (this.options.worker ?? runNativeWorker)({ ...options, consumeBudget: (kind, run) => sharedBudget.consume(kind, run) }); }
+        finally { unregister(); }
+      };
       const stdioConnections = mcpConnections.filter(item => item.transport === 'stdio');
       let assertStartupCurrent: (() => Promise<void>) | undefined;
       if (stdioConnections.length) {
@@ -461,7 +478,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         };
         assertStartupCurrent = recheck;
         await recheck();
-        await ledger.prepareStartup({ identity, startupId: 'mcp_stdio_startup', inputDigest: submissionDigest, optionsDigest: digest(active.options), metadata, policyRevision, approval });
+        await ledger.prepareStartup({ identity, startupId: 'mcp_stdio_startup', inputDigest: submissionDigest, optionsDigest, metadata, policyRevision, approval });
         startup = { identity, startupId: 'mcp_stdio_startup' };
         await recheck();
         this.changed(id, 'starting');
@@ -548,18 +565,19 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           },
         }]);
       };
-      let tools = active.tasks.wrapTools(createTools(), active.taskId, identity);
+      const stageTools = () => restrictNativeTools(active.tasks!.wrapTools(createTools(), active.taskId, identity), active.executionPolicy);
+      let tools = stageTools();
       const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
       for (const secret of forbiddenValues) assertNoModelCredential({ input: active.input, instructions: modelInstructions, tools: tools.definitions, context: ledger.loadContext() }, secret);
       const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, images: active.images, imageAttachments: active.imageAttachments, config, model, instructions: modelInstructions, forbiddenValues,
-        signal: active.abort.signal, startedAt, assertOwnership, worker: this.options.worker,
+        signal: active.abort.signal, startedAt, assertOwnership, worker,
         onCompacting: () => { active.phase = 'compacting'; this.changed(id, 'thinking'); },
         onCommitted: () => this.refreshProjection(id, ledger) });
       if (automatic.compacted) {
         // Project instructions may change while the summary request is in flight.
         instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
         modelInstructions = modelInstructionsFor(instructions.text);
-        tools = active.tasks.wrapTools(createTools(), active.taskId, identity);
+        tools = stageTools();
         model.toolDefinitions = tools.definitions;
         assertNativeInputBudget(ledger.loadContext()!, active.input, modelInstructions, config, model, active.images);
       }
@@ -571,6 +589,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (automatic.remainingRequests < 1) throw new Error('本次模型请求预算已耗尽；请检查已保存记录并调整预算后重新发送。');
       const mcpMetadata = mcpConnections.map(mcpConnectionMetadata);
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest,
+        ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}),
         ...(mcpMetadata.length ? { mcpConnections: mcpMetadata, mcpTools: mcpTools!.definitions } : {}) })));
       const durable: RunStore = {
         beginRun: async request => { const accepted = await ledger.beginRun(request); if (accepted.kind === 'accepted') {
@@ -594,8 +613,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       };
       active.phase = undefined;
       this.changed(id, 'starting');
-      const run = await (this.options.worker ?? runNativeWorker)({
-        request: { identity, input: active.input, ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+      const run = await worker({
+        request: { identity, input: active.input, ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { maxModelRequests: automatic.remainingRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const waitingAt = performance.now();
@@ -615,7 +634,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             return buildNativeContextContinuity({ identity, taskId: active.taskId, task: active.tasks!.store.read(active.taskId),
               run: ledger.listRuns().find(item => sameRun(item.identity, identity)), issues: this.taskErrors.has(id) ? [this.taskErrors.get(id)!] : [] });
           }, onCompacting: async () => { active.phase = 'compacting_in_turn'; this.changed(id, 'thinking'); await this.refreshProjection(id, ledger); },
-          onSettled: async () => { active.phase = undefined; await this.refreshProjection(id, ledger); }, worker: this.options.worker,
+          onSettled: async () => { active.phase = undefined; await this.refreshProjection(id, ledger); }, worker,
         }) } : {}),
         onEvent: event => this.projection.event(id, event),
       });
@@ -624,7 +643,10 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.refreshProjection(id, ledger);
       try { if (!this.taskErrors.has(id)) await active.tasks.refresh(ledger); }
       catch { this.taskErrors.set(id, '本轮执行已结束，但任务记录未能完成核查，验收状态未知。'); this.projection.notifyTask(id); }
-      result = await this.turnResult(run, ledger, active.tasks.store.read(active.taskId), performance.now() - startedAt);
+      const sharedCounts = sharedBudget.snapshot();
+      result = await this.turnResult(run, ledger, active.tasks.store.read(active.taskId), performance.now() - startedAt,
+        { modelRequests: Math.max(sharedCounts.modelRequests, run.modelRequests + config.maxModelRequests - automatic.remainingRequests),
+          toolCalls: Math.max(sharedCounts.toolCalls, run.toolCalls) });
       }
     } catch (error) {
       failure = error;
@@ -701,7 +723,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const message = error instanceof Error ? error.message : '';
     return /^[\u3400-\u9fff]/.test(message) && message.length < 1000 ? message : '自研 agent 执行失败，请检查连接、项目权限和本地记录。';
   }
-  private async turnResult(result: RunResult, ledger: NativeRunStore, task?: NativeTaskSnapshot | null, activeMs?: number): Promise<ChatTurnResult> {
+  private async turnResult(result: RunResult, ledger: NativeRunStore, task?: NativeTaskSnapshot | null, activeMs?: number,
+    counts?: { modelRequests: number; toolCalls: number }): Promise<ChatTurnResult> {
     // Compacted context contains host-authored historical assistant data. Only
     // the current run's latest durable model response may become its workflow
     // artifact; a tool-only or empty response deliberately produces no summary.
@@ -741,7 +764,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         const savedOptions = ledger.getRun(result.identity.runId)?.configuration.sessionOptions;
         const savedTime = savedOptions && typeof savedOptions === 'object' && !Array.isArray(savedOptions) ? savedOptions.maxActiveMs : undefined;
         const savedCeiling = typeof savedTime === 'number' && Number.isSafeInteger(savedTime) && savedTime > 0 ? savedTime : DEFAULT_RUN_BUDGET.maxActiveMs;
-        receipt = nativeExecutionReceipt(result, task, activeMs ?? savedCeiling);
+        receipt = nativeExecutionReceipt(result, task, activeMs ?? savedCeiling, counts);
         await saveNativeExecutionReceipt(this.store.directory, receipt);
       }
     } catch {

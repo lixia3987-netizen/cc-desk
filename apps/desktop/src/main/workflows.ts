@@ -400,7 +400,7 @@ export class WorkflowEngine {
       }
       if (token.cancelled) {
         // Cancellation blocks advancement, but consumed requests and effects still belong to this attempt.
-        if (receipt || run.budget) try { this.update(id, draft => { this.recordReceipt(draft, draft.stages.find(item => item.id === stage.id)!, receipt); }); }
+        if (receipt || run.providerId === 'native') try { this.update(id, draft => { this.recordReceipt(draft, draft.stages.find(item => item.id === stage.id)!, receipt); }); }
         catch (error) { token.persistenceFailed = true; throw error; }
         return;
       }

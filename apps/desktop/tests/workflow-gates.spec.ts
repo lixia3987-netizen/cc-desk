@@ -10,11 +10,13 @@ import { closeNativeApp } from './helpers/native-app-cleanup';
 // @ts-expect-error Shared real HTTP/SSE fixture has no TypeScript declarations.
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
-interface Fixture { baseURL: string; requests: Array<{ input: Array<Record<string, unknown>> }>; errors: unknown[]; close(): Promise<void> }
+interface FixtureRequest { input: Array<Record<string, unknown>>; tools: Array<{ name: string }> }
+interface Fixture { baseURL: string; requests: FixtureRequest[]; errors: unknown[]; close(): Promise<void> }
+type FixtureHandler = (input: { body: FixtureRequest; index: number }) => unknown | Promise<unknown>;
 const secret = 'sk-workflow-gates-electron-dummy-never-persist';
 const goal = '核查阶段门槛，不重做已经完成的工具';
 
-async function workspace(taskGate = false) {
+async function workspace(taskGate = false, customHandler?: FixtureHandler) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-workflow-gates-电子 空格-'));
   const data = path.join(directory, '应用 数据'), cwd = path.join(directory, '项目 空格'), projectId = randomUUID();
   await fs.mkdir(data); await fs.mkdir(cwd);
@@ -22,7 +24,7 @@ async function workspace(taskGate = false) {
   await fs.writeFile(path.join(cwd, 'AGENTS.md'), 'Read feature.txt once per stage. Do not repeat a completed tool while waiting for user confirmation.\n');
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [{ id: projectId, name: 'Native 工作流门槛项目', path: cwd, createdAt: new Date().toISOString() }],
     sessions: [], settings: { claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {} } }));
-  const fixture: Fixture = await startResponsesFixture({ handler: ({ body }: { body: Fixture['requests'][number] }) => {
+  const fixture: Fixture = await startResponsesFixture({ handler: customHandler ?? (({ body }: { body: FixtureRequest }) => {
     const turn = body.input.filter(item => item.role === 'user').length, prefix = `workflow-stage-${turn}`;
     const done = new Set(body.input.filter(item => item.type === 'function_call_output').map(item => String(item.call_id)));
     if (taskGate && turn === 1 && !done.has(`${prefix}-plan`)) {
@@ -32,7 +34,7 @@ async function workspace(taskGate = false) {
     }
     if (!done.has(`${prefix}-read`)) return { output: [functionCall(`${prefix}-read`, 'read_file', { path: 'feature.txt' })] };
     return { output: [assistantMessage(`${prefix}-final`, `第 ${turn} 阶段读取已完成，产出等待独立核查。`)] };
-  } });
+  }) });
   return { directory, data, cwd, projectId, fixture,
     launch: () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } }),
     async dispose() { await fixture.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); },
@@ -67,6 +69,12 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
   const f = await workspace(); let app: ElectronApplication | undefined;
   try {
     app = await f.launch(); const { page, session } = await configure(app, f.projectId, f.fixture.baseURL);
+    await expect(page.getByLabel('分析与计划工具权限', { exact: true })).toHaveValue('read_only');
+    await expect(page.getByLabel('实现与验证工具权限', { exact: true })).toHaveValue('standard');
+    await expect(page.getByLabel('审查与交付工具权限', { exact: true })).toHaveValue('read_only');
+    await page.getByLabel('模型请求总上限', { exact: true }).fill('6');
+    await page.getByLabel('工具调用总上限', { exact: true }).fill('3');
+    await page.getByLabel('执行总时长', { exact: true }).fill('1');
     const run = await create(page, 'manual');
     await expect(run.locator('> header .status-tag')).toHaveText('等待确认');
     await expect(run.locator('.workflow-stage.waiting_confirmation')).toHaveCount(1);
@@ -93,11 +101,87 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
     await expect(run.locator('> header .status-tag')).toHaveText('已完成');
     await expect(run.locator('.workflow-stage.completed')).toHaveCount(3);
     const completed = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(completed.budget).toEqual({ maxModelRequests: 6, maxToolCalls: 3, maxActiveMs: 60000 });
+    expect(completed.usage?.modelRequests).toBe(6); expect(completed.usage?.toolCalls).toBe(3);
     expect(completed.stages.map(stage => stage.attempts)).toEqual([1, 1, 1]);
     expect(completed.stages.flatMap(stage => stage.nativeReceipts ?? []).map(receipt => receipt.usage.toolCalls)).toEqual([1, 1, 1]);
     expect(f.fixture.requests).toHaveLength(6); expect(f.fixture.errors).toEqual([]);
+    for (const index of [0, 4]) expect(f.fixture.requests[index].tools.map(tool => tool.name)).not.toContain('run_command');
+    expect(f.fixture.requests[2].tools.map(tool => tool.name)).toContain('run_command');
     expect(await fs.readFile(path.join(f.cwd, 'feature.txt'), 'utf8')).toBe('existing project content\n');
     await page.screenshot({ path: test.info().outputPath('workflow-manual-completed.png') });
+  } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
+});
+
+test('workflow active-time budget survives manual gate waiting and a long automatically queued ordinary turn', async () => {
+  let releaseFirst!: () => void, enteredFirst!: () => void;
+  const firstRequest = new Promise<void>(resolve => { enteredFirst = resolve; });
+  const firstRelease = new Promise<void>(resolve => { releaseFirst = resolve; });
+  const f = await workspace(false, async ({ body, index }) => {
+    if (index === 0) { enteredFirst(); await firstRelease; }
+    const queued = JSON.stringify(body.input.findLast(item => item.role === 'user')).includes('排队消息独立执行，不消耗工作流阶段预算');
+    if (queued) await new Promise(resolve => setTimeout(resolve, 5500));
+    return { output: [assistantMessage(`workflow-budget-${index}`, queued ? '排队消息已独立完成。' : '工作流当前阶段实际完成。')] };
+  });
+  let app: ElectronApplication | undefined;
+  try {
+    app = await f.launch(); const { page, session } = await configure(app, f.projectId, f.fixture.baseURL);
+    const created = await page.evaluate(sessionId => window.desktop.createWorkflow({ sessionId, goal: '阶段执行预算与等待分开', maxAttempts: 2,
+      budget: { maxModelRequests: 2, maxToolCalls: 2, maxActiveMs: 5000 }, stages: [
+        { id: 'first', title: '第一阶段', instruction: '仅回复第一阶段结果。', gate: 'manual', toolPolicy: 'read_only' },
+        { id: 'second', title: '第二阶段', instruction: '仅回复第二阶段结果。', dependsOn: ['first'], toolPolicy: 'read_only' },
+      ] }), session.id);
+    await page.evaluate(id => window.desktop.startWorkflow(id), created.id); await firstRequest;
+    await page.evaluate(id => window.desktop.submitChat(id, '排队消息独立执行，不消耗工作流阶段预算', [], 'workflow-independent-queued-turn'), session.id);
+    releaseFirst();
+    const run = page.locator('.workflow-run');
+    await expect(run.locator('> header .status-tag')).toHaveText('等待确认');
+    const waiting = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(waiting.usage?.modelRequests).toBe(1); expect(waiting.usage?.activeMs).toBeLessThan(5000);
+    await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).queue?.items.length, session.id), { timeout: 12000 }).toBe(0);
+    expect(f.fixture.requests).toHaveLength(2);
+    const afterQueue = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(afterQueue.usage).toEqual(waiting.usage);
+    await run.getByLabel('第一阶段确认理由', { exact: true }).fill('已检查阶段产出；排队等待期间未重做本阶段。');
+    await run.getByRole('button', { name: '确认阶段产出', exact: true }).click();
+    await expect(run.locator('> header .status-tag')).toHaveText('等待继续');
+    await run.getByRole('button', { name: '继续', exact: true }).click();
+    await expect(run.locator('> header .status-tag')).toHaveText('已完成');
+    const complete = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(complete.usage?.modelRequests).toBe(2); expect(complete.usage?.activeMs).toBeLessThan(5000);
+    expect(complete.stages.map(stage => stage.attempts)).toEqual([1, 1]);
+    expect(f.fixture.requests).toHaveLength(3); expect(f.fixture.errors).toEqual([]);
+    await page.screenshot({ path: test.info().outputPath('workflow-budget-excludes-gate-and-queue-wait.png') });
+  } finally { releaseFirst(); try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
+});
+
+test('workflow UI retries preserve consumed model budget and never dispatch a downstream stage after exhaustion', async () => {
+  const f = await workspace(false, ({ index }) => index === 0
+    ? { httpStatus: 400, raw: JSON.stringify({ error: { message: 'Intentional fixture validation failure', type: 'invalid_request_error' } }) }
+    : { output: [assistantMessage(`workflow-retry-${index}`, '手动重试当前阶段完成。')] });
+  let app: ElectronApplication | undefined;
+  try {
+    app = await f.launch(); const { page, session } = await configure(app, f.projectId, f.fixture.baseURL);
+    const created = await page.evaluate(sessionId => window.desktop.createWorkflow({ sessionId, goal: '失败重试保留累计预算', maxAttempts: 3,
+      budget: { maxModelRequests: 2, maxToolCalls: 3, maxActiveMs: 60000 }, stages: [
+        { id: 'first', title: '第一阶段', instruction: '仅回复第一阶段结果。', toolPolicy: 'read_only' },
+        { id: 'second', title: '第二阶段', instruction: '仅回复第二阶段结果。', dependsOn: ['first'], toolPolicy: 'read_only' },
+      ] }), session.id);
+    await page.evaluate(id => window.desktop.startWorkflow(id), created.id);
+    const run = page.locator('.workflow-run'); await expect(run.locator('> header .status-tag')).toHaveText('失败');
+    expect(f.fixture.requests).toHaveLength(1);
+    expect((await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id)).usage?.modelRequests).toBe(1);
+    await run.getByRole('button', { name: '重试失败阶段', exact: true }).click();
+    await expect(run.locator('> header .status-tag')).toHaveText('已中断');
+    await expect(run).toContainText('工作流累计预算已耗尽');
+    const stopped = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(stopped.usage?.modelRequests).toBe(2); expect(stopped.usage?.recordedExecutionIds).toHaveLength(2);
+    expect(stopped.stages.map(stage => stage.attempts)).toEqual([2, 0]);
+    expect(f.fixture.requests).toHaveLength(2); expect(f.fixture.errors).toEqual([]);
+    await run.getByRole('button', { name: '继续', exact: true }).click();
+    await expect(run.locator('> header .status-tag')).toHaveText('已中断');
+    expect(f.fixture.requests).toHaveLength(2);
+    await page.screenshot({ path: test.info().outputPath('workflow-retry-budget-exhausted.png') });
   } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });
 

@@ -1,7 +1,7 @@
 import type { NativeExecutionReceipt } from '@cc-desk/contracts/native-task';
 export type WorkflowNativeReceipt = NativeExecutionReceipt;
 /** Enabled after the Native executor enforces stage permissions and shared budgets. */
-export const NATIVE_WORKFLOW_POLICIES_ENABLED = false;
+export const NATIVE_WORKFLOW_POLICIES_ENABLED = true;
 export type WorkflowGate = 'none' | 'manual' | 'native_task';
 export type WorkflowToolPolicy = 'read_only' | 'standard';
 export interface WorkflowBudget { maxModelRequests: number; maxToolCalls: number; maxActiveMs: number }

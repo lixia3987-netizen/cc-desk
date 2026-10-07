@@ -44,7 +44,10 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
   const load = useCallback(async () => { const request = ++seq.current; const value = await window.desktop.workflows(allRuns ? undefined : session.id); if (request === seq.current) setRuns(value); }, [session.id, allRuns]);
   useEffect(() => { void load().catch(onError); const off = window.desktop.onWorkflows(() => void load().catch(onError)); return () => { seq.current++; off(); }; }, [load, onError]);
   const act = async (action: () => Promise<unknown>) => { setBusy(true); try { await action(); await load(); } catch (error) { onError(error); } finally { setBusy(false); } };
-  const updateBudget = (key: keyof WorkflowBudget, value: number) => { if (Number.isSafeInteger(value) && value > 0) onDraft(current => ({ ...current, budget: { ...(current.budget ?? defaultBudget), [key]: value } })); };
+  const updateBudget = (key: keyof WorkflowBudget, value: number) => {
+    const [minimum, maximum] = key === 'maxModelRequests' ? [1, 1000] : key === 'maxToolCalls' ? [1, 2000] : [1000, 7_200_000];
+    if (Number.isSafeInteger(value) && value >= minimum && value <= maximum) onDraft(current => ({ ...current, budget: { ...(current.budget ?? defaultBudget), [key]: value } }));
+  };
   const stageDefinitions = DEFAULT_WORKFLOW_STAGES.map(stage => ({ ...stage,
     gate: draft.stageGates?.[stage.id] ?? 'none' as WorkflowGate,
     toolPolicy: native && NATIVE_WORKFLOW_POLICIES_ENABLED ? draft.stageToolPolicies?.[stage.id] ?? stage.toolPolicy ?? 'standard' : 'standard' as WorkflowToolPolicy,
@@ -73,6 +76,7 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
           <label>模型请求总上限<input aria-label="模型请求总上限" type="number" min={1} max={1000} value={budget.maxModelRequests} onChange={event => updateBudget('maxModelRequests', Number(event.target.value))} /></label>
           <label>工具调用总上限<input aria-label="工具调用总上限" type="number" min={1} max={2000} value={budget.maxToolCalls} onChange={event => updateBudget('maxToolCalls', Number(event.target.value))} /></label>
           <label>执行总时长（分钟）<input aria-label="执行总时长" type="number" min={1} max={120} value={budget.maxActiveMs / 60_000} onChange={event => updateBudget('maxActiveMs', Number(event.target.value) * 60_000)} /></label>
+          <p className="panel-note">累计阶段实际执行用量；暂停、等待确认与排队等待不计入执行时长，也不会恢复已用额度。</p>
         </fieldset>}
         <button className="primary compact full" disabled={disabled || busy || !goal.trim() || session.archived}>创建工作流</button>
         <p className="panel-note">规划 → 实现 → 审阅。执行成功与验收通过分别记录；验收等待不会重新执行。失败后由你发起重试。{native && NATIVE_WORKFLOW_POLICIES_ENABLED ? '规划与审阅默认严格只读。' : '阶段继承当前会话权限，规划指令不会强制只读。'}</p>

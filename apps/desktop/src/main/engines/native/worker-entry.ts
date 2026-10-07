@@ -72,6 +72,7 @@ async function start(message: WorkerStart) {
       maintain: (request: Parameters<NonNullable<AgentPorts['contextMaintenance']>['maintain']>[0]) => rpc<Awaited<ReturnType<NonNullable<AgentPorts['contextMaintenance']>['maintain']>>>('context.maintain', context(request), request.signal),
     } } : {}),
     host: {
+      ...(message.sharedBudget ? { consumeBudget: (kind: 'model' | 'tool', run: RunIdentity) => rpc<boolean>('host.consumeBudget', { kind, identity: run }) } : {}),
       now: () => Date.now(),
       digest: value => createHash('sha256').update(value).digest('hex'),
       deadline: (milliseconds, parent) => {

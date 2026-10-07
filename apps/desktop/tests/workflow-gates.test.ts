@@ -239,6 +239,20 @@ test('cancelled stages retain consumed usage while late results never dispatch d
   } finally { f.dispose(); }
 });
 
+test('cancelled Native stages without receipts retain unknown usage even when no overall budget was configured', async () => {
+  let release!: (value: import('../src/shared/workflows').WorkflowStageResult) => void;
+  const pending = new Promise<import('../src/shared/workflows').WorkflowStageResult>(resolve => { release = resolve; });
+  const f = fixture({ runStage: async () => pending });
+  try {
+    const run = f.engine.create({ sessionId: f.binding.sessionId, goal: 'Ship', stages: steps });
+    f.engine.start(run.id); await new Promise(resolve => setImmediate(resolve));
+    await f.engine.cancel(run.id); release({ success: false, summary: '', error: 'receipt metadata is unavailable' });
+    const cancelled = await f.engine.wait(run.id);
+    assert.equal(cancelled.status, 'cancelled'); assert.equal(cancelled.usage?.complete, false);
+    assert.equal(cancelled.stages[1].attempts, 0); assert.equal(cancelled.stages[0].artifacts.length, 0);
+  } finally { f.dispose(); }
+});
+
 test('unsupported strict policies reject explicitly and legacy records keep their ordinary stage behavior', async () => {
   const f = fixture({ nativePoliciesEnabled: true });
   try {

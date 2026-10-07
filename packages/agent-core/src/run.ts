@@ -126,6 +126,14 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     if (request.signal.aborted) throw new Stop('cancelled', 'cancelled')
     if (activeMs() >= budget.maxActiveMs) throw new Stop('budget_exhausted', 'active_time_budget')
   }
+  const consumeSharedBudget = async (kind: 'model' | 'tool'): Promise<void> => {
+    if (!host.consumeBudget) return
+    let accepted: boolean
+    try { accepted = await host.consumeBudget(kind, clone(identity)) }
+    catch { throw new Stop('failed', 'shared_budget_unavailable') }
+    checkStopped()
+    if (accepted !== true) throw new Stop('budget_exhausted', `shared_${kind}_budget`)
+  }
   const activeOperation = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     checkStopped()
     const deadline = host.deadline(Math.max(1, budget.maxActiveMs - activeMs()), request.signal)
@@ -243,6 +251,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
       await capacity(8192)
       checkStopped()
+      await consumeSharedBudget('model')
       // Reserve before append: an acknowledgement may be lost after a durable
       // attempt. Never turn that uncertainty into another paid request.
       modelRequests++
@@ -317,6 +326,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   const executeCall = async (call: ToolCall): Promise<void> => {
     checkStopped()
     if (toolCalls >= budget.maxToolCalls) throw new Stop('budget_exhausted', 'tool_call_budget')
+    await consumeSharedBudget('tool')
     toolCalls++
     let prepared: PreparedTool
     try {

@@ -169,6 +169,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let duplicateResult: RunResult | undefined, begun = false, startingRun = false;
     let activeTool: string | undefined;
     let maintenanceInFlight = false, maintenanceUncertain = false, summaryRequests = 0;
+    let modelBudgetReserved = false, toolBudgetReserved = false;
     let modelAttempts = 0, activeAttempt: number | undefined, modelStreamObserved = false, modelJournalUncertain = false, modelJournalInFlight = false;
     let retries = 0, retryNotBefore: number | undefined, modelFailureClosed = false;
     let maintenanceSource: ModelContext | undefined;
@@ -339,6 +340,19 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       // A context switch is a complete boundary operation. A compromised worker
       // cannot race it with another store mutation or tool/approval request.
       if (maintenanceInFlight && method !== 'event') invalid();
+      if (method === 'host.consumeBudget') {
+        const item = fields(args, ['kind', 'identity']);
+        identity(item.identity, runIdentity);
+        if (!options.consumeBudget || committedResult || signal.aborted || inFlight.size !== 1 ||
+            !['model', 'tool'].includes(item.kind as string)) invalid();
+        const kind = item.kind as 'model' | 'tool';
+        if (kind === 'model' ? modelBudgetReserved || activeAttempt || pendingCalls.length || activeTool :
+            toolBudgetReserved || activeAttempt || !pendingCalls.length || activeTool) invalid();
+        const accepted = await options.consumeBudget(kind, runIdentity);
+        if (typeof accepted !== 'boolean') invalid();
+        if (accepted) { if (kind === 'model') modelBudgetReserved = true; else toolBudgetReserved = true; }
+        return accepted;
+      }
       if (method === 'context.maintain') {
         const item = fields(args, ['identity', 'context', 'budget', 'modelRequests', 'toolCalls', 'remainingActiveMs']);
         identity(item.identity, runIdentity);
@@ -404,7 +418,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           let response: ModelResponse | undefined, state: ToolState | undefined;
           if (event.type === 'model_request_started') {
             fields(event, ['type', 'attempt']);
-            if (!integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
+            if (options.consumeBudget && !modelBudgetReserved || !integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
                 modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
                 modelFailureClosed && (retryNotBefore === undefined || Date.now() < retryNotBefore)) invalid();
           } else if (event.type === 'model_request_failed') {
@@ -458,6 +472,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             throw error;
           }
           if (event.type === 'model_request_started') {
+            modelBudgetReserved = false;
             modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
           } else if (event.type === 'model_request_failed') {
             activeAttempt = undefined; modelFailureClosed = true;
@@ -472,7 +487,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             else delete savedContext!.continuation;
             for (const requested of response.toolCalls) { calls.set(requested.id, clone(requested)); pendingCalls.push(requested.id); }
           } else if (event.type === 'tool_prepared') state!.recorded = true;
-          else if (event.type === 'tool_completed') { savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
+          else if (event.type === 'tool_completed') { toolBudgetReserved = false; savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
           else if (event.type === 'run_finished') committedResult = clone(event.result);
           return receipt;
         } finally { if (modelJournal) modelJournalInFlight = false; }
@@ -480,7 +495,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       if (method === 'tools.prepare') {
         const item = fields(args, ['call', 'context']);
         const requested = requireCall(item.call);
-        if (!definitions.some(definition => definition.name === requested.name)) invalid();
+        if (options.consumeBudget && !toolBudgetReserved || !definitions.some(definition => definition.name === requested.name)) invalid();
         const bound = execution(item.context, signal);
         if (signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
         const prepared = await options.tools.prepare(clone(requested), bound);
@@ -584,7 +599,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             return;
           }
           run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
-          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}) });
+          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}) });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
         }

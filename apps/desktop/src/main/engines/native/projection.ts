@@ -226,7 +226,7 @@ export class NativeProjection {
         const costUSD = !failures.has(runId) && result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
           ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
         const failure = failures.get(runId);
-        const error = nativeRunError(result.reason, { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: retryCounts.get(runId) ?? 0, ...(failure ? { modelFailure: failure.failure.category, partial: failure.partial } : {}) });
+        const error = nativeRunError(result.reason, { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: retryCounts.get(runId) ?? 0, ...(failure ? { modelFailure: failure.failure.category, diagnostic: failure.failure, partial: failure.partial } : {}) });
         add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error }) });
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
