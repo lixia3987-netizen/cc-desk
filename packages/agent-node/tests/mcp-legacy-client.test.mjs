@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { McpHttpClient, McpClientError } from '../dist/mcp-client.js';
+import { listenOnFetchLoopback } from './fixtures/fetch-loopback.mjs';
 
 const version = '2025-11-25';
 const session = 'fixture-session-id-that-must-remain-private';
@@ -41,7 +42,7 @@ async function fixture(t, action = () => {}, options = {}) {
       else await action({ body, request, response, send, ack, requests });
     } catch (error) { errors.push(error); response.destroy(); }
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await listenOnFetchLoopback(server);
   const endpoint = `http://127.0.0.1:${server.address().port}/mcp`;
   const client = new McpHttpClient({ endpoint, allowLoopbackHttp: true, protocolVersion: version, ...options.client });
   t.after(async () => {

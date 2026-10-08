@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { McpHttpClient, McpClientError, MCP_PROTOCOL_VERSION } from '../dist/mcp-client.js';
+import { listenOnFetchLoopback } from './fixtures/fetch-loopback.mjs';
 
 const tool = { name: 'lookup', description: 'Read an item.', inputSchema: { type: 'object' } };
 const complete = { resultType: 'complete', content: [{ type: 'text', text: 'done' }] };
@@ -33,7 +34,7 @@ async function fixture(t, action, options = {}) {
       else await action({ body, request, response, send, requests });
     } catch (error) { errors.push(error); response.destroy(); }
   });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  await listenOnFetchLoopback(server);
   t.after(async () => {
     server.closeAllConnections();
     await new Promise(resolve => server.close(resolve));

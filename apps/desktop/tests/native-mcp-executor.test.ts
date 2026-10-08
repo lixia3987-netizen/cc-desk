@@ -19,6 +19,8 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 // Both model and MCP requests terminate on real local HTTP fixtures.
 // @ts-expect-error Local test-only ESM fixture has no declarations.
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
 type Body = { input: Array<Record<string, unknown>>; tools: Array<{ name: string; description: string }> };
@@ -78,7 +80,7 @@ async function startMcpFixture(expectedArguments: Record<string, unknown> = { no
     }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  await listenOnFetchLoopback(server);
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, requests, errors, tool,
     count: (method: string) => requests.filter(request => request.method === method).length,

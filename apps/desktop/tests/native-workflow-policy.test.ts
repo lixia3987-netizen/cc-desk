@@ -20,6 +20,8 @@ import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/mai
 import { createNativeConfig } from '../src/main/engines/native/config';
 // @ts-expect-error Shared loopback Responses fixture has no declarations.
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Scenario = 'read-only' | 'standard' | 'simple' | 'fail-once' | 'tool-budget' | 'approval-time';
 const hash = (text: string) => createHash('sha256').update(text).digest('hex');
@@ -48,7 +50,7 @@ async function mcpFixture() {
     } catch (error) { errors.push(error); response.writeHead(500, { 'Content-Type': 'application/json' }); response.end('{"error":"local fixture assertion failed"}'); }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  await listenOnFetchLoopback(server);
   return { endpoint: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, requests, errors,
     count: () => requests.filter(item => item.method === 'tools/call').length,
     async close() { for (const socket of sockets) socket.destroy(); await new Promise<void>(resolve => server.close(() => resolve())); } };

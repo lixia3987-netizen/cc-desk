@@ -19,6 +19,8 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 // Real loopback fixtures exercise model serialization and the MCP transport together.
 // @ts-expect-error Local test-only ESM fixture has no declarations.
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
+// @ts-expect-error Shared test-only ESM fixture has no declarations.
+import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
 type RpcRequest = { jsonrpc: string; id?: number | string; method: string; params?: Record<string, unknown> };
@@ -102,7 +104,7 @@ async function startMcpFixture(options: FixtureOptions = {}) {
     }
   });
   server.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
-  await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
+  await listenOnFetchLoopback(server);
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`, requests, errors, sessions, tool, options,
     count: (method: string) => requests.filter(request => request.method === method).length,

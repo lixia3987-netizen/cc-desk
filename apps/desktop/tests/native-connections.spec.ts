@@ -7,7 +7,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:http';
-import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest } from '@cc-desk/agent-core';
@@ -25,7 +24,7 @@ test('native MCP settings persist explicit protocol choices locally and clear wr
   } }));
   let requests = 0;
   const server = createServer((_request, response) => { requests++; response.writeHead(503); response.end(); });
-  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  await listenOnFetchLoopback(server);
   const launch = () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
   let app = await launch();
   try {
