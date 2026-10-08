@@ -25,7 +25,9 @@ const receiptSchema = z.object({ version: z.literal(1), batchId: uuid, childId: 
   createdAt: timestamp, updatedAt: timestamp, receiptPath: location, cwd: location,
   workspace: z.object({ path: location, cwd: location, branch: z.string().regex(/^codex\/native-agent-[0-9a-f-]{36}$/i), baseCommit: commit,
     parentHead: commit, baseline: z.enum(['head', 'snapshot']) }).strict().optional(), workspaceVerified: z.boolean().optional(),
-  artifact: z.object({ patchPath: location, changedFiles: files, head: commit, baseCommit: commit }).strict().optional(),
+  artifact: z.object({ patchPath: location, changedFiles: files, head: commit, baseCommit: commit,
+    sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), bytes: z.number().int().nonnegative().safe().optional(),
+  }).strict().refine(value => (value.sha256 === undefined) === (value.bytes === undefined)).optional(),
   result: result.optional(), error: z.string().max(256).optional(),
 }).strict();
 const sameIdentity = (a: RunIdentity, b: RunIdentity) => (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).every(key => a[key] === b[key]);
@@ -45,7 +47,8 @@ export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIde
     title: value.title, mode: value.mode, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt, cwd: value.cwd, receiptPath: value.receiptPath };
   if (value.error) view.error = value.error;
   if (value.workspace) view.worktree = { ...value.workspace, verified: value.workspaceVerified === true };
-  if (value.artifact) view.artifact = { patchPath: value.artifact.patchPath, changedFiles: value.artifact.changedFiles.slice(0, 128), omittedFiles: Math.max(0, value.artifact.changedFiles.length - 128) };
+  if (value.artifact) view.artifact = { patchPath: value.artifact.patchPath, changedFiles: value.artifact.changedFiles.slice(0, 128), omittedFiles: Math.max(0, value.artifact.changedFiles.length - 128),
+    ...(value.artifact.sha256 === undefined ? {} : { sha256: value.artifact.sha256, bytes: value.artifact.bytes }) };
   if (value.result) {
     view.summary = value.result.summary.slice(-16384); view.reason = value.result.reason;
     view.usage = { modelRequests: value.result.modelRequests, toolCalls: value.result.toolCalls };
@@ -67,10 +70,10 @@ function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receipt
   });
   all.sort((a, b) => Number(['prepared', 'running'].includes(b.status)) - Number(['prepared', 'running'].includes(a.status)) ||
     b.createdAt.localeCompare(a.createdAt) || b.batchId.localeCompare(a.batchId) || a.childId.localeCompare(b.childId));
-  return { parentRunId: parent.runId, items: all.slice(0, 4), omitted: Math.max(0, all.length - 4), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
+  return { parentRunId: parent.runId, items: all.slice(0, 16), omitted: Math.max(0, all.length - 16), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
 }
 
-/** Keeps all (at most sixteen) parent-run receipts while exposing at most four children. */
+/** Keeps and exposes all (at most sixteen) parent-run receipts. */
 export class NativeAgentProjection {
   private items = new Map<string, NativeAgentView>();
   private retained = new Map<string, NativeDelegationReceipt>();

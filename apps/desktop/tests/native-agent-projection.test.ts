@@ -58,14 +58,14 @@ test('legal long and Unicode request IDs remain identity-bound without entering 
   assert.throws(() => nativeAgentReceiptDirectory(directory, { ...parent, requestId: 'request\0invalid' }));
 });
 
-test('at most four visible children preserve active work and retain sixteen complete recovery records', async t => {
+test('all sixteen visible children preserve active work and retain complete recovery records', async t => {
   const directory = await temporary(t), parent = newIdentity(), projection = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(directory, parent));
   const active = receipt(directory, parent); projection.record(active);
   for (let index = 1; index < 16; index++) {
     const child = complete(receipt(directory, parent, { createdAt: `2026-10-08T01:00:${String(index).padStart(2, '0')}.000Z` })); projection.record(child);
   }
   const snapshot = projection.snapshot(true);
-  assert.equal(snapshot.items.length, 4); assert.equal(snapshot.omitted, 12); assert.equal(snapshot.items[0].childId, active.childId);
+  assert.equal(snapshot.items.length, 16); assert.equal(snapshot.omitted, 0); assert.equal(snapshot.items[0].childId, active.childId);
   assert.equal(projection.receipts().length, 16);
   projection.record(complete(receipt(directory, parent))); assert.equal(projection.receipts().length, 16); assert.equal(projection.snapshot().incomplete, true);
 });

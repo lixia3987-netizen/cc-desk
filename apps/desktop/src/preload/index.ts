@@ -45,6 +45,7 @@ const api: DesktopAPI = {
   resumeNativeRecovery: (id, expectedHead) => ipcRenderer.invoke('native:resume-recovery', { id, expectedHead }),
   compactNativeContext: (id, expectedHead) => ipcRenderer.invoke('native:compact-context', { id, expectedHead }),
   nativeTaskReview: (id, input) => ipcRenderer.invoke('native:task-review', { ...input, id }),
+  nativeAgentResult: (id, input) => ipcRenderer.invoke('native:agent-result', { ...input, id }),
   snapshot:() => ipcRenderer.invoke('workspace:snapshot'),
   copyText:text => ipcRenderer.invoke('clipboard:write-text',text),
   chooseProject:() => ipcRenderer.invoke('project:choose'),

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,12 +27,12 @@ async function repository(t: { after(fn: () => Promise<void>): void }) {
 }
 const resultFor = (input: NativeAgentChildInput, result: Partial<NativeAgentChildResult> = {}): NativeAgentChildResult => ({ identity: input.identity, taskId: input.taskId,
   status: 'completed', reason: 'model_completed', committed: true, summary: `${input.title}完成`, modelRequests: 1, toolCalls: 0, ...result });
-function fixture(directory: string, runChild: (input: NativeAgentChildInput) => Promise<NativeAgentChildResult>, options: { policy?: 'read_only' | 'workspace_write'; budget?: NativeDelegationBudget; requiresApproval?: boolean; record?: (r: NativeDelegationReceipt) => Promise<void> } = {}) {
+function fixture(directory: string, runChild: (input: NativeAgentChildInput) => Promise<NativeAgentChildResult>, options: { policy?: 'read_only' | 'workspace_write'; budget?: NativeDelegationBudget; requiresApproval?: boolean; record?: (r: NativeDelegationReceipt) => Promise<void>; storeDirectory?: string } = {}) {
   const abort = new AbortController();
   const identity = { sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 };
   const budget: NativeDelegationBudget = options.budget ?? { consume: async () => true, remainingMs: () => 120000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) };
   const tool = createAgentDelegationTools({ identity, parentTaskId: randomUUID(), cwd: directory, policy: options.policy ?? 'workspace_write', signal: abort.signal,
-    forbiddenValues: ['sk-protected-delegation-secret'], storeDirectory: path.join(directory, '..', 'records'), worktreeRoot: path.join(directory, '..', 'worktrees'),
+    forbiddenValues: ['sk-protected-delegation-secret'], storeDirectory: options.storeDirectory ?? path.join(directory, '..', 'records'), worktreeRoot: path.join(directory, '..', 'worktrees'),
     assertOwnership: async () => {}, budget, runChild, requiresApproval: options.requiresApproval ?? false, record: options.record });
   const context: ToolExecutionContext = { identity, policyRevision: 'instructions:1', signal: abort.signal, maxOutputBytes: 64 * 1024 };
   const prepare = (tasks = [{ title: '审阅', goal: '检查状态边界' }], name = 'delegate_review', id = randomUUID(), baseline = 'snapshot') =>
@@ -199,7 +199,10 @@ test('parallel implement children receive isolated worktrees from one snapshot a
   for (const receipt of receipts) {
     assert.equal(receipt.workspaceVerified, true); assert.match(receipt.workspace!.branch, /^codex\/native-agent-/);
     assert.equal(await fs.readFile(path.join(receipt.workspace!.cwd, 'result.txt'), 'utf8'), receipt.title);
-    assert.match(await fs.readFile(receipt.artifact!.patchPath, 'utf8'), /result.txt/);
+    const patch = await fs.readFile(receipt.artifact!.patchPath);
+    assert.match(patch.toString('utf8'), /result.txt/);
+    assert.equal(receipt.artifact!.sha256, createHash('sha256').update(patch).digest('hex'));
+    assert.equal(receipt.artifact!.bytes, patch.byteLength);
     assert.equal(receipt.result!.evidence!.commandReceipts![0].exitCode, 0);
   }
   await assert.rejects(fs.stat(path.join(repo.cwd, 'result.txt'))); assert.equal(await fs.readFile(path.join(repo.cwd, 'file.txt'), 'utf8'), 'parent draft\n');
@@ -307,6 +310,26 @@ test('large summaries remain durable while bounded model output contains only re
   const result = await f.tool.execute(await f.prepare(Array.from({ length: 4 }, () => ({ title: '审阅', goal: 'review' }))), f.context);
   assert.equal(result.status, 'completed'); assert.equal(result.truncated, true); assert.ok(Buffer.byteLength(JSON.stringify(result.output)) <= 2048);
   assert.ok((await readReceipts(repo.storeDirectory)).every(r => r.result!.summary.length === 16000));
+});
+
+test('all output truncation levels retain the parent and child IDs needed to read saved results', async t => {
+  const repo = await repository(t);
+  const levels: string[] = [];
+  for (const { maxOutputBytes, depth } of [{ maxOutputBytes: 64000, depth: 0 }, { maxOutputBytes: 2200, depth: 0 },
+    { maxOutputBytes: 2048, depth: 3 }, { maxOutputBytes: 2048, depth: 10 }]) {
+    const storeDirectory = path.join(repo.directory, 'records', ...Array.from({ length: depth }, (_, index) => `${index}-${'r'.repeat(180)}`));
+    const f = fixture(repo.cwd, async input => resultFor(input, { summary: '详细成果'.repeat(1000) }), { storeDirectory });
+    t.after(() => f.tool.closeAll()); f.context.maxOutputBytes = maxOutputBytes;
+    const result = await f.tool.execute(await f.prepare(Array.from({ length: 4 }, () => ({ title: '审阅', goal: 'review' }))), f.context);
+    assert.ok(result.output && typeof result.output === 'object' && !Array.isArray(result.output));
+    assert.equal(result.output.parentRunId, f.identity.runId);
+    assert.ok(Array.isArray(result.output.children)); assert.equal(result.output.children.length, 4);
+    assert.ok(result.output.children.every(child => child && typeof child === 'object' && !Array.isArray(child) && typeof child.childId === 'string'));
+    assert.match(JSON.stringify(result.output), /read_agent_result/);
+    assert.ok(Buffer.byteLength(JSON.stringify(result.output)) <= maxOutputBytes);
+    levels.push('integration' in result.output ? 'full' : 'budget' in result.output ? 'references' : 'receiptDirectory' in result.output ? 'batch' : 'identities');
+  }
+  assert.deepEqual(levels, ['full', 'references', 'batch', 'identities']);
 });
 
 test('durable intent failure never calls the child host and leaves an unknown recovery barrier', async t => {

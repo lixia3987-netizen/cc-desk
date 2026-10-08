@@ -90,6 +90,22 @@ export class ConnectionStore {
     return { connections: this.connections.map(item => this.view(item)), storage: this.credentials.protection(), ...(this.loadError ? { error: this.loadError } : {}) };
   }
 
+  /** Main-only redaction values, including disabled or diagnostic-locked connections.
+   * Never serialize this collection to IPC, logs, model input or a run journal. */
+  protectedValues(): readonly string[] {
+    const values = new Set<string>();
+    for (const item of this.connections) {
+      try {
+        let value: string | undefined;
+        if (item.auth.mode === 'env') value = this.environment[item.auth.variable];
+        else if (item.auth.mode === 'memory') value = this.credentials.get(item.id);
+        else if (item.ciphertext) value = this.credentials.decrypt(item.ciphertext);
+        if (typeof value === 'string' && value.length) values.add(value);
+      } catch { /* An unavailable encrypted value must not discard other credentials. */ }
+    }
+    return Object.freeze([...values]);
+  }
+
   upsert(input: NativeConnectionInput): NativeConnectionView {
     this.assertLoaded();
     const parsed = nativeConnectionInputSchema.safeParse(input);

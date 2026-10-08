@@ -13,7 +13,7 @@ export function parseNativeExecutionPolicy(value: unknown): NativeExecutionPolic
   return value === undefined ? undefined : schema.parse(value);
 }
 const READ_ONLY_TOOLS = new Set(['list_directory', 'read_file', 'search', 'find_files', 'update_plan', 'read_task',
-  'record_code_location', 'ask_user', 'delegate_review']);
+  'record_code_location', 'ask_user', 'delegate_review', 'read_agent_result']);
 /** A host allowlist, checked again during every prepare/validate/execute; tool risk annotations alone are insufficient. */
 export function restrictNativeTools(port: ToolPort, policy?: NativeExecutionPolicy): ToolPort {
   if (policy?.toolPolicy !== 'read_only') return port;

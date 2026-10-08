@@ -332,10 +332,24 @@ export class NativeProjection {
     if (this.isActive(id)) snapshot.taskState = finalState;
     const stream = old.stream && (streamEpochs.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
-    const agents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity) : undefined;
+    let agents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity) : undefined;
     // A receipt callback can arrive while the ledger projection awaits file I/O.
     // Keep that newest host fact when publishing the rebuilt snapshot.
     agents?.merge(this.entry(id).agents);
+    // Continuing the parent must not erase the last retained collaboration.
+    // Candidates come from this conversation's ledger, never renderer paths.
+    if (agents && !agents.snapshot().items.length && !agents.snapshot().incomplete) {
+      const previousAgents = this.entry(id).agents;
+      const candidates = store.listRuns().toReversed().filter(run => run.identity.runId !== currentIdentity?.runId &&
+        (run.tools.some(tool => ['delegate_review', 'delegate_implement'].includes(tool.call.name)) ||
+          run.identity.runId === previousAgents?.parent.runId));
+      for (const run of candidates) {
+        const retained = await loadNativeAgents(this.dataDirectory, run.identity);
+        retained.merge(this.entry(id).agents);
+        const snapshot = retained.snapshot();
+        if (snapshot.items.length || snapshot.incomplete) { agents = retained; break; }
+      }
+    }
     this.missingContext.delete(id);
     this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records), agents });
     this.archive.forget(id);
@@ -378,7 +392,8 @@ export class NativeProjection {
     const terminalOverride = !!entry.override && ['completed', 'interrupted', 'error'].includes(entry.override.taskState);
     if (entry.commands?.items.length) snapshot.nativeCommands = snapshotNativeCommands(entry.commands,
       this.isActive(id) && !entry.currentTerminal && !terminalOverride ? entry.currentIdentity?.runId : undefined);
-    const agents = entry.agents?.snapshot(this.isActive(id) && !entry.currentTerminal && !terminalOverride);
+    const agents = entry.agents?.snapshot(entry.agents.parent.runId === entry.currentIdentity?.runId &&
+      this.isActive(id) && !entry.currentTerminal && !terminalOverride);
     if (agents && (agents.items.length || agents.incomplete)) snapshot.nativeAgents = agents;
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }

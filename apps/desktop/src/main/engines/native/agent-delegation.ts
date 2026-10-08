@@ -61,7 +61,7 @@ export interface NativeDelegationReceipt {
   cwd: string;
   workspace?: NativeAgentWorktree;
   workspaceVerified?: boolean;
-  artifact?: { patchPath: string; changedFiles: Array<{ path: string; status: string }>; head: string; baseCommit: string };
+  artifact?: { patchPath: string; changedFiles: Array<{ path: string; status: string }>; head: string; baseCommit: string; sha256?: string; bytes?: number };
   result?: NativeAgentChildResult;
   /** Stable host code only; provider or subprocess errors are never copied here. */
   error?: string;
@@ -132,21 +132,21 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
   const resultOutput = (receipts: NativeDelegationReceipt[], context: ToolExecutionContext): ToolResult => {
     const status: ToolResult['status'] = receipts.some(r => r.status === 'unknown') ? 'unknown' :
       receipts.every(r => r.status === 'completed') ? 'completed' : receipts.every(r => r.status === 'cancelled') ? 'cancelled' : 'failed';
-    const output = { children: receipts.map(r => ({ childId: r.childId, taskId: r.taskId, runId: r.identity.runId, title: r.title, status: r.status,
+    const output = { parentRunId: parentIdentity.runId, children: receipts.map(r => ({ childId: r.childId, taskId: r.taskId, runId: r.identity.runId, title: r.title, status: r.status,
       receiptPath: r.receiptPath, cwd: r.cwd, ...(r.workspace ? { workspace: r.workspace, workspaceVerified: r.workspaceVerified } : {}),
       ...(r.artifact ? { artifact: r.artifact } : {}), ...(r.error ? { error: r.error } : {}),
       ...(r.result ? { summary: r.result.summary, reason: r.result.reason, modelRequests: r.result.modelRequests, toolCalls: r.result.toolCalls, evidence: r.result.evidence } : {}) })),
-      budget: options.budget.snapshot(), integration: 'Review retained worktrees and patches before explicitly integrating; execution completion does not prove acceptance.' };
+      budget: options.budget.snapshot(), integration: 'Use read_agent_result with parentRunId and childId to review the retained patch and evidence. Integrate reviewed changes using normally approved tools; do not assume the child branch contains uncommitted changes. Execution completion does not prove acceptance.' };
     credentials(output);
     if (Buffer.byteLength(encode(output)) <= context.maxOutputBytes) return { status, output: JSON.parse(JSON.stringify(output)) };
     // Full summaries/evidence remain durable; truncation is only model presentation.
-    const references = { children: receipts.map(r => ({ childId: r.childId, taskId: r.taskId, runId: r.identity.runId,
-      status: r.status, receiptPath: r.receiptPath })), budget: options.budget.snapshot(), details: 'Full results, worktree and artifact references are in each durable receipt.' };
+    const references = { parentRunId: parentIdentity.runId, children: receipts.map(r => ({ childId: r.childId, taskId: r.taskId, runId: r.identity.runId,
+      status: r.status, receiptPath: r.receiptPath })), budget: options.budget.snapshot(), details: 'Use read_agent_result with parentRunId and childId to read saved results and page through retained patches.' };
     if (Buffer.byteLength(encode(references)) <= context.maxOutputBytes) return { status, truncated: true, output: references };
-    const batchReference = { batchId: receipts[0].batchId, receiptDirectory: path.dirname(path.dirname(receipts[0].receiptPath)),
-      children: receipts.map(r => ({ childId: r.childId, status: r.status })), details: 'Each child has a receipt.json in its directory.' };
+    const batchReference = { parentRunId: parentIdentity.runId, batchId: receipts[0].batchId, receiptDirectory: path.dirname(path.dirname(receipts[0].receiptPath)),
+      children: receipts.map(r => ({ childId: r.childId, status: r.status })), details: 'Use read_agent_result with parentRunId and childId to read saved results and patches.' };
     return { status, truncated: true, output: Buffer.byteLength(encode(batchReference)) <= context.maxOutputBytes ? batchReference : {
-      batchId: receipts[0].batchId, children: receipts.map(r => ({ childId: r.childId, status: r.status })), details: 'Full results are retained in the host delegation store.' } };
+      parentRunId: parentIdentity.runId, batchId: receipts[0].batchId, children: receipts.map(r => ({ childId: r.childId, status: r.status })), details: 'Use read_agent_result with parentRunId and childId to read saved results.' } };
   };
   const executeReservedBatch = async (state: CallState, context: ToolExecutionContext): Promise<ToolResult> => {
     const operationSignal = AbortSignal.any([lifecycle.signal, options.signal, context.signal]);
@@ -226,7 +226,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
             credentials({ ...evidence, patch: evidence.patch.toString('utf8') });
             const patchPath = path.join(path.dirname(receipt.receiptPath), 'workspace.diff.patch');
             await writeAgentArtifact(patchPath, evidence.patch);
-            receipt.artifact = { patchPath, changedFiles: evidence.changedFiles, head: evidence.head, baseCommit: evidence.baseCommit };
+            receipt.artifact = { patchPath, changedFiles: evidence.changedFiles, head: evidence.head, baseCommit: evidence.baseCommit,
+              sha256: createHash('sha256').update(evidence.patch).digest('hex'), bytes: evidence.patch.byteLength };
           } catch { receipt.status = 'unknown'; receipt.error = 'workspace_evidence_unconfirmed'; }
         }
         try { await save(receipt); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_receipt_unconfirmed'; }

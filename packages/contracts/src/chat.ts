@@ -3,7 +3,7 @@ import type { NativeChangeSetPreview, NativeChangeSetResult } from './native-cha
 import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
 import type { NativeAgentSnapshot, NativeAgentApprovalScope } from './native-agents.js';
-export type { NativeAgentView, NativeAgentSnapshot, NativeAgentApprovalScope } from './native-agents.js';
+export type { NativeAgentView, NativeAgentSnapshot, NativeAgentApprovalScope, NativeAgentResultRequest, NativeAgentResult, NativeAgentPatchPage } from './native-agents.js';
 /** State of a turn, independent of the lifetime of the CLI process. */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 /** Immutable metadata of the bytes submitted with one Native user message. Never a file path or image payload. */

@@ -10,6 +10,7 @@ import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
+import type { NativeAgentResult } from '../src/shared/chat';
 // @ts-expect-error The executable HTTP fixture is shared with agent-node regressions.
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
@@ -19,7 +20,9 @@ interface Body { input: Item[]; tools: Array<{ name: string }>; instructions: st
 interface Response { output?: unknown[]; hang?: boolean }
 interface Fixture { baseURL: string; requests: Body[]; errors: unknown[]; close(): Promise<void> }
 const toolResults = (body: Body) => new Map(body.input.filter(item => item.type === 'function_call_output')
-  .map(item => [item.call_id!, JSON.parse(item.output!) as { status: string; output: { hash?: string } }]));
+  .map(item => [item.call_id!, JSON.parse(item.output!) as { status: string; output: {
+    result?: NativeAgentResult;
+    hash?: string; parentRunId?: string; children?: Array<{ childId: string }> } }]));
 const userGoal = (body: Body) => { const content = body.input.find(item => item.role === 'user')?.content;
   return typeof content === 'string' ? content : content?.map(item => item.text ?? '').join('') ?? ''; };
 const responseCall = (id: string, name: string, input: unknown): Response => ({ output: [functionCall(id, name, input)] });
@@ -189,14 +192,43 @@ test('stopping the parent aborts both physical child requests and retains their 
 });
 
 test('physical implementation children inherit an explicit dirty snapshot, approve writes/commands in the parent UI and retain independent worktrees', async () => {
+  test.info().setTimeout(120000);
   const f = await workspace(), barrier = gate(), started = new Set<string>();
+  let selected: NativeDelegationReceipt | undefined;
+  const handoffMarker = '核查保存补丁，并将选定成果写入 integrated-result.txt；保留父工作区原有文件';
   await fs.writeFile(path.join(f.cwd, 'fixture.txt'), 'staged parent draft\n');
   await execute('git', ['-C', f.cwd, 'add', 'fixture.txt'], { windowsHide: true });
   await fs.writeFile(path.join(f.cwd, 'fixture.txt'), 'unstaged parent draft\n');
   await fs.writeFile(path.join(f.cwd, 'parent-untracked.txt'), 'user-owned parent file\n');
   const parentIndex = await fs.readFile(path.join(f.cwd, '.git', 'index')), parentHead = (await execute('git', ['-C', f.cwd, 'rev-parse', 'HEAD'])).stdout.trim();
   const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body }: { body: Body }) => {
-    if (!body.instructions.includes('independent delegated Native agent')) return parentResponse(body, 'implement');
+    if (!body.instructions.includes('independent delegated Native agent')) {
+      const done = toolResults(body), latestUser = body.input.filter(item => item.role === 'user').at(-1)?.content;
+      const latestGoal = typeof latestUser === 'string' ? latestUser : latestUser?.map(item => item.text ?? '').join('') ?? '';
+      if (selected && latestGoal.includes(handoffMarker)) {
+        expect(latestGoal).toContain(selected.childId); expect(latestGoal).toContain(selected.parentIdentity.runId);
+        expect(latestGoal).toContain(selected.artifact!.sha256!);
+        if (!done.has('followup-result')) return responseCall('followup-result', 'read_agent_result', {
+          parentRunId: selected.parentIdentity.runId, childId: selected.childId, expectedPatchSha256: selected.artifact!.sha256 });
+        const savedResult = done.get('followup-result')!;
+        expect(savedResult.status).toBe('completed'); expect(savedResult.output.result?.acceptance).toBe('not_assessed');
+        expect(savedResult.output.result?.patch?.integrity).toBe('verified');
+        const content = savedResult.output.result!.patch!.text.match(/^\+(child [ab] implementation)$/m)![1] + '\n';
+        if (!done.has('parent-integrate')) return responseCall('parent-integrate', 'apply_patch', { path: 'integrated-result.txt', content, expectedHash: null });
+        if (!done.has('parent-verify')) return responseCall('parent-verify', 'run_command', { executable: process.execPath, cwd: '.',
+          argv: ['-e', `const fs=require('node:fs');if(fs.readFileSync('integrated-result.txt','utf8')!==${JSON.stringify(content)})process.exitCode=8;else process.stdout.write('parent-integration-verified')`], timeoutMs: 10000, maxOutputBytes: 4096 });
+        return final('parent-followup-final', '已读取指定历史成果，按审批写入并在父工作区验证，等待人工验收。');
+      }
+      const delegated = done.get('parent-delegate');
+      if (delegated && !done.has('parent-read-result')) return responseCall('parent-read-result', 'read_agent_result', {
+        parentRunId: delegated.output.parentRunId, childId: delegated.output.children![0].childId });
+      if (done.has('parent-read-result')) {
+        expect(done.get('parent-read-result')!.status).toBe('completed');
+        expect(done.get('parent-read-result')!.output.result?.patch?.text).toMatch(/child [ab] implementation/);
+        expect(done.get('parent-read-result')!.output.result?.acceptance).toBe('not_assessed');
+      }
+      return parentResponse(body, 'implement');
+    }
     const name = userGoal(body).startsWith('IMPLEMENT_A') ? 'a' : 'b', done = toolResults(body), content = `child ${name} implementation\n`;
     if (!done.has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
     if (!done.has(`child-${name}-patch`)) return responseCall(`child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content, expectedHash: done.get(`child-${name}-read`)!.output.hash });
@@ -264,6 +296,48 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     await childPane.getByRole('button', { name: '复制隔离工作区路径', exact: true }).click();
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(saved[0].workspace!.path);
     await page.screenshot({ path: test.info().outputPath('native-agent-worktree-result.png'), fullPage: true });
+    selected = saved[0];
+    const requestCount = fixture.requests.length;
+    const composer = page.getByRole('textbox', { name: '提示词编辑器', exact: true });
+    await composer.fill('人工补充：保留已有草稿。');
+    await childPane.getByRole('button', { name: '查看保存成果', exact: true }).click();
+    const viewer = page.getByRole('dialog', { name: '子 Agent 保存成果', exact: true });
+    await expect(viewer.getByLabel('保存补丁内容', { exact: true })).toContainText(/child [ab] implementation/);
+    await expect(viewer).toContainText(selected.artifact!.sha256!);
+    await viewer.getByRole('textbox', { name: '成果审阅意见', exact: true }).fill(handoffMarker);
+    await viewer.getByRole('button', { name: '交给父 Agent 审阅/整合', exact: true }).click();
+    await expect(viewer).toContainText('已追加到输入框，请检查后发送。');
+    await page.screenshot({ path: test.info().outputPath('native-agent-result-review.png'), fullPage: true });
+    await viewer.getByRole('button', { name: '关闭成果', exact: true }).click();
+    expect(await composer.inputValue()).toMatch(/^人工补充：保留已有草稿。\n\n/);
+    expect(await composer.inputValue()).toContain(selected.childId);
+    expect(fixture.requests, 'preview and review handoff never contact the model').toHaveLength(requestCount);
+    await page.getByRole('button', { name: '发送任务', exact: true }).click();
+    for (const toolName of ['apply_patch', 'run_command']) {
+      await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => item.toolName === toolName)?.requestId).toBeTruthy();
+      const approval = page.getByRole('region', { name: '工具审批', exact: true });
+      await expect(approval).toContainText(toolName);
+      const pendingApproval = (await snapshot(page, session.id)).pending.find(item => item.toolName === toolName)!;
+      expect(pendingApproval.nativeDelegation).toBeUndefined();
+      await approval.getByRole('button', { name: '允许本次', exact: true }).click();
+    }
+    await expect.poll(async () => (await snapshot(page, session.id)).taskState).toBe('completed');
+    const continued = await snapshot(page, session.id);
+    expect(continued.nativeRun!.runId).not.toBe(selected.parentIdentity.runId);
+    expect(continued.nativeAgents?.parentRunId).toBe(selected.parentIdentity.runId);
+    expect(continued.nativeAgents?.items).toHaveLength(2);
+    expect(continued.nativeTask?.taskId).toBe(selected.parentTaskId);
+    expect(continued.nativeTask?.verification).toBe('unverified');
+    const name = selected.goal.startsWith('IMPLEMENT_A') ? 'a' : 'b';
+    expect(await fs.readFile(path.join(f.cwd, 'integrated-result.txt'), 'utf8')).toBe(`child ${name} implementation\n`);
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n');
+    expect(await fs.readFile(path.join(f.cwd, '.git', 'index'))).toEqual(parentIndex);
+    expect(fixture.errors).toEqual([]);
+    const rejected = await page.evaluate(async ({ id, childId }) => {
+      try { await window.desktop.nativeAgentResult(id, { parentRunId: '00000000-0000-4000-8000-000000000001', childId }); return false; }
+      catch { return true; }
+    }, { id: session.id, childId: selected.childId });
+    expect(rejected).toBe(true);
     await closeNativeApp(app);
     for (const child of saved) expect(await fs.stat(child.workspace!.path)).toBeTruthy();
     const reopened = await f.launch();

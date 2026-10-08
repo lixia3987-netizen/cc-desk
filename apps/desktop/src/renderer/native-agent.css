@@ -19,4 +19,20 @@
 .native-child-approval-context{margin:8px 0;padding:8px 10px;border:1px solid var(--border);border-radius:5px;overflow-wrap:anywhere;color:var(--text-secondary)}
 .native-child-approval-context p{margin:2px 0}
 .native-child-approval-context code{white-space:pre-wrap;font-size:inherit}
+.native-agent-read{margin:8px 0}
+.modal.native-agent-result{width:min(900px,calc(100vw - 32px));max-width:900px;font-size:calc(12px * var(--ui-font-scale));line-height:1.6;overflow-wrap:anywhere}
+.native-agent-result-heading{display:flex;align-items:baseline;justify-content:space-between;gap:16px}
+.native-agent-result-heading h2{margin:0}
+.native-agent-result h3{font-size:inherit;color:var(--text-secondary);margin:14px 0 6px}
+.native-agent-result p{margin:6px 0}
+.native-agent-result code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.native-agent-result-text{white-space:pre-wrap}
+.native-agent-patch{max-height:40vh;min-height:60px;overflow:auto;padding:12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);white-space:pre-wrap;tab-size:2;user-select:text}
+.native-agent-patch code{overflow-wrap:normal;white-space:pre}
+.native-agent-result-actions{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+.native-agent-result-evidence{border-top:1px solid var(--border);margin-top:12px;padding-top:10px}
+.native-agent-result-evidence summary{cursor:pointer;color:var(--text-secondary)}
+.native-agent-review-input{margin-top:16px}
+.native-agent-review-input label{display:block;color:var(--text-secondary)}
+.native-agent-review-input textarea{display:block;box-sizing:border-box;width:100%;margin-top:6px;resize:vertical;font:inherit}
 @media(max-width:650px){.native-agent-panel{margin:8px;max-height:30vh}}

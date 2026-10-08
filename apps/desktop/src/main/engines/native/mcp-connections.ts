@@ -136,6 +136,31 @@ export class NativeMcpConnectionStore {
     return { connections: this.connections.map(item => this.view(item)), storage: this.credentials.protection(), ...(this.loadError ? { error: this.loadError } : {}) };
   }
 
+  /** Main-only redaction values; readiness and activity never waive credential protection.
+   * Never serialize this collection to IPC, logs, model input or a run journal. */
+  protectedValues(): readonly string[] {
+    const values = new Set<string>();
+    for (const item of this.connections) {
+      if (item.transport === 'stdio') {
+        // Read each existing source independently: one missing/invalid mapping
+        // can prevent launch but must not expose the remaining mapped secrets.
+        for (const source of Object.values(item.environment)) {
+          const value = this.environment[source];
+          if (typeof value === 'string' && value.length) values.add(value);
+        }
+        continue;
+      }
+      try {
+        let value: string | undefined;
+        if (item.auth.mode === 'env') value = this.environment[item.auth.variable];
+        else if (item.auth.mode === 'memory') value = this.credentials.get(this.credentialKey(item.id));
+        else if (item.auth.mode === 'encrypted' && item.ciphertext) value = this.credentials.decrypt(item.ciphertext);
+        if (typeof value === 'string' && value.length) values.add(value);
+      } catch { /* An unavailable encrypted value must not discard other credentials. */ }
+    }
+    return Object.freeze([...values]);
+  }
+
   upsert(input: NativeMcpConnectionInput): NativeMcpConnectionView {
     this.assertLoaded();
     const parsed = nativeMcpConnectionInputSchema.safeParse(input);

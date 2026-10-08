@@ -1,6 +1,7 @@
 import type { ChatSnapshot, ChatSnapshotVersion, ChatSendOptions, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
 import type { NativeTaskView } from '@cc-desk/contracts/native-task';
 import type { NativeTaskReviewInput } from './native-task';
+import type { NativeAgentResultRequest, NativeAgentResult } from './chat';
 import type { GitChanges, GitDiff, ProjectFiles, ProjectFile, WorktreeInfo, WorktreeActionResult, WorktreeBranch } from './git';
 import type { EnvironmentDiagnostics } from './diagnostics';
 import type { WorkflowRun, NewWorkflow, WorkflowConfirmation, WorkflowVerification } from './workflows';
@@ -57,6 +58,7 @@ export interface DesktopAPI {
   resumeNativeRecovery(id: string, expectedHead: string): Promise<void>;
   compactNativeContext(id: string, expectedHead: string): Promise<void>;
   nativeTaskReview(id: string, input: NativeTaskReviewInput): Promise<NativeTaskView>;
+  nativeAgentResult(id: string, input: NativeAgentResultRequest): Promise<NativeAgentResult>;
   snapshot(): Promise<Snapshot>;
   copyText(text: string): Promise<void>;
   chooseProject(): Promise<Project | null>;

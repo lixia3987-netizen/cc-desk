@@ -25,6 +25,7 @@ import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
 import { NativeCommandPanel } from './NativeCommandPanel';
 import { NativeAgentPanel } from './NativeAgentPanel';
+import { appendNativeAgentReviewDraft } from './native-agent-review';
 import { NativeChildApprovalContext } from './NativeChildApprovalContext';
 import './native-agent.css';
 import './native-command.css';
@@ -84,6 +85,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   onPasteImages?:(files:File[],canContinue:()=>boolean)=>void;
 }) {
   const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
+  const reviewDraft=useRef(draft);reviewDraft.current=draft;
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [imagePreview,setImagePreview]=useState<NativeImagePreviewSelection>();
   const previewHistoryImage=useCallback((runId:string,index:number,image:NativeImageAttachment)=>{
@@ -270,7 +272,12 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}
-    {session.execution.providerId==='native'&&<NativeAgentPanel agents={snapshot?.nativeAgents} loadError={syncState.error}/>}
+    {session.execution.providerId==='native'&&<NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} loadError={syncState.error}
+      readOnly={readOnly||session.archived||!!archive||composerDisabled||submitting||!!descriptor?.maintenance}
+      onReviewPrompt={(text,parentTaskId)=>{
+        if(!mounted.current||readOnly||session.archived||archive||composerDisabled||submitting||descriptor?.maintenance)throw new Error('当前会话仅供查看，不能追加审阅交接。');
+        const next=appendNativeAgentReviewDraft(reviewDraft.current,text);onDraft(next);reviewDraft.current=next;setContinuationTaskId(parentTaskId);
+      }}/>}
     {session.execution.providerId==='native'&&<NativeCommandPanel commands={snapshot?.nativeCommands} currentRunId={snapshot?.nativeRun?.runId} loadError={syncState.error}/>}
     {session.execution.providerId==='native'&&<NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}
