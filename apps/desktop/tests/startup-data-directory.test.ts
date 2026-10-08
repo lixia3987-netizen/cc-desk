@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
+import { mkdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -56,39 +57,42 @@ test('startup preserves profile selection and creates one canonical root for eve
   const directory = await temporary(t), real = path.join(directory, 'real'), alias = path.join(directory, 'alias');
   await fs.mkdir(real); await fs.symlink(real, alias, linkType);
   const defaultDirectory = path.join(alias, 'default'), developmentDirectory = path.join(alias, 'development'), profileDirectory = path.join(alias, 'cli');
-  const profile = prepareStartupDataDirectory({ defaultDirectory, developmentDirectory, profileDirectory, isPackaged: true });
+  const profile = prepareStartupDataDirectory({ defaultDirectory: () => defaultDirectory, developmentDirectory, profileDirectory, isPackaged: true });
   assert.equal(profile, path.join(real, 'cli'), 'a CLI profile also takes precedence in a packaged app');
   assert.equal(new StateStore(profile).directory, profile);
   await assert.rejects(fs.stat(path.join(real, 'default')), { code: 'ENOENT' });
   await assert.rejects(fs.stat(path.join(real, 'development')), { code: 'ENOENT' });
-  assert.equal(prepareStartupDataDirectory({ defaultDirectory, developmentDirectory, isPackaged: false }), path.join(real, 'development'));
-  assert.equal(prepareStartupDataDirectory({ defaultDirectory, developmentDirectory, isPackaged: true }), path.join(real, 'default'));
-  assert.equal(prepareStartupDataDirectory({ defaultDirectory, profileDirectory: '', developmentDirectory: '', isPackaged: false }), path.join(real, 'default'));
+  assert.equal(prepareStartupDataDirectory({ defaultDirectory: () => defaultDirectory, developmentDirectory, isPackaged: false }), path.join(real, 'development'));
+  assert.equal(prepareStartupDataDirectory({ defaultDirectory: () => defaultDirectory, developmentDirectory, isPackaged: true }), path.join(real, 'default'));
+  assert.equal(prepareStartupDataDirectory({ defaultDirectory: () => defaultDirectory, profileDirectory: '', developmentDirectory: '', isPackaged: false }), path.join(real, 'default'));
 });
 
 test('startup retains custom CLI profile validation', async t => {
-  const directory = await temporary(t), options = { defaultDirectory: path.join(directory, 'default'), isPackaged: false };
+  const directory = await temporary(t), options = { defaultDirectory: () => path.join(directory, 'default'), isPackaged: false };
   assert.throws(() => prepareStartupDataDirectory({ ...options, profileDirectory: 'relative-profile' }), /有效的绝对路径/);
   assert.throws(() => prepareStartupDataDirectory({ ...options, profileDirectory: path.join(directory, 'x'.repeat(4096)) }), /有效的绝对路径/);
-  await assert.rejects(fs.stat(options.defaultDirectory), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(options.defaultDirectory()), { code: 'ENOENT' });
 });
 
-async function failedMainStartup(options: { defaultDirectory: string; profileDirectory?: string; developmentDirectory?: string; isPackaged: boolean }, presentationError?: Error) {
+type MainStartupOptions = { defaultDirectory: string; profileDirectory?: string; developmentDirectory?: string; isPackaged: boolean;
+  defaultLookup?: () => string; isolatedTest?: boolean };
+async function evaluateMainStartup(options: MainStartupOptions, presentationError?: Error) {
   const mainFile = fileURLToPath(new URL('../src/main/index.ts', import.meta.url));
   const source = ts.transpileModule(await fs.readFile(mainFile, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
   }).outputText;
   const events: string[] = [], errors: string[] = [];
+  let selectedDirectory: string | undefined, defaultLookups = 0;
   const app = { isPackaged: options.isPackaged, commandLine: { getSwitchValue: () => options.profileDirectory ?? '' },
-    getPath: () => options.defaultDirectory,
-    setPath: () => { events.push('setPath'); },
-    requestSingleInstanceLock: () => { events.push('lock'); return true; },
+    getPath: () => { defaultLookups++; return options.defaultLookup ? options.defaultLookup() : options.defaultDirectory; },
+    setPath: (name: string, directory: string) => { assert.equal(name, 'userData'); selectedDirectory = directory; events.push('setPath'); },
+    requestSingleInstanceLock: () => { events.push('lock'); return false; },
     whenReady: () => { events.push('ready'); throw new Error('Unexpected service initialization.'); },
     on: () => { events.push('listener'); }, quit: () => { events.push('quit'); } };
   // Evaluate the real entry point with Electron and service boundaries isolated;
   // directory preparation still performs its real filesystem operation.
   const context = vm.createContext({ exports: {}, __dirname: path.dirname(mainFile), Error,
-    process: { env: { WORKBENCH_DATA_DIR: options.developmentDirectory, WORKBENCH_TEST_MODE: '1' } },
+    process: { env: { WORKBENCH_DATA_DIR: options.developmentDirectory, WORKBENCH_TEST_MODE: options.isolatedTest === false ? '0' : '1' } },
     require: (name: string) => {
       if (name === 'electron') return { app, dialog: { showErrorBox(title: string, message: string) {
         events.push('error'); assert.equal(title, '启动失败'); errors.push(message);
@@ -102,10 +106,46 @@ async function failedMainStartup(options: { defaultDirectory: string; profileDir
     } });
   if (presentationError) assert.throws(() => vm.runInContext(source, context, { filename: mainFile }), error => error === presentationError);
   else vm.runInContext(source, context, { filename: mainFile });
-  assert.equal(vm.runInContext('allowQuit', context), true);
-  assert.deepEqual(events, ['error', 'quit'], 'no lock, ready callback, service or fallback directory is initialized');
-  return errors;
+  return { context, events, errors, selectedDirectory, defaultLookups };
 }
+async function failedMainStartup(options: MainStartupOptions, presentationError?: Error) {
+  const result = await evaluateMainStartup(options, presentationError);
+  assert.equal(vm.runInContext('allowQuit', result.context), true);
+  assert.deepEqual(result.events, ['error', 'quit'], 'no lock, ready callback, service or fallback directory is initialized');
+  return result.errors;
+}
+
+for (const source of ['cli', 'development'] as const) {
+  for (const lookup of ['side_effect', 'throws'] as const) {
+    test(`${source} entry profile avoids a default userData lookup that ${lookup}`, async t => {
+      const directory = await temporary(t), real = path.join(directory, 'real'), alias = path.join(directory, 'alias'), defaultDirectory = path.join(directory, 'default');
+      await fs.mkdir(real); await fs.symlink(real, alias, linkType);
+      const profile = path.join(alias, 'profile'), unusedDevelopment = path.join(directory, 'unused-development');
+      const result = await evaluateMainStartup({ defaultDirectory, isPackaged: source === 'cli', isolatedTest: false,
+        profileDirectory: source === 'cli' ? profile : undefined,
+        developmentDirectory: source === 'cli' ? unusedDevelopment : profile,
+        defaultLookup: () => {
+          if (lookup === 'throws') throw new Error('Default profile is unavailable.');
+          mkdirSync(defaultDirectory, { recursive: true }); return defaultDirectory;
+        } });
+      assert.equal(result.defaultLookups, 0);
+      assert.equal(result.selectedDirectory, path.join(real, 'profile'));
+      assert.deepEqual(result.errors, []);
+      assert.deepEqual(result.events, ['setPath', 'lock', 'quit'], 'the canonical explicit profile is prepared before normal singleton handling');
+      assert.ok((await fs.stat(result.selectedDirectory!)).isDirectory());
+      await assert.rejects(fs.stat(defaultDirectory), { code: 'ENOENT' });
+      await assert.rejects(fs.stat(unusedDevelopment), { code: 'ENOENT' });
+    });
+  }
+}
+
+test('entry without an override reads the default profile exactly once', async t => {
+  const directory = await temporary(t), defaultDirectory = path.join(directory, 'default');
+  const result = await evaluateMainStartup({ defaultDirectory, isPackaged: true });
+  assert.equal(result.defaultLookups, 1); assert.equal(result.selectedDirectory, defaultDirectory);
+  assert.deepEqual(result.errors, []); assert.deepEqual(result.events, ['setPath', 'lock', 'quit']);
+  assert.ok((await fs.stat(defaultDirectory)).isDirectory());
+});
 
 for (const source of ['default', 'development', 'cli'] as const) {
   test(`${source} profile preparation errors show startup failure and stop before locking or services`, async t => {
@@ -130,7 +170,7 @@ for (const source of ['cli', 'development'] as const) {
   test(`${source} profile aliases support durable delegation, worktrees and receipt recovery`, async t => {
     const directory = await temporary(t), cwd = await repository(directory), real = path.join(directory, 'real-profile'), alias = path.join(directory, 'profile-alias');
     await fs.mkdir(real); await fs.symlink(real, alias, linkType);
-    const root = prepareStartupDataDirectory({ defaultDirectory: path.join(directory, 'unused'), isPackaged: false,
+    const root = prepareStartupDataDirectory({ defaultDirectory: () => path.join(directory, 'unused'), isPackaged: false,
       ...(source === 'cli' ? { profileDirectory: path.join(alias, 'data') } : { developmentDirectory: path.join(alias, 'data') }) });
     assert.equal(root, path.join(real, 'data'));
     const store = new StateStore(root), parentHead = await git(cwd, 'rev-parse', 'HEAD');
@@ -161,7 +201,7 @@ for (const descendant of ['delegations', 'agent-worktrees'] as const) {
   test(`canonical startup roots still reject a replaced ${descendant} descendant`, async t => {
     const directory = await temporary(t), cwd = await repository(directory), real = path.join(directory, 'real-profile'), alias = path.join(directory, 'profile-alias');
     await fs.mkdir(real); await fs.symlink(real, alias, linkType);
-    const root = prepareStartupDataDirectory({ defaultDirectory: alias, isPackaged: false }), store = new StateStore(root);
+    const root = prepareStartupDataDirectory({ defaultDirectory: () => alias, isPackaged: false }), store = new StateStore(root);
     const native = path.join(root, 'native'), target = path.join(native, descendant), outside = path.join(directory, 'outside');
     await fs.mkdir(target, { recursive: true }); await fs.mkdir(outside);
     await fs.rmdir(target); await fs.symlink(outside, target, linkType);

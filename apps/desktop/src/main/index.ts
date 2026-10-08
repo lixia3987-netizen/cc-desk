@@ -40,7 +40,7 @@ import { allowsLocalFonts, isTrustedRendererUrl } from './renderer-permissions';
 let startupDirectoryFailure: { error: unknown } | undefined;
 try {
   app.setPath('userData', prepareStartupDataDirectory({
-    defaultDirectory: app.getPath('userData'),
+    defaultDirectory: () => app.getPath('userData'),
     profileDirectory: app.commandLine.getSwitchValue('user-data-dir'),
     developmentDirectory: process.env.WORKBENCH_DATA_DIR,
     isPackaged: app.isPackaged,
