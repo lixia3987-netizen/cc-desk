@@ -95,7 +95,8 @@ test('settings keeps seven stable category IDs, separates global connections and
   for (const id of ['appearance', 'models', 'terminal', 'mcp', 'sessions', 'workspace', 'system']) assert.match(connections, new RegExp(`id="settings-tab-${id}"`));
   assert.match(connections, /模型与上下文/);
   assert.match(connections, /<details class="native-model-defaults"><summary>新会话默认模型<\/summary>/);
-  assert.match(connections, /从 Claude 默认配置导入/);
+  assert.doesNotMatch(connections, /从 Claude 默认配置导入|选择 Claude 配置文件|aria-label="Native 模型导入"/);
+  assert.match(connections, /id="settings-subtab-models-import"[^>]*aria-selected="false"/);
   assert.match(connections, /全局资源/);
   assert.doesNotMatch(connections, /aria-label="默认强度"/);
   assert.doesNotMatch(connections, /aria-label="默认自动压缩"/);
@@ -107,6 +108,17 @@ test('settings keeps seven stable category IDs, separates global connections and
   assert.doesNotMatch(context, /aria-label="默认输入预算"/);
   assert.doesNotMatch(context, /从 Claude 默认配置导入|aria-label="默认自动压缩"/);
   assert.match(context, /role="radio" aria-checked="false" disabled="">当前会话/);
+});
+
+test('model import has its own settings subpage without connection editing or default-model controls', () => {
+  const markup = renderPanel({ initialSubpage: 'import' });
+  assert.match(markup, /id="settings-subtab-models-import"[^>]*aria-selected="true"/);
+  assert.match(markup, /aria-label="Native 模型导入"/);
+  assert.match(markup, /从 Claude 默认配置导入/);
+  assert.match(markup, /选择 Claude 配置文件/);
+  assert.doesNotMatch(markup, /aria-label="Native 模型连接"|新增模型连接|aria-label="Native 连接名称"/);
+  assert.doesNotMatch(markup, /新会话默认模型|aria-label="设置作用范围"|aria-label="默认自动压缩"|aria-label="默认输入预算模式"/);
+  assert.equal((markup.match(/<form\b/g) ?? []).length, 1);
 });
 
 test('current-session deep link renders only its group inside one settings form and uses saved defaults', () => {

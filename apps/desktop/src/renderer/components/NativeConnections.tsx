@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NativeConnectionInput, NativeConnectionList, NativeConnectionModelListCode, NativeConnectionModelListResult, NativeConnectionTestCode, NativeConnectionTestResult, NativeConnectionView, NativeModelCapabilitySnapshot } from '../../shared/native-connections';
-import type { ClaudeModelImportPreview } from '../../shared/claude-model-import';
 import { nativeConnectionsChanged } from '../useNativeConnectionReadiness';
 import { ModelCapabilityInfo } from './ModelCapabilityInfo';
 
@@ -62,10 +61,6 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
-  const [importPreview, setImportPreview] = useState<ClaudeModelImportPreview>();
-  const [importModel, setImportModel] = useState('');
-  const [importCredentialMode, setImportCredentialMode] = useState<'memory' | 'encrypted'>('memory');
-  const [importLoopback, setImportLoopback] = useState(false);
   const [testing, setTesting] = useState<{ id: string; requestId: string }>();
   const activeTest = useRef<{ id: string; requestId: string } | undefined>(undefined);
   const [testResults, setTestResults] = useState<Record<string, { revision: number; result: NativeConnectionTestResult }>>({});
@@ -76,16 +71,22 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
   const [capabilityRefresh, setCapabilityRefresh] = useState(0);
   const credential = useRef<HTMLInputElement>(null);
   const mounted = useRef(true);
+  const refreshRequest = useRef(0);
   const refresh = useCallback(async () => {
     if (!api) return;
+    const request = ++refreshRequest.current;
     const next = await api.list();
-    if (mounted.current) { setData(next); setCapabilityRefresh(value => value + 1); }
+    if (mounted.current && request === refreshRequest.current) { setData(next); setCapabilityRefresh(value => value + 1); }
   }, [api]);
   useEffect(() => {
     mounted.current = true;
     void refresh().catch(() => { if (mounted.current) setError('读取模型连接失败，请刷新重试。'); });
+    const onChanged = () => { void refresh().catch(() => { if (mounted.current) setError('读取模型连接失败，请刷新重试。'); }); };
+    window.addEventListener(nativeConnectionsChanged, onChanged);
     return () => {
       mounted.current = false;
+      refreshRequest.current++;
+      window.removeEventListener(nativeConnectionsChanged, onChanged);
       if (credential.current) credential.current.value = '';
       if (activeTest.current) void api?.cancelTest({ requestId: activeTest.current.requestId }).catch(() => {});
       activeTest.current = undefined;
@@ -113,7 +114,7 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     return () => { cancelled = true; };
   }, [api, capabilityBindings, capabilityRefresh]);
   const clearSecret = () => { if (credential.current) credential.current.value = ''; };
-  const select = (value?: NativeConnectionInput) => { clearSecret(); setImportPreview(undefined); setDraft(value); setError(''); setNotice(''); };
+  const select = (value?: NativeConnectionInput) => { clearSecret(); setDraft(value); setError(''); setNotice(''); };
   const action = async (work: () => Promise<void>) => {
     setBusy(true); setError(''); setNotice('');
     try { await work(); await refresh(); window.dispatchEvent(new Event(nativeConnectionsChanged)); }
@@ -124,30 +125,6 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     if (!draft) return;
     clearSecret();
     void action(async () => { const next = await api.upsert(draft); if (mounted.current) { setDraft(editable(next)); setNotice('连接已保存。'); } });
-  };
-  const previewClaude = (source: 'default' | 'file') => {
-    clearSecret(); setDraft(undefined); setImportPreview(undefined);
-    void action(async () => {
-      const preview = await window.desktop.claudeModelImport.preview({ source });
-      if (!mounted.current || !preview) return;
-      const choices = preview.models.filter(item => item.nativeImportable);
-      setImportModel(choices.find(item => item.model === preview.model)?.model ?? (choices.length === 1 ? choices[0].model : ''));
-      setImportCredentialMode('memory'); setImportLoopback(false); setImportPreview(preview);
-    });
-  };
-  const importClaude = () => {
-    if (!importPreview || !importModel) return;
-    const preview = importPreview;
-    // The main process consumes every confirmation attempt; stale previews cannot be retried.
-    setImportPreview(undefined);
-    clearSecret();
-    void action(async () => {
-      const result = await window.desktop.claudeModelImport.import({ token: preview.token, model: importModel, credentialMode: importCredentialMode, allowLoopbackHttp: importLoopback });
-      if (!mounted.current) return;
-      setImportPreview(undefined);
-      setDraft(result.connection.ready ? undefined : editable(result.connection));
-      setNotice(result.notice ?? '已从 Claude Code 配置创建自研 Agent 模型连接。');
-    });
   };
   const saveCredential = () => {
     if (!draft?.id || !draft.revision || draft.auth.mode === 'env' || !credential.current) return;
@@ -233,32 +210,14 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
   const locked = disabled || busy || Boolean(testing) || Boolean(listing) || Boolean(data?.error);
   return <section className="settings-section native-connections" aria-label="Native 模型连接">
     <div className="settings-card-heading"><h4>自研 Agent 模型连接</h4><button type="button" className="secondary compact" disabled={locked || !api} onClick={() => void action(refresh)}>刷新</button></div>
-    <p className="settings-description">添加模型连接，或读取 Claude Code 配置并转换为自研 Agent 模型。</p>
+    <p className="settings-description">管理自研 Agent 的模型连接，手动新增或编辑服务地址、模型与凭据。</p>
     {!api && <p role="status" className="hint">当前桌面版本尚未提供模型连接管理。</p>}
     {data?.storage.reason && <p className="hint">{data.storage.reason}</p>}
     {(error || data?.error) && <p className="settings-error" role="alert">{error || data?.error}</p>}
     {notice && <p role="status" className="hint">{notice}</p>}
     <div className="model-connection-actions">
       {api && <button type="button" className="primary" disabled={locked || !data} onClick={() => select(emptyConnection())}>新增模型连接</button>}
-      {window.desktop.claudeModelImport && <>
-        <button type="button" className="secondary" disabled={locked || !data} onClick={() => previewClaude('default')}>从 Claude 默认配置导入</button>
-        <button type="button" className="text-button" disabled={locked || !data} onClick={() => previewClaude('file')}>选择 Claude 配置文件</button>
-      </>}
     </div>
-    {importPreview && <section className="native-connection-editor" aria-label="Claude 模型导入预览">
-      <h4>导入为自研 Agent 模型</h4>
-      <p className="hint">来源：{importPreview.sourcePath}<br/>服务地址：{importPreview.baseURL}<br/>协议：Anthropic Messages<br/>凭据：{importPreview.credential.configured ? '已读取（内容不显示）' : '未读取，导入后需单独设置'}</p>
-      <label>导入模型<select aria-label="导入模型" value={importModel} disabled={locked} onChange={event => setImportModel(event.target.value)}>
-        <option value="">请选择模型</option>{importPreview.models.map(item => <option key={item.model} value={item.model} disabled={!item.nativeImportable}>{item.model}{item.nativeImportable ? '' : '（需配置具体模型 ID）'}</option>)}
-      </select></label>
-      {importPreview.credential.configured && <label>凭据保存方式<select aria-label="导入凭据保存方式" value={importCredentialMode} disabled={locked} onChange={event => setImportCredentialMode(event.target.value as 'memory' | 'encrypted')}>
-        <option value="memory">仅本次应用内存</option><option value="encrypted" disabled={!data?.storage.persistentAvailable}>系统安全存储加密保存{data?.storage.persistentAvailable ? '' : '（不可用）'}</option>
-      </select></label>}
-      {importPreview.requiresLoopbackHttp && <label className="checkbox"><input aria-label="允许导入本地回环 HTTP" type="checkbox" checked={importLoopback} disabled={locked} onChange={event => setImportLoopback(event.target.checked)}/><span>明确允许此本地回环地址使用 HTTP</span></label>}
-      {importPreview.warnings.map((warning, index) => <p className="hint" key={index}>{warning}</p>)}
-      <p className="hint">确认后创建自研 Agent 模型连接，Claude Code 配置保持原样。预览五分钟有效。</p>
-      <div className="settings-footer-actions"><button type="button" className="secondary" disabled={locked} onClick={() => setImportPreview(undefined)}>取消导入</button><button type="button" className="primary" disabled={locked || !importModel || Boolean(importPreview.requiresLoopbackHttp && !importLoopback)} onClick={importClaude}>确认导入模型连接</button></div>
-    </section>}
     {data?.connections.map(item => {
       const modelList = modelLists[item.id]?.result.revision === item.revision ? modelLists[item.id] : undefined;
       const capability = modelCapabilities[item.id]?.revision === item.revision && modelCapabilities[item.id]?.model === item.model ? modelCapabilities[item.id] : undefined;
@@ -296,7 +255,7 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
         {testResults[item.id].result.usage ? <> 服务报告用量：输入 {testResults[item.id].result.usage?.inputTokens ?? '未提供'}，输出 {testResults[item.id].result.usage?.outputTokens ?? '未提供'}，合计 {testResults[item.id].result.usage?.totalTokens ?? '未提供'} tokens。</> : <> 服务未提供用量。</>}
       </p>}
     </div>; })}
-    {api && !data?.connections.length && !data?.error && !draft && !importPreview && <p className="model-connections-empty">还没有模型连接。新增一个，或从 Claude Code 配置导入。</p>}
+    {api && !data?.connections.length && !data?.error && !draft && <p className="model-connections-empty">还没有模型连接。可手动新增，或前往“模型导入”读取 Claude Code 配置。</p>}
     {draft && <div className="native-connection-editor">
       <h4>{draft.id ? '编辑模型连接' : '新增模型连接'}</h4>
       <label>连接名称<input aria-label="Native 连接名称" value={draft.name} maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, name: event.target.value })}/></label>
@@ -332,10 +291,10 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     </div>}
     <details className="model-config-details model-connection-help"><summary>连接与测试说明</summary>
       <p className="hint">支持 Responses、Chat Completions 和 Anthropic Messages。连接与凭据立即保存；运行中的连接需停止后修改，已有会话引用的连接可以禁用，替换引用后才能删除。</p>
-      <p className="hint">“就绪”只表示本机配置完整。打开设置、保存和导入不会请求模型。测试仅验证所选协议的文本流，不代表工具调用兼容性。</p>
+      <p className="hint">“就绪”只表示本机配置完整。打开设置和保存不会请求模型。测试仅验证所选协议的文本流，不代表工具调用兼容性。</p>
       <p className="hint">“读取可用模型”使用已保存的服务地址与凭据请求模型列表，支持 OpenAI 兼容和 Anthropic 服务，不发送对话或项目内容。列表不保证所有模型都支持所选协议、图片或工具调用；服务不支持列表时可手动填写模型 ID。读取结果仅对应当前修订，切换模型后原模型价格不会套用到新模型。</p>
       <p className="hint">“测试连接（可能计费）”发送一次固定文本请求，上限 256 tokens、30 秒超时，不发送项目内容、不调用工具、不自动重试。取消不保证免计费，测试结果仅对应当前修订。</p>
-      <p className="hint">仅本次内存的凭据会在退出后清除；系统加密保存需可用的安全存储。Claude Code 仅作为配置导入来源，其模型设置仍由 Claude Code 管理。</p>
+      <p className="hint">仅本次内存的凭据会在退出后清除；系统加密保存需可用的安全存储。</p>
     </details>
   </section>;
 }

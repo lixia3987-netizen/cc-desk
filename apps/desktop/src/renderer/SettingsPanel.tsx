@@ -9,6 +9,7 @@ import type { ExecutionDescriptor } from '../shared/execution';
 import { EngineConfigFields, configurationSupported, engineDefaults, sameEngineDefaults } from './EngineConfiguration';
 import { ThemePicker } from './ThemePicker';
 import { NativeConnections } from './components/NativeConnections';
+import { NativeModelImport } from './components/NativeModelImport';
 import { NativeMcpConnections } from './components/NativeMcpConnections';
 import { NativeContextSettingsInfo } from './components/NativeContextSettingsInfo';
 import { LegacyClaudeOverrides } from './components/LegacyClaudeOverrides';
@@ -28,7 +29,7 @@ const pages = [
 export type SettingsPage = typeof pages[number]['id'];
 const subpages: Record<SettingsPage, Array<{ id: string; title: string; group?: EngineSettingsGroup }>> = {
   appearance: [{ id: 'fonts', title: '字体' }, { id: 'theme', title: '主题' }],
-  models: [{ id: 'connections', title: '模型连接', group: 'model' }, { id: 'context', title: '上下文预算', group: 'context' }, { id: 'compaction', title: '自动压缩', group: 'compaction' }],
+  models: [{ id: 'connections', title: '模型连接', group: 'model' }, { id: 'import', title: '模型导入' }, { id: 'context', title: '上下文预算', group: 'context' }, { id: 'compaction', title: '自动压缩', group: 'compaction' }],
   terminal: [{ id: 'cli', title: 'Claude Code' }, { id: 'shell', title: 'Shell 与终端' }],
   mcp: [{ id: 'connections', title: 'MCP 连接' }, { id: 'tools', title: '会话工具', group: 'tools' }],
   sessions: [{ id: 'limits', title: '运行限制', group: 'limits' }, { id: 'recovery', title: '失败恢复', group: 'recovery' }, { id: 'permissions', title: '权限与审批', group: 'permissions' }],
@@ -210,7 +211,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
           <NativeConnections disabled={busy}/>
           <EnginePolicySection props={props} group="model" scope={scope} onScope={setScope}/>
         </>}
-        {page === 'models' && selectedSubpage.id !== 'connections' && <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope}/>}
+        {page === 'models' && selectedSubpage.id === 'import' && <NativeModelImport disabled={busy} onConnections={() => changeSubpage('connections')}/>}
+        {page === 'models' && (selectedSubpage.id === 'context' || selectedSubpage.id === 'compaction') && <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope}/>}
         {page === 'mcp' && selectedSubpage.id === 'connections' && <><p className="settings-resource-note"><span>全局资源</span>MCP 连接与凭据独立保存；新增连接不会自动启用到会话。</p><NativeMcpConnections disabled={busy}/></>}
         {page === 'mcp' && selectedSubpage.id === 'tools' && <EnginePolicySection props={props} group="tools" scope={scope} onScope={setScope}/>}
         {page === 'terminal' && selectedSubpage.id === 'cli' && <>
