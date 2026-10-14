@@ -14,7 +14,7 @@ P4a 固定候选 `5a1be39` 的三平台验证已通过，见 [PR #34](https://gi
 
 P4b 首批 `491e44ee` 的三平台技术验证已通过，见 [PR #35](https://github.com/lixia3987-netizen/cc-desk/pull/35)。后续 `feat/native-agent-auto-compaction` 提供默认关闭的发送前自动压缩，详见[第二批记录](NATIVE-AGENT-PHASE-4B-AUTO.md)。
 
-1. 从开发源码构建应用，在「设置与连接 → 模型与上下文 → 模型连接」登记自研 Agent 模型连接，明确选择 Responses、Chat Completions 或 Anthropic Messages，填写服务地址和准确模型名。此页仅管理自研 Agent，Claude Code 的模型配置由 Claude Code 管理。地址填写 API 基础地址，例如 `https://服务域名/v1`；适配器分别追加 `/responses`、`/chat/completions` 或 `/messages`。Anthropic 地址未带 `/v1` 时追加 `/v1/messages`，不自动回退。
+1. 从开发源码构建应用，在「设置与连接 → 模型与上下文 → 模型连接」登记自研 Agent 模型连接，明确选择 Responses、Chat Completions 或 Anthropic Messages，填写连接名称、服务地址和认证方式；可先保存，再设置凭据并读取模型，或直接填写准确模型名。新增与编辑使用独立编辑视图，保存连接信息后再设置凭据；普通字段未保存时凭据操作不可用。未选择模型的连接不能执行文本测试或发送消息。此页仅管理自研 Agent，Claude Code 的模型配置由 Claude Code 管理。地址填写 API 基础地址，例如 `https://服务域名/v1`；适配器分别追加 `/responses`、`/chat/completions` 或 `/messages`。Anthropic 地址未带 `/v1` 时追加 `/v1/messages`，不自动回退。
 2. 选择认证方式：从指定环境变量读取、仅本次应用进程保存，或使用操作系统安全存储。环境变量需由启动桌面应用的环境提供。密钥只经专用输入接口进入主进程，不写 workspace；仅内存模式重启后需重新输入。
 3. 添加项目，新建 Agent 会话，显式选择「自研 Agent · Alpha」及连接。模型覆盖留空使用连接默认值。native 不依赖 Claude CLI 登录；Claude 会话继续使用各自的 CLI 配置。
 4. 提交文字任务。列目录、搜索和普通文件读取在已选项目内执行；每次文本写入、命令及敏感文件读取都单独审批。检查文件内容、版本条件或 executable / argv / cwd，再允许本次或拒绝。
@@ -24,7 +24,7 @@ P4b 首批 `491e44ee` 的三平台技术验证已通过，见 [PR #35](https://g
 
 ### 从服务地址读取可用模型
 
-保存连接并配置凭据后，在连接卡片点击「读取可用模型」。使用已保存的服务地址和凭据请求列表：OpenAI 兼容服务在 API 基础路径追加 `/models`；Anthropic 地址未带 `/v1` 时追加 `/v1/models`，已有 `/v1` 时只追加 `/models`，网关前缀保留。格式依据 [OpenAI Models API](https://platform.openai.com/docs/api-reference/models/list) 和 [Anthropic Models API](https://platform.claude.com/docs/en/api/models/list)。此操作仅发送 GET 请求，不发送对话或项目内容，也不调用生成接口。
+保存连接并配置凭据后，在编辑视图或连接卡片点击「读取可用模型」。默认模型可先留空，不需要猜测模型 ID 才能读取列表；普通字段有修改时须先保存。使用已保存的服务地址和凭据请求列表：OpenAI 兼容服务在 API 基础路径追加 `/models`；Anthropic 地址未带 `/v1` 时追加 `/v1/models`，已有 `/v1` 时只追加 `/models`，网关前缀保留。格式依据 [OpenAI Models API](https://platform.openai.com/docs/api-reference/models/list) 和 [Anthropic Models API](https://platform.claude.com/docs/en/api/models/list)。此操作仅发送 GET 请求，不发送对话或项目内容，也不调用生成接口。
 
 读取成功后选择「可用模型」，点击「切换模型」保存为此连接的默认模型；读取本身不修改配置，当前模型不在列表中仍会保留。已有上下文绑定原服务、协议和模型，更换模型需新建会话；单独指定模型的会话和新会话默认设置仍使用其显式选择。价格配置继续绑定原模型，切换不会沿用其费率。列表仅表示服务返回的模型，不保证它们均支持所选协议、图片或工具调用；服务不支持模型列表时可在「编辑」中手动填写模型 ID。
 
@@ -42,11 +42,11 @@ Kimi 部分核验日期为 **2026-10-07**。官方 `api.kimi.com` / `api.kimi.ai
 
 ### 从 Claude 配置导入模型连接
 
-在「模型与上下文 → 模型连接」点击「从 Claude 默认配置导入」，读取 `CLAUDE_CONFIG_DIR/settings.json` 或用户主目录的 `.claude/settings.json`；也可点击「选择 Claude 配置文件」导入指定 JSON。预览展示来源、服务地址、候选模型与凭据状态，确认前不写入连接、不请求模型。候选模型来自 `model` 和 `env` 中的默认、自定义模型变量；优先采用 `env.ANTHROPIC_MODEL`，其次 `model`，再次 `env.ANTHROPIC_DEFAULT_MODEL`。`sonnet`、`opus`、`haiku`、`fable` 仅在文件含对应具体模型映射时可用于 Native；没有具体 ID 的别名需先补全。
+在「模型与上下文 → 模型导入」点击「从 Claude 默认配置导入」，读取 `CLAUDE_CONFIG_DIR/settings.json` 或用户主目录的 `.claude/settings.json`；也可点击「选择 Claude 配置文件」导入指定 JSON。预览展示来源、服务地址、候选模型与凭据状态，确认前不写入连接、不请求模型。候选模型来自 `model` 和 `env` 中的默认、自定义模型变量；优先采用 `env.ANTHROPIC_MODEL`，其次 `model`，再次 `env.ANTHROPIC_DEFAULT_MODEL`。`sonnet`、`opus`、`haiku`、`fable` 仅在文件含对应具体模型映射时可用于 Native；没有具体 ID 的别名需先补全。
 
-确认导入会将读取的配置转换为自研 Agent 的独立 Anthropic 连接，不修改 Claude Code 默认模型或工作区设置。`ANTHROPIC_BASE_URL` 缺省使用 `https://api.anthropic.com`；配置中的 `ANTHROPIC_AUTH_TOKEN` 使用 Bearer 认证，优先于采用 `x-api-key` 的 `ANTHROPIC_API_KEY`。凭据由主进程读取，不回显，也不把明文写入连接或工作区文件；选择仅本次内存或系统加密保存，前者退出后清除。未配置 API 凭据时可先导入，再在自动展开的连接编辑中补充。回环 HTTP 代理需在预览明确勾选允许。导入就绪后仅显示连接卡片，需要修改时点击「编辑」。
+确认导入会将读取的配置转换为自研 Agent 的独立 Anthropic 连接，不修改 Claude Code 默认模型或工作区设置。`ANTHROPIC_BASE_URL` 缺省使用 `https://api.anthropic.com`；配置中的 `ANTHROPIC_AUTH_TOKEN` 使用 Bearer 认证，优先于采用 `x-api-key` 的 `ANTHROPIC_API_KEY`。凭据由主进程读取，不回显，也不把明文写入连接或工作区文件；选择仅本次内存或系统加密保存，前者退出后清除。未配置 API 凭据时可先导入，再主动点击「编辑此连接」定位并补充；未就绪时不能用于新会话。回环 HTTP 代理需在预览明确勾选允许。导入结果显示凭据有效期，并提供「编辑此连接」「用于新会话」和「前往模型连接」；「用于新会话」仅打开预选此连接的自研 Agent 草稿，不自动发送模型请求。
 
-连接列表集中提供新增、导入、编辑和测试入口。「高级设置（价格与本地代理）」「连接与测试说明」默认收起。自研 Agent 新会话的默认连接和模型覆盖位于「新会话默认模型」折叠项，修改后需保存设置；连接本身的操作立即保存。
+连接列表提供手动新增、编辑、模型列表读取和测试入口；Claude Code 配置导入使用独立的「模型导入」页。新增或编辑时列表暂时隐藏，区域内提供独立的保存和返回操作。切换设置子页会保留普通字段草稿，清空尚未提交的密码输入，并取消测试或模型列表读取。关闭设置前会汇总未保存修改，详情见[设置说明](SETTINGS.md)。「高级设置（价格与本地代理）」「连接与测试说明」默认收起。自研 Agent 新会话的默认连接和模型覆盖位于「新会话默认模型」折叠项，修改后需保存设置；连接本身的操作立即保存。
 
 导入只读取显式配置，不执行 `apiKeyHelper` 或 hooks，也不读取 Claude 登录凭据；源文件不变。项目或组织的多层配置不会自动合并，请选择实际需要的文件。预览五分钟有效且只能确认一次。配置格式、模型优先级与认证规则见 [Claude 设置文档](https://code.claude.com/docs/en/settings)、[模型配置文档](https://code.claude.com/docs/en/model-config)及[环境变量参考](https://code.claude.com/docs/en/env-vars)。Claude CLI 和 Shell 路径、检测及终端显示设置位于「终端与CLI」，工具服务位于「工具与扩展 → MCP 连接」。
 

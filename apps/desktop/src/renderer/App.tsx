@@ -31,6 +31,7 @@ import { useSessionMemory } from './workspace/useSessionMemory';
 import { useWorkspacePreferences } from './workspace/useWorkspacePreferences';
 import { WorkspaceHeader } from './workspace/WorkspaceHeader';
 import { WorkspaceWelcome } from './workspace/WorkspaceWelcome';
+import { currentEngineStatus } from './workspace/engine-status';
 import { useNativeConnectionReadiness } from './useNativeConnectionReadiness';
 import { importNativePastedImages, nativePasteTargetAvailable, withAttachmentImport } from './native-image-paste';
 import { sessionReadLifecycle } from './session-read-lifecycle';
@@ -65,6 +66,8 @@ export function App() {
   const [archived, setArchived] = useState(false);
   const [modal, setModal] = useState<Modal>(null);
   const [settingsTarget, setSettingsTarget] = useState<{ scope: SettingsScope; group?: EngineSettingsGroup; subpage?: string }>({ scope: 'defaults' });
+  const settingsCloseRequest = useRef<(() => void) | undefined>(undefined);
+  const registerSettingsCloseRequest = useCallback((request: (() => void) | undefined) => { settingsCloseRequest.current = request; }, []);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [operationBusy, setBusy] = useState(false);
@@ -220,7 +223,7 @@ export function App() {
     }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
   }, [activeId, structured, executionCapabilities?.attachments, readOnly, report]);
-  const openNew = (_kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string, continuation?: Session) => {
+  const openNew = (_kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string, continuation?: Session, nativeConnectionId?: string) => {
     if (continuation) {
       // A continuation creates an editable draft. It must never enter first-send
       // staging, whose saveDraft would replace the host-generated handoff text.
@@ -230,18 +233,19 @@ export function App() {
         continuation: { sourceSessionId: continuation.id, snapshotHash: '', messageIds: [] } });
       setError(''); setModal('continuation'); return;
     }
-    const key = fork ? `fork:${fork.id}` : 'new';
+    const key = nativeConnectionId ? `native-model:${nativeConnectionId}` : fork ? `fork:${fork.id}` : 'new';
     let pending = blankSessions.current.get(key);
     if (!pending || pending.submission.accepted) {
       const candidates = fork ? [fork.projectId] : [targetProjectId, projectId, active?.projectId, state?.projects[0]?.id];
       const selected = candidates.find(id => state?.projects.some(project => project.id === id)) ?? '';
-      const providerId = fork?.execution.providerId ?? 'claude';
+      const providerId = nativeConnectionId ? 'native' : fork?.execution.providerId ?? 'claude';
       const selectedEngine = executors.find(item => item.providerId === providerId && item.mode === 'structured');
       const input: SessionDraft = {
         projectId: selected, title: fork ? `${fork.title} · 分支` : '', kind: 'agent',
         providerId, engineConfig: fork ? structuredClone(fork.engineConfig) : newSessionEngineDefaults(selectedEngine, state?.settings),
         isolated: false, worktreeName: '', mode: 'structured', conversationId: fork?.execution.conversationId, fork: !!fork,
       };
+      if (nativeConnectionId) input.engineConfig = { ...input.engineConfig, options: { ...input.engineConfig.options, connectionId: nativeConnectionId, model: '' } };
       pending = { key, token: crypto.randomUUID(), input, text: '', files: [], sending: false, importing: false, error: '', submission: new NewSessionSubmission({
         createSession: value => window.desktop.createSession(value),
         saveDraft: (id, text) => window.desktop.saveDraft(id, text),
@@ -325,6 +329,7 @@ export function App() {
     } finally { owner.sending = false; changedBlank(); }
   };
   const openSettings = () => { if (state) { setSettingsTarget({ scope: 'defaults' }); preferences.begin(); setModal('settings'); } };
+  const closeModal = () => { if (modal === 'settings' && settingsCloseRequest.current) settingsCloseRequest.current(); else setModal(null); };
   const openSessionSettings = () => { if (state && active) {
     setSettingsTarget({ scope: 'session', group: active.execution.providerId === 'native' ? 'context' : 'permissions' });
     preferences.begin(active.execution.providerId === 'native' ? 'models' : 'sessions'); setModal('settings');
@@ -397,7 +402,7 @@ export function App() {
         }
         if (!latestBlankKey.current && latestActiveId.current === id) selectSession('');
       }} onSearch={value => { setSearch(value); if (value.trim()) setCollapsedGroups(new Set()); }}
-      onProject={id => { setProjectId(id); expandGroup(id); }} toggleGroup={toggleGroup} setArchived={setArchived} openHistory={openHistory} onSettings={openSettings} />
+      onProject={id => { setProjectId(id); expandGroup(id); }} toggleGroup={toggleGroup} setArchived={setArchived} openHistory={openHistory} onSettings={openSettings} draftProviderId={blank?.input.providerId} />
     <main className="workspace">
       <WorkspaceHeader state={state} creating={!!blank} active={active} descriptor={descriptor} unavailable={unavailable} readOnly={readOnly} project={project} structured={structured} activeBusy={activeBusy} busy={busy}
         onPalette={openPalette} openIde={openIde} perform={perform} setNotice={setNotice} start={start}
@@ -477,7 +482,7 @@ export function App() {
       </>}
       <footer className="statusbar">
         <span>
-          <span className={`dot ${cap.available ? 'running' : 'stopped'}`} />{cap.available ? cap.version : '未检测到 Claude Code'}</span>
+          <span className={`dot ${currentEngineStatus(active, executors, blank?.input.providerId ?? 'claude').ready ? 'running' : 'stopped'}`} />{currentEngineStatus(active, executors, blank?.input.providerId ?? 'claude').text}</span>
         <span>
           <span className="running-count" title="执行中包含任务、Shell 和尚未同步状态的终端">
             <span className={`dot ${taskCount ? 'running' : 'idle'}`} />{taskCount} 执行中</span>
@@ -490,14 +495,15 @@ export function App() {
     </main>
     {currentBlankImagePreview && <NewSessionImagePreview key={newSessionImagePreviewKey(currentBlankImagePreview)} selection={currentBlankImagePreview} onClose={() => setBlankImagePreview(undefined)} />}
     {filePicker && <FilePicker key={filePicker} sessionId={filePicker} selected={[]} onClose={() => setFilePicker('')} onError={report} onPick={paths => { const id = filePicker; const value = drafts[id] ?? state.sessions.find(s => s.id === id)?.draft ?? ''; saveDraftFor(id, value + (value ? '\n\n' : '') + '请参考以下项目文件：\n' + paths.map(p => '@' + JSON.stringify(p)).join('\n')); setFilePicker(''); }} />}
-    {modal && <Dialog className={modal === 'settings' ? 'preferences' : ''} onClose={() => setModal(null)} closeDisabled={busy} label={modal === 'continuation' ? '跨引擎续接' : modal === 'settings' ? '设置与连接' : modal === 'palette' ? '命令面板' : '导入引擎历史'}>
-      <button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={() => setModal(null)}>
+    {modal && <Dialog className={modal === 'settings' ? 'preferences' : ''} onClose={closeModal} closeDisabled={busy} label={modal === 'continuation' ? '跨引擎续接' : modal === 'settings' ? '设置与连接' : modal === 'palette' ? '命令面板' : '导入引擎历史'}>
+      <button className="icon-button close-modal" disabled={busy} aria-label="关闭弹窗" onClick={closeModal}>
         <X size={20} />
       </button>
       {modal === 'palette' && <CommandPalette state={state} historyAvailable={!!historySources.length} paletteQuery={paletteQuery} setPaletteQuery={setPaletteQuery} openNew={openNew} openHistory={openHistory} onSettings={openSettings}
         onSelect={session => { setProjectId('all'); setArchived(session.archived); setSearch(''); selectSession(session.id); setModal(null); }} />}
       {modal === 'continuation' && <ContinuationSessionForm state={state} executors={executors} draft={draft} setDraft={setDraft} busy={busy} perform={perform} onCreated={id => { selectSession(id); setArchived(false); setModal(null); }} />}
       {modal === 'settings' && draftSettings && <SettingsPanel executors={executors} cliBusy={cliActionBusy || cliUpdateBusy(cliUpdate)} value={draftSettings} saved={state.settings} {...preferences.editor}
+        onCloseRequestChange={registerSettingsCloseRequest} onUseConnection={id => openNew('agent', undefined, undefined, undefined, id)}
         activeSession={active} onSessionError={report} initialScope={settingsTarget.scope} initialGroup={settingsTarget.group} initialSubpage={settingsTarget.subpage}
         cliUpdate={<CLIUpdateNotice state={cliUpdate} onCheck={checkCLIUpdate} onUpdate={updateCLI} disabled={busy || cliActionBusy || draftSettings.claudePath !== state.settings.claudePath} />}
         busy={busy} error={error} capabilities={cap} platform={platform} dataPath={dataPath} onClose={() => setModal(null)} />}

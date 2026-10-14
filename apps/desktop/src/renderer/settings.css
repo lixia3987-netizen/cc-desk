@@ -72,6 +72,12 @@
 .model-list-picker select{width:100%;min-width:0}
 .model-list-picker>button{flex-shrink:0}
 .native-connection-editor{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:18px;margin:16px 0}
+.native-connection-editor-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
+.native-connection-editor-heading h4{margin:0}
+.native-connection-editor-actions{position:sticky;bottom:-30px;z-index:1;margin:18px -18px -18px;padding:14px 18px;border-top:1px solid var(--border);border-radius:0 0 10px 10px;background:var(--surface)}
+.settings-persistent-resource[hidden]{display:none!important}
+.settings-close-confirm{font-size:calc(12px * var(--ui-font-scale));line-height:1.7}
+.settings-close-confirm p{margin:0 0 12px;color:var(--text-secondary)}
 .model-config-details,.native-model-defaults{border-top:1px solid var(--border);padding:14px 0;margin-top:16px;font-size:calc(11px * var(--ui-font-scale))}
 .model-config-details>summary,.native-model-defaults>summary{cursor:pointer;color:var(--text-secondary);font-weight:500;line-height:1.8}
 .model-config-details[open]>summary,.native-model-defaults[open]>summary{margin-bottom:14px}

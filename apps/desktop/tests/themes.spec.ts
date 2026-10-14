@@ -125,6 +125,10 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     await page.getByLabel('菜单字号', { exact: true }).fill('16');
     await page.getByLabel('菜单字体', { exact: true }).selectOption(font.id);
     await page.getByRole('button', { name: '关闭', exact: true }).click();
+    const fontPreviewConfirmation = page.getByRole('alert', { name: '未保存的修改', exact: true });
+    await expect(fontPreviewConfirmation).toContainText('全局设置');
+    await fontPreviewConfirmation.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '设置与连接', exact: true })).toHaveCount(0);
     expect(await terminal!.evaluate(element => element.isConnected && element === document.querySelector('.terminal-host .xterm'))).toBe(true);
     const mainBackgrounds = new Set<string>();
     for (const choice of choices) {
@@ -194,10 +198,15 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     await page.getByRole('radio', { name: '云白靛', exact: true }).check();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'cloud');
     await page.keyboard.press('Escape');
+    const themePreviewConfirmation = page.getByRole('alert', { name: '未保存的修改', exact: true });
+    await expect(themePreviewConfirmation).toContainText('全局设置');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'cloud');
+    await themePreviewConfirmation.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '设置与连接', exact: true })).toHaveCount(0);
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'amber');
     expect((await page.evaluate(async () => (await window.desktop.snapshot()).state.settings)).theme).toBe('amber');
     expect(rendererErrors).toEqual([]);
-    await page.getByRole('button', { name: '停止', exact: true }).click();
+    await page.getByLabel('终端操作', { exact: true }).click(); await page.getByRole('button', { name: '关闭终端', exact: true }).click();
     await expect(page.locator('.session-header .status-tag')).toContainText('已停止');
     await app.close();
     app = await launch();

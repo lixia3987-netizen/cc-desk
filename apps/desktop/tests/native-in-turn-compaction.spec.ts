@@ -62,7 +62,7 @@ async function configure(app: ElectronApplication, projectId: string, fixture: F
     await window.desktop.setSelection(session.id); return session;
   }, { projectId, baseURL });
   await openSessionSettings(page, 'compaction');
-  await page.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
+  await page.getByLabel('会话运行策略来源', { exact: true }).selectOption('custom');
   const setting = page.getByLabel('会话自动压缩', { exact: true });
   await expect(setting).toHaveValue('off');
   await setting.selectOption('before_send_and_during_run');

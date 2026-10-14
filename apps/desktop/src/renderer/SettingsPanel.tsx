@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Bell, Bot, Check, FolderCog, FolderOpen, Layers, Loader2, Palette, Plug, RefreshCw, Terminal, Trash2, Upload } from 'lucide-react';
 import type { Capabilities, Session, Settings } from '../shared/types';
 import { DEFAULT_TYPOGRAPHY, fontFamily, systemFontFamily, typography, type FontId, type ImportedFont, type SystemFont } from '../shared/fonts';
@@ -13,7 +13,7 @@ import { NativeModelImport } from './components/NativeModelImport';
 import { NativeMcpConnections } from './components/NativeMcpConnections';
 import { NativeContextSettingsInfo } from './components/NativeContextSettingsInfo';
 import { LegacyClaudeOverrides } from './components/LegacyClaudeOverrides';
-import { SessionConfig } from './SessionConfig';
+import { SessionConfig, SessionConfigDraftStore } from './SessionConfig';
 import { engineFieldsForGroup, engineGroupForKey, engineGroupTitles, type EngineSettingsGroup, type SettingsScope } from './settings-organization';
 import type { ReactNode } from 'react';
 
@@ -52,6 +52,8 @@ export interface SettingsPanelProps {
   cliUpdate: ReactNode; executors: ExecutionDescriptor[]; cliBusy?: boolean;
   activeSession?: Session; onSessionError(error: unknown): void;
   initialScope?: SettingsScope; initialGroup?: EngineSettingsGroup; initialSubpage?: string;
+  onCloseRequestChange?(request: (() => void) | undefined): void;
+  onUseConnection?(id: string): void;
 }
 
 export function EngineDefaultsGroup({ value, onChange, executors, group, disabled }: {
@@ -71,7 +73,7 @@ export function EngineDefaultsGroup({ value, onChange, executors, group, disable
   })}</>;
 }
 
-function EnginePolicySection({ scope, onScope, group, props }: { scope: SettingsScope; onScope(scope: SettingsScope): void; group: EngineSettingsGroup; props: SettingsPanelProps }) {
+function EnginePolicySection({ scope, onScope, group, props, draftStore }: { scope: SettingsScope; onScope(scope: SettingsScope): void; group: EngineSettingsGroup; props: SettingsPanelProps; draftStore: SessionConfigDraftStore }) {
   const active = props.activeSession;
   const descriptor = active && props.executors.find(item => item.providerId === active.execution.providerId && item.mode === active.execution.mode);
   const currentAllowed = !!active && active.kind === 'agent';
@@ -79,14 +81,14 @@ function EnginePolicySection({ scope, onScope, group, props }: { scope: Settings
   const current = scope === 'session'
     ? !currentAllowed ? <p className="hint">请选择一个 Agent 会话后编辑当前会话配置。</p>
       : nativeOnly && active.execution.providerId !== 'native' ? <p className="hint">此设置仅用于自研 Agent。Claude Code 的模型与工具配置由 CLI 管理。</p>
-        : <SessionConfig session={active} descriptor={descriptor} onError={props.onSessionError} group={group} settings={props.saved}/>
+        : <SessionConfig session={active} descriptor={descriptor} onError={props.onSessionError} group={group} settings={props.saved} draftStore={draftStore}/>
     : <EngineDefaultsGroup value={props.value} onChange={props.onChange} executors={props.executors} group={group} disabled={props.busy}/>;
   return <section className="settings-section settings-policy-section" aria-label={engineGroupTitles[group] + '设置'}>
     <div className="settings-policy-heading"><h4>{engineGroupTitles[group]}</h4><div className="settings-scope" role="radiogroup" aria-label="设置作用范围">
       <button type="button" role="radio" aria-checked={scope === 'defaults'} disabled={props.busy} onClick={() => onScope('defaults')}>新会话默认</button>
       <button type="button" role="radio" aria-checked={scope === 'session'} disabled={props.busy || !currentAllowed} onClick={() => onScope('session')}>当前会话</button>
     </div></div>
-    <p className="settings-scope-description">{scope === 'session' ? currentAllowed ? `当前会话：${active.title || active.id}。配置由下方按钮单独保存；切换分类或作用范围会放弃未保存的会话编辑。` : '尚未选择 Agent 会话。' : group === 'model' || group === 'permissions' ? '保存设置后用于新会话，已有会话的配置保持不变。' : '保存设置后用于新会话。已有会话的自定义配置保持不变；跟随默认的自研 Agent 会话在下一回合使用已保存策略。'}</p>
+    <p className="settings-scope-description">{scope === 'session' ? currentAllowed ? `当前会话：${active.title || active.id}。通过本区域“保存配置”保存，切换分类或作用范围会保留普通字段草稿。` : '尚未选择 Agent 会话。' : group === 'model' || group === 'permissions' ? '保存设置后用于新会话，已有会话的配置保持不变。' : '保存设置后用于新会话。已有会话的自定义配置保持不变；跟随默认的自研 Agent 会话在下一回合使用已保存策略。'}</p>
     {group === 'model' && scope === 'defaults' ? <details className="native-model-defaults"><summary>新会话默认模型</summary>{current}</details> : current}
     {group === 'permissions' && <p className="hint">自研 Agent 的文件写入与命令执行始终逐次审批；Claude Code 的权限模式独立设置。</p>}
   </section>;
@@ -120,6 +122,16 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const {value, saved, onChange, page, onPage, fonts, busy, error, capabilities: cap, platform, dataPath} = props;
   const [validation, setValidation] = useState('');
   const [scope, setScope] = useState<SettingsScope>(props.initialScope ?? 'defaults');
+  const sessionDraftStore = useMemo(() => new SessionConfigDraftStore(), []);
+  const sessionDraftRevision = useSyncExternalStore(sessionDraftStore.subscribe, sessionDraftStore.getRevision, sessionDraftStore.getRevision);
+  const [connectionDirty, setConnectionDirty] = useState(false);
+  const [mcpDirty, setMcpDirty] = useState(false);
+  const [editConnectionId, setEditConnectionId] = useState<string>();
+  const clearEditConnectionId = useCallback(() => setEditConnectionId(undefined), []);
+  const [closing, setClosing] = useState(false);
+  const afterClose = useRef<(() => void) | undefined>(undefined);
+  const continueEditing = useRef<HTMLButtonElement>(null);
+  const connectionsVisited = useRef(false), mcpVisited = useRef(false);
   const [subpageByPage, setSubpageByPage] = useState<Partial<Record<SettingsPage, string>>>(() => {
     if (props.initialGroup) {
       const location = locationForGroup(props.initialGroup);
@@ -154,8 +166,27 @@ export function SettingsPanel(props: SettingsPanelProps) {
   const content = useRef<HTMLDivElement>(null);
   const selected = pages.find(item => item.id === page)!;
   const selectedSubpage = subpages[page].find(item => item.id === subpageByPage[page]) ?? subpages[page][0];
+  const connectionsActive = page === 'models' && selectedSubpage.id === 'connections';
+  const mcpActive = page === 'mcp' && selectedSubpage.id === 'connections';
+  if (connectionsActive) connectionsVisited.current = true;
+  if (mcpActive) mcpVisited.current = true;
   const dirty = (Object.keys({...saved,...value}) as (keyof Settings)[]).some(key => key === 'engineDefaults'
     ? !sameEngineDefaults(value.engineDefaults, saved.engineDefaults) : value[key] !== saved[key]);
+  const sessionDirty = sessionDraftStore.hasDirty();
+  const unsaved = dirty || connectionDirty || mcpDirty || sessionDirty;
+  const requestClose = useCallback((next?: () => void) => {
+    if (closing) return;
+    afterClose.current = next;
+    if (unsaved) setClosing(true);
+    else { props.onClose(); next?.(); }
+  }, [unsaved, closing, props.onClose, sessionDraftRevision]);
+  useEffect(() => {
+    props.onCloseRequestChange?.(() => requestClose());
+    return () => props.onCloseRequestChange?.(undefined);
+  }, [props.onCloseRequestChange, requestClose]);
+  useEffect(() => { if (closing) continueEditing.current?.focus(); }, [closing]);
+  const pendingAreas = [dirty && '全局设置', connectionDirty && '模型连接', mcpDirty && 'MCP 连接', sessionDirty && '当前会话'].filter(Boolean);
+  const globalSaveVisible = dirty || !(page === 'models' && ['connections', 'import'].includes(selectedSubpage.id) || mcpActive || scope === 'session' && !!selectedSubpage.group);
   const changePage = (next: SettingsPage) => { onPage(next); content.current?.scrollTo(0, 0); };
   const changeSubpage = (next: string) => { setSubpageByPage(current => ({ ...current, [page]: next })); content.current?.scrollTo(0, 0); };
   const save = (detect: boolean) => {
@@ -173,7 +204,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   };
   return <form className="settings-form" noValidate onSubmit={event => {event.preventDefault();save(false);}}>
     <header className="settings-header"><span className="eyebrow">PREFERENCES</span><h2>设置与连接</h2><p>按你的习惯组织工作台</p></header>
-    <div className="settings-layout">
+    <div className="settings-layout" inert={closing ? true : undefined}>
       <nav className="settings-nav" role="tablist" aria-label="设置分类" aria-orientation="vertical">
         {pages.map((item, index) => <button type="button" role="tab" key={item.id} id={'settings-tab-' + item.id} aria-controls={'settings-page-' + item.id} aria-selected={page === item.id} tabIndex={page === item.id ? 0 : -1} disabled={busy} onClick={() => changePage(item.id)} onKeyDown={event => {
           const next = event.key === 'ArrowDown' ? (index + 1) % pages.length : event.key === 'ArrowUp' ? (index + pages.length - 1) % pages.length : event.key === 'Home' ? 0 : event.key === 'End' ? pages.length - 1 : undefined;
@@ -206,15 +237,15 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </section>
         </>}
         {page === 'appearance' && selectedSubpage.id === 'theme' && <ThemePicker value={normalizeThemeId(value.theme)} disabled={busy} onChange={theme => onChange({...value, theme})}/>}
-        {page === 'models' && selectedSubpage.id === 'connections' && <>
+        {connectionsVisited.current && <div className="settings-persistent-resource" hidden={!connectionsActive}>
           <p className="settings-resource-note"><span>全局资源</span>模型连接与凭据独立保存，供自研 Agent 会话选择。</p>
-          <NativeConnections disabled={busy}/>
-          <EnginePolicySection props={props} group="model" scope={scope} onScope={setScope}/>
-        </>}
-        {page === 'models' && selectedSubpage.id === 'import' && <NativeModelImport disabled={busy} onConnections={() => changeSubpage('connections')}/>}
-        {page === 'models' && (selectedSubpage.id === 'context' || selectedSubpage.id === 'compaction') && <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope}/>}
-        {page === 'mcp' && selectedSubpage.id === 'connections' && <><p className="settings-resource-note"><span>全局资源</span>MCP 连接与凭据独立保存；新增连接不会自动启用到会话。</p><NativeMcpConnections disabled={busy}/></>}
-        {page === 'mcp' && selectedSubpage.id === 'tools' && <EnginePolicySection props={props} group="tools" scope={scope} onScope={setScope}/>}
+          <NativeConnections disabled={busy} active={connectionsActive} editConnectionId={editConnectionId} onEditHandled={clearEditConnectionId} onDirtyChange={setConnectionDirty}/>
+        </div>}
+        {connectionsActive && <EnginePolicySection props={props} group="model" scope={scope} onScope={setScope} draftStore={sessionDraftStore}/>}
+        {page === 'models' && selectedSubpage.id === 'import' && <NativeModelImport disabled={busy} onConnections={() => changeSubpage('connections')} onEditConnection={id => { setEditConnectionId(id); changeSubpage('connections'); }} onUseConnection={props.onUseConnection ? id => requestClose(() => props.onUseConnection?.(id)) : undefined}/>}
+        {page === 'models' && (selectedSubpage.id === 'context' || selectedSubpage.id === 'compaction') && <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope} draftStore={sessionDraftStore}/>}
+        {mcpVisited.current && <div className="settings-persistent-resource" hidden={!mcpActive}><p className="settings-resource-note"><span>全局资源</span>MCP 连接与凭据独立保存；新增连接不会自动启用到会话。</p><NativeMcpConnections disabled={busy} active={mcpActive} onDirtyChange={setMcpDirty}/></div>}
+        {page === 'mcp' && selectedSubpage.id === 'tools' && <EnginePolicySection props={props} group="tools" scope={scope} onScope={setScope} draftStore={sessionDraftStore}/>}
         {page === 'terminal' && selectedSubpage.id === 'cli' && <>
           {props.cliUpdate}
           <section className="settings-section"><h4>Claude Code</h4><label>Claude Code 可执行文件<input aria-label="Claude Code 路径" disabled={busy || props.cliBusy} value={value.claudePath} placeholder="留空自动检测" onChange={event => onChange({...value,claudePath:event.target.value})}/></label>
@@ -230,7 +261,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
           </section>}
         {page === 'sessions' && <>
           {selectedSubpage.id === 'limits' && <section className="settings-section"><h4>并发任务 <span className="settings-global-badge">全局</span></h4><label>最大并发会话<input aria-label="最大并发会话" type="number" min={1} max={12} disabled={busy} value={value.maxSessions} onChange={event => onChange({...value,maxSessions:Number(event.target.value)})}/></label><p className="hint">限制同时连接的会话数量。降低上限不会停止已有任务。</p></section>}
-          <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope}/>
+          <EnginePolicySection props={props} group={selectedSubpage.group!} scope={scope} onScope={setScope} draftStore={sessionDraftStore}/>
         </>}
         {page === 'workspace' && selectedSubpage.id === 'worktree' && <>
           <section className="settings-section worktree-preferences"><h4>Worktree 位置</h4><label>Worktree 位置<select aria-label="Worktree 位置" aria-describedby="worktree-location-help" disabled={busy} value={value.worktreeLocation ?? 'project'} onChange={event => onChange({...value,worktreeLocation:event.target.value as 'project' | 'custom'})}><option value="project">项目目录内（.claude/worktrees）</option><option value="custom">统一目录</option></select></label>
@@ -248,8 +279,8 @@ export function SettingsPanel(props: SettingsPanelProps) {
     </div>
     <footer className="settings-footer">
       {(validation || error) && <div className="settings-error" role="alert">{validation || error}</div>}
-      <p className="settings-save-help">保存设置应用全局偏好与默认策略。关闭会丢弃未保存的编辑；连接、MCP、字体库及当前会话已保存的更改不会撤销。</p>
-      <div className="settings-footer-actions"><span className="settings-save-state">{busy ? '正在处理…' : dirty ? '全局设置有未保存的更改' : '全局设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={props.onClose}>关闭</button>{page === 'terminal' && selectedSubpage.id === 'cli' && <button type="button" className="secondary" disabled={busy || props.cliBusy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}<button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button></div>
+      <p className="settings-save-help">全局偏好与默认策略通过“保存设置”保存。连接、MCP 及当前会话在各自区域保存；切换分类保留普通字段草稿，关闭前会提示未保存修改。</p>
+      {closing ? <div className="settings-close-confirm" role="alert" aria-label="未保存的修改"><p>{pendingAreas.join('、')}还有未保存的修改。</p><div className="settings-footer-actions"><button ref={continueEditing} type="button" className="primary" onClick={() => { afterClose.current = undefined; setClosing(false); }}>继续编辑</button><button type="button" className="secondary danger" onClick={() => { const next = afterClose.current; props.onClose(); next?.(); }}>放弃未保存修改并关闭</button></div></div> : <div className="settings-footer-actions"><span className="settings-save-state" role="status">{busy ? '正在处理…' : pendingAreas.length ? pendingAreas.join('、') + '有未保存的更改' : '全局设置已同步'}</span><button type="button" className="secondary" disabled={busy} onClick={() => requestClose()}>关闭</button>{page === 'terminal' && selectedSubpage.id === 'cli' && <button type="button" className="secondary" disabled={busy || props.cliBusy} onClick={() => save(true)}><RefreshCw size={14}/>保存并检测</button>}{globalSaveVisible && <button type="submit" className="primary" disabled={busy}>{busy ? <Loader2 className="spin" size={15}/> : <Check size={15}/>}保存设置</button>}</div>}
     </footer>
   </form>;
 }

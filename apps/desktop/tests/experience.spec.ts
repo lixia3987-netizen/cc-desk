@@ -154,71 +154,63 @@ test('experience: project groups preserve navigation and drafts with a compact h
       await expect(page.getByRole('heading',{name:title,exact:true})).toBeVisible();
       const layout=await page.evaluate(()=>({top:document.querySelector('.chat-scroll')!.getBoundingClientRect().top,header:document.querySelector('.session-header')!.getBoundingClientRect().height,width:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth}));
       expect(layout.header).toBeLessThanOrEqual(76);expect(layout.top).toBeLessThanOrEqual(112);expect(layout.overflow).toBe(false);
-      for(const name of ['开始输入','命令面板']){
+      for(const name of ['命令面板']){
         const button=page.getByRole('button',{name,exact:true});await expect(button).toBeVisible();
         const bounds=(await button.boundingBox())!;expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(layout.width);
       }
       await sessionRow(page,title).scrollIntoViewIfNeeded();
       await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
-      await sessionRow(page,title).click({button:'right'});
+      await page.getByRole('button',{name:'更多会话操作：'+title,exact:true}).click();
       for(const name of ['打开工作目录','导出会话记录']){
         const item=page.getByRole('menuitem',{name,exact:true});await expect(item).toBeVisible();
         const bounds=(await item.boundingBox())!;expect(bounds.x).toBeGreaterThanOrEqual(0);expect(bounds.x+bounds.width).toBeLessThanOrEqual(layout.width);
       }
       await page.keyboard.press('Escape');
     }
-    await page.getByRole('button',{name:'开始输入',exact:true}).click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
+    await expect(page.getByRole('button',{name:'开始输入',exact:true})).toHaveCount(0);await page.getByLabel('提示词编辑器').click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
     await expect(page.getByLabel('提示词编辑器')).toHaveValue('折叠和跨项目切换后仍保留');expect(errors).toEqual([]);
   }finally{await app.close();await f.dispose();}
 });
 
-test('experience: panel drafts keep session/file identity, open panels and unsaved edits across restart',async()=>{
+test('experience: panel drafts keep session and file identity across dedicated workflow views and restart',async()=>{
   const f=await workspace();let app=await f.launch();
   try{
     let page=await app.firstWindow();
+    const createView=async()=>{await openPanel(page,'工作流');await page.getByRole('button',{name:'新建工作流',exact:true}).click();};
+    const listView=async()=>{await page.getByRole('button',{name:'返回列表并保留草稿',exact:true}).click();};
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
-    await openPanel(page,'工作流');await page.getByLabel('工作流目标').fill('已提交的工作流目标');
-    // The unavailable CLI blocks execution, while a local workflow draft stays editable.
+    await createView();await page.getByLabel('工作流目标').fill('已提交的工作流目标');
     await expect(page.getByRole('button',{name:'创建工作流',exact:true})).toBeEnabled();
-    await page.getByRole('button',{name:'创建工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(1);
+    await page.getByRole('button',{name:'创建工作流',exact:true}).click();
+    await expect(page.locator('.workflow-run')).toHaveCount(1);
     await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
-    await expect(page.getByLabel('工作流目标')).toHaveValue('');
+    await createView();await expect(page.getByLabel('工作流目标')).toHaveValue('');
     await page.getByLabel('工作流目标').fill('下一项任务的草稿');
     await page.getByLabel('每阶段结束后由我确认继续').uncheck();await page.getByLabel('最大尝试次数').selectOption('3');
-    await page.getByRole('button',{name:'编辑阶段指令',exact:true}).first().click();await page.getByLabel('阶段指令').fill('尚未保存的阶段指令');
-    await expect(page.getByRole('button',{name:'保存指令',exact:true})).toBeEnabled();
+    await listView();await page.getByRole('button',{name:'编辑阶段指令',exact:true}).first().click();
+    await page.getByLabel('阶段指令').fill('尚未保存的阶段指令');
     await fs.writeFile(path.join(f.projects[1].path,'one.txt'),'changed one\n');await fs.writeFile(path.join(f.projects[1].path,'two.txt'),'changed two\n');
     await openPanel(page,'变更');await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();
     await page.getByLabel('代码审阅反馈').fill('one 的审阅意见');
     await page.locator('.changed-files button').filter({hasText:'two.txt'}).click();await expect(page.getByLabel('代码审阅反馈')).toHaveValue('');
     await page.getByLabel('代码审阅反馈').fill('two 的审阅意见');await page.getByRole('button',{name:'已暂存',exact:true}).click();
-    await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
-    await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');await expect(page.getByLabel('最大尝试次数')).toHaveValue('3');
-    await expect(page.getByLabel('每阶段结束后由我确认继续')).not.toBeChecked();
-    await select(page,'短对话 B');await expect(page.getByLabel('工作流目标')).toHaveValue('');
-    await expect(page.getByLabel('每阶段结束后由我确认继续')).toBeChecked();await expect(page.getByLabel('最大尝试次数')).toHaveValue('2');
-    await page.getByLabel('工作流目标').fill('另一个会话的草稿');await select(page,'长对话 B');
-    await openPanel(page,'变更');await expect(page.getByLabel('代码审阅反馈')).toHaveValue('two 的审阅意见');
-    await expect(page.getByRole('button',{name:'已暂存',exact:true})).toHaveClass(/chosen/);
-    await page.getByLabel('代码审阅反馈').fill('编辑后立即退出也保留');
+    await openPanel(page,'工作流');await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
+    await createView();await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
+    await expect(page.getByLabel('最大尝试次数')).toHaveValue('3');await expect(page.getByLabel('每阶段结束后由我确认继续')).not.toBeChecked();
+    await listView();await select(page,'短对话 B');await createView();await expect(page.getByLabel('工作流目标')).toHaveValue('');
+    await expect(page.getByLabel('最大尝试次数')).toHaveValue('2');await page.getByLabel('工作流目标').fill('另一个会话的草稿');
+    await listView();await select(page,'长对话 B');await openPanel(page,'变更');
+    await expect(page.getByLabel('代码审阅反馈')).toHaveValue('two 的审阅意见');await page.getByLabel('代码审阅反馈').fill('编辑后立即退出也保留');
     await app.close();app=await f.launch();page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();await openPanel(page,'变更');
     await expect(page.getByLabel('代码审阅反馈')).toHaveValue('编辑后立即退出也保留');
     await expect(page.locator('.changed-files .selected')).toContainText('two.txt');await expect(page.getByRole('button',{name:'已暂存',exact:true})).toHaveClass(/chosen/);
     await page.locator('.changed-files button').filter({hasText:'one.txt'}).click();await expect(page.getByLabel('代码审阅反馈')).toHaveValue('one 的审阅意见');
-    await fs.writeFile(path.join(f.projects[1].path,'one.txt'),'original one\n');
-    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
-    await expect(page.getByText('该文件已不在变更列表中，审阅草稿已保留。',{exact:true})).toBeVisible();
-    await expect(page.getByLabel('代码审阅反馈')).toHaveValue('one 的审阅意见');
-    await openPanel(page,'工作流');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
-    await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
-    await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
-    await expect(page.getByRole('button',{name:'保存指令',exact:true})).toBeEnabled();
+    await openPanel(page,'工作流');await expect(page.getByLabel('阶段指令')).toHaveValue('尚未保存的阶段指令');
     await page.getByRole('button',{name:'保存指令',exact:true}).click();await expect(page.getByLabel('阶段指令')).toHaveCount(0);
-    await expect(page.locator('.workflow-run').getByRole('button',{name:'开始',exact:true})).toBeDisabled();
-    const saved=await page.evaluate(async id=>(await window.desktop.workflows(id))[0].stages[0].instruction,f.sessions[0].id);
-    expect(saved).toBe('尚未保存的阶段指令');await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');
-    await select(page,'短对话 B');await expect(page.getByLabel('工作流目标')).toHaveValue('另一个会话的草稿');
+    const saved=await page.evaluate(async id=>(await window.desktop.workflows(id))[0].stages[0].instruction,f.sessions[0].id);expect(saved).toBe('尚未保存的阶段指令');
+    await createView();await expect(page.getByLabel('工作流目标')).toHaveValue('下一项任务的草稿');await listView();
+    await select(page,'短对话 B');await createView();await expect(page.getByLabel('工作流目标')).toHaveValue('另一个会话的草稿');
     await expect(page.locator('.error-banner')).toHaveCount(0);
   }finally{await app.close();await f.dispose();}
 });
@@ -236,7 +228,7 @@ test('experience: new-session project, template append, terminal selection and r
     await page.getByLabel('工作空间',{exact:true}).selectOption(f.projects[0].id);
     await selectProjectFilter(page,'全部项目');await select(page,'长对话 B');
     await selectProjectFilter(page,'全部项目');
-    await page.getByRole('button',{name:'开始输入',exact:true}).click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
+    await expect(page.getByRole('button',{name:'开始输入',exact:true})).toHaveCount(0);await page.getByLabel('提示词编辑器').click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.sessions.some(session=>session.started)).toBe(false);
     await expect(page.locator('.chat-message')).toHaveCount(90);await settleReading(page);
     await page.locator('.chat-scroll').evaluate(element=>{element.scrollTop=300;});
@@ -259,7 +251,7 @@ test('experience: new-session project, template append, terminal selection and r
     await select(page,'短对话 B');await select(page,'长对话 B');await settleReading(page);
     expect(await page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(2);
     await select(page,'CLI 终端 B');await expect(page.locator('.error-banner')).toHaveCount(0);
-    await page.getByLabel('提示词编辑器').fill('保留现有草稿');await openPanel(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
+    await page.getByLabel('提示词编辑器').fill('保留现有草稿');await openPanel(page,'工作流');await page.getByRole('button',{name:'新建工作流',exact:true}).click();await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
     const text=await page.getByLabel('提示词编辑器').inputValue();expect(text).toMatch(/^保留现有草稿\n\n请完成以下任务/);
     await select(page,'Shell B');await expect(page.locator('.error-banner')).toHaveCount(0);
     await select(page,'CLI 终端 B');await expect(page.getByLabel('提示词编辑器')).toHaveValue(text);await expect(page.locator('.error-banner')).toHaveCount(0);
@@ -297,7 +289,7 @@ test('experience: delayed terminal activation cannot steal composer input or los
     expect(await page.evaluate(()=>(window as Window & {releaseFrames?:()=>number}).releaseFrames!())).toBeGreaterThan(0);
     await expect(editor).toBeFocused();
     await page.keyboard.insertText('保留现有草稿');await expect(editor).toHaveValue('保留现有草稿');
-    await openPanel(page,'工作流');await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
+    await openPanel(page,'工作流');await page.getByRole('button',{name:'新建工作流',exact:true}).click();await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
     await expect(editor).toHaveValue(/^保留现有草稿\n\n请完成以下任务/);
     // Ordinary terminal selection still focuses the active terminal by default.
     await select(page,'Shell B');
@@ -522,6 +514,7 @@ test('experience: permission defaults persist while sessions, forks and import o
     await expect(page.getByLabel('默认权限模式',{exact:true})).toHaveValue('default');
     await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
     await page.keyboard.press('Escape');
+    await page.getByRole('button',{name:'放弃未保存修改并关闭',exact:true}).click();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('default');
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await page.getByRole('tab',{name:'运行与权限',exact:true}).click();
@@ -613,7 +606,7 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
     const before=await count();expect(before).toBe(1);
     await page.getByRole('button',{name:'保存并检测',exact:true}).click();await expect.poll(count).toBe(before+1);
     await expect(page.getByRole('button',{name:'保存并检测',exact:true})).toBeEnabled();
-    await page.getByLabel('Claude Code 路径').fill(a.cli);await page.keyboard.press('Escape');
+    await page.getByLabel('Claude Code 路径').fill(a.cli);await page.keyboard.press('Escape');await page.getByRole('button',{name:'放弃未保存修改并关闭',exact:true}).click();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.claudePath).toBe(b.cli);
     await selectProjectFilter(page,'项目 A');
     await selectProjectFilter(page,'全部项目');

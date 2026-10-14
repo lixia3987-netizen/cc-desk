@@ -225,7 +225,7 @@ test('native incremental edit uses approved file identity and exposes measured u
     const page = await readyWindow(app), configured = await connection(page, fixture.baseURL);
     const session = await nativeSession(page, f.projectId, configured.id, '阶段四增量编辑');
     await openSessionSettings(page, 'context');
-    await page.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
+    await page.getByLabel('会话运行策略来源', { exact: true }).selectOption('custom');
     await page.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
     const inputBudget = page.getByLabel('会话输入预算（估算 tokens）', { exact: true });
     await expect(inputBudget).toHaveValue('64000');

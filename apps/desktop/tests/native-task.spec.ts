@@ -1,3 +1,4 @@
+import { openChatAssistance } from './helpers/chat-assistance';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -95,7 +96,9 @@ async function pending(page: Page, id: string, name: string) {
 }
 async function finished(page: Page, id: string) {
   await expect.poll(async () => (await snapshot(page, id)).nativeTask?.execution).toBe('ended');
+  await openChatAssistance(page, 'task');
   await expect(panel(page).locator('.native-task-overview')).toContainText('本轮正常结束');
+  await openChatAssistance(page, 'task');
   await expect(panel(page).getByRole('button', { name: '继续此任务', exact: true })).toBeEnabled();
   return (await snapshot(page, id)).nativeTask!;
 }
@@ -119,10 +122,12 @@ test('native task UI survives approval-time reload and keeps model completion se
     app = await f.launch(); const page = await ready(app), session = await configure(page, f.projectId, f.fixture.baseURL);
     await submit(page, '实现工程任务并准确展示计划和验证状态。');
     const writeApproval = await pending(page, session.id, 'apply_patch');
+    await openChatAssistance(page, 'task');
     await expect(panel(page)).toContainText(goal); await expect(panel(page).locator('.native-task-overview')).toContainText('验证：未验证');
     expect(await fs.readFile(path.join(f.cwd, 'feature.txt'), 'utf8')).toBe(before);
     const beforeReload = (await snapshot(page, session.id)).nativeTask!;
     await page.reload(); await expect(page.locator('main.workspace')).toBeVisible();
+    await openChatAssistance(page, 'task');
     await expect(panel(page)).toContainText(goal);
     expect((await snapshot(page, session.id)).nativeTask?.taskId).toBe(beforeReload.taskId);
     expect(await pending(page, session.id, 'apply_patch')).toBe(writeApproval);
@@ -133,7 +138,9 @@ test('native task UI survives approval-time reload and keeps model completion se
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     const ended = await finished(page, session.id);
     expect(ended.steps[0].status).toBe('implemented'); expect(ended.verification).toBe('unverified');
+    await openChatAssistance(page, 'task');
     await expect(panel(page).locator('.native-task-overview')).toContainText('验证：未验证');
+    await openChatAssistance(page, 'task');
     await expect(panel(page).locator('[data-step-status="implemented"]')).toContainText('模型声明已实现');
     await expect(page.locator('.chat-message.assistant').last()).toContainText('模型声称任务已全部实现并且验收通过');
     expect(await fs.readFile(path.join(f.cwd, 'feature.txt'), 'utf8')).toBe(after);
@@ -144,11 +151,13 @@ test('native task UI survives approval-time reload and keeps model completion se
     await review(page, session.id, 'content'); await review(page, session.id, 'scope');
     expect((await snapshot(page, session.id)).nativeTask?.verification).not.toBe('passed');
     await review(page, session.id, '');
+    await openChatAssistance(page, 'task');
     await expect(panel(page).locator('.native-task-overview')).toContainText('验证：验收通过');
     const approved = (await snapshot(page, session.id)).nativeTask!;
     await fs.appendFile(path.join(f.cwd, 'feature.txt'), 'external edit after verification\n');
     // Exercise the registered focus-resynchronization path without a polling loop.
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await openChatAssistance(page, 'task');
     await expect(panel(page).locator('.native-task-overview')).toContainText('验证：证据已过期');
     const stale = (await snapshot(page, session.id)).nativeTask!;
     expect(stale.workspace?.current.fingerprint).not.toBe(approved.workspace?.current.fingerprint);
@@ -168,6 +177,7 @@ test('native task UI restores a durable plan after restart and Continue only bin
     expect(original.verification).toBe('unverified'); expect(original.evidence).toEqual([]);
     await closeNativeApp(app); app = await f.launch(); page = await ready(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await openChatAssistance(page, 'task');
     await expect(panel(page)).toContainText(goal);
     const restored = (await snapshot(page, session.id)).nativeTask!;
     expect(restored.taskId).toBe(original.taskId); expect(restored.revision).toBe(original.revision);
@@ -210,6 +220,7 @@ test('native code location links reveal saved line excerpts and retain historica
     const criterionLink = panel(page).locator('.native-task-criteria .native-task-location-links a');
     expect(await stepLink.getAttribute('href')).toMatch(/^#native-task-evidence-[0-9a-f]+-[0-9a-f]+$/);
     expect(await criterionLink.getAttribute('href')).toBe(await stepLink.getAttribute('href'));
+    await openChatAssistance(page, 'task');
     await expect(panel(page).locator('.native-task-evidence')).toBeHidden();
     await stepLink.click();
     const evidence = panel(page).locator('.native-task-evidence');
@@ -229,6 +240,7 @@ test('native code location links reveal saved line excerpts and retain historica
     expect((await snapshot(page, session.id)).nativeTask!.evidence[0].location).toEqual(original.evidence[0].location);
     await closeNativeApp(app); app = await f.launch(); page = await ready(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await openChatAssistance(page, 'task');
     await expect(panel(page)).toContainText(goal);
     await panel(page).locator('.native-task-criteria .native-task-location-links a').click();
     const restored = panel(page).locator('.native-task-evidence');

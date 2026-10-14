@@ -199,3 +199,31 @@ test('native connections IPC: separate write-only mutation has no credential rea
     }
   } finally { f.dispose(); }
 });
+
+
+test('incomplete model connections persist and discover with protected credentials while execution still requires a model', () => {
+  let active = false, testing = false;
+  const f = fixture({ isConnectionActive: () => active, isConnectionTesting: () => testing });
+  try {
+    const created = f.store.upsert({ ...baseline, model: '' });
+    assert.equal(created.model, ''); assert.equal(created.ready, false);
+    assert.match(created.error!, /选择模型/);
+    assert.throws(() => f.store.resolveForModelList({ id: created.id, revision: created.revision }), /凭据/);
+    const saved = f.store.setCredential({ id: created.id, revision: created.revision, mode: 'memory', secret: sentinel });
+    assert.equal(saved.ready, false); assert.equal(saved.credentialConfigured, true);
+    assert.throws(() => f.store.resolve(saved.id), /选择模型/);
+    assert.throws(() => f.store.resolveForDiagnostic({ id: saved.id, revision: saved.revision }), /选择模型/);
+    const catalog = f.store.resolveForModelList({ id: saved.id, revision: saved.revision });
+    assert.equal(catalog.model, ''); assert.equal(catalog.apiKey, sentinel); assert.equal(catalog.redirect, 'error');
+    assert.throws(() => f.store.resolveForModelList({ id: saved.id, revision: created.revision }), /更新/);
+    active = true; assert.throws(() => f.store.resolveForModelList({ id: saved.id, revision: saved.revision }), /运行/);
+    active = false; testing = true; assert.throws(() => f.store.resolveForModelList({ id: saved.id, revision: saved.revision }), /读取模型或测试/);
+    testing = false;
+    const restarted = new ConnectionStore(f.directory);
+    assert.equal(restarted.list().connections[0].model, ''); assert.equal(restarted.list().error, undefined);
+    assert.throws(() => restarted.resolveForModelList({ id: saved.id, revision: saved.revision }), /凭据/);
+    const selected = f.store.upsert({ ...edit(saved), model: 'discovered-model' });
+    assert.equal(selected.ready, true); assert.equal(f.store.resolve(selected.id).model, 'discovered-model');
+    assert.ok(!fs.readFileSync(f.file, 'utf8').includes(sentinel));
+  } finally { f.dispose(); }
+});

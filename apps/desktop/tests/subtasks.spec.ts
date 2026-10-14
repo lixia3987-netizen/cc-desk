@@ -145,7 +145,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.chat-composer')).toBeInViewport({ ratio: 1 });
-    await expect(page.getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: '停止本轮', exact: true })).toBeInViewport({ ratio: 1 });
     await page.screenshot({ path: testInfo.outputPath('subtasks-narrow-inspector-open.png') });
     await page.getByRole('button', { name: '收起子任务', exact: true }).click();
     await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
@@ -174,7 +174,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.chat-composer')).toBeInViewport({ ratio: 1 });
-    await expect(page.getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.getByRole('button', { name: '停止本轮', exact: true })).toBeInViewport({ ratio: 1 });
     await expect(updateBanner).toBeInViewport({ ratio: 1 });
     expect(await panel.locator('.subtask-list').evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath('subtasks-progress.png') });

@@ -100,7 +100,7 @@ test('chat queue: accepted messages clear immediately, Enter is deduplicated, FI
     await expect(queued(page, '第三项带附件').locator('.queued-chat-actions')).toHaveCSS('opacity', '1');
     await expect(editor(page)).toBeInViewport({ ratio: 1 });
     await expect(page.locator('.chat-composer').getByRole('button', { name: '加入队列', exact: true })).toBeInViewport({ ratio: 1 });
-    await expect(page.locator('.chat-composer').getByRole('button', { name: '中断', exact: true })).toBeInViewport({ ratio: 1 });
+    await expect(page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true })).toBeInViewport({ ratio: 1 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: path.join(os.tmpdir(), 'ccdesk-chat-queue-narrow.png') });
 
@@ -223,7 +223,7 @@ test('chat queue: a failed turn and an explicit interrupt pause without losing l
     await page.getByRole('button', { name: '继续发送队列', exact: true }).click();
     await expect.poll(() => f.prompts(session)).toEqual(['执行失败的任务', '失败后仍需保留的任务']);
     await submit(page, '中断后仍需保留的任务');
-    await page.locator('.chat-composer').getByRole('button', { name: '中断', exact: true }).click();
+    await page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true }).click();
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'interrupt').length).toBe(1);
     await f.signal(session, 'release-interrupt');
     await expect.poll(async () => (await snapshot(page, session.id)).queue?.paused).toBe(true);

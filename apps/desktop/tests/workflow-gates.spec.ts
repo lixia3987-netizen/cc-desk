@@ -53,6 +53,7 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
   await page.getByRole('button', { name: '工作流', exact: true }).click();
   const contextToggle = page.getByRole('button', { name: '上下文', exact: true });
   if (await contextToggle.getAttribute('aria-pressed') === 'true') await contextToggle.click();
+  await page.getByRole('button', { name: '新建工作流', exact: true }).click();
   await expect(page.getByLabel('工作流目标', { exact: true })).toBeVisible();
   return { page, session };
 }
@@ -72,6 +73,7 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
     await expect(page.getByLabel('分析与计划工具权限', { exact: true })).toHaveValue('read_only');
     await expect(page.getByLabel('实现与验证工具权限', { exact: true })).toHaveValue('standard');
     await expect(page.getByLabel('审查与交付工具权限', { exact: true })).toHaveValue('read_only');
+    await page.getByText('高级预算设置', { exact: true }).click();
     await page.getByLabel('模型请求总上限', { exact: true }).fill('6');
     await page.getByLabel('工具调用总上限', { exact: true }).fill('3');
     await page.getByLabel('执行总时长', { exact: true }).fill('1');
@@ -98,6 +100,7 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
     await expect(run.locator('> header .status-tag')).toHaveText('等待继续');
     expect(f.fixture.requests).toHaveLength(4);
     await run.getByRole('button', { name: '继续', exact: true }).click();
+    await page.getByRole('button', { name: /^已结束（/ }).click();
     await expect(run.locator('> header .status-tag')).toHaveText('已完成');
     await expect(run.locator('.workflow-stage.completed')).toHaveCount(3);
     const completed = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
@@ -131,6 +134,7 @@ test('workflow active-time budget survives manual gate waiting and a long automa
         { id: 'first', title: '第一阶段', instruction: '仅回复第一阶段结果。', gate: 'manual', toolPolicy: 'read_only' },
         { id: 'second', title: '第二阶段', instruction: '仅回复第二阶段结果。', dependsOn: ['first'], toolPolicy: 'read_only' },
       ] }), session.id);
+    await page.getByRole('button', { name: '返回列表并保留草稿', exact: true }).click();
     await page.evaluate(id => window.desktop.startWorkflow(id), created.id); await firstRequest;
     await page.evaluate(id => window.desktop.submitChat(id, '排队消息独立执行，不消耗工作流阶段预算', [], 'workflow-independent-queued-turn'), session.id);
     releaseFirst();
@@ -146,6 +150,7 @@ test('workflow active-time budget survives manual gate waiting and a long automa
     await run.getByRole('button', { name: '确认阶段产出', exact: true }).click();
     await expect(run.locator('> header .status-tag')).toHaveText('等待继续');
     await run.getByRole('button', { name: '继续', exact: true }).click();
+    await page.getByRole('button', { name: /^已结束（/ }).click();
     await expect(run.locator('> header .status-tag')).toHaveText('已完成');
     const complete = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
     expect(complete.usage?.modelRequests).toBe(2); expect(complete.usage?.activeMs).toBeLessThan(5000);
@@ -167,6 +172,7 @@ test('workflow UI retries preserve consumed model budget and never dispatch a do
         { id: 'first', title: '第一阶段', instruction: '仅回复第一阶段结果。', toolPolicy: 'read_only' },
         { id: 'second', title: '第二阶段', instruction: '仅回复第二阶段结果。', dependsOn: ['first'], toolPolicy: 'read_only' },
       ] }), session.id);
+    await page.getByRole('button', { name: '返回列表并保留草稿', exact: true }).click();
     await page.evaluate(id => window.desktop.startWorkflow(id), created.id);
     const run = page.locator('.workflow-run'); await expect(run.locator('> header .status-tag')).toHaveText('失败');
     expect(f.fixture.requests).toHaveLength(1);
@@ -191,6 +197,7 @@ test('real Native stage verification button refreshes its bound task and keeps s
     app = await f.launch(); const { page, session } = await configure(app, f.projectId, f.fixture.baseURL);
     const run = await create(page, 'native_task');
     await expect(run.locator('> header .status-tag')).toHaveText('等待验收');
+    await page.getByRole('button', { name: /^任务与验收 ·/ }).click();
     const taskPanel = page.getByRole('region', { name: 'Native 任务计划与验收', exact: true });
     await expect(taskPanel).toBeVisible();
     const previous = await page.evaluate(async id => (await window.desktop.chatSnapshot(id)).nativeTask!, session.id);

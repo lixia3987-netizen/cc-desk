@@ -1,4 +1,4 @@
-import { ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, Play, Square, X } from 'lucide-react';
+import { ChevronRight, Code2, Command, Folder, FolderOpen, GitBranch, Play, X } from 'lucide-react';
 import type { ExecutionDescriptor } from '../../shared/execution';
 import type { AppState, Session } from '../../shared/types';
 import { AttentionCenter } from '../AttentionCenter';
@@ -16,7 +16,7 @@ interface Props {
   start: (session: Session) => Promise<void>;
 }
 
-export function WorkspaceHeader({ state, active, descriptor, unavailable, readOnly, project, structured, activeBusy, busy, creating, onPalette, onAttention, openIde, perform, setNotice, start }: Props) {
+export function WorkspaceHeader({ state, active, descriptor, unavailable, readOnly, project, structured, activeBusy, busy, creating, onPalette, onAttention, openIde, perform, start }: Props) {
   return <header className={'topbar ' + (active ? 'session-header' : '')}>
     {active ? <div className="session-heading">
       <div className="breadcrumb">
@@ -44,14 +44,14 @@ export function WorkspaceHeader({ state, active, descriptor, unavailable, readOn
       </button>
       {(active || project) && <button className="secondary compact ide-open" aria-label="在 IDE 中打开" title={state.settings.idePath ? `使用 ${state.settings.idePath} 打开 ${active?.cwd ?? project?.path}` : '配置用于打开项目的 IDE 应用'} disabled={busy} onClick={openIde}>
         <Code2 size={16} />IDE</button>}
-      {active && <div className="session-actions">
-        {activeBusy ? <>
+      {active && !structured && <div className="session-actions">
+        {activeBusy &&
           <button className="secondary compact" disabled={readOnly || busy || active.status === 'stopping'} onClick={() => void perform(() => window.desktop.interruptSession(active.id))}>{active.status === 'stopping' ? '正在停止' : '中断任务'}</button>
-          <button className="secondary compact danger" disabled={readOnly || busy || active.status === 'stopping'} onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
-            <Square size={13} />停止</button>
-        </> : !structured && active.status === 'running' ? <button className="secondary compact" disabled={busy || readOnly} title="关闭等待输入的终端进程，稍后可以恢复" onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
-          <X size={13} />关闭终端</button> : <button className="primary compact" disabled={busy || active.archived || (!structured && (!!unavailable || (active.kind === 'agent' && active.started && active.status !== 'running' && !descriptor?.capabilities.resume)))} title={structured ? undefined : unavailable} onClick={() => { if (structured) { document.querySelector<HTMLTextAreaElement>('.chat-composer textarea')?.focus(); setNotice('输入任务并按 Enter 发送；Ctrl / ⌘ + Enter 换行。'); } else void start(active); }}>
-          <Play size={14} />{structured ? (active.started ? '继续输入' : '开始输入') : active.started ? '恢复会话' : '启动会话'}</button>}</div>}
+        }
+        {activeBusy || active.status === 'running' ? <details className="terminal-actions-menu"><summary aria-label="终端操作" title="终端进程操作">终端操作</summary>
+          <button className="secondary compact danger" disabled={busy || readOnly || active.status === 'stopping'} title="结束此终端及其子进程，稍后可以恢复" onClick={() => void perform(() => window.desktop.stopSession(active.id))}>
+            <X size={13} />关闭终端</button></details> : <button className="primary compact" disabled={busy || readOnly || active.archived || !!unavailable || (active.kind === 'agent' && active.started && !descriptor?.capabilities.resume)} title={unavailable} onClick={() => void start(active)}>
+          <Play size={14} />{active.started ? '恢复会话' : '启动会话'}</button>}</div>}
     </div>
   </header>;
 }

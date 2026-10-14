@@ -1,3 +1,4 @@
+import { openChatAssistance } from './helpers/chat-assistance';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -115,6 +116,8 @@ test('production Native utilityProcesses review concurrently with independent co
     await waitForChildren(started, page, session.id, fixture, f.data);
     expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     await expect.poll(async () => (await snapshot(page, session.id)).nativeAgents?.items.filter(child => child.status === 'running').length).toBe(2);
+    await expect(page.getByRole('region', { name: 'Native Agent 协作', exact: true })).toBeHidden();
+    await openChatAssistance(page, 'agents');
     await expect(page.getByRole('region', { name: 'Native Agent 协作', exact: true })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath('native-agent-review.png'), fullPage: true });
     barrier.release(); const result = await pending;
@@ -141,6 +144,7 @@ test('production Native utilityProcesses review concurrently with independent co
       expect(restored.nativeAgents?.items).toHaveLength(2);
       expect(restored.nativeAgents!.items.every(child => child.status === 'completed')).toBe(true);
       expect(new Set(restored.nativeAgents!.items.map(child => child.identity.runId))).toEqual(new Set(saved.map(child => child.identity.runId)));
+      await openChatAssistance(reopenedPage, 'agents');
       await expect(reopenedPage.getByRole('region', { name: 'Native Agent 协作', exact: true })).toBeVisible();
       expect(await childrenMetrics(reopened)).toBe(0);
     } finally { await closeNativeApp(reopened); }
@@ -264,9 +268,7 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       await expect(approval.getByRole('region', { name: '子 Agent 操作范围' })).toContainText(child.title);
       await expect(approval).toContainText(child.cwd);
       if (i === 0) {
-        await page.locator('.native-agent-panel > details > summary').click();
-        const steps = page.locator('.native-task-panel details[open] > summary').filter({ hasText: /^步骤与验收条件$/ });
-        if (await steps.count()) await steps.click();
+        await expect(page.getByRole('button', { name: /^子 Agent ·/ })).toHaveAttribute('aria-expanded', 'false');
         await approval.evaluate(element => element.scrollIntoView({ block: 'start' }));
         await page.screenshot({ path: test.info().outputPath('native-agent-child-approval.png'), fullPage: true });
       }
@@ -289,7 +291,7 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     expect((await execute('git', ['-C', f.cwd, 'rev-parse', 'HEAD'])).stdout.trim()).toBe(parentHead);
     expect((await execute('git', ['-C', f.cwd, 'branch', '--show-current'])).stdout.trim()).toBe('main');
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n');
-    await page.locator('.native-agent-panel > details > summary').click();
+    await openChatAssistance(page, 'agents');
     const childPane = page.locator(`[data-agent-id="${saved[0].childId}"]`);
     await childPane.locator(':scope > summary').click();
     await childPane.getByRole('link', { name: '隔离工作区', exact: true }).click();

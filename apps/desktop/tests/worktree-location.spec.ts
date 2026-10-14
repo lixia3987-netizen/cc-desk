@@ -148,6 +148,9 @@ test('worktree location: picker edits a draft; custom and project settings survi
     await settings.getByRole('button', { name: '选择 Worktree 目录', exact: true }).click();
     await expect(settings.getByLabel('统一 Worktree 根目录', { exact: true })).toHaveValue(f.customRoot);
     await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await expect(settings.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');
+    await settings.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(settings).toHaveCount(0);
 
     settings = await openSettings(page);
     await expect(settings.getByLabel('Worktree 位置', { exact: true })).toHaveValue('project');

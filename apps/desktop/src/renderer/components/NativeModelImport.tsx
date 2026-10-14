@@ -4,7 +4,12 @@ import type { NativeConnectionList } from '../../shared/native-connections';
 import { nativeConnectionsChanged } from '../useNativeConnectionReadiness';
 
 /** Configuration previews contain metadata only; credentials stay in the main process. */
-export function NativeModelImport({ disabled = false, onConnections }: { disabled?: boolean; onConnections(): void }) {
+export function NativeModelImport({ disabled = false, onConnections, onEditConnection, onUseConnection }: {
+  disabled?: boolean;
+  onConnections(): void;
+  onEditConnection?(id: string): void;
+  onUseConnection?(id: string): void;
+}) {
   const api = window.desktop.claudeModelImport;
   const connections = window.desktop.nativeConnections;
   const [data, setData] = useState<NativeConnectionList>();
@@ -85,8 +90,13 @@ export function NativeModelImport({ disabled = false, onConnections }: { disable
       <h4>模型连接已导入</h4>
       <p className="hint" role="status">{result.notice ?? '已从 Claude Code 配置创建自研 Agent 模型连接。'}</p>
       <p className="hint">模型：{result.connection.model}<br/>服务地址：{result.connection.baseURL}</p>
-      {!result.connection.ready && <p className="hint">此连接尚未就绪，请前往“模型连接”编辑并补充凭据。</p>}
-      <div className="settings-footer-actions"><button type="button" className="secondary" disabled={disabled || busy} onClick={onConnections}>前往模型连接</button></div>
+      <p className="hint">{!result.connection.credentialConfigured ? '凭据：尚未设置；请编辑此连接补充凭据。' : result.connection.auth.mode === 'memory' ? '凭据：仅本次应用内存有效，退出应用后失效；下次使用前需要重新设置。' : result.connection.auth.mode === 'encrypted' ? '凭据：已通过系统安全存储加密保存，可在下次启动后使用。' : '凭据：从主进程环境变量读取。'}</p>
+      {!result.connection.ready && <p className="hint">此连接尚未就绪，请编辑此连接完成配置后再用于新会话。</p>}
+      <div className="settings-footer-actions">
+        <button type="button" className="secondary" disabled={disabled || busy} onClick={() => onEditConnection ? onEditConnection(result.connection.id) : onConnections()}>编辑此连接</button>
+        {onUseConnection && <button type="button" className="primary" disabled={disabled || busy || !result.connection.ready} onClick={() => onUseConnection(result.connection.id)}>用于新会话</button>}
+        <button type="button" className="secondary" disabled={disabled || busy} onClick={onConnections}>前往模型连接</button>
+      </div>
     </section>}
     <p className="hint">Claude Code 仅作为配置来源。导入不会修改其配置，也不会读取 Claude 登录凭据。</p>
   </section>;

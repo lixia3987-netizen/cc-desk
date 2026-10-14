@@ -282,7 +282,7 @@ test('session experience: active tasks block worktree changes, completed workers
     await page.getByLabel('提示词编辑器', { exact: true }).fill('保持运行直到测试确认完成');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(1);
-    await expect(page.locator('.session-actions').getByRole('button', { name: '中断任务', exact: true })).toBeVisible();
+    await expect(page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true })).toBeVisible();
     const input = { projectId: f.project.id, title: '下一项独立任务', kind: 'agent' as const, mode: 'structured' as const, engineConfig: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'default' } }, isolated: true, worktreeName: 'next-task' };
     await expect(page.evaluate(input => window.desktop.createSession(input), input)).rejects.toThrow(/停止/);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(1);

@@ -54,10 +54,23 @@ const diagnosticMessages: Record<NativeConnectionTestCode, string> = {
 };
 
 /** Secrets remain in the uncontrolled password field only until the one write-only IPC. */
-export function NativeConnections({ disabled = false }: { disabled?: boolean }) {
+export interface NativeConnectionsProps {
+  disabled?: boolean;
+  active?: boolean;
+  editConnectionId?: string;
+  onDirtyChange?(dirty: boolean): void;
+  onEditHandled?(): void;
+}
+export function NativeConnections({ disabled = false, active = true, editConnectionId, onDirtyChange, onEditHandled }: NativeConnectionsProps) {
   const api = window.desktop.nativeConnections;
   const [data, setData] = useState<NativeConnectionList>();
   const [draft, setDraft] = useState<NativeConnectionInput>();
+  const [savedDraft, setSavedDraft] = useState('');
+  const ordinaryDrafts = useRef(new Map<string, { draft: NativeConnectionInput; saved: string }>());
+  const nameInput = useRef<HTMLInputElement>(null);
+  const activeView = useRef(active);
+  activeView.current = active;
+  const pendingAction = useRef(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -94,9 +107,18 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
       activeList.current = undefined;
     };
   }, [api, refresh]);
+  useEffect(() => {
+    if (active) return;
+    if (credential.current) credential.current.value = '';
+    const test = activeTest.current, list = activeList.current;
+    activeTest.current = undefined; activeList.current = undefined;
+    setTesting(undefined); setListing(undefined); setTestResults({}); setModelLists({});
+    if (test) void api?.cancelTest({ requestId: test.requestId }).catch(() => {});
+    if (list) void api?.cancelListModels({ requestId: list.requestId }).catch(() => {});
+  }, [active, api]);
   const capabilityBindings = data?.connections.filter(item => item.ready).map(item => JSON.stringify([item.id, item.revision, item.model])).join('|');
   useEffect(() => {
-    if (!api?.modelCapabilities || !data) return;
+    if (!active || !api?.modelCapabilities || !data) return;
     let cancelled = false;
     // Read one saved connection at a time; the main process bounds and caches
     // metadata GETs. This never populates or selects the available-model picker.
@@ -112,22 +134,60 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
       }
     })();
     return () => { cancelled = true; };
-  }, [api, capabilityBindings, capabilityRefresh]);
+  }, [active, api, capabilityBindings, capabilityRefresh]);
   const clearSecret = () => { if (credential.current) credential.current.value = ''; };
-  const select = (value?: NativeConnectionInput) => { clearSecret(); setDraft(value); setError(''); setNotice(''); };
+  const draftHasChanges = Boolean(draft && JSON.stringify(draft) !== savedDraft);
+  const anyDraftHasChanges = draftHasChanges || [...ordinaryDrafts.current.values()].some(item => JSON.stringify(item.draft) !== item.saved);
+  useEffect(() => { onDirtyChange?.(anyDraftHasChanges); }, [anyDraftHasChanges, onDirtyChange]);
+  useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
+  // Ordinary fields may survive navigation; write-only secrets never do.
+  useEffect(() => { clearSecret(); }, [draft]);
+  const select = (value?: NativeConnectionInput, preserveCurrent = false) => {
+    clearSecret();
+    if (draft) {
+      if (preserveCurrent) ordinaryDrafts.current.set(draft.id ?? '__new__', { draft, saved: savedDraft });
+      else ordinaryDrafts.current.delete(draft.id ?? '__new__');
+    }
+    const cached = value && ordinaryDrafts.current.get(value.id ?? '__new__');
+    if (value) ordinaryDrafts.current.delete(value.id ?? '__new__');
+    setDraft(cached?.draft ?? value); setSavedDraft(cached?.saved ?? (value ? JSON.stringify(value) : ''));
+    setError(''); setNotice('');
+  };
+  useEffect(() => {
+    if (!active || !editConnectionId || !data || !api) return;
+    let cancelled = false;
+    const open = (item?: NativeConnectionView) => {
+      if (cancelled) return;
+      if (item) select(editable(item), true);
+      else setError('要编辑的模型连接不存在，请刷新后重试。');
+      onEditHandled?.();
+    };
+    const existing = data.connections.find(value => value.id === editConnectionId);
+    if (existing) open(existing);
+    else void api.list().then(next => {
+      if (!cancelled) { setData(next); open(next.connections.find(value => value.id === editConnectionId)); }
+    }).catch(() => { if (!cancelled) { setError('读取模型连接失败，请刷新重试。'); onEditHandled?.(); } });
+    return () => { cancelled = true; };
+  }, [active, editConnectionId, Boolean(data), api, onEditHandled]);
+  useEffect(() => {
+    if (!active || !draft) return;
+    nameInput.current?.focus();
+    nameInput.current?.scrollIntoView({ block: 'nearest' });
+  }, [active, Boolean(draft), draft?.id]);
   const action = async (work: () => Promise<void>) => {
-    setBusy(true); setError(''); setNotice('');
+    if (!activeView.current || disabled || pendingAction.current) return;
+    pendingAction.current = true; setBusy(true); setError(''); setNotice('');
     try { await work(); await refresh(); window.dispatchEvent(new Event(nativeConnectionsChanged)); }
     catch (cause) { if (mounted.current) setError(cause instanceof Error ? cause.message : '连接操作失败，请重试。'); }
-    finally { if (mounted.current) setBusy(false); }
+    finally { pendingAction.current = false; if (mounted.current) setBusy(false); }
   };
   const save = () => {
     if (!draft) return;
     clearSecret();
-    void action(async () => { const next = await api.upsert(draft); if (mounted.current) { setDraft(editable(next)); setNotice('连接已保存。'); } });
+    void action(async () => { const next = await api.upsert(draft); if (mounted.current) { setDraft(editable(next)); setSavedDraft(JSON.stringify(editable(next))); setNotice(next.model ? '连接已保存。' : '连接已保存，尚未选择模型。设置凭据后可读取可用模型，也可手动填写模型 ID。'); } });
   };
   const saveCredential = () => {
-    if (!draft?.id || !draft.revision || draft.auth.mode === 'env' || !credential.current) return;
+    if (draftHasChanges || !draft?.id || !draft.revision || draft.auth.mode === 'env' || !credential.current) return;
     const input = credential.current;
     // Clear immediately after invoke, including synchronous bridge errors. Never keep a form draft.
     void action(async () => {
@@ -135,11 +195,11 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
       try { request = api.setCredential({ id: draft.id!, revision: draft.revision!, mode: draft.auth.mode as 'memory' | 'encrypted', secret: input.value }); }
       finally { input.value = ''; }
       const next = await request;
-      if (mounted.current) { setDraft(editable(next)); setNotice('凭据已设置，输入内容已清空。'); }
+      if (mounted.current) { setDraft(editable(next)); setSavedDraft(JSON.stringify(editable(next))); setNotice('凭据已设置，输入内容已清空。'); }
     });
   };
   const testConnection = (item: NativeConnectionView) => {
-    if (disabled || busy || activeTest.current || activeList.current || !item.ready) return;
+    if (!active || disabled || busy || activeTest.current || activeList.current || draftHasChanges || !item.ready) return;
     clearSecret(); setError(''); setNotice('');
     const current = { id: item.id, requestId: crypto.randomUUID() };
     activeTest.current = current; setTesting(current);
@@ -165,7 +225,7 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     });
   };
   const loadModels = (item: NativeConnectionView) => {
-    if (disabled || busy || activeList.current || activeTest.current || !item.ready) return;
+    if (!active || disabled || busy || activeList.current || activeTest.current || draftHasChanges || !item.enabled || !item.credentialConfigured) return;
     clearSecret(); setError(''); setNotice('');
     const current = { id: item.id, requestId: crypto.randomUUID() };
     activeList.current = current; setListing(current);
@@ -195,70 +255,79 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
     });
   };
   const switchModel = (item: NativeConnectionView) => {
+    if (locked || draftHasChanges) return;
     const entry = modelLists[item.id];
     if (!entry || entry.result.revision !== item.revision || entry.result.code !== 'ok' || !entry.result.models?.some(model => model.id === entry.selected) || entry.selected === item.model) return;
     clearSecret();
     void action(async () => {
       const next = await api.upsert({ ...editable(item), model: entry.selected });
       if (mounted.current) {
-        if (draft?.id === item.id) setDraft(editable(next));
+        if (draft?.id === item.id) { setDraft(editable(next)); setSavedDraft(JSON.stringify(editable(next))); }
         setNotice('默认模型已切换为 ' + next.model + '。已有对话切换模型需新建会话；单独指定的会话模型保持原选择。');
       }
     });
   };
-  const draftHasChanges = Boolean(draft && (!draft.id || !data?.connections.some(item => item.id === draft.id && JSON.stringify(editable(item)) === JSON.stringify(draft))));
-  const locked = disabled || busy || Boolean(testing) || Boolean(listing) || Boolean(data?.error);
-  return <section className="settings-section native-connections" aria-label="Native 模型连接">
+  const locked = !active || disabled || busy || Boolean(testing) || Boolean(listing) || Boolean(data?.error);
+  const renderModels = (item: NativeConnectionView) => {
+    const modelList = modelLists[item.id]?.result.revision === item.revision ? modelLists[item.id] : undefined;
+    return <>{modelList && <div className="model-list-result">
+        {modelList.result.code === 'ok' && modelList.result.models?.length ? <>
+          <div className="model-list-picker"><label>可用模型<select aria-label="可用模型" value={modelList.selected} disabled={locked || draftHasChanges} onChange={event => {
+            const selected = event.target.value;
+            setModelLists(results => ({ ...results, [item.id]: { ...results[item.id], selected } }));
+          }}><option value="">请选择模型</option>{modelList.result.models.map(model => <option key={model.id} value={model.id}>{model.name && model.name !== model.id ? model.name + ' · ' : ''}{model.id}</option>)}</select></label><button type="button" className="primary compact" disabled={locked || draftHasChanges || !modelList.selected || modelList.selected === item.model} onClick={() => switchModel(item)}>切换模型</button></div>
+          <p className="hint">读取到 {modelList.result.models.length} 个模型。{!item.model ? '请选择模型完成配置。' : !modelList.result.models.some(model => model.id === item.model) ? '当前模型未在列表中，原配置已保留。' : ''}切换保存为此连接的默认模型，已有对话更换模型需新建会话。</p>
+        </> : <p className="hint" role="status">{modelList.result.code === 'ok' ? '服务返回空模型列表，原配置已保留，可手动填写模型 ID。' : modelListMessages[modelList.result.code]}{modelList.result.httpStatus !== undefined && <> HTTP {modelList.result.httpStatus}。</>}</p>}
+      </div>}</>;
+  };
+  const renderTestResult = (item: NativeConnectionView) => <>{testResults[item.id]?.revision === item.revision && <p className="hint native-connection-test-result" role="status">
+        {diagnosticMessages[testResults[item.id].result.code]} 耗时 {testResults[item.id].result.durationMs} ms。
+        {testResults[item.id].result.estimatedCostUSD !== undefined && <> 按用户价格估算 ${testResults[item.id].result.estimatedCostUSD!.toFixed(6)}。</>}
+        {testResults[item.id].result.httpStatus !== undefined && <> HTTP {testResults[item.id].result.httpStatus}。</>}
+        {testResults[item.id].result.usage ? <> 服务报告用量：输入 {testResults[item.id].result.usage?.inputTokens ?? '未提供'}，输出 {testResults[item.id].result.usage?.outputTokens ?? '未提供'}，合计 {testResults[item.id].result.usage?.totalTokens ?? '未提供'} tokens。</> : <> 服务未提供用量。</>}
+      </p>}</>;
+  const savedConnection = draft?.id ? data?.connections.find(item => item.id === draft.id) : undefined;
+  if (!active) return null;
+  return <section className="settings-section native-connections" aria-label="Native 模型连接" onKeyDown={event => {
+    if (event.key === 'Enter' && event.target instanceof HTMLInputElement) event.preventDefault();
+  }}>
     <div className="settings-card-heading"><h4>自研 Agent 模型连接</h4><button type="button" className="secondary compact" disabled={locked || !api} onClick={() => void action(refresh)}>刷新</button></div>
     <p className="settings-description">管理自研 Agent 的模型连接，手动新增或编辑服务地址、模型与凭据。</p>
     {!api && <p role="status" className="hint">当前桌面版本尚未提供模型连接管理。</p>}
     {data?.storage.reason && <p className="hint">{data.storage.reason}</p>}
     {(error || data?.error) && <p className="settings-error" role="alert">{error || data?.error}</p>}
     {notice && <p role="status" className="hint">{notice}</p>}
-    <div className="model-connection-actions">
+    {!draft && <div className="model-connection-actions">
       {api && <button type="button" className="primary" disabled={locked || !data} onClick={() => select(emptyConnection())}>新增模型连接</button>}
-    </div>
-    {data?.connections.map(item => {
-      const modelList = modelLists[item.id]?.result.revision === item.revision ? modelLists[item.id] : undefined;
+    </div>}
+    {!draft && data?.connections.map(item => {
       const capability = modelCapabilities[item.id]?.revision === item.revision && modelCapabilities[item.id]?.model === item.model ? modelCapabilities[item.id] : undefined;
       return <div className={'connection-box model-connection-card ' + (item.ready ? 'connected' : '')} key={item.id}>
       <div className="model-connection-title"><strong>{item.name}</strong><span>{item.enabled ? item.ready ? '就绪' : '未就绪' : '已禁用'}</span></div>
-      <p>{item.model} · {protocolNames[item.protocol]}</p>
+      <p>{item.model || '尚未选择模型'} · {protocolNames[item.protocol]}</p>
       <p className="hint"><ModelCapabilityInfo capabilities={capability?.capabilities} conservative={capability?.conservative}/></p>
       <p className="model-connection-endpoint">{item.baseURL}</p>
       <details className="model-connection-metadata"><summary>连接信息</summary><small>连接 ID：{item.id}<br/>修订：{item.revision}<br/>认证：{item.auth.mode === 'env' ? '环境变量 ' + item.auth.variable : item.auth.mode === 'memory' ? '仅本次内存' : '系统加密保存'}{item.credentialConfigured ? '' : ' · 尚未设置凭据'}</small></details>
       {item.error && <p className="hint">{item.error}</p>}
       <div className="settings-footer-actions">
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => select(editable(item))}>编辑</button>
-        <button type="button" className="secondary compact" disabled={locked || !item.ready || draftHasChanges} onClick={() => loadModels(item)}>读取可用模型</button>
+        <button type="button" className="secondary compact" disabled={locked} onClick={() => select(editable(item), true)}>编辑</button>
+        <button type="button" className="secondary compact" disabled={locked || !item.enabled || !item.credentialConfigured || draftHasChanges} onClick={() => loadModels(item)}>读取可用模型</button>
         {listing?.id === item.id && <button type="button" className="secondary compact" onClick={cancelList}>取消读取模型</button>}
         <button type="button" className="secondary compact" disabled={locked || !item.ready} onClick={() => testConnection(item)}>测试连接（可能计费）</button>
         {testing?.id === item.id && <button type="button" className="secondary compact" onClick={cancelTest}>取消连接测试</button>}
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { const next = await api.upsert({ ...editable(item), enabled: !item.enabled }); if (draft?.id === next.id) setDraft(editable(next)); }); }}>{item.enabled ? '禁用' : '启用'}</button>
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { await api.remove({ id: item.id, revision: item.revision }); if (draft?.id === item.id) setDraft(undefined); }); }}>删除</button>
+        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { await api.upsert({ ...editable(item), enabled: !item.enabled }); }); }}>{item.enabled ? '禁用' : '启用'}</button>
+        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { await api.remove({ id: item.id, revision: item.revision }); ordinaryDrafts.current.delete(item.id); }); }}>删除</button>
       </div>
       {listing?.id === item.id && <p className="hint" role="status">正在从服务地址读取可用模型…</p>}
-      {modelList && <div className="model-list-result">
-        {modelList.result.code === 'ok' && modelList.result.models?.length ? <>
-          <div className="model-list-picker"><label>可用模型<select aria-label="可用模型" value={modelList.selected} disabled={locked || draftHasChanges} onChange={event => {
-            const selected = event.target.value;
-            setModelLists(results => ({ ...results, [item.id]: { ...results[item.id], selected } }));
-          }}><option value="">请选择模型</option>{modelList.result.models.map(model => <option key={model.id} value={model.id}>{model.name && model.name !== model.id ? model.name + ' · ' : ''}{model.id}</option>)}</select></label><button type="button" className="primary compact" disabled={locked || draftHasChanges || !modelList.selected || modelList.selected === item.model} onClick={() => switchModel(item)}>切换模型</button></div>
-          <p className="hint">读取到 {modelList.result.models.length} 个模型。{!modelList.result.models.some(model => model.id === item.model) && '当前模型未在列表中，原配置已保留。'}切换保存为此连接的默认模型，已有对话更换模型需新建会话。</p>
-        </> : <p className="hint" role="status">{modelList.result.code === 'ok' ? '服务返回空模型列表，原配置已保留，可手动填写模型 ID。' : modelListMessages[modelList.result.code]}{modelList.result.httpStatus !== undefined && <> HTTP {modelList.result.httpStatus}。</>}</p>}
-      </div>}
+      {renderModels(item)}
       {testing?.id === item.id && <p className="hint" role="status">正在测试 所选协议文本流…</p>}
-      {testResults[item.id]?.revision === item.revision && <p className="hint native-connection-test-result" role="status">
-        {diagnosticMessages[testResults[item.id].result.code]} 耗时 {testResults[item.id].result.durationMs} ms。
-        {testResults[item.id].result.estimatedCostUSD !== undefined && <> 按用户价格估算 ${testResults[item.id].result.estimatedCostUSD!.toFixed(6)}。</>}
-        {testResults[item.id].result.httpStatus !== undefined && <> HTTP {testResults[item.id].result.httpStatus}。</>}
-        {testResults[item.id].result.usage ? <> 服务报告用量：输入 {testResults[item.id].result.usage?.inputTokens ?? '未提供'}，输出 {testResults[item.id].result.usage?.outputTokens ?? '未提供'}，合计 {testResults[item.id].result.usage?.totalTokens ?? '未提供'} tokens。</> : <> 服务未提供用量。</>}
-      </p>}
+      {renderTestResult(item)}
     </div>; })}
     {api && !data?.connections.length && !data?.error && !draft && <p className="model-connections-empty">还没有模型连接。可手动新增，或前往“模型导入”读取 Claude Code 配置。</p>}
-    {draft && <div className="native-connection-editor">
+    {draft && <div className="native-connection-editor" aria-label="模型连接编辑">
       <h4>{draft.id ? '编辑模型连接' : '新增模型连接'}</h4>
-      <label>连接名称<input aria-label="Native 连接名称" value={draft.name} maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, name: event.target.value })}/></label>
+      <p className="hint" role="status">{draftHasChanges ? '连接信息有未保存修改；请先保存，再设置凭据或读取模型。' : savedConnection ? '连接信息已保存 · ' + (savedConnection.ready ? '就绪' : savedConnection.model ? '待设置凭据' : '待选择模型') : '填写名称、服务地址和认证方式后可先保存，模型可稍后选择。'}</p>
+      <label>连接名称<input ref={nameInput} aria-label="Native 连接名称" value={draft.name} maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, name: event.target.value })}/></label>
       <label>模型协议<select aria-label="Native 模型协议" value={draft.protocol} disabled={locked} onChange={event => {
         const protocol = event.target.value as NativeConnectionInput['protocol'];
         setDraft({ ...draft, protocol, authHeader: protocol === 'anthropic' ? draft.authHeader ?? 'x-api-key' : undefined,
@@ -268,10 +337,10 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
       <p className="hint">地址填写 API 基础路径；{draft.protocol === 'anthropic' ? '请求 /v1/messages（已有 /v1 时只追加 /messages）' : '将追加 ' + (draft.protocol === 'responses' ? '/responses' : '/chat/completions')}。已有对话更改模型、协议或服务地址后需新建会话。</p>
       {draft.protocol === 'anthropic' && <label>Anthropic 认证头<select aria-label="Anthropic 认证头" value={draft.authHeader ?? 'x-api-key'} disabled={locked} onChange={event => setDraft({ ...draft, authHeader: event.target.value as 'x-api-key' | 'authorization' })}><option value="x-api-key">API Key（x-api-key）</option><option value="authorization">Auth Token（Bearer）</option></select></label>}
       <label>服务地址<input aria-label="Native 服务地址" type="url" autoComplete="off" spellCheck={false} value={draft.baseURL} maxLength={2048} disabled={locked} onChange={event => setDraft({ ...draft, baseURL: event.target.value })}/></label>
-      <label>默认模型<input aria-label="Native 默认模型" value={draft.model} placeholder="填写服务提供的模型 ID" maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, model: event.target.value })}/></label>
-      <p className="hint">保存连接并设置凭据后，可在连接卡片读取可用模型。{draftHasChanges && draft.id ? '请先保存或关闭当前编辑，再读取或切换模型。' : ''}</p>
+      <label>默认模型<input aria-label="Native 默认模型" value={draft.model} placeholder="可稍后读取模型列表，也可填写模型 ID" maxLength={200} disabled={locked} onChange={event => setDraft({ ...draft, model: event.target.value })}/></label>
+      <p className="hint">模型可留空保存；未选择模型的连接不能发送消息或测试文本响应。</p>
       <label>认证方式<select aria-label="Native 认证方式" value={draft.auth.mode} disabled={locked} onChange={event => { clearSecret(); setDraft({ ...draft, auth: event.target.value === 'env' ? { mode: 'env', variable: draft.protocol === 'anthropic' ? draft.authHeader === 'authorization' ? 'ANTHROPIC_AUTH_TOKEN' : 'ANTHROPIC_API_KEY' : 'OPENAI_API_KEY' } : { mode: event.target.value as 'memory' | 'encrypted' } }); }}><option value="env">环境变量名称（密钥不经过界面）</option><option value="memory">仅本次应用内存</option><option value="encrypted" disabled={!data?.storage.persistentAvailable}>系统安全存储加密保存{data?.storage.persistentAvailable ? '' : '（不可用）'}</option></select></label>
-      {draft.auth.mode === 'env' ? <label>环境变量名称<input aria-label="Native 环境变量名称" autoComplete="off" spellCheck={false} value={draft.auth.variable} maxLength={128} disabled={locked} onChange={event => setDraft({ ...draft, auth: { mode: 'env', variable: event.target.value } })}/></label> : <p className="hint">保存连接后单独设置凭据；既有凭据不回显。</p>}
+      {draft.auth.mode === 'env' ? <label>环境变量名称<input aria-label="Native 环境变量名称" autoComplete="off" spellCheck={false} value={draft.auth.variable} maxLength={128} disabled={locked} onChange={event => setDraft({ ...draft, auth: { mode: 'env', variable: event.target.value } })}/></label> : <p className="hint">保存连接后单独设置凭据；既有凭据不回显。{draft.auth.mode === 'memory' ? '本次应用内存凭据在退出后失效。' : '凭据由系统安全存储加密保存。'}</p>}
       <details className="model-config-details model-connection-advanced" key={draft.id ?? 'new'}>
       <summary>高级设置（价格与本地代理）</summary>
       <label className="checkbox"><input aria-label="填写模型价格" type="checkbox" checked={Boolean(draft.pricing)} disabled={locked} onChange={event => setDraft({ ...draft, pricing: event.target.checked ? { model: draft.model, inputUSDPerMillion: 0, outputUSDPerMillion: 0 } : undefined })}/><span>自行填写模型价格（可选，仅估算）</span></label>
@@ -283,11 +352,24 @@ export function NativeConnections({ disabled = false }: { disabled?: boolean }) 
       </fieldset>}
       <label className="checkbox"><input type="checkbox" checked={draft.allowLoopbackHttp} disabled={locked} onChange={event => setDraft({ ...draft, allowLoopbackHttp: event.target.checked })}/><span>明确允许本地回环 HTTP（localhost、127.0.0.1 或 ::1）</span></label>
       </details>
-      <div className="settings-footer-actions"><button type="button" className="secondary" disabled={locked} onClick={() => select()}>关闭编辑</button><button type="button" className="primary" disabled={locked} onClick={save}>保存模型连接</button></div>
       {draft.id && draft.auth.mode !== 'env' && <div>
-        <label>新的 API Key<input ref={credential} aria-label="Native 新的 API Key" type="password" autoComplete="off" spellCheck={false} maxLength={16384} disabled={locked}/></label>
-        <button type="button" className="secondary" disabled={locked || (draft.auth.mode === 'encrypted' && !data?.storage.persistentAvailable)} onClick={saveCredential}>设置凭据并清空输入</button>
+        <label>新的 API Key<input ref={credential} aria-label="Native 新的 API Key" type="password" autoComplete="off" spellCheck={false} maxLength={16384} disabled={locked || draftHasChanges}/></label>
+        <button type="button" className="secondary" disabled={locked || draftHasChanges || (draft.auth.mode === 'encrypted' && !data?.storage.persistentAvailable)} onClick={saveCredential}>设置凭据并清空输入</button>
       </div>}
+      {savedConnection && <div className="connection-editor-discovery">
+        <p className="hint">{savedConnection.error}</p>
+        <div className="settings-footer-actions">
+          <button type="button" className="secondary compact" disabled={locked || draftHasChanges || !savedConnection.enabled || !savedConnection.credentialConfigured} onClick={() => loadModels(savedConnection)}>读取可用模型</button>
+          {listing && <button type="button" className="secondary compact" onClick={cancelList}>取消读取模型</button>}
+          <button type="button" className="secondary compact" disabled={locked || draftHasChanges || !savedConnection.ready} onClick={() => testConnection(savedConnection)}>测试连接（可能计费）</button>
+          {testing && <button type="button" className="secondary compact" onClick={cancelTest}>取消连接测试</button>}
+        </div>
+        {listing && <p className="hint" role="status">正在从服务地址读取可用模型…</p>}
+        {renderModels(savedConnection)}
+        {testing && <p className="hint" role="status">正在测试所选协议文本流…</p>}
+        {renderTestResult(savedConnection)}
+      </div>}
+      <div className="settings-footer-actions native-connection-editor-actions"><button type="button" className="secondary" title={draftHasChanges ? '返回连接列表并放弃此连接未保存的修改' : '返回连接列表'} disabled={locked} onClick={() => select()}>关闭编辑</button><button type="button" className="primary" disabled={locked || !draftHasChanges} onClick={save}>保存模型连接</button></div>
     </div>}
     <details className="model-config-details model-connection-help"><summary>连接与测试说明</summary>
       <p className="hint">支持 Responses、Chat Completions 和 Anthropic Messages。连接与凭据立即保存；运行中的连接需停止后修改，已有会话引用的连接可以禁用，替换引用后才能删除。</p>

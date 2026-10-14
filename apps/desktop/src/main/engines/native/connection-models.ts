@@ -46,7 +46,7 @@ export class NativeConnectionModelCatalog {
     if (previous) return previous.input.id === value.id && previous.input.revision === value.revision ? previous.promise : result('configuration');
     if (this.active) return result('busy');
     let connection: ResolvedNativeConnection;
-    try { connection = this.connections.resolveForDiagnostic({ id: value.id, revision: value.revision }); }
+    try { connection = this.connections.resolveForModelList({ id: value.id, revision: value.revision }); }
     catch { return result('configuration'); }
     const entry: ModelListRequest = { input: value, controller: new AbortController(), promise: result('busy') };
     this.active = entry;

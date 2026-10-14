@@ -45,7 +45,7 @@ type PanelName = typeof panelNames[number];
 const panel = (page: Page, name: PanelName) => page.getByRole('region', { name: `${name}面板`, exact: true });
 const panelToggle = (page: Page, name: PanelName) => page.getByRole('button', { name, exact: true });
 const dock = (page: Page) => page.locator('#session-inspector .inspector-dock');
-const openPanelsKey = 'cc-desk.inspector-open-panels';
+const openPanelsKey = 'cc-desk.inspector-selected-panel';
 const panelIds: Record<PanelName, string> = { 上下文: 'context', 变更: 'git', 工作流: 'workflows', 诊断: 'diagnostics' };
 
 async function expectOpenPanels(page: Page, open: readonly PanelName[]) {
@@ -60,50 +60,6 @@ async function expectOpenPanels(page: Page, open: readonly PanelName[]) {
   }
   if (open.length) await expect(dock(page)).toBeVisible();
   else await expect(dock(page)).toBeHidden();
-}
-
-// Assert visual opening order, including the third panel spanning the right column.
-async function expectPanelGeometry(page: Page, open: readonly PanelName[], columns: 1 | 2) {
-  const boxes = await Promise.all(open.map(name => panel(page, name).boundingBox()));
-  expect(boxes.every(Boolean)).toBe(true);
-  const first = boxes[0]!;
-  for (const box of boxes) expect(Math.abs(box!.width - first.width)).toBeLessThan(2);
-  if (columns === 2) {
-    const geometry = Math.abs(first.width - 320) >= 0.5 ? await page.evaluate(() => {
-      const container = document.querySelector<HTMLElement>('.session-content')!;
-      const inspector = document.querySelector<HTMLElement>('#session-inspector')!;
-      const dock = inspector.querySelector<HTMLElement>('.inspector-dock')!;
-      const styles = getComputedStyle(dock);
-      return {
-        viewport: { width: innerWidth, height: innerHeight, availableHeight: screen.availHeight, devicePixelRatio },
-        content: container.getBoundingClientRect().toJSON(), inspector: inspector.getBoundingClientRect().toJSON(),
-        dock: { offsetWidth: dock.offsetWidth, clientWidth: dock.clientWidth, offsetHeight: dock.offsetHeight,
-          clientHeight: dock.clientHeight, scrollWidth: dock.scrollWidth, scrollHeight: dock.scrollHeight, scrollTop: dock.scrollTop },
-        css: Object.fromEntries(['width', 'height', 'grid-template-columns', 'grid-template-rows', 'column-gap', 'row-gap',
-          'overflow-x', 'overflow-y', 'scrollbar-gutter'].map(property => [property, styles.getPropertyValue(property)])),
-        panels: Array.from(inspector.querySelectorAll<HTMLElement>('.inspector-panel:not([hidden])'))
-          .map(element => ({ id: element.dataset.panel, ...element.getBoundingClientRect().toJSON() })),
-      };
-    }) : undefined;
-    expect(first.width, geometry ? JSON.stringify({ measuredPanels: boxes, geometry }, null, 2) : undefined).toBeCloseTo(320, 0);
-    expect(Math.abs(boxes[1]!.x - first.x)).toBeLessThan(2);
-    expect(boxes[1]!.y).toBeGreaterThanOrEqual(first.y + first.height - 1);
-    expect(boxes[2]!.x).toBeGreaterThanOrEqual(first.x + first.width - 1);
-    expect(Math.abs(boxes[2]!.y - first.y)).toBeLessThan(2);
-    if (open.length === 3) {
-      expect(Math.abs(boxes[2]!.height - (boxes[1]!.y + boxes[1]!.height - first.y))).toBeLessThan(2);
-    } else {
-      expect(Math.abs(boxes[3]!.x - boxes[2]!.x)).toBeLessThan(2);
-      expect(Math.abs(boxes[3]!.y - boxes[1]!.y)).toBeLessThan(2);
-      for (const box of boxes) expect(Math.abs(box!.height - first.height)).toBeLessThan(2);
-    }
-  } else {
-    for (let index = 1; index < boxes.length; index++) {
-      expect(Math.abs(boxes[index]!.x - first.x)).toBeLessThan(2);
-      expect(boxes[index]!.y).toBeGreaterThanOrEqual(boxes[index - 1]!.y + boxes[index - 1]!.height - 1);
-    }
-    if (open.length === 1) expect(Math.abs(first.height - (await dock(page).boundingBox())!.height)).toBeLessThan(2);
-  }
 }
 
 test('inspector: keyboard and header close preserve drafts and mounted content, and a closed dock survives session changes and restart', async ({}, testInfo) => {
@@ -160,7 +116,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
       await expect(page.getByRole('heading', { name: session.title, exact: true })).toBeVisible();
       await expectOpenPanels(page, []);
     }
-    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('[]');
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('null');
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('这段提示词还没有发送。');
     await app.close();
     app = await f.launch();
@@ -170,7 +126,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expectOpenPanels(page, []);
     await panelToggle(page, '上下文').click();
     await expectOpenPanels(page, ['上下文']);
-    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('["context"]');
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('"context"');
     await page.reload();
     await expectOpenPanels(page, ['上下文']);
     await expect(page.locator('.error-banner')).toHaveCount(0);
@@ -178,108 +134,52 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
   } finally { await app.close(); await f.dispose(); }
 });
 
-test('inspector: panels open vertically before adding an equal-width column, preserve edits while resizing, and restore opening order', async ({}, testInfo) => {
-  const f = await workspace();
-  let app = await f.launch();
+test('inspector: one detail at a time preserves workflow drafts and width across switching and restart', async ({}, testInfo) => {
+  const f = await workspace(); let app = await f.launch();
   try {
     let page = await app.firstWindow();
     await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000));
-    await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width).toBeGreaterThanOrEqual(1100);
-    await expectOpenPanels(page, ['上下文']);
-    await expectPanelGeometry(page, ['上下文'], 1);
-    await expect(page.getByLabel('会话模型', { exact: true })).toHaveCount(0);
-    const modelNode = (await page.getByRole('button', { name: '会话设置', exact: true }).elementHandle())!;
-    await panelToggle(page, '工作流').click();
-    await expectOpenPanels(page, ['上下文', '工作流']);
-    await expectPanelGeometry(page, ['上下文', '工作流'], 1);
-    await page.getByLabel('工作流目标', { exact: true }).fill('同时打开面板和重启之后仍然保留。');
-    await page.getByLabel('最大尝试次数', { exact: true }).selectOption('3');
-    const workflow = page.getByLabel('工作流目标', { exact: true });
-    const workflowNode = (await workflow.elementHandle())!;
-    await panelToggle(page, '变更').click();
-    await expectOpenPanels(page, ['上下文', '工作流', '变更']);
-    await expectPanelGeometry(page, ['上下文', '工作流', '变更'], 2);
-    await page.screenshot({ path: testInfo.outputPath('three-panels-wide.png') });
-    await panelToggle(page, '诊断').click();
-    const all: PanelName[] = ['上下文', '工作流', '变更', '诊断'];
-    await expectOpenPanels(page, all);
-    await expectPanelGeometry(page, all, 2);
-    await workflow.focus();
-    for (const width of [980, 1600]) {
-      await app.evaluate(({ BrowserWindow }, value) => BrowserWindow.getAllWindows()[0].setSize(value, 1000), width);
-      await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width >= 1100).toBe(width === 1600);
-      await expectOpenPanels(page, all);
-      await expectPanelGeometry(page, all, width === 1600 ? 2 : 1);
-      await expect(workflow).toBeFocused();
-      await expect(workflow).toHaveValue('同时打开面板和重启之后仍然保留。');
-      await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
-      expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
-      expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    const chatWidth = (await page.locator('.chat-pane').boundingBox())!.width;
+    await panelToggle(page, '工作流').click(); await expectOpenPanels(page, ['工作流']);
+    await expect(page.getByLabel('工作流目标')).toBeHidden();
+    await page.getByRole('button', { name: '新建工作流', exact: true }).click();
+    await page.getByLabel('工作流目标').fill('切换详情和重新启动后保留草稿。');
+    await page.getByLabel('最大尝试次数').selectOption('3');
+    const node = (await page.getByLabel('工作流目标').elementHandle())!;
+    for (const name of ['变更', '诊断', '上下文'] as const) {
+      await panelToggle(page, name).click(); await expectOpenPanels(page, [name]);
+      expect(await node.evaluate(element => element.isConnected)).toBe(true);
+      expect((await page.locator('.chat-pane').boundingBox())!.width).toBeGreaterThanOrEqual(chatWidth - 2);
     }
-    await page.evaluate(async () => {
-      const { state } = await window.desktop.snapshot();
-      await window.desktop.saveSettings({ ...state.settings, uiFontSize: 20 });
-    });
-    await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-font-scale')))).toBeCloseTo(20 / 13, 5);
-    const outsideContent = await page.evaluate(() => innerWidth - document.querySelector('.session-content')!.getBoundingClientRect().width);
-    for (const contentWidth of [1099, 1100]) {
-      await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setContentSize(width, 1000), Math.round(outsideContent + contentWidth));
-      await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width).toBe(contentWidth);
-      await expectPanelGeometry(page, all, contentWidth === 1100 ? 2 : 1);
-      await expect(workflow).toBeFocused();
-      await expect(workflow).toHaveValue('同时打开面板和重启之后仍然保留。');
-      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    }
-    await page.screenshot({ path: testInfo.outputPath('four-panels-wide.png') });
-    await page.keyboard.press('Escape');
-    await expectOpenPanels(page, all);
-    await page.keyboard.press('Shift+Escape');
-    await expectOpenPanels(page, ['上下文', '变更', '诊断']);
-    await expect(panelToggle(page, '工作流')).toBeFocused();
-    expect(await workflowNode.evaluate(element => element.isConnected)).toBe(true);
-    await expectPanelGeometry(page, ['上下文', '变更', '诊断'], 2);
-    await panelToggle(page, '工作流').click();
-    await expectOpenPanels(page, ['上下文', '变更', '诊断', '工作流']);
-    await expectPanelGeometry(page, ['上下文', '变更', '诊断', '工作流'], 2);
-    await expect(workflow).toHaveValue('同时打开面板和重启之后仍然保留。');
-    await expect(page.getByLabel('最大尝试次数', { exact: true })).toHaveValue('3');
-    expect(await workflowNode.evaluate(element => element === document.querySelector('[aria-label="工作流目标"]'))).toBe(true);
-    await page.getByRole('button', { name: '关闭上下文面板', exact: true }).click();
-    await expectOpenPanels(page, ['变更', '诊断', '工作流']);
-    await expect(panelToggle(page, '上下文')).toBeFocused();
-    await modelNode.evaluate(element => (element as HTMLElement).focus());
-    await expect(panelToggle(page, '上下文')).toBeFocused();
-    await panelToggle(page, '上下文').click();
-    await expect(page.getByRole('button', { name: '会话设置', exact: true })).toBeVisible();
-    expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
-    await panelToggle(page, '变更').click();
-    const remaining: PanelName[] = ['诊断', '工作流', '上下文'];
-    await expectOpenPanels(page, remaining);
-    await expectPanelGeometry(page, remaining, 2);
-    for (const session of [f.second, f.first]) {
-      await page.locator('.session-row').filter({ hasText: session.title }).click();
-      await expect(page.getByRole('heading', { name: session.title, exact: true })).toBeVisible();
-      await expectOpenPanels(page, remaining);
-    }
-    await expect(workflow).toHaveValue('同时打开面板和重启之后仍然保留。');
-    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('["diagnostics","workflows","context"]');
-    await app.close();
-    app = await f.launch();
-    page = await app.firstWindow();
-    await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
-    await expectOpenPanels(page, remaining);
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1600, 1000));
-    await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width).toBeGreaterThanOrEqual(1100);
-    await expectPanelGeometry(page, remaining, 2);
-    await expect(page.getByLabel('工作流目标', { exact: true })).toHaveValue('同时打开面板和重启之后仍然保留。');
-    await expect(page.getByLabel('最大尝试次数', { exact: true })).toHaveValue('3');
+    await panelToggle(page, '工作流').click(); await expect(page.getByLabel('工作流目标')).toHaveValue('切换详情和重新启动后保留草稿。');
+    const resize = page.getByRole('separator', { name: '调整会话详情宽度' });
+    await resize.focus(); await page.keyboard.press('ArrowLeft');
+    await expect(resize).toHaveAttribute('aria-valuenow', '360');
+    await page.keyboard.press('Home'); await expect(resize).toHaveAttribute('aria-valuenow', '260');
+    const before = (await panel(page, '工作流').boundingBox())!.width;
+    const handle = (await resize.boundingBox())!;
+    await page.mouse.move(handle.x + 2, handle.y + 60); await page.mouse.down();
+    await page.mouse.move(handle.x - 58, handle.y + 60); await page.mouse.up();
+    await expect.poll(async () => (await panel(page, '工作流').boundingBox())!.width).toBeGreaterThan(before + 50);
+    const savedWidth = await resize.getAttribute('aria-valuenow');
+    await page.getByRole('button', { name: '返回列表并保留草稿' }).click();
+    await expect(page.getByLabel('工作流目标')).toBeHidden();
+    await page.getByRole('button', { name: '新建工作流', exact: true }).click();
+    await expect(page.getByLabel('工作流目标')).toHaveValue('切换详情和重新启动后保留草稿。');
+    await page.screenshot({ path: testInfo.outputPath('single-detail-workflow.png') });
+    await app.close(); app = await f.launch(); page = await app.firstWindow();
+    await expectOpenPanels(page, ['工作流']);
+    await expect(page.getByRole('separator', { name: '调整会话详情宽度' })).toHaveAttribute('aria-valuenow', savedWidth!);
+    await expect(page.getByLabel('工作流目标')).toBeHidden();
+    await page.getByRole('button', { name: '新建工作流', exact: true }).click();
+    await expect(page.getByLabel('工作流目标')).toHaveValue('切换详情和重新启动后保留草稿。');
+    await expect(page.getByLabel('最大尝试次数')).toHaveValue('3');
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await app.close(); await f.dispose(); }
 });
 
-test('inspector: single-panel and older multi-panel preferences migrate while preserving open order and hidden choices', async () => {
+test('inspector: legacy layouts migrate to a single last-opened tool and preserve hidden choices', async () => {
   const f = await workspace(), app = await f.launch();
   try {
     const page = await app.firstWindow();
@@ -288,11 +188,11 @@ test('inspector: single-panel and older multi-panel preferences migrate while pr
       { single: '"workflows"', visible: 'false', open: ['context', 'git'], collapsed: [], expected: ['工作流'] },
       { single: 'null', visible: 'true', open: ['context', 'git'], collapsed: [], expected: [] },
       { visible: 'false', open: ['context', 'git', 'workflows'], collapsed: [], expected: [] },
-      { visible: 'true', open: ['diagnostics', 'invalid', 'workflows', 'git', 'context', 'git'], collapsed: ['context'], expected: ['诊断', '工作流', '变更'] },
+      { visible: 'true', open: ['diagnostics', 'invalid', 'workflows', 'git', 'context', 'git'], collapsed: ['context'], expected: ['变更'] },
     ];
     for (const migration of migrations) {
       await page.evaluate(({ key, single, visible, open, collapsed }) => {
-        localStorage.removeItem(key);
+        localStorage.removeItem(key); localStorage.removeItem('cc-desk.inspector-open-panels');
         localStorage.removeItem('cc-desk.inspector-active-panel');
         if (single !== undefined) localStorage.setItem('cc-desk.inspector-active-panel', single);
         localStorage.setItem('cc-desk.inspector-open', visible);
@@ -300,20 +200,20 @@ test('inspector: single-panel and older multi-panel preferences migrate while pr
       }, { key: openPanelsKey, ...migration });
       await page.reload();
       await expectOpenPanels(page, migration.expected);
-      await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe(JSON.stringify(migration.expected.map(name => panelIds[name])));
+      await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe(JSON.stringify(migration.expected.length ? panelIds[migration.expected[0]] : null));
     }
     // New choices override both previous preference formats on subsequent reloads.
     await panelToggle(page, '上下文').click();
-    const all: PanelName[] = ['诊断', '工作流', '变更', '上下文'];
+    const all: PanelName[] = ['上下文'];
     await expectOpenPanels(page, all);
-    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('["diagnostics","workflows","git","context"]');
+    await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe('"context"');
     await page.reload();
     await expectOpenPanels(page, all);
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await app.close(); await f.dispose(); }
 });
 
-test('inspector: the vertical rail and stacked panels fit wide and narrow windows without restarting a running terminal', async ({}, testInfo) => {
+test('inspector: the vertical rail and single panel fit wide and narrow windows without restarting a running terminal', async ({}, testInfo) => {
   const f = await workspace(true), app = await f.launch();
   const failures: unknown[] = [];
   try {
@@ -363,12 +263,7 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
       }, uiFontSize);
       await expect.poll(() => page.evaluate(() => Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-font-scale')))).toBeCloseTo(uiFontSize / 13, 5);
       await expect.poll(async () => (await page.locator('.session-content').boundingBox())!.width >= 1100).toBe(width === 1600);
-      await expectOpenPanels(page, panelNames);
-      await expectPanelGeometry(page, panelNames, width === 1600 ? 2 : 1);
-      if (width === 980) {
-        expect(await dock(page).evaluate(element => element.scrollHeight > element.clientHeight)).toBe(true);
-        for (const name of panelNames) expect((await panel(page, name).boundingBox())!.height).toBeGreaterThanOrEqual(219);
-      }
+      await expectOpenPanels(page, ['诊断']);
       const railBoxes = await Promise.all(panelNames.map(tool => panelToggle(page, tool).boundingBox()));
       for (let index = 1; index < railBoxes.length; index++) {
         expect(Math.abs(railBoxes[index]!.x - railBoxes[0]!.x)).toBeLessThan(2);
@@ -376,6 +271,7 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
       }
       expect(railBoxes[0]!.x).toBeGreaterThan((await page.evaluate(() => innerWidth)) - 100);
       for (const name of panelNames) {
+        if (await panelToggle(page, name).getAttribute('aria-pressed') !== 'true') await panelToggle(page, name).click();
         const region = panel(page, name);
         expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
@@ -383,7 +279,7 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
         // fractional clipped edge in the narrow, large-font scrolling grid.
         await close.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
         await expect(close).toBeInViewport({ ratio: 1 });
-        await expectOpenPanels(page, panelNames);
+        await expectOpenPanels(page, [name]);
         const regionBox = (await region.boundingBox())!, terminalBox = (await page.locator('.terminal-host').boundingBox())!;
         expect(regionBox.x + regionBox.width).toBeLessThanOrEqual(railBoxes[0]!.x);
         expect(regionBox.x).toBeGreaterThanOrEqual(terminalBox.x + terminalBox.width - 1);
@@ -395,11 +291,13 @@ test('inspector: the vertical rail and stacked panels fit wide and narrow window
     }
     for (let index = panelNames.length - 1; index >= 0; index--) {
       const name = panelNames[index];
+      if (await panelToggle(page, name).getAttribute('aria-pressed') !== 'true') await panelToggle(page, name).click();
       const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
       await close.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
       await expect(close).toBeInViewport({ ratio: 1 });
+      if (await panelToggle(page, name).getAttribute('aria-pressed') !== 'true') await panelToggle(page, name).click();
       await close.click();
-      await expectOpenPanels(page, panelNames.slice(0, index));
+      await expectOpenPanels(page, []);
       await expect(panelToggle(page, name)).toBeFocused();
     }
     await page.screenshot({ path: testInfo.outputPath('tool-panels-narrow-closed.png') });

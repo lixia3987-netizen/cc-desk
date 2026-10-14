@@ -546,3 +546,27 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .chat-message>header,.tool-card>summary{font-family:var(--ui-font-family)}
 .message-markdown code,.message-markdown pre,.tool-input{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
 .statusbar{height:auto;min-height:30px;gap:10px;padding-block:6px;flex-wrap:wrap}
+/* Session selection and row actions are sibling controls, never nested buttons. */
+.session-row-wrap{position:relative;display:flex;align-items:center;margin-bottom:3px;border:1px solid transparent;border-radius:7px}
+.session-row-wrap.active{background:var(--selected);border-color:var(--selected-border)}
+.session-row-wrap:hover{background:var(--hover)}
+.session-row-wrap>.session-row{flex:1;min-width:0;width:auto;margin:0;border:0;background:transparent}
+.session-row-wrap>.session-row-menu{flex:0 0 26px;width:26px;height:28px;margin-right:4px;color:var(--text-muted)}
+.archive-list-toggle{font-size:calc(10px * var(--ui-font-scale));gap:4px}
+.current-engine-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.workflow-list-tabs{display:flex;flex-wrap:wrap;gap:5px;margin:12px 0}
+.workflow-list-tabs button[aria-pressed=true]{background:var(--selected);color:var(--mint)}
+.workflow-budget{padding:10px 0}
+.workflow-budget>summary{cursor:pointer;color:var(--text-secondary)}
+.terminal-actions-menu{position:relative;font-size:calc(11px * var(--ui-font-scale))}
+.terminal-actions-menu>summary{cursor:pointer;padding:7px 9px;color:var(--text-secondary)}
+.terminal-actions-menu>button{position:absolute;z-index:20;right:0;top:100%;white-space:nowrap;background:var(--panel);border:1px solid var(--line);box-shadow:var(--shadow)}
+.native-assistance{flex-shrink:0;min-width:0;margin:0 18px}
+.native-assistance-tabs{display:flex;flex-wrap:wrap;gap:4px}
+.native-assistance-tabs:empty{display:none}
+.native-assistance-tabs>button{font-size:calc(10px * var(--ui-font-scale));padding:5px 7px}
+.native-assistance-tabs>button[aria-pressed=true]{background:var(--selected);color:var(--mint)}
+.native-assistance-body{max-height:34vh;overflow:auto;overscroll-behavior:contain}
+.native-assistance-body[hidden]{display:none}
+.native-assistance-body>.native-agent-panel,.native-assistance-body>.native-command-panel,.native-assistance-body>.native-task-panel{margin:3px 0 6px;max-height:none}
+@media(max-width:650px){.native-assistance{margin:0 8px}.native-assistance-body{max-height:30vh}}

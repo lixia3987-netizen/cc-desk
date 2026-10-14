@@ -1,31 +1,31 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readInspectorOpenPanels, saveInspectorOpenPanels } from '../src/renderer/layout-preferences';
+import { readInspectorOpenPanels, saveInspectorOpenPanels, readInspectorWidth, saveInspectorWidth } from '../src/renderer/layout-preferences';
 
-const openKey = 'cc-desk.inspector-open-panels', activeKey = 'cc-desk.inspector-active-panel';
+const selectedKey = 'cc-desk.inspector-selected-panel', openKey = 'cc-desk.inspector-open-panels', activeKey = 'cc-desk.inspector-active-panel';
 const legacyOpen = 'cc-desk.inspector-open', legacyPanels = 'cc-desk.inspector-panels';
 const storage = (initial: Record<string, string> = {}) => {
   const values = new Map(Object.entries(initial));
   return { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
 };
 
-test('multiple tool windows preserve opening order and remove duplicate or unknown panel IDs', () => {
+test('legacy multiple tools migrate to the last valid opened tool', () => {
   const value = storage({ [openKey]: JSON.stringify(['diagnostics', 'git', 'unknown', 'context', 'git', null, 'workflows', 7]) });
-  assert.deepEqual(readInspectorOpenPanels(value), ['diagnostics', 'git', 'context', 'workflows']);
+  assert.deepEqual(readInspectorOpenPanels(value), ['workflows']);
   saveInspectorOpenPanels(['workflows', 'context', 'git'], value);
-  assert.equal(value.getItem(openKey), '["workflows","context","git"]');
-  assert.deepEqual(readInspectorOpenPanels(value), ['workflows', 'context', 'git']);
+  assert.equal(value.getItem(selectedKey), '"git"');
+  assert.deepEqual(readInspectorOpenPanels(value), ['git']);
 });
 
-test('new multi-panel preferences override all older formats, including explicit all-closed state', () => {
+test('new selected tool overrides older formats including explicit closed state', () => {
   const value = storage({
     [activeKey]: '"diagnostics"', [legacyOpen]: 'false',
     [legacyPanels]: JSON.stringify({ open: ['git', 'context'], collapsed: [] }),
   });
   saveInspectorOpenPanels(['workflows', 'git'], value);
-  assert.deepEqual(readInspectorOpenPanels(value), ['workflows', 'git']);
+  assert.deepEqual(readInspectorOpenPanels(value), ['git']);
   saveInspectorOpenPanels([], value);
-  assert.equal(value.getItem(openKey), '[]');
+  assert.equal(value.getItem(selectedKey), 'null');
   assert.deepEqual(readInspectorOpenPanels(value), []);
   assert.equal(value.getItem(activeKey), '"diagnostics"');
   assert.equal(value.getItem(legacyOpen), 'false');
@@ -42,7 +42,7 @@ test('single-tool preferences migrate before older global and multi-panel settin
 test('legacy multi-panel migration retains opening order while excluding collapsed and invalid tools', () => {
   assert.deepEqual(readInspectorOpenPanels(storage({ [legacyPanels]: JSON.stringify({
     open: ['diagnostics', 'unknown', 'workflows', 'git', 'diagnostics', 'context'], collapsed: ['git', 'context', 'unknown'],
-  }) })), ['diagnostics', 'workflows']);
+  }) })), ['workflows']);
   assert.deepEqual(readInspectorOpenPanels(storage({ [legacyPanels]: JSON.stringify({ open: ['git'], collapsed: [] }) })), ['git']);
 });
 
@@ -71,4 +71,15 @@ test('corrupt preferences fall back to valid older layouts or the default contex
 test('storage failures do not prevent tool windows from opening and closing', () => {
   assert.deepEqual(readInspectorOpenPanels({ getItem() { throw new Error('Storage unavailable'); } }), ['context']);
   assert.doesNotThrow(() => saveInspectorOpenPanels([], { setItem() { throw new Error('Quota exceeded'); } }));
+});
+
+
+test('detail width is bounded, persisted independently and tolerates missing storage', () => {
+  const value = storage();
+  assert.equal(readInspectorWidth(value), 340);
+  saveInspectorWidth(420, value); assert.equal(readInspectorWidth(value), 420);
+  saveInspectorWidth(999, value); assert.equal(readInspectorWidth(value), 560);
+  saveInspectorWidth(-3, value); assert.equal(readInspectorWidth(value), 260);
+  saveInspectorWidth(Number.NaN, value); assert.equal(readInspectorWidth(value), 340);
+  assert.equal(readInspectorWidth({ getItem() { throw new Error('unavailable'); } }), 340);
 });

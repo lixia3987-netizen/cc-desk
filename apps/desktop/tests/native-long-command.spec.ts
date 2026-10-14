@@ -1,3 +1,4 @@
+import { openChatAssistance } from './helpers/chat-assistance';
 import { test, expect, _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -49,6 +50,7 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
   await expect(panel(page)).toHaveCount(0);
   await page.getByRole('region', { name: '工具审批', exact: true }).getByRole('button', { name: '允许本次', exact: true }).click();
   await expect.poll(async () => (await snapshot(page, session.id)).nativeCommands?.items[0]?.status).toBe('running');
+  await openChatAssistance(page, 'commands');
   await expect(panel(page).locator('[data-command-status="running"]')).toBeVisible();
   return { page, session };
 }
@@ -59,6 +61,7 @@ test('native command UI receives terminal host events while the model is waiting
     app = await f.launch(); const configured = await configure(app, f.projectId, f.fixture.baseURL); let page = configured.page; const session = configured.session;
     const commandId = (await snapshot(page, session.id)).nativeCommands!.items[0].commandId;
     await page.reload(); await expect(page.locator('main.workspace')).toBeVisible();
+    await openChatAssistance(page, 'commands');
     await expect(panel(page).locator('[data-command-status="running"]')).toBeVisible();
     await fs.writeFile(path.join(f.cwd, 'finish.txt'), 'finish the fixture command');
     // No model/tool polling request is needed for the command's final host notification.
@@ -73,6 +76,7 @@ test('native command UI receives terminal host events while the model is waiting
     const saved = (await snapshot(page, session.id)).nativeCommands, requests = f.fixture.requests.length;
     await closeNativeApp(app); app = await f.launch(); page = await app.firstWindow(); await expect(page.locator('main.workspace')).toBeVisible();
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    await openChatAssistance(page, 'commands');
     await expect(panel(page).locator('[data-command-status="finished"]')).toBeVisible();
     expect((await snapshot(page, session.id)).nativeCommands).toEqual(saved);
     expect(f.fixture.requests).toHaveLength(requests); expect(f.fixture.errors).toEqual([]);
@@ -84,12 +88,13 @@ test('interrupting a native turn closes its running command and the UI retains c
   const f = await workspace(); let app: ElectronApplication | undefined;
   try {
     app = await f.launch(); const { page, session } = await configure(app, f.projectId, f.fixture.baseURL);
-    await page.getByRole('button', { name: '中断', exact: true }).click();
+    await page.getByRole('button', { name: '停止本轮', exact: true }).click();
     await expect.poll(async () => (await snapshot(page, session.id)).nativeCommands?.items[0]?.status).toBe('finished');
     const entry = panel(page).locator('[data-command-status="finished"]'); await entry.locator('summary').first().click();
     await expect(entry).toContainText('取消：是'); await expect(entry).toContainText('清理：已确认');
     await expect.poll(async () => (await snapshot(page, session.id)).taskState).toBe('interrupted');
     expect((await snapshot(page, session.id)).nativeCommands!.items[0].result?.cancelled).toBe(true);
+    await openChatAssistance(page, 'commands');
     await expect(panel(page)).toContainText('不代表任务验收通过');
   } finally { f.release(); try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });

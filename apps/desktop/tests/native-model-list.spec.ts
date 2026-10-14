@@ -164,13 +164,56 @@ test('model-list errors, empty replies and cancellation preserve the current con
     await expect(switchModel).toBeEnabled();
     await card.getByRole('button', { name: '编辑', exact: true }).click();
     await region.getByLabel('Native 默认模型', { exact: true }).fill('fixture-manually-entered');
-    await expect(read).toBeDisabled(); await expect(switchModel).toBeDisabled();
+    await expect(card).toHaveCount(0);
+    await expect(region.getByRole('button', { name: '读取可用模型', exact: true })).toBeDisabled();
+    await expect(region.getByRole('button', { name: '切换模型', exact: true })).toBeDisabled();
     expect(await savedConnection(page)).toEqual(initial);
     await region.getByRole('button', { name: '保存模型连接', exact: true }).click();
     await expect.poll(async () => (await savedConnection(page)).model).toBe('fixture-manually-entered');
+    await region.getByRole('button', { name: '关闭编辑', exact: true }).click();
     await expect(card.getByLabel('可用模型', { exact: true })).toHaveCount(0);
     expect(await savedConnection(page)).toMatchObject({ protocol: 'anthropic', authHeader: 'authorization', baseURL: f.baseURL,
       auth: { mode: 'env', variable: 'MODEL_LIST_UI_TOKEN' }, ready: true });
     expect(listRequests(f.requests)).toHaveLength(4); assertRequests(f.requests); await assertPrivate(page, f.data);
+  } finally { await app.close(); await f.dispose(); }
+});
+
+
+test('first model setup saves address and key before discovering and explicitly selecting a model', async () => {
+  const f = await fixture(), app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await page.getByRole('button', { name: '设置与连接', exact: true }).click();
+    await page.getByRole('tab', { name: '模型与上下文', exact: true }).click();
+    const region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
+    await region.getByRole('button', { name: '新增模型连接', exact: true }).click();
+    await expect(region.getByLabel('Native 连接名称', { exact: true })).toBeFocused();
+    await region.getByLabel('Native 连接名称', { exact: true }).fill('先接入再选模型');
+    await region.getByLabel('Native 服务地址', { exact: true }).fill(f.baseURL + '/v1');
+    await region.getByLabel('Native 认证方式', { exact: true }).selectOption('memory');
+    await region.locator('summary').filter({ hasText: '高级设置（价格与本地代理）' }).click();
+    await region.getByLabel('明确允许本地回环 HTTP', { exact: false }).check();
+    await region.getByRole('button', { name: '保存模型连接', exact: true }).click();
+    await expect.poll(async () => (await savedConnection(page)).model).toBe('');
+    await expect(region.getByRole('button', { name: '测试连接（可能计费）', exact: true })).toBeDisabled();
+    await expect(region.getByRole('button', { name: '读取可用模型', exact: true })).toBeDisabled();
+    await region.getByLabel('Native 新的 API Key', { exact: true }).fill(secret);
+    await region.getByRole('button', { name: '设置凭据并清空输入', exact: true }).click();
+    await expect(region.getByLabel('Native 新的 API Key', { exact: true })).toHaveValue('');
+    await expect(region.getByRole('button', { name: '读取可用模型', exact: true })).toBeEnabled();
+    await expect(region.getByRole('button', { name: '测试连接（可能计费）', exact: true })).toBeDisabled();
+    expect(f.requests).toHaveLength(0);
+    await region.getByRole('button', { name: '读取可用模型', exact: true }).click();
+    await expect(region.getByLabel('可用模型', { exact: true })).toBeVisible();
+    expect((await savedConnection(page)).model).toBe('');
+    await region.getByLabel('可用模型', { exact: true }).selectOption('fixture-beta');
+    await region.getByRole('button', { name: '切换模型', exact: true }).click();
+    await expect.poll(async () => (await savedConnection(page)).ready).toBe(true);
+    await expect(region.getByLabel('Native 默认模型', { exact: true })).toHaveValue('fixture-beta');
+    await expect(region.getByRole('button', { name: '测试连接（可能计费）', exact: true })).toBeEnabled();
+    expect(f.requests.every(item => item.method === 'GET')).toBe(true);
+    await region.getByRole('button', { name: '关闭编辑', exact: true }).click();
+    await expect(region.locator('.model-connection-card')).toContainText('fixture-beta');
+    await assertPrivate(page, f.data);
   } finally { await app.close(); await f.dispose(); }
 });

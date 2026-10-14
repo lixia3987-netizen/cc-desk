@@ -251,3 +251,20 @@ test('model catalog IPC accepts only saved id/revision/request references and ne
     assert.throws(() => handlers.get('native:connections-models-cancel')!({ requestId: secret }), error => error instanceof Error && !error.message.includes(secret));
   } finally { await f.dispose(); }
 });
+
+
+test('model catalog discovers models for a saved credentialed connection before a default model is selected', async () => {
+  const f = await fixture();
+  try {
+    const incomplete = f.store.upsert({ ...metadata(f.connection), model: '' });
+    assert.equal(incomplete.ready, false); assert.equal(incomplete.credentialConfigured, true);
+    assert.equal((await f.diagnostics.test(f.input(incomplete))).code, 'configuration');
+    assert.equal(f.requests.length, 0, 'a text test with no model must not contact the service');
+    const result = await f.catalog.list(f.input(incomplete));
+    assert.equal(result.code, 'ok'); assert.deepEqual(result.models, [{ id: 'one' }, { id: 'two', name: 'Second model' }]);
+    assert.equal(f.requests.length, 1); assert.equal(f.requests[0].method, 'GET'); assert.equal(f.requests[0].url, '/v1/models');
+    assert.equal(f.store.list().connections[0].model, '', 'discovery never chooses a model implicitly');
+    const selected = f.store.upsert({ ...metadata(incomplete), model: result.models![0].id });
+    assert.equal(selected.ready, true); safe(result);
+  } finally { await f.dispose(); }
+});

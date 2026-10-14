@@ -1,4 +1,4 @@
-import { Archive, ChevronRight, Command, Folder, GitBranch, History, Plus, Search, Settings2, TerminalSquare } from 'lucide-react';
+import { Archive, ChevronRight, Command, Folder, GitBranch, History, MoreHorizontal, Plus, Search, Settings2, TerminalSquare } from 'lucide-react';
 import { useCallback, useState } from 'react';
 import { SessionActions, type SessionActionHandlers, type SessionMenuTarget } from './SessionActions';
 import type { AppState, Capabilities, Session } from '../../shared/types';
@@ -6,19 +6,21 @@ import type { AppState, Capabilities, Session } from '../../shared/types';
 import { sessionColor, sessionLabel, time } from './presentation';
 import type { OpenNew } from './types';
 import { ProjectFilter } from './ProjectFilter';
+import { currentEngineStatus } from './engine-status';
 
 interface Props extends SessionActionHandlers {
   state: AppState; cap: Capabilities; historyAvailable: boolean; chooseProject?: () => Promise<void>; activeId: string; projectId: string;
-  archived: boolean; search: string; collapsedGroups: Set<string>;
+  archived: boolean; search: string; collapsedGroups: Set<string>; draftProviderId?: string;
   openNew: OpenNew; selectSession: (id: string) => void;
   onSearch: (value: string) => void; onProject: (id: string) => void;
   toggleGroup: (id: string) => void; setArchived: (value: boolean) => void;
   openHistory: () => Promise<void>; onSettings: () => void;
 }
 
-export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _chooseProject, activeId, projectId, archived, search, collapsedGroups, openNew, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings, ...actions }: Props) {
+export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _chooseProject, activeId, projectId, archived, search, collapsedGroups, draftProviderId, openNew, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings, ...actions }: Props) {
   const [menu, setMenu] = useState<SessionMenuTarget>();
   const closeMenu = useCallback(() => setMenu(undefined), []);
+  const engineStatus = currentEngineStatus(state.sessions.find(item => item.id === activeId), actions.executors, draftProviderId ?? 'claude');
   const projectsById = new Map(state.projects.map(project => [project.id, project]));
   const query = search.trim().toLowerCase();
   const sessions = state.sessions.filter(s => s.archived === archived && (projectId === 'all' || s.projectId === projectId) && `${s.title} ${s.cwd} ${projectsById.get(s.projectId)?.name ?? ''}`.toLowerCase().includes(query)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -48,8 +50,8 @@ export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _c
     <div className="section-label sessions-label">
       <span>{archived ? '归档会话' : '最近会话'} <small>{sessions.length}</small>
       </span>
-      <button className={`icon-button ${archived ? 'mint' : ''}`} title={archived ? '查看活跃会话' : '查看归档'} onClick={() => setArchived(!archived)}>
-        <Archive size={15} />
+      <button className={`text-button archive-list-toggle ${archived ? 'mint' : ''}`} aria-label={archived ? '查看活跃会话' : '查看归档'} title={archived ? '查看活跃会话' : '查看归档'} onClick={() => setArchived(!archived)}>
+        <Archive size={14} />{archived ? '返回最近' : '归档'}
       </button>
     </div>
     <div className="session-list">
@@ -66,7 +68,8 @@ export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _c
             </button>}</div>
           <div id={'sessions-' + group.id} className="project-sessions" hidden={!expanded}>
             {group.sessions.map(s =>
-              <button key={s.id} data-session-id={s.id} title={s.title} aria-current={activeId === s.id ? 'page' : undefined}
+              <div key={s.id} className={'session-row-wrap' + (activeId === s.id ? ' active' : '')}>
+              <button data-session-id={s.id} title={s.title} aria-current={activeId === s.id ? 'page' : undefined}
                 aria-haspopup="menu" aria-expanded={menu?.sessionId === s.id} className={`session-row ${activeId === s.id ? 'active' : ''}`}
                 onClick={() => selectSession(s.id)}
                 onContextMenu={event => {
@@ -84,7 +87,9 @@ export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _c
                   <strong>{s.title}</strong>
                   <small>{actions.executors.find(item => item.providerId === s.execution.providerId && item.mode === s.execution.mode)?.displayName ?? s.execution.providerId}<span>·</span>{sessionLabel(s)}<span>·</span>{time(s.updatedAt)}</small>
                 </div>{s.worktree && <GitBranch size={13} />}
-              </button>)}
+              </button><button className="icon-button session-row-menu" aria-label={`更多会话操作：${s.title}`} title="更多会话操作" aria-haspopup="menu" aria-expanded={menu?.sessionId === s.id}
+                onClick={event => { const bounds = event.currentTarget.getBoundingClientRect(); setMenu({ sessionId: s.id, archived: s.archived, worktreePath: s.worktree, x: bounds.right, y: bounds.bottom, opener: event.currentTarget }); }}><MoreHorizontal size={16} /></button>
+              </div>)}
           </div>
         </section>;
       })}
@@ -97,8 +102,8 @@ export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _c
       <button onClick={() => { onSettings(); }}>
         <Settings2 size={16} />设置与连接<ChevronRight size={14} />
       </button>
-      <div className="local-status">
-        <span className={`dot ${cap.available ? 'running' : 'stopped'}`} />{cap.available ? 'Claude Code 已安装' : '未检测到 Claude Code'}<span>本地</span>
+      <div className="local-status" title={engineStatus.detail}>
+        <span className={`dot ${engineStatus.ready ? 'running' : 'stopped'}`} /><span className="current-engine-name">{engineStatus.text}</span><span>本地</span>
       </div>
     </div>
     <SessionActions {...actions} sessions={state.sessions} projects={state.projects} menu={menu} onCloseMenu={closeMenu} openNew={openNew} />

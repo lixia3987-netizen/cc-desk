@@ -68,6 +68,9 @@ test('ide: configure an application through a draft, cancel safely and preserve 
     await settings.getByRole('button', { name: '选择 IDE 应用', exact: true }).click();
     await expect(settings.getByLabel('IDE 应用路径', { exact: true })).toHaveValue(f.executable);
     await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await expect(settings.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');
+    await settings.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(settings).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.idePath ?? '').toBe('');
 
     await page.getByRole('button', { name: '在 IDE 中打开', exact: true }).click();
@@ -79,6 +82,7 @@ test('ide: configure an application through a draft, cancel safely and preserve 
     await settings.getByLabel('IDE 应用路径', { exact: true }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: testInfo.outputPath('ide-settings.png') });
     await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await expect(settings).toHaveCount(0);
     await app.close();
     app = await f.launch();
     page = await app.firstWindow();
@@ -90,6 +94,9 @@ test('ide: configure an application through a draft, cancel safely and preserve 
     // Editing an already saved path and closing the modal must also preserve it.
     await settings.getByLabel('IDE 应用路径', { exact: true }).fill('');
     await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await expect(settings.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');
+    await settings.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(settings).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.idePath).toBe(f.executable);
     expect(JSON.parse(await fs.readFile(path.join(f.data, 'workspace.json'), 'utf8')).settings.idePath).toBe(f.executable);
     await expect(page.locator('.error-banner')).toHaveCount(0);

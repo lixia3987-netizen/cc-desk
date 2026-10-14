@@ -1,21 +1,21 @@
-/* Fill a column top to bottom before adding a second equal-width column. */
+/* A single, resizable detail panel keeps the conversation readable. */
 .session-content{container-type:inline-size;container-name:session-layout}
-.inspector{--tool-panel-width:320px;--tool-rail-width:46px;width:calc(var(--tool-panel-width) + var(--tool-rail-width) + 1px);max-width:46%;min-width:0;min-height:0;flex-shrink:0;padding:0;display:flex;flex-direction:row;overflow:hidden;border-left:1px solid var(--line);background:var(--panel)}
-.inspector-dock{display:grid;flex:1;grid-template-columns:minmax(0,1fr);grid-auto-rows:minmax(max(220px,calc(170px * var(--ui-font-scale))),1fr);gap:1px;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;background:var(--line)}
+.inspector{--tool-panel-width:340px;--tool-rail-width:48px;position:relative;width:calc(var(--tool-panel-width) + var(--tool-rail-width) + 1px);max-width:48%;min-width:0;min-height:0;flex-shrink:0;padding:0;display:flex;flex-direction:row;overflow:hidden;border-left:1px solid var(--line);background:var(--panel)}
+.inspector-dock{display:flex;flex:1;min-width:0;min-height:0;overflow:hidden;background:var(--line)}
 .inspector-dock[hidden],.inspector-panel[hidden]{display:none}
 .inspector[data-empty=true]{width:calc(var(--tool-rail-width) + 1px);max-width:none}
 .inspector[data-empty=true] .inspector-dock{display:none}
-
-.inspector-tools{display:flex;flex:0 0 var(--tool-rail-width);flex-direction:column;align-items:center;gap:6px;min-height:0;padding:6px 5px;border-left:1px solid var(--line);background:var(--sidebar);overflow-x:hidden;overflow-y:auto}
+.inspector-resize{position:absolute;inset:0 auto 0 0;width:5px;z-index:2;cursor:col-resize;touch-action:none}
+.inspector-resize:hover,.inspector-resize:focus-visible{background:var(--mint);outline:none}
+.inspector-tools{display:flex;flex:0 0 var(--tool-rail-width);flex-direction:column;align-items:center;gap:6px;min-height:0;padding:6px 4px;border-left:1px solid var(--line);background:var(--sidebar);overflow-x:hidden;overflow-y:auto}
 .inspector[data-empty=true] .inspector-tools{border-left:0}
-.inspector-tools button{position:relative;display:flex;flex:0 0 34px;align-items:center;justify-content:center;width:34px;height:34px;min-width:0;padding:0;border-radius:5px;color:var(--text-muted)}
-.inspector-tools button>svg{width:18px;height:18px;flex-shrink:0}
-.inspector-tools button>span{display:none}
+.inspector-tools button{position:relative;display:flex;flex:0 0 48px;flex-direction:column;gap:4px;align-items:center;justify-content:center;width:38px;height:48px;min-width:0;padding:0;border-radius:5px;color:var(--text-muted)}
+.inspector-tools button>svg{width:17px;height:17px;flex-shrink:0}
+.inspector-tools button>span{font-size:10px;line-height:1.2}
 .inspector-tools button:hover{background:var(--hover);color:var(--text-strong)}
 .inspector-tools button[aria-pressed=true]{background:var(--selected);color:var(--mint)}
-.inspector-tools button[aria-pressed=true]::before{content:"";position:absolute;top:6px;bottom:6px;left:-5px;width:2px;border-radius:2px;background:var(--mint)}
+.inspector-tools button[aria-pressed=true]::before{content:"";position:absolute;top:6px;bottom:6px;left:-4px;width:2px;border-radius:2px;background:var(--mint)}
 .inspector-tools button:focus-visible{outline-offset:-2px}
-
 .inspector-panel{display:flex;flex:1;flex-direction:column;width:100%;min-width:0;min-height:0;overflow:hidden;background:var(--panel)}
 .inspector-panel-header{display:flex;align-items:center;gap:8px;min-height:42px;padding:6px 10px 6px 14px;border-bottom:1px solid var(--line);background:var(--surface);flex-shrink:0}
 .inspector-panel-title{display:flex;flex:1;align-items:center;min-width:0;margin:0;font-size:calc(12px * var(--ui-font-scale));font-weight:600;text-align:left;color:var(--text-secondary)}
@@ -25,15 +25,8 @@
 .inspector-panel-body>.panel-content{width:100%;min-width:0;padding:16px 14px;overscroll-behavior:contain}
 .inspector-panel-body .panel-actions>button,.inspector-panel-body .action-confirm>button,.inspector-panel-body .full{max-width:100%;white-space:normal;overflow-wrap:anywhere}
 .inspector-panel-body .action-confirm>button{max-width:calc(100% - 5px)}
-
 @container session-layout (max-width:850px){
-  .inspector{--tool-panel-width:280px}
+  .inspector{max-width:44%}
   .inspector-panel-header{padding-left:12px}
   .inspector-panel-body>.panel-content{padding:14px 12px}
-}
-
-@container session-layout (min-width:1100px){
-  .inspector:is([data-count="3"],[data-count="4"]){width:calc(2 * var(--tool-panel-width) + var(--tool-rail-width) + 2px);max-width:64%}
-  .inspector:is([data-count="3"],[data-count="4"]) .inspector-dock{grid-template-columns:repeat(2,minmax(0,1fr));grid-template-rows:repeat(2,minmax(max(220px,calc(170px * var(--ui-font-scale))),1fr));grid-auto-flow:column}
-  .inspector[data-count="3"] .inspector-panel:nth-child(3){grid-column:2;grid-row:1 / 3}
 }

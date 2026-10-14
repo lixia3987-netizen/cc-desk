@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ArrowDownToLine, Check, ChevronRight, Loader2, Play, RefreshCw, Square, Trash2 } from 'lucide-react';
+import { ArrowDownToLine, Check, ChevronRight, Loader2, Play, Plus, RefreshCw, Square, Trash2 } from 'lucide-react';
 import type { Session } from '../shared/types';
 import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED, type WorkflowBudget, type WorkflowGate, type WorkflowNativeReceipt, type WorkflowRun, type WorkflowToolPolicy } from '../shared/workflows';
 import { MessageText } from './MessageText';
@@ -25,6 +25,7 @@ export function WorkflowReceiptDetails({ receipt }: { receipt: WorkflowNativeRec
 export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, disabled = false, executionBlocked }: { disabled?: boolean; executionBlocked?: (run: WorkflowRun) => boolean; session: Session; onError: (error: unknown) => void; onTemplate: (value: string) => boolean; draft: WorkflowDraft; onDraft: UpdateDraft<WorkflowDraft> }) {
   const [runs, setRuns] = useState<WorkflowRun[]>([]), [busy, setBusy] = useState(false), [deleteId, setDeleteId] = useState(''), [notice, setNotice] = useState('');
   const [confirmationReasons, setConfirmationReasons] = useState<Record<string, string>>({});
+  const [creating, setCreating] = useState(false), [showHistory, setShowHistory] = useState(false);
   const { goal, pauseAfterEachStage: pause, maxAttempts: attempts, editing, instructions, allRuns } = draft;
   const instruction = instructions[editing] ?? '';
   const native = session.execution.providerId === 'native';
@@ -52,16 +53,21 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
     gate: draft.stageGates?.[stage.id] ?? 'none' as WorkflowGate,
     toolPolicy: native && NATIVE_WORKFLOW_POLICIES_ENABLED ? draft.stageToolPolicies?.[stage.id] ?? stage.toolPolicy ?? 'standard' : 'standard' as WorkflowToolPolicy,
   }));
+  const activeStatuses = ['draft', 'running', 'paused', 'waiting_verification', 'waiting_confirmation', 'interrupted', 'failed'];
+  const activeRuns = runs.filter(run => activeStatuses.includes(run.status));
+  const historyRuns = runs.filter(run => !activeStatuses.includes(run.status));
+  const visibleRuns = showHistory ? historyRuns : activeRuns;
   return <div className="panel-content">
-    <div className="panel-heading"><strong>阶段工作流</strong><button className="icon-button" title="刷新工作流" onClick={() => void load().catch(onError)}><RefreshCw size={14} /></button></div>
-    <label className="inline-checkbox"><input type="checkbox" checked={allRuns} onChange={event => { onDraft(current => ({ ...current, allRuns: event.target.checked })); setDeleteId(''); }} />全部工作流记录</label>
+    <div className="panel-heading"><strong>{creating ? '新建工作流' : '阶段工作流'}</strong>{creating ? <button className="text-button" onClick={() => setCreating(false)}>返回工作流列表</button> : <><button className="secondary compact" disabled={session.archived} onClick={() => setCreating(true)}><Plus size={13} />新建工作流</button><button className="icon-button" title="刷新工作流" onClick={() => void load().catch(onError)}><RefreshCw size={14} /></button></>}</div>
+    {!creating && <><label className="inline-checkbox"><input type="checkbox" checked={allRuns} onChange={event => { onDraft(current => ({ ...current, allRuns: event.target.checked })); setDeleteId(''); }} />全部工作流记录</label>
+      <div className="workflow-list-tabs" role="group" aria-label="工作流记录范围"><button className="secondary compact" aria-pressed={!showHistory} onClick={() => setShowHistory(false)}>进行中与待处理（{activeRuns.length}）</button><button className="secondary compact" aria-pressed={showHistory} onClick={() => setShowHistory(true)}>已结束（{historyRuns.length}）</button></div></>}
     {notice && <p className="panel-note" role="status">{notice}</p>}
-    {session.execution.mode !== 'structured' ? <><p className="panel-note">自动阶段执行需要结构化会话。终端会话可以使用以下提示词。</p><button className="secondary compact full" onClick={() => onTemplate('请完成以下任务：\n\n【填写目标】\n\n按规划、实现、验证三个阶段执行；阅读项目规范，检查当前改动，完成实现并运行相关测试，最后报告结果与剩余问题。')}>添加完整开发提示词</button></> :
+    <div className="workflow-create-view" hidden={!creating}>{session.execution.mode !== 'structured' ? <><p className="panel-note">自动阶段执行需要结构化会话。终端会话可以使用以下提示词。</p><button className="secondary compact full" onClick={() => onTemplate('请完成以下任务：\n\n【填写目标】\n\n按规划、实现、验证三个阶段执行；阅读项目规范，检查当前改动，完成实现并运行相关测试，最后报告结果与剩余问题。')}>添加完整开发提示词</button></> :
       <form className="workflow-create" onSubmit={event => { event.preventDefault(); if (disabled || busy) return; void act(async () => {
         await window.desktop.createWorkflow({ sessionId: session.id, goal, pauseAfterEachStage: pause, maxAttempts: attempts,
           ...(native || Object.values(draft.stageGates ?? {}).some(value => value !== 'none') ? { stages: stageDefinitions } : {}),
           ...(native && NATIVE_WORKFLOW_POLICIES_ENABLED ? { budget } : {}),
-        }); onDraft(current => current.goal === goal ? { ...current, goal: '' } : current);
+        }); onDraft(current => current.goal === goal ? { ...current, goal: '' } : current); setCreating(false); setShowHistory(false);
       }); }}>
         <textarea aria-label="工作流目标" placeholder="这次工作要交付什么？" value={goal} onChange={event => onDraft(current => ({ ...current, goal: event.target.value }))} maxLength={20000} />
         {stageDefinitions.map(stage => <div className="workflow-stage" key={stage.id}><div><strong>{stage.title}</strong>
@@ -72,16 +78,18 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
         </div></div>)}
         <label className="inline-checkbox"><input type="checkbox" checked={pause} onChange={event => onDraft(current => ({ ...current, pauseAfterEachStage: event.target.checked }))} />每阶段结束后由我确认继续</label>
         <label>每阶段最多尝试<select aria-label="最大尝试次数" value={attempts} onChange={event => onDraft(current => ({ ...current, maxAttempts: Number(event.target.value) }))}><option value={1}>1 次</option><option value={2}>2 次</option><option value={3}>3 次</option></select></label>
-        {native && NATIVE_WORKFLOW_POLICIES_ENABLED && <fieldset><legend>整个工作流预算（含失败与重试）</legend>
+        {native && NATIVE_WORKFLOW_POLICIES_ENABLED && <details className="workflow-budget"><summary>高级预算设置</summary><fieldset><legend>整个工作流预算（含失败与重试）</legend>
           <label>模型请求总上限<input aria-label="模型请求总上限" type="number" min={1} max={1000} value={budget.maxModelRequests} onChange={event => updateBudget('maxModelRequests', Number(event.target.value))} /></label>
           <label>工具调用总上限<input aria-label="工具调用总上限" type="number" min={1} max={2000} value={budget.maxToolCalls} onChange={event => updateBudget('maxToolCalls', Number(event.target.value))} /></label>
           <label>执行总时长（分钟）<input aria-label="执行总时长" type="number" min={1} max={120} value={budget.maxActiveMs / 60_000} onChange={event => updateBudget('maxActiveMs', Number(event.target.value) * 60_000)} /></label>
           <p className="panel-note">累计阶段实际执行用量；暂停、等待确认与排队等待不计入执行时长，也不会恢复已用额度。</p>
-        </fieldset>}
+        </fieldset></details>}
         <button className="primary compact full" disabled={disabled || busy || !goal.trim() || session.archived}>创建工作流</button>
         <p className="panel-note">规划 → 实现 → 审阅。执行成功与验收通过分别记录；验收等待不会重新执行。失败后由你发起重试。{native && NATIVE_WORKFLOW_POLICIES_ENABLED ? '规划与审阅默认严格只读。' : '阶段继承当前会话权限，规划指令不会强制只读。'}</p>
-      </form>}
-    {runs.map(run => <section className="workflow-run" key={run.id}>
+        <button type="button" className="secondary compact full" disabled={busy} onClick={() => setCreating(false)}>返回列表并保留草稿</button>
+      </form>}</div>
+    {!creating && !visibleRuns.length && <p className="panel-note">{showHistory ? '暂无已结束的工作流。' : '暂无正在运行或等待处理的工作流。可新建工作流，按阶段推进任务。'}</p>}
+    {!creating && visibleRuns.map(run => <section className="workflow-run" key={run.id}>
       <header><strong>{run.title}</strong><span className={'status-tag ' + (run.status === 'running' ? 'running' : '')}>{labels[run.status] ?? run.status}</span></header><p className="workflow-goal">{run.goal}</p>
       {run.error && <p className="chat-error">{run.error}</p>}
       {run.usage && <p className="panel-note">累计模型请求 {run.usage.modelRequests}{run.budget ? ` / ${run.budget.maxModelRequests}` : ''} · 工具调用 {run.usage.toolCalls}{run.budget ? ` / ${run.budget.maxToolCalls}` : ''} · 执行 {(run.usage.activeMs / 60_000).toFixed(1)}{run.budget ? ` / ${(run.budget.maxActiveMs / 60_000).toFixed(1)}` : ''} 分钟{!run.usage.complete ? ' · 用量不完整，需核查执行记录' : ''}</p>}

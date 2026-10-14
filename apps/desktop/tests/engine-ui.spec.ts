@@ -118,7 +118,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await expect(page.locator('.thinking-indicator')).toBeVisible();
     await send(page, 'queued message');
     await expect(page.locator('.queued-chat-message')).toContainText('queued message');
-    await page.locator('.chat-composer').getByRole('button', { name: '中断', exact: true }).click();
+    await page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true }).click();
     // Interrupted turns remain queued deliberately: remove the inspected old
     // turn before explicitly continuing the still-unsent second message.
     const interrupted = page.locator('.queued-chat-message').filter({ hasText: 'hold' });
@@ -128,6 +128,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await page.getByRole('button', { name: '继续发送队列', exact: true }).click();
     await expect(page.locator('.chat-message.assistant').last()).toContainText('测试引擎完成：queued message');
     await page.getByRole('button', { name: '工作流', exact: true }).click();
+    await page.getByRole('button', { name: '新建工作流', exact: true }).click();
     await page.getByLabel('工作流目标', { exact: true }).fill('独立引擎完成三阶段');
     await page.getByRole('button', { name: '创建工作流', exact: true }).click();
     await page.getByRole('button', { name: '开始', exact: true }).click();
@@ -135,7 +136,10 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await page.getByRole('button', { name: '继续', exact: true }).click();
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(2);
     await page.getByRole('button', { name: '继续', exact: true }).click();
+    await page.getByRole('button', { name: /^已结束（/ }).click();
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
+    // The inspector displays one tool at a time; session settings live in Context.
+    await page.getByRole('button', { name: '上下文', exact: true }).click();
     await openSessionSettings(page, 'limits');
     await page.getByLabel('会话路由', { exact: true }).fill('saved-route');
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
@@ -241,7 +245,7 @@ test('engine history ignores stale source results and unknown configurations ret
     await expect(page.getByRole('menuitem', { name: '删除会话', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(page.locator('.chat-composer .engine-unavailable')).toBeVisible();
-    await page.getByRole('button', { name: '继续输入', exact: true }).click();
+    await expect(page.getByRole('button', { name: '继续输入', exact: true })).toHaveCount(0); await page.getByLabel('提示词编辑器', { exact: true }).click();
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toBeFocused();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('/retained draft');
     await expect(page.locator('.slash-menu')).toHaveCount(0);

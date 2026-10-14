@@ -100,7 +100,7 @@ test('settings keeps seven stable category IDs, separates global connections and
   assert.match(connections, /全局资源/);
   assert.doesNotMatch(connections, /aria-label="默认强度"/);
   assert.doesNotMatch(connections, /aria-label="默认自动压缩"/);
-  assert.match(connections, /关闭会丢弃未保存的编辑/);
+  assert.match(connections, /关闭前会提示未保存修改/);
   const context = renderPanel({ initialGroup: 'context' });
   assert.match(context, /id="settings-subtab-models-context"[^>]*aria-selected="true"/);
   assert.match(context, /aria-label="默认输入预算模式"/);
@@ -134,7 +134,7 @@ test('current-session deep link renders only its group inside one settings form 
   assert.match(markup, /当前会话：当前任务/);
   assert.match(markup, /aria-label="会话输出上限"[^>]*value="2048"/);
   assert.doesNotMatch(markup, /aria-label="会话输出上限"[^>]*value="8192"|aria-label="会话自动压缩"|aria-label="会话模型连接"/);
-  assert.match(markup, /会话配置来源/);
+  assert.match(markup, /会话运行策略来源/);
 });
 
 test('explicit IDE settings target renders the focusable path editor while engine-group targets take precedence', () => {

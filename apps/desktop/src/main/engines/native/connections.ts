@@ -10,6 +10,8 @@ const id = z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const text = z.string().trim().min(1).max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 const model = text;
+// Incomplete connections may be saved before catalog discovery; execution still requires a model.
+const savedModel = z.string().trim().max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 const pricing = z.object({ model, inputUSDPerMillion: z.number().finite().min(0).max(1_000_000), outputUSDPerMillion: z.number().finite().min(0).max(1_000_000) }).strict();
 const auth = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('env'), variable: z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/) }).strict(),
@@ -17,7 +19,7 @@ const auth = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('encrypted') }).strict(),
 ]);
 const fields = {
-  name: text, protocol: z.enum(['responses', 'chat-completions', 'anthropic']), authHeader: z.enum(['x-api-key', 'authorization']).optional(), baseURL: z.string().trim().min(1).max(2048), model, pricing: pricing.optional(),
+  name: text, protocol: z.enum(['responses', 'chat-completions', 'anthropic']), authHeader: z.enum(['x-api-key', 'authorization']).optional(), baseURL: z.string().trim().min(1).max(2048), model: savedModel, pricing: pricing.optional(),
   allowLoopbackHttp: z.boolean(), enabled: z.boolean(), auth,
 };
 export const nativeConnectionInputSchema = z.object({ id: id.optional(), revision: revision.optional(), ...fields }).strict();
@@ -179,12 +181,18 @@ export class ConnectionStore {
   }
 
   resolve(connectionId: string, modelOverride?: string): ResolvedNativeConnection {
+    return this.resolveSaved(connectionId, modelOverride, true);
+  }
+
+  private resolveSaved(connectionId: string, modelOverride: string | undefined, requireModel: boolean): ResolvedNativeConnection {
     this.assertLoaded();
     const parsed = nativeConnectionReadinessSchema.safeParse({ id: connectionId, ...(modelOverride !== undefined ? { model: modelOverride } : {}) });
     if (!parsed.success) throw new Error('请选择有效的 native 模型连接和模型。');
     const item = this.current(connectionId);
     if (this.options.isConnectionTesting?.(connectionId)) throw new Error('此连接正在读取模型或测试，请等待完成或取消请求后再使用。');
     if (!item.enabled) throw new Error('此模型连接已禁用，请在设置中启用或选择其他连接。');
+    const selectedModel = parsed.data.model ?? item.model;
+    if (requireModel && !model.safeParse(selectedModel).success) throw new Error('此连接尚未选择模型，请在设置中读取可用模型或填写模型 ID。');
     const baseURL = validateNativeBaseURL(item.baseURL, item.allowLoopbackHttp);
     let apiKey: string | undefined;
     if (item.auth.mode === 'env') apiKey = this.environment[item.auth.variable];
@@ -192,7 +200,7 @@ export class ConnectionStore {
     else if (item.ciphertext) apiKey = this.credentials.decrypt(item.ciphertext);
     if (!apiKey) throw new Error(item.auth.mode === 'env' ? '主进程未找到此连接指定的环境变量，请设置后重启应用。' : '此连接尚无可用凭据，请重新设置（本次内存凭据不会跨重启保留）。');
     if (!nativeCredentialMutationSchema.shape.secret.safeParse(apiKey).success) throw new Error('此连接的凭据格式无效，请重新设置。');
-    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, ...(item.authHeader ? { authHeader: item.authHeader } : {}), baseURL, model: parsed.data.model ?? item.model, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
+    return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, ...(item.authHeader ? { authHeader: item.authHeader } : {}), baseURL, model: selectedModel, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
   }
 
   /** Synchronous revision / activity check before a diagnostic acquires its lock. */
@@ -203,6 +211,16 @@ export class ConnectionStore {
     this.current(parsed.data.id, parsed.data.revision);
     this.assertInactive(parsed.data.id);
     return this.resolve(parsed.data.id);
+  }
+
+  /** Catalog discovery requires the same revision, credential and activity checks, but no generation model. */
+  resolveForModelList(input: { id: string; revision: number }): ResolvedNativeConnection {
+    this.assertLoaded();
+    const parsed = nativeConnectionReferenceSchema.safeParse(input);
+    if (!parsed.success) throw new Error('连接引用无效，请刷新后重试。');
+    this.current(parsed.data.id, parsed.data.revision);
+    this.assertInactive(parsed.data.id);
+    return this.resolveSaved(parsed.data.id, undefined, false);
   }
 
   private current(connectionId: string, expectedRevision?: number): StoredConnection {

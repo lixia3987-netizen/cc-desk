@@ -311,7 +311,7 @@ for (const target of targets) {
         const snapshot = await window.desktop.snapshot();
         return (await window.desktop.terminalSnapshot(snapshot.state.sessions[0].id)).chunks.map(chunk => chunk.data).join('');
       })).toContain(marker);
-      await page.getByRole('button', { name: '停止', exact: true }).click();
+      await page.getByLabel('终端操作', { exact: true }).click(); await page.getByRole('button', { name: '关闭终端', exact: true }).click();
       await expect(page.locator('.status-tag').first()).toContainText('已停止');
       await page.screenshot({ path: testInfo.outputPath('packaged-terminal.png') });
       await close();

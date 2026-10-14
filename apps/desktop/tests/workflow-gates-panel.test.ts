@@ -15,6 +15,9 @@ const render = (providerId: string) => renderToStaticMarkup(createElement(Workfl
 
 test('workflow creation exposes explicit gates and does not advertise unsupported Claude strict policies', () => {
   const native = render('native'), claude = render('claude');
+  assert.match(native, /class="workflow-create-view" hidden=""/);
+  assert.match(native, /新建工作流/);
+  assert.match(native, /进行中与待处理/);
   assert.match(native, /检查任务验收条件/);
   assert.match(native, /人工确认产出/);
   assert.match(native, /验收等待不会重新执行/);

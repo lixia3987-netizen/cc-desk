@@ -164,6 +164,9 @@ test('Claude model import previews multiple default models privately, cancels wi
     await preview.getByLabel('允许导入本地回环 HTTP', { exact: true }).check();
     await preview.getByRole('button', { name: '确认导入模型连接', exact: true }).click();
     await expect(preview).toHaveCount(0);
+    await expect(region).toContainText('退出应用后失效');
+    await expect(region.getByRole('button', { name: '编辑此连接', exact: true })).toBeEnabled();
+    await expect(region.getByRole('button', { name: '用于新会话', exact: true })).toBeEnabled();
     await expect(region.getByLabel('Native 模型协议', { exact: true })).toHaveCount(0);
     region = await goToConnections(page);
     await expect(region.locator('.connection-box')).toContainText('fixture-opus');
@@ -228,6 +231,7 @@ test('Claude model file selection imports API-key authentication and preserves i
     await expect(region.locator('details').filter({ hasText: '高级设置（价格与本地代理）' })).toHaveJSProperty('open', false);
     await region.getByLabel('Native 默认模型', { exact: true }).fill('fixture-edited-model');
     await region.getByRole('button', { name: '保存模型连接', exact: true }).click();
+    await region.getByRole('button', { name: '关闭编辑', exact: true }).click();
     await expect(region.locator('.connection-box')).toContainText('fixture-edited-model');
     expect((await page.evaluate(() => window.desktop.nativeConnections.list())).connections[0]).toMatchObject({ protocol: 'anthropic', authHeader: 'x-api-key', model: 'fixture-edited-model', ready: true });
     await region.getByRole('button', { name: '禁用', exact: true }).click();
@@ -293,10 +297,10 @@ test('Claude import keeps credential completion separate until the user opens th
     await expect(region.getByLabel('Native 模型协议', { exact: true })).toHaveCount(0);
     await expect(region.getByLabel('Native 新的 API Key', { exact: true })).toHaveCount(0);
     expect((await page.evaluate(() => window.desktop.nativeConnections.list())).connections[0]).toMatchObject({ protocol: 'anthropic', ready: false, credentialConfigured: false });
-    region = await goToConnections(page);
-    await expect(region.locator('.connection-box')).toContainText('fixture-needs-credential');
-    await expect(region.getByLabel('Native 新的 API Key', { exact: true })).toHaveCount(0);
-    await region.getByRole('button', { name: '编辑', exact: true }).click();
+    await expect(region.getByRole('button', { name: '用于新会话', exact: true })).toBeDisabled();
+    await region.getByRole('button', { name: '编辑此连接', exact: true }).click();
+    region = page.getByRole('region', { name: 'Native 模型连接', exact: true });
+    await expect(region.locator('.model-connection-card')).toHaveCount(0);
     await expect(region.getByLabel('Native 模型协议', { exact: true })).toHaveValue('anthropic');
     await expect(region.getByLabel('Native 默认模型', { exact: true })).toHaveValue('fixture-needs-credential');
     await expect(region.getByLabel('Native 新的 API Key', { exact: true })).toBeVisible();
@@ -353,6 +357,31 @@ test('leaving model import discards a late preview response without changing con
     await expect(page.getByRole('region', { name: 'Claude 模型导入预览', exact: true })).toHaveCount(0);
     await expect(reopened.getByRole('alert')).toHaveCount(0);
     expect(f.requests()).toHaveLength(0);
+  } finally { await app.close(); await f.dispose(); }
+});
+
+test('using an imported connection opens a Native draft without creating or sending a task', async () => {
+  const f = await fixture();
+  await fs.writeFile(path.join(f.configDirectory, 'settings.json'), JSON.stringify({ model: 'fixture-use-imported-model', env: {
+    ANTHROPIC_BASE_URL: f.baseURL, ANTHROPIC_API_KEY: 'imported-draft-fixture-key',
+  } }));
+  const app = await f.launch();
+  try {
+    const page = await app.firstWindow();
+    await openModels(page);
+    const region = await openImport(page);
+    await region.getByRole('button', { name: '从 Claude 默认配置导入', exact: true }).click();
+    const preview = page.getByRole('region', { name: 'Claude 模型导入预览', exact: true });
+    await preview.getByLabel('允许导入本地回环 HTTP', { exact: true }).check();
+    await preview.getByRole('button', { name: '确认导入模型连接', exact: true }).click();
+    const imported = (await page.evaluate(() => window.desktop.nativeConnections.list())).connections[0];
+    await region.getByRole('button', { name: '用于新会话', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '设置与连接', exact: true })).toHaveCount(0);
+    const draft = page.getByRole('region', { name: '新建会话', exact: true });
+    await expect(draft.getByLabel('模型连接', { exact: true })).toHaveValue(imported.id);
+    await expect(draft.getByLabel('提示词编辑器', { exact: true })).toHaveValue('');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toEqual([]);
+    expect(f.requests().every(request => request.method === 'GET')).toBe(true);
   } finally { await app.close(); await f.dispose(); }
 });
 

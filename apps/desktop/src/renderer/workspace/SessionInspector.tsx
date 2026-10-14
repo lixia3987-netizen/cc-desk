@@ -2,9 +2,9 @@ import type { ExecutionDescriptor } from '../../shared/execution';
 import type { Session } from '../../shared/types';
 import { executionUnavailable } from '../EngineConfiguration';
 import { Activity, GitBranch, Stethoscope, Workflow } from 'lucide-react';
-import { useLayoutEffect, useRef } from 'react';
+import { useLayoutEffect, useRef, type CSSProperties } from 'react';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../../shared/panel-drafts';
-import { inspectorPanelIds, type InspectorPanelId } from '../layout-preferences';
+import { inspectorPanelIds, inspectorWidthBounds, type InspectorPanelId } from '../layout-preferences';
 import { DiagnosticsPanel, GitPanel } from '../ProjectPanels';
 import { WorkflowPanel } from '../WorkflowPanel';
 import { InspectorPanel } from './InspectorPanel';
@@ -30,8 +30,7 @@ export function SessionInspector(props: Props) {
   const layout = useInspectorPanels();
   const openingPanel = useRef<InspectorPanelId | null>(null);
   const empty = layout.openPanels.length === 0;
-  // Keep keyed, visited panels mounted while matching keyboard order to the dock.
-  const orderedPanels = [...layout.openPanels, ...inspectorPanelIds.filter(id => !layout.openPanels.includes(id))];
+  const resizing = useRef<{ x: number; width: number } | null>(null);
   useLayoutEffect(() => {
     const id = openingPanel.current;
     openingPanel.current = null;
@@ -48,7 +47,7 @@ export function SessionInspector(props: Props) {
     document.getElementById(`inspector-toggle-${id}`)?.focus();
   };
 
-  return <aside id="session-inspector" aria-label="会话详情" className="inspector" data-empty={empty} data-count={layout.openPanels.length} onKeyDown={event => {
+  return <aside id="session-inspector" aria-label="会话详情" className="inspector" style={{ '--tool-panel-width': `${layout.width}px` } as CSSProperties} data-empty={empty} data-count={layout.openPanels.length} onKeyDown={event => {
     if (event.key !== 'Escape' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || event.nativeEvent.isComposing) return;
     if (document.querySelector('[role="dialog"]') || !(event.target instanceof Element)) return;
     const focusedPanel = event.target.closest<HTMLElement>('.inspector-panel')?.dataset.panel;
@@ -56,8 +55,14 @@ export function SessionInspector(props: Props) {
     if (!id) return;
     event.preventDefault(); event.stopPropagation(); close(id);
   }}>
+    {!empty && <div className="inspector-resize" role="separator" tabIndex={0} aria-label="调整会话详情宽度" aria-orientation="vertical"
+      aria-valuemin={inspectorWidthBounds.min} aria-valuemax={inspectorWidthBounds.max} aria-valuenow={layout.width}
+      onPointerDown={event => { if (event.button !== 0) return; resizing.current = { x: event.clientX, width: layout.width }; event.currentTarget.setPointerCapture(event.pointerId); event.preventDefault(); }}
+      onPointerMove={event => { const start = resizing.current; if (start) layout.resize(start.width + start.x - event.clientX); }}
+      onPointerUp={() => { resizing.current = null; }} onLostPointerCapture={() => { resizing.current = null; }}
+      onKeyDown={event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); layout.resize(event.key === 'Home' ? inspectorWidthBounds.min : event.key === 'End' ? inspectorWidthBounds.max : layout.width + (event.key === 'ArrowLeft' ? 20 : -20)); }} />}
     <div className="inspector-dock" hidden={empty}>
-      {orderedPanels.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
+      {inspectorPanelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
         {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
         {/* Saving a workflow draft does not require a live CLI or model credential. */}

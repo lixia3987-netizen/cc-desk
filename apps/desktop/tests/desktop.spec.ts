@@ -33,7 +33,7 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     await page.getByRole('button',{name:/已验证的项目终端.*运行中/}).click();
     await expect(page.locator('.status-tag')).toContainText('运行中');
     await page.screenshot({path:documentationPath('screenshots', 'terminal.png')});
-    await page.getByRole('button',{name:'停止',exact:true}).click();
+    await page.getByLabel('终端操作',{exact:true}).click();await page.getByRole('button',{name:'关闭终端',exact:true}).click();
     await expect(page.locator('.status-tag')).toContainText('已停止');
     await sessionAction(page,'已验证的项目终端','归档会话');
     await page.getByRole('dialog',{name:'归档会话',exact:true}).getByRole('button',{name:'确认归档',exact:true}).click();
@@ -151,9 +151,9 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.getByLabel('代码审阅反馈')).toHaveValue('回合结束刷新时保留我的审阅');
     await expect(page.locator('.changed-files .selected')).toContainText('example.ts');
     await page.screenshot({path:documentationPath('screenshots', 'structured-chat.png')});
-    await page.getByRole('button',{name:'工作流',exact:true}).click();await page.getByLabel('工作流目标').fill('验证阶段执行与人工继续');await page.getByRole('button',{name:'创建工作流',exact:true}).click();await page.getByRole('button',{name:'开始',exact:true}).click();
+    await page.getByRole('button',{name:'工作流',exact:true}).click();await page.getByRole('button',{name:'新建工作流',exact:true}).click();await page.getByLabel('工作流目标').fill('验证阶段执行与人工继续');await page.getByRole('button',{name:'创建工作流',exact:true}).click();await page.getByRole('button',{name:'开始',exact:true}).click();
     await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('等待继续');await expect(page.locator('.workflow-stage.completed')).toHaveCount(1);await page.getByRole('button',{name:'继续',exact:true}).click();
-    await expect(page.locator('.workflow-stage.completed')).toHaveCount(2);await page.getByRole('button',{name:'继续',exact:true}).click();await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('已完成');await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
+    await expect(page.locator('.workflow-stage.completed')).toHaveCount(2);await page.getByRole('button',{name:'继续',exact:true}).click();await page.getByRole('button',{name:/^已结束（/}).click();await expect(page.locator('.workflow-run>header .status-tag')).toHaveText('已完成');await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
     await page.screenshot({path:documentationPath('screenshots', 'workflow.png')});
     const workflowPanel=page.locator('#session-inspector .panel-content').filter({has:page.getByLabel('全部工作流记录',{exact:true})});
     const workflowExport=path.join(directory,'workflow-export.json');
@@ -163,7 +163,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(workflowPanel.getByRole('status')).toHaveText('工作流记录已导出');
     expect(JSON.parse(await fs.readFile(workflowExport,'utf8')).runs[0].stages).toHaveLength(3);
     await page.keyboard.press(process.platform==='darwin'?'Meta+k':'Control+k');await expect(page.getByRole('dialog',{name:'命令面板'})).toBeVisible();await page.getByLabel('查找命令与会话').fill('会话 B');await page.locator('.palette-results button').filter({hasText:'会话 B'}).click();await expect(page.getByRole('heading',{name:'会话 B',exact:true})).toBeVisible();
-    await page.getByLabel('全部工作流记录').check();await expect(page.locator('.workflow-run')).toHaveCount(1);await page.getByRole('button',{name:'删除记录',exact:true}).click();await page.getByRole('button',{name:'确认删除工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(0);
+    await page.getByLabel('全部工作流记录').check();await page.getByRole('button',{name:/^已结束（/}).click();await expect(page.locator('.workflow-run')).toHaveCount(1);await page.getByRole('button',{name:'删除记录',exact:true}).click();await page.getByRole('button',{name:'确认删除工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(0);
     await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(project,'example.ts'));
     await page.getByRole('button',{name:'添加附件',exact:true}).click();await page.getByLabel('提示词编辑器').fill('');await expect(page.getByRole('button',{name:'发送任务',exact:true})).toBeEnabled();await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.locator('.chat-message.assistant')).toHaveCount(1);await expect(page.locator('.attachment-chips')).toHaveCount(0);
     // Notification clicks use this same main-process selection/state path, across all filters.

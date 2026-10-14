@@ -9,7 +9,7 @@ import type { AddressInfo } from 'node:net';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
+import { openSessionSettings } from './helpers/session-settings';
 import { submitNewSession } from './helpers/session-ui';
 // @ts-expect-error Test-only ESM fixture has no declarations.
 import { anthropicEvents, anthropicSse } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
@@ -161,7 +161,7 @@ test('session policy uses saved defaults and isolates custom budgets from an uns
     const sessionId = (await page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId!;
     await expect.poll(async () => (await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId)).taskState).toBe('completed');
     const dialog = await openSessionSettings(page, 'context');
-    await expect(dialog.getByLabel('会话配置来源', { exact: true })).toHaveValue('defaults');
+    await expect(dialog.getByLabel('会话运行策略来源', { exact: true })).toHaveValue('defaults');
     await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('24000');
     await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toBeDisabled();
     await dialog.getByRole('radio', { name: '新会话默认', exact: true }).click();
@@ -176,7 +176,7 @@ test('session policy uses saved defaults and isolates custom budgets from an uns
     expect(inheritedResult.success).toBe(true);
     const inheritedSnapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
     expect(inheritedSnapshot.context?.budget?.maxInputTokens).toBe(24000);
-    await dialog.getByLabel('会话配置来源', { exact: true }).selectOption('custom');
+    await dialog.getByLabel('会话运行策略来源', { exact: true }).selectOption('custom');
     await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('model');
     await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
     await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
@@ -193,7 +193,13 @@ test('session policy uses saved defaults and isolates custom budgets from an uns
     expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(3);
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
     await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
-    await closeSessionSettings(page);
+    await dialog.getByRole('button', { name: '关闭弹窗', exact: true }).click();
+    await expect(dialog.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');
+    await dialog.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    const persisted = (await page.evaluate(() => window.desktop.snapshot())).state;
+    expect(persisted.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
+    expect(persisted.sessions.find(item => item.id === sessionId)!.engineConfig.options.maxInputTokens).toBe(22000);
     await assertPrivate(page, f.data);
   } finally { await closeNativeApp(app); await f.dispose(); }
 });

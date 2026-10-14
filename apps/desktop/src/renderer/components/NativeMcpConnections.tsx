@@ -41,7 +41,7 @@ export function submitMcpCredential(api: Pick<NativeMcpConnectionsAPI, 'setCrede
   } finally { input.value = ''; }
 }
 
-export function NativeMcpConnections({ disabled = false }: { disabled?: boolean }) {
+export function NativeMcpConnections({ disabled = false, active = true, onDirtyChange }: { disabled?: boolean; active?: boolean; onDirtyChange?(dirty: boolean): void }) {
   const api = typeof window === 'undefined' ? undefined : window.desktop.nativeMcp;
   const [data, setData] = useState<NativeMcpConnectionList>();
   const [draft, setDraft] = useState<NativeMcpConnectionInput>();
@@ -66,6 +66,7 @@ export function NativeMcpConnections({ disabled = false }: { disabled?: boolean 
     return () => { mounted.current = false; generation.current++; if (credential.current) credential.current.value = ''; };
   }, [refresh]);
   const clearSecret = () => { if (credential.current) credential.current.value = ''; };
+  useEffect(() => { if (!active) clearSecret(); }, [active]);
   const replaceDraft = (next?: NativeMcpConnectionInput) => {
     setDraft(next);
     setArgvText(JSON.stringify(next?.transport === 'stdio' ? next.argv : [], null, 2));
@@ -89,6 +90,9 @@ export function NativeMcpConnections({ disabled = false }: { disabled?: boolean 
     void action(async () => { const next = await api.upsert(input); if (mounted.current) { replaceDraft(editable(next)); setNotice('MCP 连接已保存。'); } });
   };
   const saved = draft?.id ? data?.connections.find(item => item.id === draft.id) : undefined;
+  const dirty = Boolean(draft && (!saved || JSON.stringify(editable(saved)) !== JSON.stringify(draft)
+    || draft.transport === 'stdio' && (argvText !== JSON.stringify(draft.argv, null, 2) || environmentText !== JSON.stringify(draft.environment, null, 2))));
+  useEffect(() => { onDirtyChange?.(dirty); }, [dirty, onDirtyChange]);
   const credentialReady = saved && draft && draft.transport !== 'stdio' && JSON.stringify(editable(saved)) === JSON.stringify(draft);
   const saveCredential = () => {
     if (!draft || !credential.current || !api || !credentialReady) return;
@@ -99,7 +103,8 @@ export function NativeMcpConnections({ disabled = false }: { disabled?: boolean 
     });
   };
   const locked = disabled || busy || Boolean(data?.error);
-  return <section className="settings-section native-connections native-mcp-connections" aria-label="Native MCP 连接">
+  if (!active) return null;
+  return <section className="settings-section native-connections native-mcp-connections" aria-label="Native MCP 连接" onKeyDown={event => { if (event.key === 'Enter' && event.target instanceof HTMLInputElement) event.preventDefault(); }}>
     <div className="settings-card-heading"><h4>Native Agent Alpha · MCP 连接</h4><button type="button" className="secondary compact" disabled={disabled || busy || !api} onClick={() => { clearSecret(); void action(async () => {}); }}>刷新</button></div>
     <p className="hint">支持 MCP HTTP 2026-07-28、2025-11-25 Streamable HTTP 同步工具，以及 2025-11-25 本地 stdio。旧 HTTP+SSE 暂不支持，协议版本不会自动回退。在会话运行配置中明确选择后，发送任务才会连接服务；默认引擎仍为 Claude。</p>
     <p className="hint">打开设置、刷新和保存只操作本机配置，不访问远端或启动程序。stdio 每回合启动本地服务前需要审批；每次 MCP 工具调用也需要独立审批。</p>
@@ -113,14 +118,15 @@ export function NativeMcpConnections({ disabled = false }: { disabled?: boolean 
       <small>连接 ID：{item.id}<br/>{item.transport === 'stdio' ? '环境：仅按变量名映射；工作目录使用回合项目根目录' : <>认证：{item.auth.mode === 'none' ? '无认证' : item.auth.mode === 'env' ? 'Bearer 环境变量 ' + item.auth.variable : item.auth.mode === 'memory' ? 'Bearer 仅本次内存' : 'Bearer 系统加密保存'}{item.credentialConfigured ? '' : ' · 尚未设置凭据'}</>}</small>
       {item.error && <p className="hint">{item.error}</p>}
       <div className="settings-footer-actions">
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => select(editable(item))}>编辑</button>
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { const next = await api!.upsert({ ...editable(item), enabled: !item.enabled }); if (mounted.current && draft?.id === next.id) replaceDraft(editable(next)); }); }}>{item.enabled ? '禁用' : '启用'}</button>
-        <button type="button" className="secondary compact" disabled={locked} onClick={() => { clearSecret(); void action(async () => { await api!.remove({ id: item.id, revision: item.revision }); if (mounted.current && draft?.id === item.id) replaceDraft(); }); }}>删除</button>
+        <button type="button" className="secondary compact" disabled={locked || dirty} onClick={() => select(editable(item))}>编辑</button>
+        <button type="button" className="secondary compact" disabled={locked || dirty} onClick={() => { clearSecret(); void action(async () => { const next = await api!.upsert({ ...editable(item), enabled: !item.enabled }); if (mounted.current && draft?.id === next.id) replaceDraft(editable(next)); }); }}>{item.enabled ? '禁用' : '启用'}</button>
+        <button type="button" className="secondary compact" disabled={locked || dirty} onClick={() => { clearSecret(); void action(async () => { await api!.remove({ id: item.id, revision: item.revision }); if (mounted.current && draft?.id === item.id) replaceDraft(); }); }}>删除</button>
       </div>
     </div>)}
     {api && data && !data.connections.length && !data.error && <p className="hint">尚无 MCP 连接。新增服务不会自动启用到会话。</p>}
     {api && !draft && <button type="button" className="secondary" disabled={locked || !data} onClick={() => select(emptyConnection())}>新增 MCP 连接</button>}
     {draft && <div className="native-connection-editor">
+      {dirty && <p className="hint" role="status">MCP 连接有未保存的修改，请先保存或关闭编辑，再操作连接列表。</p>}
       <h4>{draft.id ? '编辑 MCP 连接' : '新增 MCP 连接'}</h4>
       <label>连接名称<input aria-label="MCP 连接名称" value={draft.name} maxLength={200} disabled={locked} onChange={event => change({ ...draft, name: event.target.value })}/></label>
       <label>传输方式<select aria-label="MCP 传输方式" value={draft.transport ?? 'http'} disabled={locked} onChange={event => select(switchMcpTransport(draft, event.target.value as 'http' | 'stdio'))}>
