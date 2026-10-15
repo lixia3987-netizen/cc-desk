@@ -59,7 +59,7 @@ Import-Module -Name ([IO.Path]::Combine($PSHOME,'Modules','CimCmdlets','CimCmdle
 [Console]::Out.WriteLine('{"type":"progress","phase":"windows_snapshot","code":"running","snapshots":0,"terminationAttempts":0,"liveProcesses":0,"nativeCode":0,"helperStage":"input"}')
 $specifications=@(ConvertFrom-Json -InputObject ${input === 'stdin' ? '([Console]::In.ReadToEnd())' : `'${serialized}'`})
 $anchors=New-Object 'System.Collections.Generic.HashSet[int]'
-$specs=@{}; $known=@{}; $handles=@{}; $bound=@{}; $minimum=@{}
+$specs=@{}; $known=@{}; $handles=@{}; $bound=@{}; $minimum=@{}; $nativeExited=@{}
 $phase='windows_snapshot'; $failure='running'; $nativeCode=0; $operation=$null; $identityFailure=$null
 $helperStage='compile'
 $snapshots=0; $attempts=0; $live=0; $quiet=0; $released=$false
@@ -99,6 +99,16 @@ public static class NativeOwnedProcess {
     elseif($null -ne $spec.spawnStartedAt) { $minimum[$key]=[DateTimeOffset]::FromUnixTimeMilliseconds([long]$spec.spawnStartedAt).UtcDateTime }
   }
   do {
+    # 先用保留的句柄证明既有父代均已退出，再开始后置快照。
+    # 快照没有扩展已观察谱系时，才可证明这些锚点在退出后的扫描中保持闭合。
+    $closedBeforeSnapshot=$true
+    $anchorCountBeforeSnapshot=$anchors.Count
+    foreach($number in $anchors) {
+      $key=[string]$number
+      if($handles.ContainsKey($key)) {
+        if([NativeOwnedProcess]::WaitForSingleObject($handles[$key],0) -ne 0) { $closedBeforeSnapshot=$false }
+      } elseif(!$nativeExited.ContainsKey($key)) { $closedBeforeSnapshot=$false }
+    }
     $phase='windows_snapshot'; $helperStage='snapshot'; $operation='query_snapshot'; Report-Progress
     $all=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process')
     # windows-tree:after-snapshot
@@ -151,6 +161,8 @@ public static class NativeOwnedProcess {
       if($handle -eq [IntPtr]::Zero) {
         $nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
         if($nativeCode -eq 87) {
+          # 原生无效 PID 证明此前已退出；后置快照仍须检查同 PID 的身份与活状态。
+          $nativeExited[$key]=$true
           if(!$known.ContainsKey($key)) { $known[$key]='tombstone'; Report-Anchor $number 'tombstone' }
           continue
         }
@@ -218,8 +230,17 @@ public static class NativeOwnedProcess {
         $operation='verify_termination'
         if([NativeOwnedProcess]::WaitForSingleObject($handle,$wait) -ne 0) { $failure='os_error'; throw 'Cannot terminate owned handle.' }
       }
+      # TerminateProcess 成功只表示终止已启动，后续等待仍绑定同一进程句柄。
+      # 小段原生等待不增加总期限，避免用昂贵的全量 CIM 查询轮询异步退出。
+      $wait=[uint32][Math]::Max(0,[Math]::Min(250,[Math]::Floor(($deadline-[DateTime]::UtcNow).TotalMilliseconds)))
+      $operation='verify_termination'
+      $state=[NativeOwnedProcess]::WaitForSingleObject($handle,$wait)
+      if($state -ne 0 -and $state -ne 258) { $failure='os_error'; throw 'Cannot verify owned termination.' }
     }
     Report-Progress
+    if($live -eq 0 -and $closedBeforeSnapshot -and $anchors.Count -eq $anchorCountBeforeSnapshot) {
+      $released=$true; break
+    }
     if($live -eq 0) { $quiet++ } else { $quiet=0 }
     if($quiet -ge 2) { $released=$true; break }
     Start-Sleep -Milliseconds 25

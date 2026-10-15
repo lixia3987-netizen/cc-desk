@@ -57,8 +57,11 @@ export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawn
 $ErrorActionPreference='Stop'
 $cleanupPhase='compile_handle_api'
 $rootHandle=[IntPtr]::Zero
+$handles=@{}
+$nativeExited=@{}
 trap {
   if($rootHandle -ne [IntPtr]::Zero) { [void][OwnedProcessHandle]::CloseHandle($rootHandle) }
+  foreach($handle in @($handles.Values)) { [void][OwnedProcessHandle]::CloseHandle($handle) }
   [Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:'+$cleanupPhase)
   exit 1
 }
@@ -101,6 +104,15 @@ $known[[string]$rootPid]=$earliest.ToString('yyyyMMddHHmmssffffff')
 $anchorBirths[[string]$rootPid]=$earliest
 $deadline=[DateTime]::UtcNow.AddSeconds(5)
 do {
+  # 持有所有已确认的句柄直到树释放，既证明退出，也阻止父代 PID 在扫描间被复用。
+  $closedBeforeSnapshot=$true
+  $anchorCountBeforeSnapshot=$anchors.Count
+  foreach($anchor in $anchors) {
+    $key=[string]$anchor
+    if($handles.ContainsKey($key)) {
+      if([OwnedProcessHandle]::WaitForSingleObject($handles[$key],0) -ne 0) { $closedBeforeSnapshot=$false }
+    } elseif(!$nativeExited.ContainsKey($key)) { $closedBeforeSnapshot=$false }
+  }
   $cleanupPhase='snapshot'
   $all=@(Get-CimInstance Win32_Process)
   $current=@{}
@@ -144,19 +156,26 @@ do {
       } else { $known[$key]='exited-before-inspection' }
     }
   }
-  if($targets.Count -eq 0) {
+  if($targets.Count -eq 0 -or ($closedBeforeSnapshot -and $anchors.Count -eq $anchorCountBeforeSnapshot)) {
+    $cleanupPhase='confirm_owned_release'
+    foreach($handle in @($handles.Values)) {
+      if([OwnedProcessHandle]::WaitForSingleObject($handle,0) -ne 0) { throw 'An owned process is still live.' }
+    }
     if($rootHandle -ne [IntPtr]::Zero) {
       $cleanupPhase='confirm_root_release'
       if([OwnedProcessHandle]::WaitForSingleObject($rootHandle,0) -ne 0) { throw 'The confirmed root is still live.' }
       [void][OwnedProcessHandle]::CloseHandle($rootHandle); $rootHandle=[IntPtr]::Zero
     }
+    foreach($handle in @($handles.Values)) { [void][OwnedProcessHandle]::CloseHandle($handle) }
     exit 0
   }
   foreach($processItem in $targets) {
     $cleanupPhase='open_owned_handle'
-    $handle=[OwnedProcessHandle]::OpenProcess(0x101001,$false,[int]$processItem.ProcessId)
+    $key=[string]$processItem.ProcessId
+    $retained=$handles.ContainsKey($key)
+    $handle=if($retained) { $handles[$key] } else { [OwnedProcessHandle]::OpenProcess(0x101001,$false,[int]$processItem.ProcessId) }
     if($handle -eq [IntPtr]::Zero) {
-      if([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { continue }
+      if([Runtime.InteropServices.Marshal]::GetLastWin32Error() -eq 87) { $nativeExited[$key]=$true; continue }
       throw 'Cannot open owned process for termination.'
     }
     try {
@@ -166,6 +185,7 @@ do {
       $identity=[DateTime]::FromFileTimeUtc($created).ToString('yyyyMMddHHmmssffffff')
       $cleanupPhase='verify_handle_identity'
       if($known[[string]$processItem.ProcessId] -ne $identity) { throw 'Process identity changed before termination.' }
+      $handles[$key]=$handle; $retained=$true
       $cleanupPhase='terminate_owned_handle'
       if($exited -eq 0 -and ![OwnedProcessHandle]::TerminateProcess($handle,1)) {
         # A parent/job can terminate this process after GetProcessTimes. Prove
@@ -174,14 +194,17 @@ do {
         $remaining=[uint32][Math]::Max(0,[Math]::Min(250,[Math]::Ceiling(($deadline-[DateTime]::UtcNow).TotalMilliseconds)))
         if([OwnedProcessHandle]::WaitForSingleObject($handle,$remaining) -ne 0) { throw 'Owned process termination failed and exit is unconfirmed.' }
       }
-    } finally { [void][OwnedProcessHandle]::CloseHandle($handle) }
-  }
-  if($rootHandle -ne [IntPtr]::Zero -and [OwnedProcessHandle]::WaitForSingleObject($rootHandle,0) -eq 0) {
-    [void][OwnedProcessHandle]::CloseHandle($rootHandle); $rootHandle=[IntPtr]::Zero
+      # 成功发起终止后，仍须从原句柄观察退出；等待始终受现有总期限约束。
+      $remaining=[uint32][Math]::Max(0,[Math]::Min(250,[Math]::Ceiling(($deadline-[DateTime]::UtcNow).TotalMilliseconds)))
+      $state=[OwnedProcessHandle]::WaitForSingleObject($handle,$remaining)
+      if($state -ne 0 -and $state -ne 258) { throw 'Owned process exit cannot be queried.' }
+    } finally { if(!$retained) { [void][OwnedProcessHandle]::CloseHandle($handle) } }
   }
   Start-Sleep -Milliseconds 25
 } while([DateTime]::UtcNow -lt $deadline)
 [Console]::Error.WriteLine('CLAUDE_TREE_CLEANUP_FAILED:tree_deadline')
+if($rootHandle -ne [IntPtr]::Zero) { [void][OwnedProcessHandle]::CloseHandle($rootHandle) }
+foreach($handle in @($handles.Values)) { [void][OwnedProcessHandle]::CloseHandle($handle) }
 exit 1
 `;
 }

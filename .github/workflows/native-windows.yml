@@ -1,0 +1,185 @@
+name: Windows 原生执行回归
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/native-windows.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'patches/node-pty-*.patch'
+      - 'packages/*/package.json'
+      - 'packages/*/tsconfig.json'
+      - 'packages/agent-core/src/**'
+      - 'packages/contracts/src/**'
+      - 'packages/agent-node/src/process-supervisor.ts'
+      - 'packages/agent-node/src/windows-*.ts'
+      - 'packages/agent-node/tests/process-supervisor.test.mjs'
+      - 'packages/agent-node/tests/process-windows-*.test.mjs'
+      - 'packages/agent-node/tests/windows-command-job.test.mjs'
+      - 'packages/agent-node/tests/helpers/**'
+      - 'packages/agent-node/tests/fixtures/responses-server.mjs'
+      - 'packages/engine-claude/src/connection.ts'
+      - 'packages/engine-claude/src/terminal-launcher.ts'
+      - 'packages/engine-claude/src/runtime.ts'
+      - 'packages/engine-claude/tests/connection-windows.test.mjs'
+      - 'apps/desktop/package.json'
+      - 'apps/desktop/tsconfig.json'
+      - 'apps/desktop/playwright.config.ts'
+      - 'apps/desktop/scripts/prepare-native.mjs'
+      - 'apps/desktop/scripts/prepare-node-pty-windows.mjs'
+      - 'apps/desktop/scripts/build.mjs'
+      - 'apps/desktop/scripts/run-desktop-tests.mjs'
+      - 'apps/desktop/src/main/runtime.ts'
+      - 'apps/desktop/src/main/execution/**'
+      - 'apps/desktop/src/main/engines/native/**'
+      - 'apps/desktop/tests/native-build.test.ts'
+      - 'apps/desktop/tests/runtime.test.ts'
+      - 'apps/desktop/tests/windows-pty-resources.test.ts'
+      - 'apps/desktop/tests/native-agent.spec.ts'
+      - 'apps/desktop/tests/native-multi-agent.spec.ts'
+      - 'apps/desktop/tests/helpers/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native-windows:
+    runs-on: windows-2025
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: 确认 Windows x64 执行环境
+        run: |
+          New-Item -ItemType Directory -Force test-results/windows-native | Out-Null
+          node -e "if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Expected a real Windows x64 runner'); console.log(JSON.stringify({node:process.version,platform:process.platform,arch:process.arch}))"
+          exit $LASTEXITCODE
+      - name: 安装锁定依赖并编译真实 ConPTY 补丁
+        id: install
+        timeout-minutes: 10
+        # 沿用生产 postinstall 的源码哈希、编译和资源校验；不接受预编译回退。
+        run: |
+          npm ci 2>&1 | Tee-Object -FilePath test-results/windows-native/install.log
+          exit $LASTEXITCODE
+      - name: 在 Node 和 Electron 中验证真实补丁模块
+        id: native
+        timeout-minutes: 2
+        run: |
+          node --input-type=module -e "import path from 'node:path'; import {createRequire} from 'node:module'; import {verifyBuiltConpty,verifyConptyResources} from './apps/desktop/scripts/prepare-node-pty-windows.mjs'; const require=createRequire(import.meta.url); const root=path.dirname(require.resolve('node-pty/package.json')); await verifyConptyResources(root); verifyBuiltConpty(root); verifyBuiltConpty(root,require('electron'),true);" 2>&1 | Tee-Object -FilePath test-results/windows-native/native-module.log
+          exit $LASTEXITCODE
+      - name: 记录已验证原生产物的来源与哈希
+        id: native_artifacts
+        if: ${{ always() && steps.native.outcome == 'success' }}
+        env:
+          CC_DESK_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          @'
+          import assert from 'node:assert/strict';
+          import fs from 'node:fs/promises';
+          import path from 'node:path';
+          import { createRequire } from 'node:module';
+          import { execFileSync } from 'node:child_process';
+          import { nodePtyPatch, sha256 } from './apps/desktop/scripts/prepare-node-pty-windows.mjs';
+          const require = createRequire(import.meta.url);
+          const root = path.dirname(require.resolve('node-pty/package.json'));
+          const output = 'test-results/windows-native-binaries';
+          const metadata = JSON.parse(await fs.readFile(path.join(root, 'package.json'), 'utf8'));
+          assert.equal(process.platform, 'win32');
+          assert.equal(process.arch, 'x64');
+          assert.equal(metadata.version, nodePtyPatch.version);
+          const checkedOutSha = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+          for (const sha of [checkedOutSha, process.env.GITHUB_SHA, process.env.CC_DESK_HEAD_SHA]) assert.match(sha ?? '', /^[a-f0-9]{40}$/);
+          assert.equal(checkedOutSha, process.env.GITHUB_SHA);
+          const sources = [];
+          for (const [relative, pinned] of Object.entries(nodePtyPatch.files)) {
+            const digest = sha256(await fs.readFile(path.join(root, relative)));
+            assert.equal(digest, pinned.after, relative);
+            sources.push({ path: relative, sha256: digest });
+          }
+          const artifacts = [];
+          for (const relative of ['conpty.node', 'conpty_console_list.node', 'conpty/conpty.dll', 'conpty/OpenConsole.exe']) {
+            const bytes = await fs.readFile(path.join(root, 'build/Release', relative));
+            assert.ok(bytes.length > 0, relative);
+            const target = path.join(output, relative);
+            await fs.mkdir(path.dirname(target), { recursive: true });
+            await fs.writeFile(target, bytes);
+            artifacts.push({ path: relative, sha256: sha256(bytes), bytes: bytes.length });
+          }
+          const patch = 'patches/node-pty-1.1.0-conpty.patch';
+          const provenance = { version: 1, candidateSha: process.env.GITHUB_SHA, headSha: process.env.CC_DESK_HEAD_SHA, checkedOutSha,
+            nodeVersion: process.version, platform: process.platform, architecture: process.arch, nodePtyVersion: metadata.version,
+            conptyFix: 2, patch: { path: patch, sha256: sha256(await fs.readFile(patch)) }, sources, artifacts };
+          await fs.writeFile(path.join(output, 'provenance.json'), JSON.stringify(provenance, null, 2) + '\n');
+          '@ | node --input-type=module
+          exit $LASTEXITCODE
+      - name: 构建全部本地包
+        id: packages
+        timeout-minutes: 5
+        run: |
+          npm run build:packages 2>&1 | Tee-Object -FilePath test-results/windows-native/packages.log
+          exit $LASTEXITCODE
+      - name: 验证真实 Windows Job、监督器与 CIM 清理
+        timeout-minutes: 10
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap packages/agent-node/tests/process-supervisor.test.mjs packages/agent-node/tests/process-windows-protocol.test.mjs packages/agent-node/tests/process-windows-job-integration.test.mjs packages/agent-node/tests/windows-command-job.test.mjs packages/agent-node/tests/process-windows-tree.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/agent-node.tap
+          exit $LASTEXITCODE
+      - name: 验证真实 Claude Windows 后代进程清理
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
+        timeout-minutes: 5
+        # 独立执行后续检查以保留完整失败证据；前一步失败仍会使作业失败。
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap packages/engine-claude/tests/connection-windows.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/engine-claude.tap
+          exit $LASTEXITCODE
+      - name: 验证补丁约束、真实 PTY 释放与运行时
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/desktop/tests/native-build.test.ts apps/desktop/tests/windows-pty-resources.test.ts apps/desktop/tests/runtime.test.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/desktop-runtime.tap
+          exit $LASTEXITCODE
+      - name: 构建生产桌面入口
+        id: production
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          npm run build --workspace claude-workbench 2>&1 | Tee-Object -FilePath test-results/windows-native/production-build.log
+          exit $LASTEXITCODE
+      - name: 验证物理 Electron Worker、委派、取消与命令审批
+        if: ${{ !cancelled() && steps.production.outcome == 'success' }}
+        timeout-minutes: 10
+        # 使用本地 HTTP 测试服务和临时凭据，覆盖物理进程链路；不冒充真实模型回归。
+        run: |
+          npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
+          exit $LASTEXITCODE
+      - name: 保留原生验证日志和失败轨迹
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: native-windows-x64-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            test-results/windows-native/**
+            test-results/desktop/**
+      - name: 保留已验证的真实 Windows 原生构建产物
+        uses: actions/upload-artifact@v4
+        if: ${{ always() && steps.native.outcome == 'success' && steps.native_artifacts.outcome == 'success' }}
+        with:
+          name: native-windows-x64-binaries-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: test-results/windows-native-binaries/**

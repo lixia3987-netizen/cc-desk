@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { initializeEngineeringBatch, generateEngineeringReport } from '../native-eval-engineering-reports.mjs';
 import { verifyEngineeringRun } from '../native-eval-engineering-runner.mjs';
+import { prepareEngineeringDependencies } from './helpers/engineering-dependencies.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const suite = path.join(repository, 'evals/native-engineering/v1');
@@ -25,20 +26,6 @@ function git(cwd, args) {
   return result.stdout.trim();
 }
 
-async function linkInstalledDependencies(candidate) {
-  const destination = path.join(candidate, 'node_modules');
-  await fs.mkdir(destination);
-  for (const name of await fs.readdir(path.join(repository, 'node_modules'))) {
-    if (name === '@cc-desk' || name === 'claude-workbench') continue;
-    await fs.symlink(path.join(repository, 'node_modules', name), path.join(destination, name), 'junction');
-  }
-  await fs.mkdir(path.join(destination, '@cc-desk'));
-  for (const name of ['contracts', 'engine-claude', 'agent-core', 'agent-node']) {
-    await fs.symlink(path.join(candidate, 'packages', name), path.join(destination, '@cc-desk', name), 'junction');
-  }
-  await fs.symlink(path.join(candidate, 'apps/desktop'), path.join(destination, 'claude-workbench'), 'junction');
-}
-
 async function fixture(t) {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'native-engineering-integration-'));
   const candidate = path.join(parent, 'candidate'), batch = path.join(parent, 'operator-batch');
@@ -49,7 +36,7 @@ async function fixture(t) {
   });
   git(repository, ['worktree', 'add', '--detach', candidate, baseline]);
   registered = true;
-  await linkInstalledDependencies(candidate);
+  await prepareEngineeringDependencies(repository, candidate);
   await fs.copyFile(path.join(suite, '01-snapshot-refresh/TASK.md'), path.join(candidate, 'TASK.md'));
   git(candidate, ['apply', path.join(suite, '01-snapshot-refresh/injection.patch')]);
   git(candidate, ['apply', path.join(suite, '01-snapshot-refresh/reference.patch')]);

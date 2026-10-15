@@ -85,6 +85,78 @@ ${buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)}`;
   }
 });
 
+test('Windows cleanup proves closure with one post-exit snapshot even when CIM retains exited rows', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-closed-snapshot-'));
+  const ready = path.join(directory, 'ready');
+  const spawnStartedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  const spawnCompletedAt = Date.now();
+  try {
+    await until(() => exists(ready), 'fixture process must start');
+    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000).replace(
+      '# windows-tree:after-snapshot',
+      `# windows-tree:after-snapshot
+if($snapshots -ge 2) { throw 'Closure must not require another full CIM snapshot.' }
+if($snapshots -eq 0) { $retainedRows=@($all | Where-Object { [int]$_.ProcessId -eq ${root.pid} }) }
+foreach($row in $retainedRows) {
+  if(!(@($all | Where-Object { $_.ProcessId -eq $row.ProcessId }).Count)) { $all+=@($row) }
+}`);
+    const result = await run(script);
+    const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
+    const outcome = events.findLast(item => item.type === 'result');
+    assert.equal(outcome?.released, true, JSON.stringify(outcome));
+    assert.equal(outcome?.snapshots, 2, 'the second snapshot must follow native HANDLE exit confirmation');
+    assert.equal(live(root.pid), false);
+  } finally {
+    root.kill('SIGKILL');
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+for (const failureKind of ['invalid_pid', 'snapshot_absent', 'access_denied']) test(`Windows cleanup cannot adopt a live PID after an earlier ${failureKind} result`, { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-invalid-pid-'));
+  const ready = path.join(directory, 'ready');
+  const spawnStartedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  const rootClosed = new Promise(resolve => root.once('close', resolve));
+  const spawnCompletedAt = Date.now();
+  try {
+    await until(() => exists(ready), 'fixture process must start');
+    // 仅注入首次缺行或原生错误；后置快照、第二次打开、创建时间和活状态都来自真实 Windows。
+    let script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000);
+    if (failureKind === 'snapshot_absent') {
+      script = script.replace('# windows-tree:after-snapshot', `# windows-tree:after-snapshot
+if($snapshots -eq 0) { $all=@($all | Where-Object { [int]$_.ProcessId -ne ${root.pid} }) }`);
+    } else {
+      script = script.replace('$handle=[NativeOwnedProcess]::OpenProcess(0x101001,$false,$number)', `$handle=[NativeOwnedProcess]::OpenProcess(0x101001,$false,$number)
+      if($number -eq ${root.pid} -and !$injectedAbsent) {
+        if($handle -ne [IntPtr]::Zero) { [void][NativeOwnedProcess]::CloseHandle($handle) }
+        $handle=[IntPtr]::Zero; $injectedAbsent=$true; $injectNative87=$true
+      }`)
+      .replace('$nativeCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error()\n        if($nativeCode -eq 87)', `$nativeCode=if($injectNative87) { $injectNative87=$false; ${failureKind === 'invalid_pid' ? 87 : 5} } else { [Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+        if($nativeCode -eq 87)`);
+    }
+    await assert.rejects(run(script), error => {
+      const outcome = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
+      assert.equal(outcome?.released, false);
+      if (failureKind === 'access_denied') {
+        assert.equal(outcome?.code, 'os_error');
+        assert.equal(outcome?.nativeCode, 5);
+      } else {
+        assert.equal(outcome?.code, 'identity_changed');
+        assert.equal(outcome?.identityFailure, 'live_tombstone');
+      }
+      return true;
+    });
+    assert.equal(live(root.pid), true, 'a prior absence or native error cannot authorize a later live incarnation');
+  } finally {
+    root.kill('SIGKILL');
+    // 负例故意保留活进程；必须等待原始进程的物理关闭，才能删除它持有的工作目录。
+    await rootClosed;
+    await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('Windows handle cleanup retains an exited parent anchor and finds the later detached grandchild', { skip: process.platform !== 'win32', timeout: 35000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-identity-'));
   const childReady = path.join(directory, 'child.pid');

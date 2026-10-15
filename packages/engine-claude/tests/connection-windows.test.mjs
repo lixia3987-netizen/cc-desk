@@ -356,6 +356,22 @@ test('Windows cleanup proves exit on its held handle when the process exits betw
   }
 });
 
+test('Windows cleanup releases a signaled retained HANDLE when CIM keeps the exited process row', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  const startedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+  const spawnedAt = Date.now();
+  try {
+    await runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
+      '$all=@(Get-CimInstance Win32_Process)',
+      `$all=@(Get-CimInstance Win32_Process)
+  if(!$retainedRows) { $retainedRows=@($all | Where-Object { [int]$_.ProcessId -eq ${root.pid} }) }
+  foreach($row in $retainedRows) {
+    if(!(@($all | Where-Object { $_.ProcessId -eq $row.ProcessId }).Count)) { $all+=@($row) }
+  }`));
+    assert.equal(live(root.pid), false, 'release must be based on the original process HANDLE exit');
+  } finally { root.kill('SIGKILL'); }
+});
+
 test('Windows cleanup refuses a failed termination while the held process is still live', { skip: process.platform !== 'win32', timeout: 12000 }, async () => {
   const startedAt = Date.now();
   const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });

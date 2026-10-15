@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 // @ts-expect-error 构建脚本是普通 ESM，没有 TypeScript 类型声明。
-import { applyExactPatch, applyPinnedNodePtyPatch, conptyVerificationSource, nodePtyPatch, sha256, windowsNodePtyBuildArguments } from '../scripts/prepare-node-pty-windows.mjs';
+import { applyExactPatch, applyPinnedNodePtyPatch, conptyVerificationSource, nodePtyPatch, sha256, windowsNodePtyBuildArguments, windowsNodePtyBuildEnvironment, verifyConptyResources } from '../scripts/prepare-node-pty-windows.mjs';
 
 const require = createRequire(import.meta.url);
 const installedRoot = path.dirname(require.resolve('node-pty/package.json'));
@@ -25,6 +25,44 @@ test('Windows rebuild cleans stale binaries and builds both ConPTY modules witho
   assert.equal(gyp.opts.target, '22.12.0');
   assert.equal(gyp.opts.debug, false);
   assert.equal(gyp.opts['dist-url'], 'https://nodejs.org/download/release');
+});
+
+test('Windows native build and bundled resources use the same architecture despite inherited npm configuration', () => {
+  const inherited = { npm_config_arch: 'arm64', NPM_CONFIG_ARCH: 'ia32', Path: 'preserved', npm_config_python: 'python.exe' };
+  const environment = windowsNodePtyBuildEnvironment(inherited, 'x64');
+  assert.deepEqual(environment, { Path: 'preserved', npm_config_python: 'python.exe', npm_config_arch: 'x64' });
+  assert.equal(inherited.npm_config_arch, 'arm64', 'the parent environment remains unchanged');
+  assert.equal(inherited.NPM_CONFIG_ARCH, 'ia32');
+  assert.throws(() => windowsNodePtyBuildEnvironment(inherited, 'ia32'), /Unsupported Windows/);
+});
+
+test('resource preparation verifies the actual upstream copy and rejects resources for another architecture', { skip: process.platform !== 'win32' }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-conpty-resources-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true, maxRetries: 3 }));
+  const source = path.join(installedRoot, 'third_party', 'conpty');
+  const versions = await fs.readdir(source);
+  assert.equal(versions.length, 1);
+  for (const arch of ['x64', 'arm64']) {
+    const directory = path.join('third_party', 'conpty', versions[0], `win10-${arch}`);
+    await fs.mkdir(path.join(root, directory), { recursive: true });
+    for (const name of ['conpty.dll', 'OpenConsole.exe']) {
+      await fs.copyFile(path.join(installedRoot, directory, name), path.join(root, directory, name));
+    }
+  }
+  await fs.mkdir(path.join(root, 'scripts'));
+  await fs.copyFile(path.join(installedRoot, 'scripts', 'post-install.js'), path.join(root, 'scripts', 'post-install.js'));
+  // 执行依赖随包提供的真实资源复制脚本；不创建或加载替代原生模块。
+  const result = spawnSync(process.execPath, [path.join(root, 'scripts', 'post-install.js')], {
+    cwd: root, encoding: 'utf8', timeout: 10_000,
+    env: windowsNodePtyBuildEnvironment({ ...process.env, npm_config_arch: 'arm64', NPM_CONFIG_ARCH: 'ia32' }, 'x64'),
+  });
+  assert.equal(result.status, 0, result.stderr);
+  await verifyConptyResources(root, 'x64');
+  await assert.rejects(verifyConptyResources(root, 'arm64'), /does not match the bundled arm64 resource/);
+  await fs.copyFile(path.join(source, versions[0], 'win10-arm64', 'OpenConsole.exe'), path.join(root, 'build', 'Release', 'conpty', 'OpenConsole.exe'));
+  await assert.rejects(verifyConptyResources(root, 'x64'), /OpenConsole.exe does not match/);
+  await fs.unlink(path.join(root, 'build', 'Release', 'conpty', 'conpty.dll'));
+  await assert.rejects(verifyConptyResources(root, 'x64'), { code: 'ENOENT' });
 });
 
 async function fixture(t: TestContext) {
