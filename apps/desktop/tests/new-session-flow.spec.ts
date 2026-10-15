@@ -22,7 +22,7 @@ interface FlowFixture {
 }
 type FlowGlobal = typeof globalThis & { firstSendFixture: FlowFixture };
 
-async function workspace(withExisting = false) {
+async function workspace(withExisting = false, engineDefaults: AppState['settings']['engineDefaults'] = {}) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-new-session-')));
   const data = path.join(directory, 'data'), projectPath = path.join(directory, '选中的工作目录');
   await fs.mkdir(data); await fs.mkdir(projectPath);
@@ -38,7 +38,7 @@ async function workspace(withExisting = false) {
   };
   const state: AppState = {
     version: 3, projects: withExisting ? [project] : [], sessions: withExisting ? [existing] : [], selectedSessionId: withExisting ? existing.id : undefined,
-    settings: { engineDefaults: {}, claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
+    settings: { engineDefaults, claudePath: path.join(directory, 'unavailable-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
   };
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify(state));
   const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
@@ -78,7 +78,7 @@ async function workspace(withExisting = false) {
       dispose: () => gate?.reject?.(new Error('Fixture disposed')),
     };
   });
-  return { app, page, existing, project, projectPath, git, close: async () => {
+  return { app, page, existing, project, projectPath, data, git, close: async () => {
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.dispose()).catch(() => {});
     await app.close(); await fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   } };
@@ -105,7 +105,11 @@ test('new session: choose or reuse a directory without an empty record, and firs
     const { page, app } = f;
     await expect(page.getByRole('button', { name: /新建会话/ })).toBeEnabled();
     const form = await openNew(page), editor = form.getByLabel('提示词编辑器', { exact: true });
+    const permission = form.getByLabel('新会话权限模式', { exact: true });
     await expect(editor).toBeFocused();
+    await expect(permission).toBeVisible();
+    await expect(permission).toHaveValue('default');
+    await expect(form.locator('.new-session-more-options').getByLabel('新会话权限模式', { exact: true })).toHaveCount(0);
     await expect(form.getByRole('button', { name: '发送任务', exact: true })).toBeDisabled();
     await expect(page.getByRole('button', { name: '添加项目', exact: true })).toHaveCount(0);
     await expect(form.getByLabel('交互方式', { exact: true })).toHaveCount(0);
@@ -127,10 +131,21 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await form.getByRole('button', { name: '新会话设置', exact: true }).click();
     await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
     await page.getByRole('tab', { name: '权限与审批', exact: true }).click();
-    await page.getByLabel('默认权限模式', { exact: true }).selectOption('plan');
+    await page.locator('.settings-engine-defaults').filter({ has: page.getByRole('heading', { name: 'Claude Code', exact: true }) }).getByLabel('默认权限模式', { exact: true }).selectOption('plan');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('plan');
     await page.getByRole('dialog', { name: '设置与连接', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(permission).toHaveValue('plan');
+    await permission.selectOption('acceptEdits');
+    // Saving unrelated defaults and refreshing the snapshot must preserve an explicit draft choice.
+    await form.getByRole('button', { name: '新会话设置', exact: true }).click();
+    await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
+    await page.getByRole('tab', { name: '运行限制', exact: true }).click();
+    await page.getByLabel('最大并发会话', { exact: true }).fill('3');
+    await page.getByRole('button', { name: '保存设置', exact: true }).click();
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.maxSessions).toBe(3);
+    await page.getByRole('dialog', { name: '设置与连接', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
+    await expect(permission).toHaveValue('acceptEdits');
     await openNewSessionOptions(page);
     await form.getByRole('checkbox', { name: /创建独立 Git worktree/ }).check();
     await form.getByLabel('起始分支', { exact: true }).selectOption('refs/heads/main');
@@ -146,16 +161,17 @@ test('new session: choose or reuse a directory without an empty record, and firs
       for (let index = 0; index < 2; index++) element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
     });
     await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.createEntered())).toBe(true);
+    await expect(permission).toBeDisabled();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
     expect((await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records())).creates).toBe(1);
     await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseCreate());
     await expect(form).toHaveCount(0);
     const first = (await page.evaluate(() => window.desktop.snapshot())).state.sessions[0];
-    expect(first).toMatchObject({ projectId: selected.id, title: '目录内的第一项任务', engineConfig: { schemaVersion: 1, options: { model: '', permissionMode: 'plan' } }, kind: 'agent', execution: { providerId: 'claude', mode: 'structured' } });
+    expect(first).toMatchObject({ projectId: selected.id, title: '目录内的第一项任务', engineConfig: { schemaVersion: 1, options: { model: '', permissionMode: 'acceptEdits' } }, kind: 'agent', execution: { providerId: 'claude', mode: 'structured' } });
     const records = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
     expect(records.creates).toBe(1); expect(records.submissions).toHaveLength(1);
     expect(records.submissions[0]).toMatchObject({ id: first.id, text: '第一条真实提交' });
-    await openNew(page); await openNewSessionOptions(page); await form.getByLabel('会话名称', { exact: true }).fill('同目录的第二项任务');
+    await openNew(page); await expect(permission).toHaveValue('plan'); await openNewSessionOptions(page); await form.getByLabel('会话名称', { exact: true }).fill('同目录的第二项任务');
     await submitNewSession(page, '第二条提交');
     await expect(page.locator('.session-group')).toHaveCount(1);
     await expect(page.locator(`[data-project-id="${selected.id}"] .session-row`)).toHaveCount(2);
@@ -198,6 +214,45 @@ test('new session: editing and switching create no record, and delayed first-sen
   } finally { await f.close(); }
 });
 
+test('new session: switching engines restores their defaults and the selected native permission is persisted on creation', async () => {
+  const f = await workspace(true, {
+    claude: { schemaVersion: 1, options: { model: '', effort: 'default', permissionMode: 'plan' } },
+    native: { schemaVersion: 1, options: { permissionMode: 'acceptEdits' } },
+  });
+  try {
+    const { page, app } = f;
+    const form = await openNew(page), permission = form.getByLabel('新会话权限模式', { exact: true });
+    const engines = form.getByRole('group', { name: '执行引擎', exact: true });
+    await expect(permission).toHaveValue('plan');
+    await permission.selectOption('bypassPermissions');
+    await engines.getByRole('button', { name: '自研 Agent · Alpha', exact: true }).click();
+    await expect(permission).toHaveValue('acceptEdits');
+    expect(await permission.locator('option').evaluateAll(options => options.map(option => (option as HTMLOptionElement).value))).toEqual(['default', 'acceptEdits', 'bypassPermissions']);
+    await permission.selectOption('bypassPermissions');
+    await engines.getByRole('button', { name: 'Claude Code', exact: true }).click();
+    await expect(permission).toHaveValue('plan');
+    await engines.getByRole('button', { name: '自研 Agent · Alpha', exact: true }).click();
+    await expect(permission).toHaveValue('acceptEdits');
+    await permission.selectOption('bypassPermissions');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions.map(session => session.id)).toEqual([f.existing.id]);
+    expect((await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records())).creates).toBe(0);
+    await submitNewSession(page, '按所选权限创建自研会话');
+    const state = (await page.evaluate(() => window.desktop.snapshot())).state;
+    const created = state.sessions.find(session => session.id !== f.existing.id)!;
+    expect(created).toMatchObject({ execution: { providerId: 'native', mode: 'structured' }, engineConfig: { schemaVersion: 1, options: { permissionMode: 'bypassPermissions' } } });
+    expect(state.settings.engineDefaults.native.options.permissionMode).toBe('acceptEdits');
+    expect(state.settings.engineDefaults.claude.options.permissionMode).toBe('plan');
+    await expect.poll(async () => {
+      const saved = JSON.parse(await fs.readFile(path.join(f.data, 'workspace.json'), 'utf8')) as AppState;
+      return saved.sessions.find(session => session.id === created.id)?.engineConfig.options.permissionMode;
+    }).toBe('bypassPermissions');
+    const records = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(records.creates).toBe(1); expect(records.submissions).toHaveLength(1);
+    expect(records.submissions[0]).toMatchObject({ id: created.id, text: '按所选权限创建自研会话' });
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  } finally { await f.close(); }
+});
+
 test('new session: retrying a failed first submission reuses its session and request identity', async () => {
   const f = await workspace(true);
   try {
@@ -212,6 +267,8 @@ test('new session: retrying a failed first submission reuses its session and req
     const before = (await page.evaluate(() => window.desktop.snapshot())).state.sessions;
     expect(before).toHaveLength(2);
     const created = before.find(session => session.title === '失败后原位重试')!;
+    await expect(form.getByLabel('新会话权限模式', { exact: true })).toBeDisabled();
+    await expect(form.getByLabel('新会话权限模式', { exact: true })).toHaveValue(String(created.engineConfig.options.permissionMode));
     await expect(form.getByLabel('工作空间', { exact: true })).toBeDisabled();
     await expect(form.getByLabel('模型', { exact: true })).toHaveCount(0);
     await expect(form.getByLabel('会话名称', { exact: true })).toBeDisabled();
@@ -227,3 +284,4 @@ test('new session: retrying a failed first submission reuses its session and req
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(2);
   } finally { await f.close(); }
 });
+

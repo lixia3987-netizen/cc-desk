@@ -40,6 +40,7 @@ type Modal = 'continuation' | 'settings' | 'history' | 'palette' | null;
 interface BlankSession {
   key: string; token: string; input: SessionDraft; text: string; files: NewSessionAttachment[];
   submission: NewSessionSubmission; sending: boolean; importing: boolean; error: string;
+  permissionOverridden?: boolean;
 }
 
 
@@ -101,6 +102,7 @@ export function App() {
       const defaults = newSessionEngineDefaults(engine, state.settings);
       if (!engine || defaults.schemaVersion !== pending.input.engineConfig.schemaVersion) continue;
       const options = { ...pending.input.engineConfig.options, ...defaults.options };
+      if (pending.permissionOverridden) options.permissionMode = pending.input.engineConfig.options.permissionMode;
       if (engine.providerId === 'native') {
         // Connection/model choices are owned by the draft, while its policy follows settings.
         options.connectionId = pending.input.engineConfig.options.connectionId ?? '';
@@ -420,6 +422,8 @@ export function App() {
         setDraft={value => { if (!blank.sending && !blank.importing && !blank.submission.session) {
           const next = typeof value === 'function' ? value(blank.input) : value;
           if (next.providerId !== blank.input.providerId && blank.files.length) { report(new Error('请先移除待发送附件再切换引擎。')); return; }
+          if (next.providerId !== blank.input.providerId) blank.permissionOverridden = false;
+          else if (next.engineConfig.options.permissionMode !== blank.input.engineConfig.options.permissionMode) blank.permissionOverridden = true;
           blank.input = next; changedBlank();
         } }}
         busy={busy || blank.sending} created={!!blank.submission.session} text={blank.text}
@@ -513,3 +517,4 @@ export function App() {
     </Dialog>}
   </div>;
 }
+

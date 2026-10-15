@@ -8,6 +8,7 @@ import { configurationSupported, EngineConfigFields, newSessionEngineDefaults } 
 import { engineFieldsForGroup } from '../settings-organization';
 import { ChatAttachmentChips } from '../NativeImageAttachments';
 import { PromptEditor } from '../PromptEditor';
+import { NewSessionPermissionMode } from './NewSessionPermissionMode';
 import { useChatFileDrop } from '../useChatFileDrop';
 import './new-session.css';
 
@@ -102,7 +103,7 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
         </div>
         {attachments.length > 0 && <p className="new-session-note">移除待发送附件后可以切换执行引擎。</p>}
         {isNative && <div className="new-session-options-grid"><EngineConfigFields value={draft.engineConfig} fields={engineFieldsForGroup(descriptor, 'model', draft.engineConfig)} disabled={configurationBlocked || engineBlocked} onChange={engineConfig => setDraft({ ...draft, engineConfig })} /></div>}
-        <div className="new-session-workspace"><p className="new-session-note">{isNative ? '上下文、自动压缩与运行限制在设置中管理。' : '运行权限与默认配置在设置中管理。'}</p><button type="button" className="secondary compact" disabled={busy || attachmentBusy} onClick={onOpenSettings}>新会话设置</button></div>
+        <div className="new-session-workspace"><p className="new-session-note">{isNative ? '上下文、自动压缩与运行限制在设置中管理。' : '新会话默认配置在设置中管理。'}</p><button type="button" className="secondary compact" disabled={busy || attachmentBusy} onClick={onOpenSettings}>新会话设置</button></div>
         <details className="new-session-more-options" open={draft.isolated || !!draft.title || !!draft.worktreeName}><summary>更多选项</summary>
         <div className="new-session-extra-options">
           <label>会话名称 <span className="new-session-optional">可选</span><input maxLength={120} aria-label="会话名称" disabled={configurationBlocked} placeholder={isNative ? '留空使用默认名称，可稍后重命名' : '留空，由 agent 总结首条消息命名'} value={draft.title} onChange={event => setDraft({ ...draft, title: event.target.value })} /></label>
@@ -133,6 +134,7 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
         <ChatAttachmentChips attachments={attachments} isNative={isNative} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={isNative ? onPreviewAttachment : undefined} previewTitle="本地预览当前选择版本（尚未保存）" />
         {attachmentBusy && <p className="attachment-import-status" role="status"><Loader2 size={12} className="spin" />正在添加待发送附件…可以继续编辑消息。</p>}
         <PromptEditor placeholder="描述你的任务…" value={text} disabled={busy} onChange={onText} onSend={send} onPasteFiles={pasteImages} />
+        <div className="chat-composer-permissions"><NewSessionPermissionMode value={draft.engineConfig} descriptor={descriptor} disabled={configurationBlocked || engineBlocked} onChange={engineConfig => setDraft({ ...draft, engineConfig })} /></div>
         <div className="chat-composer-actions">
           <button type="button" className="icon-button" title={isNative ? "添加 PNG / JPEG，也可拖入或在输入框中粘贴图片" : "添加附件，也可将文件拖入此处"} aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16} /></button>
           <span>Enter 发送 · Ctrl / ⌘ + Enter 换行{attachments.length > 0 && ` · ${attachments.length} 个附件`}</span>
@@ -142,3 +144,4 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
     </div>
   </div>;
 }
+
