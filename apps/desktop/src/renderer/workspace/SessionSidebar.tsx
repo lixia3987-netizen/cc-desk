@@ -6,7 +6,6 @@ import type { AppState, Capabilities, Session } from '../../shared/types';
 import { sessionColor, sessionLabel, time } from './presentation';
 import type { OpenNew } from './types';
 import { ProjectFilter } from './ProjectFilter';
-import { currentEngineStatus } from './engine-status';
 
 interface Props extends SessionActionHandlers {
   state: AppState; cap: Capabilities; historyAvailable: boolean; chooseProject?: () => Promise<void>; activeId: string; projectId: string;
@@ -17,10 +16,9 @@ interface Props extends SessionActionHandlers {
   openHistory: () => Promise<void>; onSettings: () => void;
 }
 
-export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _chooseProject, activeId, projectId, archived, search, collapsedGroups, draftProviderId, openNew, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings, ...actions }: Props) {
+export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _chooseProject, activeId, projectId, archived, search, collapsedGroups, openNew, selectSession, onSearch, onProject, toggleGroup, setArchived, openHistory, onSettings, ...actions }: Props) {
   const [menu, setMenu] = useState<SessionMenuTarget>();
   const closeMenu = useCallback(() => setMenu(undefined), []);
-  const engineStatus = currentEngineStatus(state.sessions.find(item => item.id === activeId), actions.executors, draftProviderId ?? 'claude');
   const projectsById = new Map(state.projects.map(project => [project.id, project]));
   const query = search.trim().toLowerCase();
   const sessions = state.sessions.filter(s => s.archived === archived && (projectId === 'all' || s.projectId === projectId) && `${s.title} ${s.cwd} ${projectsById.get(s.projectId)?.name ?? ''}`.toLowerCase().includes(query)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
@@ -102,9 +100,6 @@ export function SessionSidebar({ state, cap, historyAvailable, chooseProject: _c
       <button onClick={() => { onSettings(); }}>
         <Settings2 size={16} />设置与连接<ChevronRight size={14} />
       </button>
-      <div className="local-status" title={engineStatus.detail}>
-        <span className={`dot ${engineStatus.ready ? 'running' : 'stopped'}`} /><span className="current-engine-name">{engineStatus.text}</span><span>本地</span>
-      </div>
     </div>
     <SessionActions {...actions} sessions={state.sessions} projects={state.projects} menu={menu} onCloseMenu={closeMenu} openNew={openNew} />
   </aside>;

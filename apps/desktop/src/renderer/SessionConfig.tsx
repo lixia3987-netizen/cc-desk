@@ -40,7 +40,7 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
   const native = session.execution.providerId === 'native';
   const policyGroup = native && ['context', 'compaction', 'limits', 'recovery'].includes(group);
   const followsDefaults = policyGroup && value.options.runtimePolicy === 'defaults';
-  const effective = native ? resolveNativeRuntimeConfig(value, engineDefaults(descriptor, settings)) : value;
+  const effective = native ? resolveNativeRuntimeConfig({ ...value, options: { permissionMode: 'default', ...value.options } }, engineDefaults(descriptor, settings)) : value;
   const fields = engineFieldsForGroup(descriptor, group, effective);
   const projectSkills = value.options.projectSkills;
   const validProjectSkills = projectSkills === undefined || Array.isArray(projectSkills) && projectSkills.every(path => typeof path === 'string');

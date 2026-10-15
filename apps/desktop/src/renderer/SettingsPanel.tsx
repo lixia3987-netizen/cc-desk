@@ -90,7 +90,7 @@ function EnginePolicySection({ scope, onScope, group, props, draftStore }: { sco
     </div></div>
     <p className="settings-scope-description">{scope === 'session' ? currentAllowed ? `当前会话：${active.title || active.id}。通过本区域“保存配置”保存，切换分类或作用范围会保留普通字段草稿。` : '尚未选择 Agent 会话。' : group === 'model' || group === 'permissions' ? '保存设置后用于新会话，已有会话的配置保持不变。' : '保存设置后用于新会话。已有会话的自定义配置保持不变；跟随默认的自研 Agent 会话在下一回合使用已保存策略。'}</p>
     {group === 'model' && scope === 'defaults' ? <details className="native-model-defaults"><summary>新会话默认模型</summary>{current}</details> : current}
-    {group === 'permissions' && <p className="hint">自研 Agent 的文件写入与命令执行始终逐次审批；Claude Code 的权限模式独立设置。</p>}
+    {group === 'permissions' && <p className="hint">自研 Agent 与 Claude Code 的权限模式分别保存。当前会话的修改在下一回合生效；新会话默认值不会改变已有会话。</p>}
   </section>;
 }
 

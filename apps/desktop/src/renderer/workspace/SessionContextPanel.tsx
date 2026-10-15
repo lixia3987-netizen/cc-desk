@@ -1,4 +1,5 @@
 import { Activity } from 'lucide-react';
+import { NATIVE_PERMISSION_LABELS, type NativePermissionMode } from '../../shared/native-permissions';
 import { useEffect, useState } from 'react';
 import type { AppState, Session, Settings } from '../../shared/types';
 import type { ChatSnapshot } from '../../shared/chat';
@@ -57,6 +58,7 @@ export function SessionContextPanel({ active, project, structured, descriptor, r
       <div className="detail-block">
         <label>当前模型</label><strong>{snapshot?.model ?? snapshot?.context?.requestModel ?? (typeof policy.options.model === 'string' && policy.options.model || '跟随连接或引擎默认')}</strong>
         {native && <>
+          <label>权限模式</label><strong>{NATIVE_PERMISSION_LABELS[policy.options.permissionMode as NativePermissionMode] ?? NATIVE_PERMISSION_LABELS.default}</strong>
           <label>运行策略</label><strong>{active.engineConfig.options.runtimePolicy === 'defaults' ? '跟随默认' : '单独设置'}</strong>
           <label>输入预算方式</label><strong>{policy.options.inputBudgetMode === 'model' ? '跟随模型窗口' : `自定义上限 ${Number(policy.options.maxInputTokens ?? 64000).toLocaleString()} tokens`}</strong>
           <label>最近回合预算</label><strong>{budget ? `${budget.estimatedInputTokens.toLocaleString()} / ${budget.maxInputTokens.toLocaleString()} 估算 tokens` : '等待回合数据'}</strong>

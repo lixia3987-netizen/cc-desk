@@ -10,7 +10,7 @@ import { engineFieldsForGroup, type EngineSettingsGroup } from '../src/renderer/
 
 const fail = () => { throw new Error('Initial settings rendering must not read, save or generate'); };
 const nativeConfig: EngineConfig = { schemaVersion: 1, options: { connectionId: 'saved-connection', model: 'saved-model',
-  inputBudgetMode: 'model', maxInputTokens: 64000, maxOutputTokens: 4096, autoCompact: 'before_send', modelRetry: 'off',
+  permissionMode: 'default', inputBudgetMode: 'model', maxInputTokens: 64000, maxOutputTokens: 4096, autoCompact: 'before_send', modelRetry: 'off',
   maxModelRequests: 12, maxToolCalls: 20, maxActiveMs: 300000, runtimePolicy: 'custom', mcpConnections: ['saved-service'], projectSkills: ['.agents/skills/read'] } };
 const fieldLabels: Record<string, string> = { connectionId: '模型连接', model: '模型覆盖', inputBudgetMode: '输入预算模式', maxInputTokens: '输入预算', maxOutputTokens: '输出上限', autoCompact: '自动压缩', modelRetry: '模型重试', maxModelRequests: '请求上限', maxToolCalls: '工具上限', maxActiveMs: '时长上限', runtimePolicy: '内部策略', permissionMode: '权限模式', effort: '强度' };
 function descriptor(providerId = 'native', keys = Object.keys(nativeConfig.options)): ExecutionDescriptor {
@@ -48,7 +48,7 @@ test('configuration groups separate model, budget, compaction and execution poli
   const config = { ...nativeConfig, options: { ...nativeConfig.options, inputBudgetMode: 'custom' } };
   const groups: EngineSettingsGroup[] = ['model', 'context', 'compaction', 'limits', 'recovery', 'permissions', 'tools'];
   const keys = groups.map(group => engineFieldsForGroup(descriptor(), group, config).map(field => field.key));
-  assert.deepEqual(keys, [['connectionId', 'model'], ['inputBudgetMode', 'maxInputTokens', 'maxOutputTokens'], ['autoCompact'], ['maxModelRequests', 'maxToolCalls', 'maxActiveMs'], ['modelRetry'], [], ['mcpConnections', 'projectSkills']]);
+  assert.deepEqual(keys, [['connectionId', 'model'], ['inputBudgetMode', 'maxInputTokens', 'maxOutputTokens'], ['autoCompact'], ['maxModelRequests', 'maxToolCalls', 'maxActiveMs'], ['modelRetry'], ['permissionMode'], ['mcpConnections', 'projectSkills']]);
   assert.equal(new Set(keys.flat()).size, keys.flat().length);
   assert.ok(!keys.flat().includes('runtimePolicy'));
 });
@@ -145,4 +145,17 @@ test('explicit IDE settings target renders the focusable path editor while engin
   const context = renderPanel({ initialGroup: 'context', initialSubpage: 'connections' });
   assert.match(context, /id="settings-subtab-models-context"[^>]*aria-selected="true"/);
   assert.doesNotMatch(context, /从 Claude 默认配置导入/);
+});
+
+test('Native permission mode is exposed in both defaults and current-session settings', () => {
+  const defaults = renderPanel({ page: 'sessions', initialGroup: 'permissions' });
+  assert.match(defaults, /aria-label="默认权限模式"/);
+  assert.doesNotMatch(defaults, /文件写入与命令执行始终逐次审批/);
+  const active: Session = { id: 'native-permissions', projectId: 'fixture', title: '权限测试', cwd: '/fixture', kind: 'agent',
+    execution: { providerId: 'native', mode: 'structured' },
+    engineConfig: { ...nativeConfig, options: { ...nativeConfig.options, permissionMode: 'acceptEdits' } },
+    started: false, status: 'idle', archived: false, createdAt: '', updatedAt: '' };
+  const current = renderPanel({ page: 'sessions', initialScope: 'session', initialGroup: 'permissions', activeSession: active });
+  assert.match(current, /aria-label="会话权限模式"[^>]*value="acceptEdits"/);
+  assert.match(current, /保存配置/);
 });
