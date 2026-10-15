@@ -12,7 +12,7 @@ import type { LegacyAppState as AppState } from './helpers/legacy-workspace';
 
 interface FixtureRecord { event: 'start' | 'prompt'; mode: 'structured' | 'terminal'; session: string; pid: number; resume?: boolean; text?: string }
 
-/** Both adapters use real processes; only the account-dependent Claude executable is replaced. */
+/** 两个适配器都使用真实进程；仅替换依赖账号的 Claude 可执行文件。 */
 async function workspace(nativeHooks = true) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-session-experience-')));
   const data = path.join(directory, 'data'), projectPath = path.join(directory, '项目 with spaces');
@@ -22,7 +22,7 @@ async function workspace(nativeHooks = true) {
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath), fs.mkdir(pkg, { recursive: true })]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: projectPath, encoding: 'utf8', stdio: 'pipe' }).trim();
   git('init', '-b', 'main'); git('config', 'user.name', 'Session Test'); git('config', 'user.email', 'tests@example.invalid');
-  // Fixture bytes must not depend on the host's checkout newline policy.
+  // 测试装置字节不能依赖宿主的检出换行策略。
   git('config', 'core.autocrlf', 'false');
   await fs.writeFile(path.join(projectPath, 'README.md'), 'Session experience fixture\n');
   git('add', '.'); git('commit', '-m', 'Fixture');
@@ -159,8 +159,8 @@ test('session connections: list idle and active processes across sidebar filters
     const idle = await create(page, '已完成但保持连接');
     await page.getByLabel('提示词编辑器', { exact: true }).fill('快速完成任务');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter'); await completed(page);
-    // Keep the idle connection on a different directory; competing execution
-    // intentionally drains an idle Claude connection that owns the same root.
+    // 将空闲连接放在不同目录；竞争执行会有意清理
+    // 占有相同根目录的空闲 Claude 连接。
     const runningPath = path.join(f.directory, '独立执行工程'); await fs.mkdir(runningPath);
     const runningProject = await page.evaluate(folder => window.desktop.addProject(folder), runningPath);
     const running = await create(page, '正在执行的连接', 'structured', runningProject.id);
@@ -177,7 +177,7 @@ test('session connections: list idle and active processes across sidebar filters
     await selectProjectFilter(page, f.project.name);
     await page.getByLabel('搜索会话', { exact: true }).fill('隐藏全部会话');
     await expect(page.locator('.session-row')).toHaveCount(0);
-    // The modal makes the app inert; keep count assertions independent of the accessibility tree.
+    // 模态对话框使应用暂不可交互；计数断言不能依赖无障碍树。
     const trigger = page.locator('.connection-trigger');
     await expect(trigger).toContainText('3 / 4 已连接'); await trigger.click();
     const dialog = page.getByRole('dialog', { name: '已连接会话', exact: true });
@@ -249,14 +249,14 @@ test('session experience: Enter sends once, modifiers insert lines, IME is safe,
     await sessionAction(page, '登录校验修复摘要', '重命名会话');
     await page.getByLabel('新的会话名称', { exact: true }).fill('登录校验专项');
     await page.getByRole('button', { name: '保存', exact: true }).click();
-    // Saving crosses IPC; the dialog keeps background inputs inert until it closes.
-    // Playwright fill/press can otherwise target the still-focused name field.
+    // 保存操作经过 IPC；对话框关闭前，后台输入框保持不可交互。
+    // 否则 Playwright 的 fill/press 可能操作仍持有焦点的名称字段。
     await expect(page.getByRole('dialog', { name: '重命名会话', exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '登录校验专项', exact: true })).toBeVisible();
     await page.getByLabel('提示词编辑器', { exact: true }).fill('继续补充接口验证');
     await page.getByLabel('提示词编辑器', { exact: true }).press('Enter');
-    // A resumed conversation initially shows the previous turn's completion.
-    // Wait for this prompt and response before asserting the new terminal state.
+    // 恢复的会话最初会显示上一轮的完成状态。
+    // 断言新的终态前，先等待本轮提示词和响应。
     await expect.poll(async () => (await f.records()).filter(value => value.event === 'prompt').length).toBe(3);
     await expect(page.getByLabel('提示词编辑器', { exact: true })).toHaveValue('');
     await expect(page.locator('.chat-message.assistant')).toHaveCount(3);

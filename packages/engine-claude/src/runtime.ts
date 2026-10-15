@@ -13,7 +13,7 @@ import type { ClaudeHost, ClaudeHistory, ClaudeArchive, ClaudeSubtasks } from '.
 import { chatArguments, userContent } from './chat-protocol.js';
 import { normalizeCommands, invokedCommand, type ContextUsage } from './claude-session.js';
 import { isMissingTranscriptError } from './session-recovery.js';
-/** Test injection is constructor-only; renderer callers cannot select commands or protocol frames. */
+/** 测试注入仅限构造函数；渲染进程调用方不能选择命令或协议帧。 */
 export interface ClaudeRuntimeOptions {
   invocation?: (session: Session, capabilities: Capabilities, resumed: boolean) => { file: string; args: string[] };
   transcriptExists?: (id: string) => Promise<boolean>;
@@ -27,10 +27,10 @@ const now = () => new Date().toISOString();
 const messageOf = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /**
- * One persistent CLI subprocess per structured session. Wire protocol follows
- * anthropics/claude-agent-sdk-python, _internal/query.py (initialize,
- * can_use_tool, control_cancel_request, interrupt, set_model, set_permission_mode).
- * No SDK credentials or permissive CLI switches are injected.
+ * 每个结构化会话使用一个持久 CLI 子进程，通信协议遵循
+ * anthropics/claude-agent-sdk-python 的 _internal/query.py（initialize，
+ * 以及 can_use_tool、control_cancel_request、interrupt、set_model、set_permission_mode）。
+ * 不注入 SDK 凭据或宽松的 CLI 开关。
  */
 export class ClaudeRuntime {
   private entries = new Map<string, Entry>();
@@ -57,12 +57,12 @@ export class ClaudeRuntime {
       snapshot.error = '聊天记录写入失败：' + error.message;
       const entry = this.entries.get(id);
       if (entry) {
-        try { this.subtasks.end(id, 'failed', snapshot.error); } catch { /* Preserve the original disk failure. */ }
+        try { this.subtasks.end(id, 'failed', snapshot.error); } catch { /* 保留原始磁盘失败信息。 */ }
         entry.turn?.resolve({ success: false, summary: '', error: snapshot.error });
         entry.turn = undefined; this.terminate(entry);
       }
       snapshot.taskState = 'error'; snapshot.pending = [];
-      try { this.update(id, { status: 'error', taskState: 'error', error: snapshot.error }); } catch { /* The disk may also reject workspace writes. */ }
+      try { this.update(id, { status: 'error', taskState: 'error', error: snapshot.error }); } catch { /* 磁盘也可能拒绝工作区写入。 */ }
       this.publishConversation(id);
     } });
     this.history = conversations.history;
@@ -79,8 +79,8 @@ export class ClaudeRuntime {
       message: (id, message) => this.message(id, message), system: (id, text) => this.system(id, text),
     });
   }
-  private publishState() { try { this.host.onState(); } catch { /* Observers do not own persistence or execution. */ } }
-  private publishConversation(id: string) { try { this.host.onConversation(id); } catch { /* Observers cannot interrupt cleanup. */ } }
+  private publishState() { try { this.host.onState(); } catch { /* 观测方不负责持久化或执行。 */ } }
+  private publishConversation(id: string) { try { this.host.onConversation(id); } catch { /* 观测方不能中断清理。 */ } }
   get activeCount() { return new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting]).size; }
   has(id: string) { return this.entries.has(id) || this.releasing.has(id) || this.starting.has(id) || Boolean(this.host.metadata?.has(id)); }
   isBusy(id: string) {
@@ -88,7 +88,7 @@ export class ClaudeRuntime {
     return this.busy.has(id) || this.starting.has(id) || Boolean(entry &&
       (entry.turn || entry.tasks.size || entry.approvals.size || entry.connection.controls.size));
   }
-  /** Release a reusable idle CLI before changing its working directory or reclaiming a slot. */
+  /** 更改工作目录或回收槽位之前，先释放可复用的空闲 CLI。 */
   async stopIdle(id: string) {
     if (this.isBusy(id)) throw new Error('请先停止正在执行的任务。');
     await this.stopAndWait(id);
@@ -100,9 +100,9 @@ export class ClaudeRuntime {
     await this.host.metadata?.cancel(id);
     this.host.metadata?.assertReleased(id);
     if (!entry) { await this.whenReleased(id); return; }
-    // A root process may exit before its MCP/tool descendants. Wait for the
-    // process-group escalation as well, rather than treating root exit as a
-    // guarantee that the working directory is no longer held on Windows.
+    // 根进程可能先于其 MCP 或工具后代退出。也要等待
+    // 进程组升级终止，不能仅凭根进程退出就断定
+    // Windows 上的工作目录已不再被占用。
     const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
     while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，工作目录未释放，请稍后重试。');
@@ -116,7 +116,7 @@ export class ClaudeRuntime {
     this.releasing.delete(id);
     await this.whenReleased(id);
   }
-  /** Wait for the physical CLI/tree/stream/history barrier, never outer queue ACKs. */
+  /** 等待物理层面的 CLI、进程树、流及历史屏障，绝不等待外层队列 ACK。 */
   async whenReleased(id: string): Promise<void> {
     await this.host.metadata?.cancel(id);
     this.host.metadata?.assertReleased(id);
@@ -174,7 +174,7 @@ export class ClaudeRuntime {
   }
   private append(id: string, event: ChatJournalEvent) {
     this.history.append(id, event);
-    try { this.options.onEvent?.(id, structuredClone(event)); } catch { /* The journal is already committed; observers cannot invalidate it. */ }
+    try { this.options.onEvent?.(id, structuredClone(event)); } catch { /* 日志已提交，观测方不能将其置为无效。 */ }
   }
   private notify(id: string, immediate = false) {
     this.history.changed(id);
@@ -203,8 +203,8 @@ export class ClaudeRuntime {
     this.notify(id, true);
   }
   private message(id: string, message: ChatMessage, delta?: string) {
-    // Journal the complete event before bounding the UI projection. A delta without
-    // a visible block needs its metadata as well, so recovery can recreate it.
+    // 限制界面投影之前，先将完整事件写入日志。没有可见内容块的增量
+    // 也需要保留元数据，以便恢复时重建。
     const existing = this.history.getMessage(id, message.id);
     this.append(id, delta === undefined || !existing ? { type: 'message', message } : { type: 'text_delta', id: message.id, text: delta });
     if (message.text.length > MAX_TEXT) message = { ...message, text: message.text.slice(-MAX_TEXT), truncated: true };
@@ -222,7 +222,7 @@ export class ClaudeRuntime {
     this.session(id);
     return structuredClone({ ...this.history.get(id), commands: this.entries.get(id)?.commands });
   }
-  /** Initialize the CLI without sending a prompt or spending a model turn. */
+  /** 初始化 CLI，不发送提示词，也不消耗模型交互轮次。 */
   async prepareCommands(id: string, capabilities: Capabilities): Promise<ChatSnapshot> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
     if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能连接会话。');
@@ -265,7 +265,7 @@ export class ClaudeRuntime {
   }
   hydrate(id: string) { this.session(id); return this.hydrator.hydrate(id); }
   exportPath(id: string) { this.session(id); return this.history.exportPath(id); }
-  /** User-confirmed recovery only; normal resume never falls back to a blank conversation. */
+  /** 仅限用户确认的恢复；正常续接绝不回退为空白对话。 */
   async recoverContext(id: string): Promise<void> {
     const assertReady = () => {
       if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
@@ -285,8 +285,8 @@ export class ClaudeRuntime {
       const session = assertReady();
       if (session.execution.conversationId !== previousConversationId) throw new Error('会话标识已改变，请刷新后重试。');
       const conversationId = randomUUID();
-      // Preserve the old identity durably before changing workspace metadata.
-      // If saving that metadata fails, its original ID and resume guard remain intact.
+      // 更改工作区元数据前，先持久化保留旧身份。
+      // 如果保存元数据失败，其原始 ID 及续接保护仍保持完整。
       this.history.flush();
       this.append(id, { type: 'conversation_recovered', previousConversationId, conversationId });
       this.update(id, { execution: { ...session.execution, conversationId, forkFrom: undefined, imported: undefined },
@@ -341,8 +341,8 @@ export class ClaudeRuntime {
       this.message(id, { id: userId, sourceId: userId, turnId: entry.turn!.id, role: 'user', text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
       this.state(id, 'thinking');
       try {
-        // Built-in command parsing expects a prompt string; ordinary multimodal
-        // messages continue to use content blocks.
+        // 内置命令解析需要提示词字符串；普通多模态
+        // 消息继续使用内容块。
         entry.connection.write({ type: 'user', uuid: userId, message: { role: 'user', content: command ? text.trimStart() : content }, parent_tool_use_id: null, session_id: this.session(id).execution.conversationId });
         if (!command) this.host.onAcceptedPrompt(id, titlePrompt, capabilities);
       } catch (error) { this.fail(id, entry, messageOf(error)); }
@@ -358,7 +358,7 @@ export class ClaudeRuntime {
     if (this.shuttingDown || this.maintenance) throw new Error('会话连接已暂停。');
     this.host.metadata?.assertReleased(id);
     if (this.entries.has(id) || this.releasing.has(id) || this.starting.has(id)) throw new Error('会话正在启动。');
-    // Metadata cleanup does not consume a foreground conversation slot.
+    // 元数据清理不消耗前台对话槽位。
     void this.host.metadata?.cancel(id);
     if (this.releaseErrors.has(id)) throw new Error('上一轮资源释放失败，请重启工作台后重试。');
     this.releaseCompletions.delete(id);
@@ -429,14 +429,14 @@ export class ClaudeRuntime {
     try { await entry.connection.control({ subtype: 'interrupt' }, 5000); }
     catch (error) { if (this.entries.get(id) === entry && entry.turn) { this.system(id, messageOf(error), true); this.stop(id); } }
   }
-  /** Priority sends must outlive both interrupt acknowledgement and process cleanup. */
+  /** 优先发送必须等待中断确认及进程清理全部完成。 */
   async interruptAndWait(id: string) {
     const entry = this.entries.get(id) ?? this.releasing.get(id);
     if (entry) this.releasing.set(id, entry);
     await this.interrupt(id);
     const deadline = Date.now() + 10_000;
     while (this.isBusy(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
-    // Closing an interrupted connection also discards any delayed old-turn frames.
+    // 关闭已中断的连接也会丢弃所有延迟的旧交互轮次帧。
     await this.stopAndWait(id);
     while (this.busy.has(id) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (this.busy.has(id) || this.has(id)) throw new Error('上一轮尚未完全停止，排队消息没有发送。');
@@ -454,17 +454,17 @@ export class ClaudeRuntime {
     if (entry?.connection.ending) throw new Error('请等待会话停止。');
     this.busy.add(id);
     try {
-      // Bypass must be enabled when the CLI starts. Restart an idle process when
-      // entering or leaving it so other modes never inherit a bypass launch flag.
+      // Bypass 必须在 CLI 启动时启用。进入或退出该模式时，
+      // 重启空闲进程，确保其他模式不继承绕过审批的启动参数。
       if (entry && patch.permissionMode !== undefined && entry.bypassEnabled !== (patch.permissionMode === 'bypassPermissions')) {
         this.update(id, { status: 'stopping' });
         this.terminate(entry);
         const deadline = Date.now() + PROCESS_RELEASE_TIMEOUT_MS;
         while (this.entries.get(id) === entry && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
         if (this.entries.get(id) === entry) throw new Error('CLI 尚未停止，权限配置未保存。请等待停止后重试。');
-        // This method owns the runtime's busy flag. Await only the physical
-        // connection release here; whenReleased also waits busy and would wait
-        // on this very configuration operation. Root close alone is insufficient.
+        // 此方法负责运行时的 busy 标志。此处仅等待物理连接
+        // 释放；whenReleased 还会等待 busy，因此会等待
+        // 当前配置操作本身。仅关闭根进程是不够的。
         if (!entry.connection.termination || !await entry.connection.termination) throw new Error('CLI 后代进程尚未停止，权限配置未保存。');
         await this.releaseCompletions.get(id);
         if (this.releaseErrors.has(id)) throw new Error('CLI 资源释放失败，权限配置未保存。', { cause: this.releaseErrors.get(id) });
@@ -474,8 +474,8 @@ export class ClaudeRuntime {
       if (entry) {
         if (patch.model !== undefined) {
           await entry.connection.control({ subtype: 'set_model', model: patch.model || null });
-          // A confirmed model change stands even if a later permission control fails.
-          // A rejected model control leaves the previous context untouched.
+          // 即使后续权限控制失败，已确认的模型变更仍然有效。
+          // 模型控制被拒绝时，先前上下文保持不变。
           invalidateModelContext();
           this.update(id, { model: patch.model }); this.history.get(id).model = patch.model || undefined;
         }
@@ -528,7 +528,7 @@ export class ClaudeRuntime {
       this.finish(id, entry, { success: false, summary: '', error });
       this.update(id, { status: 'error', error });
     } catch {
-      // Disk failure must not strand a pending workflow or escape a stdout listener.
+      // 磁盘失败不得搁置待处理工作流，也不得从标准输出监听器中逸出。
       entry.turn = undefined;
       const snapshot = this.history.get(id); snapshot.taskState = 'error'; snapshot.error = error; snapshot.pending = [];
       turn?.resolve({ success: false, summary: '', error }); this.publishConversation(id);
@@ -550,7 +550,7 @@ export class ClaudeRuntime {
     if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
     entry.approvals.clear(); entry.approvalRequests.clear();
     entry.connection.terminate();
-    // Keep tracking descendants even after `closed` removes the root entry.
+    // 即使 `closed` 已移除根条目，也继续跟踪后代进程。
     const termination = entry.connection.termination!;
     this.terminations.add(termination);
     void termination.then(stopped => { if (!stopped) this.terminationFailed = true; this.terminations.delete(termination); });
@@ -585,9 +585,9 @@ export class ClaudeRuntime {
     for (const id of this.entries.keys()) { try { this.stop(id); } catch (error) { errors.push(error); } }
     const deadline = Date.now() + 2500;
     while (this.entries.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
-    for (const entry of this.entries.values()) { try { entry.connection.child.kill('SIGKILL'); } catch { /* Exited. */ } }
-    // Root close does not release its detached process group. Keep the event loop
-    // alive until the tracked escalation has confirmed every descendant stop.
+    for (const entry of this.entries.values()) { try { entry.connection.child.kill('SIGKILL'); } catch { /* 已退出。 */ } }
+    // 根进程关闭不会释放其分离的进程组。保持事件循环运行，
+    // 直到已跟踪的升级终止操作确认所有后代均已停止。
     let terminationDeadline: NodeJS.Timeout | undefined;
     try {
       const stopped = await Promise.race([
@@ -610,7 +610,7 @@ export class ClaudeRuntime {
     if (!this.maintenance) throw new Error('断开聊天前必须暂停新会话。');
     const ids = new Set([...this.entries.keys(), ...this.releasing.keys(), ...this.starting, ...this.busy, ...(this.host.metadata?.ids ?? [])]);
     const results = await Promise.allSettled([...ids].map(id => this.stopAndWait(id)));
-    // Pending hydration / attachment reads must settle while starts remain blocked.
+    // 在仍禁止启动期间，完成待处理的恢复加载及附件读取。
     const deadline = Date.now() + 10_000;
     while ((this.busy.size || this.terminations.size) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
     if (results.some(result => result.status === 'rejected') || this.activeCount || this.busy.size || this.terminations.size || this.terminationFailed) throw new Error('无法确认全部聊天进程已停止，已取消更新。请等待或重启工作台后重试。');

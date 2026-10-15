@@ -41,8 +41,8 @@ test('queue acknowledgement binds image bytes even when paths and text remain un
 test('queue restart keeps the accepted image hashes and sends them as execution preconditions', async t => {
   const f = await setup(t);
   await f.queue.submit('session', '', ['/staged/screen.png'], 'image-only');
-  // Let the old process's scheduled wake observe its blocked state before
-  // simulating a replacement process; a real restart cannot keep both alive.
+  // 模拟替代进程前，先让旧进程的计划唤醒观察到其阻塞状态；
+  // 真实重启不能让两个进程同时存活。
   await new Promise(resolve => setImmediate(resolve));
   f.change([image('b'.repeat(64))]);
   const restarted = new ChatQueue(f.directory, f.options);

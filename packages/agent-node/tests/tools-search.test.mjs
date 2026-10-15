@@ -165,7 +165,7 @@ test('changed scope instructions during search suppress results and do not autho
     calls++; if (calls === mutateAt) await fs.writeFile(path.join(root, 'AGENTS.md'), 'Changed while searching.');
   } });
   const prepared = await port.prepare(call('changing', 'search', { path: '.', query: 'needle' }), ctx);
-  // execute guard, validate guard, pre-execution guard, then result-delivery guard.
+  // 依次执行 execute 检查、validate 检查、执行前检查和结果交付检查。
   mutateAt = calls + 4;
   const result = await port.execute(prepared, ctx);
   assert.equal(result.status, 'failed'); assert.match(JSON.stringify(result.output), /instructions changed/i);

@@ -21,7 +21,7 @@ const expected = [
   `${prefix}windows-x64-setup.exe`,
   `${prefix}windows-x64-portable.exe`,
   `${prefix}windows-x64-portable.zip`,
-  // AppImage expands ${arch} using Linux's x86_64 name; archive targets use x64.
+  // AppImage 将 ${arch} 展开为 Linux 的 x86_64 名称；归档目标使用 x64。
   `${prefix}linux-x86_64-portable.AppImage`,
   `${prefix}linux-x64-portable.tar.gz`,
   `${prefix}macos-arm64-setup.dmg`,
@@ -50,7 +50,7 @@ const optional = endpoint => {
 };
 const existingTag = optional(`git/ref/tags/${tag}`);
 if (existingTag && api(`commits/${tag}`).sha !== commit) throw new Error('Existing tag points to another commit; refusing to move it.');
-// gh resolves pending draft tags through GraphQL as well as published releases.
+// gh 通过 GraphQL 解析待发布草稿的标签，也会解析已发布的版本。
 const findRelease = () => {
   try {
     const found = JSON.parse(gh(['release', 'view', tag, '--repo', repository, '--json', 'databaseId,isDraft,targetCommitish,tagName']));
@@ -75,7 +75,7 @@ try {
       body: `${notes}\n\n源码提交：\`${commit}\`\n\n[构建与验证记录](https://github.com/${repository}/actions/runs/${process.env.GITHUB_RUN_ID})\n`,
       draft: true,
     }));
-    // Use the creation response directly: a new draft may not appear in listings yet.
+    // 直接使用创建响应：新草稿可能尚未出现在列表中。
     release = JSON.parse(gh(['api', `repos/${repository}/releases`, '--method', 'POST', '--input', payloadFile]));
   }
   if (!release?.draft || release.target_commitish !== commit || release.tag_name !== tag || !Number.isSafeInteger(release.id)) {

@@ -86,7 +86,7 @@ test('inspector: keyboard and header close preserve drafts and mounted content, 
     await expectOpenPanels(page, []);
     await expect(toggle).toBeFocused();
     await expect.poll(async () => (await chat.boundingBox())!.width).toBeGreaterThan(initialWidth + 200);
-    // Hidden controls stay mounted but cannot steal keyboard focus from the rail.
+    // 隐藏的控件仍保持挂载，但不能从侧栏夺取键盘焦点。
     await modelNode.evaluate(element => (element as HTMLElement).focus());
     await expect(toggle).toBeFocused();
     expect(await modelNode.evaluate(element => element.isConnected)).toBe(true);
@@ -202,7 +202,7 @@ test('inspector: legacy layouts migrate to a single last-opened tool and preserv
       await expectOpenPanels(page, migration.expected);
       await expect.poll(() => page.evaluate(key => localStorage.getItem(key), openPanelsKey)).toBe(JSON.stringify(migration.expected.length ? panelIds[migration.expected[0]] : null));
     }
-    // New choices override both previous preference formats on subsequent reloads.
+    // 后续重新加载时，新的选择会覆盖两种旧版偏好设置格式。
     await panelToggle(page, '上下文').click();
     const all: PanelName[] = ['上下文'];
     await expectOpenPanels(page, all);
@@ -275,8 +275,8 @@ test('inspector: the vertical rail and single panel fit wide and narrow windows 
         const region = panel(page, name);
         expect(await region.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
         const close = page.getByRole('button', { name: `关闭${name}面板`, exact: true });
-        // Center explicitly: Chromium's conditional scrolling can retain a
-        // fractional clipped edge in the narrow, large-font scrolling grid.
+        // 显式滚动到居中位置：在字体较大的窄滚动网格中，Chromium 的条件滚动
+        // 可能仍留下被裁剪的小数像素边缘。
         await close.evaluate(element => element.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }));
         await expect(close).toBeInViewport({ ratio: 1 });
         await expectOpenPanels(page, [name]);

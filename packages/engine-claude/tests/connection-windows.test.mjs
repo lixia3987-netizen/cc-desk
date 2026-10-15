@@ -19,9 +19,9 @@ async function until(condition, phase, timeout = 3000) {
   while (!await condition()) { assert.ok(Date.now() < deadline, phase); await pause(); }
 }
 
-// Use the production ownership handshake even when injecting a race checkpoint.
-// The bridge is restored immediately after synchronous helper creation; all
-// process handles, challenge transport and exit barriers remain production code.
+// 即使注入竞态检查点，也使用生产环境的归属握手。
+// 同步创建辅助进程后立即恢复桥接；所有进程句柄、
+// 质询传输及退出屏障仍使用生产代码。
 function runOwnedCleanup(root, startedAt, spawnedAt, transform, onHelperClose) {
   const originalExecFile = childProcess.execFile;
   let failurePhase;
@@ -145,10 +145,10 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
   const resume = path.join(directory, 'resume');
   const record = file => `const fs=require('node:fs');fs.writeFileSync(${JSON.stringify(file)}+'.tmp',String(process.pid));fs.renameSync(${JSON.stringify(file)}+'.tmp',${JSON.stringify(file)});`;
   const grandchild = `${record(grandchildReady)}setInterval(()=>{},1000);`;
-  // Exactly two descendants. The child forks only after the first cleanup
-  // snapshot, then exits before that snapshot is allowed to signal anything.
-  // Windows libuv kills non-detached children when their parent exits. Detach
-  // this one so the cleanup helper, rather than that job policy, must stop it.
+  // 恰好两个后代进程。子进程仅在首个清理快照之后派生，
+  // 并在该快照获准发送任何信号之前退出。
+  // Windows libuv 在父进程退出时会终止未分离的子进程。
+  // 将此子进程分离，使清理辅助进程必须亲自停止它，不依赖该作业策略。
   const child = `${record(childReady)}const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(poll);const spawned=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true});spawned.once('spawn',()=>process.exit(0));spawned.unref()},10);`;
   const rootScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}).unref();setInterval(()=>{},1000);`;
   const startedAt = Date.now();
@@ -173,7 +173,7 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
       Start-Sleep -Milliseconds 10
     }
   }`));
-    // Attach rejection immediately, then still require the original promise below.
+    // 立即附加拒绝处理，随后仍须等待下面的原始 Promise。
     void cleaning.catch(() => {});
     await untilCleanupCheckpoint(() => exists(captured), 'cleanup must capture the original tree', cleaning);
     await fs.writeFile(forkGate, 'fork');
@@ -187,12 +187,12 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
     assert.equal(live(childPid), false);
     assert.equal(live(grandchildPid), false, 'retained parent anchors must discover and stop the new generation');
   } finally {
-    // Finish the single in-flight helper before recovery; never race two cleaners.
+    // 恢复前完成唯一的进行中辅助进程，绝不让两个清理器竞态执行。
     await fs.writeFile(resume, 'continue');
     await cleaning?.catch(() => {});
     root.kill('SIGKILL');
-    // Match this fixture's unique command-line marker, then reuse the same
-    // handle-bound cleanup. This catches a child born before a failed handshake.
+    // 匹配此测试夹具独有的命令行标记，再复用相同的
+    // 句柄绑定清理。这可以捕获握手失败前新创建的子进程。
     const cleanup = windowsTreeCleanupScript(2147483647, true, startedAt, Date.now()).replace(
       '$known=@{}',
       `$known=@{}
@@ -230,8 +230,8 @@ test('Windows cleanup excludes stale parent PID links before following the proce
     try {
       if (staleParent === 'root') { await startUnrelated(); await startRoot(); }
       else { await startRoot(); await startUnrelated(); }
-      // The middle-parent case is newer than the root but older than its parent;
-      // a single global root lower bound would wrongly adopt this sentinel.
+      // 中间父进程用例的创建时间晚于根进程，却早于自身父进程；
+      // 单一的全局根时间下界会错误地将此哨兵进程纳入管理。
       await fs.writeFile(forkGate, 'fork');
       await until(() => exists(childReady), 'the actual descendant must start');
       const childPid = Number(await fs.readFile(childReady, 'utf8'));
@@ -254,8 +254,8 @@ test('Windows cleanup excludes stale parent PID links before following the proce
     } finally {
       await cleaning?.catch(() => {});
       root?.kill('SIGKILL'); unrelated?.kill('SIGKILL');
-      // Restrict recovery to this fixture's command-line marker and retain the
-      // normal creation-time/held-handle checks for any detached descendant.
+      // 将恢复限制为此测试夹具的命令行标记，并对所有分离后代
+      // 保留正常的创建时间及所持句柄检查。
       const cleanup = windowsTreeCleanupScript(2147483647, true, startedAt ?? Date.now(), Date.now()).replace('$known=@{}', `$known=@{}
 foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${psQuote(path.basename(directory))}) })) {
   [void]$anchors.Add([int]$owned.ProcessId)
@@ -295,8 +295,8 @@ while(!(Test-Path -LiteralPath ${psQuote(resume)})) {
       }, failure => { firstFailure = failure; });
       void cleaning.catch(() => {});
       await untilCleanupCheckpoint(() => exists(captured), 'cleanup must reach the pre-identity checkpoint', cleaning);
-      // Match shutdown's escalation through the original ChildProcess HANDLE,
-      // while a detached descendant deliberately survives that root exit.
+      // 与关闭时通过原始 ChildProcess HANDLE 升级终止的行为匹配，
+      // 同时刻意让一个分离的后代进程在根进程退出后继续存活。
       root.kill('SIGKILL');
       await until(() => root.exitCode !== null || root.signalCode !== null, 'the original HANDLE must report exit');
       assert.equal(live(childPid), true, 'root exit alone does not release its descendant');
@@ -309,8 +309,8 @@ while(!(Test-Path -LiteralPath ${psQuote(resume)})) {
       await fs.writeFile(resume, 'continue');
       await cleaning?.catch(() => {});
       root.kill('SIGKILL');
-      // Recovery is restricted to this fixture's unique command-line marker;
-      // production still determines whether the original cleanup passed.
+      // 恢复仅限此测试夹具独有的命令行标记；
+      // 生产逻辑仍然决定原始清理是否通过。
       const cleanup = windowsTreeCleanupScript(2147483647, true, startedAt, Date.now()).replace('$known=@{}', `$known=@{}
 foreach($owned in @(Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${psQuote(path.basename(directory))}) })) {
   [void]$anchors.Add([int]$owned.ProcessId)
@@ -361,8 +361,8 @@ test('Windows cleanup refuses a failed termination while the held process is sti
   const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
   const spawnedAt = Date.now();
   try {
-    // Inject only the unsuccessful termination result. The process, opened
-    // handle, creation check and bounded wait all remain real Windows operations.
+    // 仅注入终止失败的结果。进程、已打开的句柄、
+    // 创建检查及有界等待仍然是真实的 Windows 操作。
     const cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script
       .replace('![OwnedProcessHandle]::TerminateProcess($handle,1)', '$true'));
     await assert.rejects(cleaning, error => {
@@ -376,8 +376,8 @@ test('Windows cleanup refuses a failed termination while the held process is sti
 test('Windows cleanup binds the original live handle despite an incompatible wall-clock spawn window', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
   const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
   try {
-    // Deliberately excludes the actual creation time. A widened timestamp window
-    // must not be what authorizes this process: only the original HANDLE can.
+    // 刻意排除真实创建时间。扩大时间戳窗口不能用于
+    // 授权操作此进程，只有原始 HANDLE 可以提供授权。
     assert.equal(await stopWindowsTree(root, false, Date.now() - 60000, Date.now() - 59999), true);
     await until(() => !live(root.pid), 'confirmed original root must be stopped');
   } finally { root.kill('SIGKILL'); }

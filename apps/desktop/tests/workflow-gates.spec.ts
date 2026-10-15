@@ -7,7 +7,7 @@ import type { NativeTaskPlan } from '@cc-desk/contracts/native-task';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error Shared real HTTP/SSE fixture has no TypeScript declarations.
+// @ts-expect-error 共享的真实 HTTP/SSE 测试装置没有 TypeScript 类型声明。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface FixtureRequest { input: Array<Record<string, unknown>>; tools: Array<{ name: string }> }

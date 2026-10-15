@@ -206,8 +206,8 @@ test('Electron exit can remove stream listeners without EOF; retained diagnostic
   while (!h.worker.sent.some(message => message.type === 'finish')) await tick();
   assert.equal(stdout.readableEnded, false);
   assert.equal(stderr.readableEnded, false);
-  // Electron removes its PassThrough listeners and getters as part of exit.
-  // Neither stream gets an EOF or an observable close event from the writer.
+  // Electron 退出时会移除其 PassThrough 监听器与访问器。
+  // 两个流都不会从写入器收到 EOF 或可观察到的关闭事件。
   stdout.removeAllListeners(); stderr.removeAllListeners();
   h.worker.emit('exit', 0);
   assert.equal((await h.promise).status, 'completed');

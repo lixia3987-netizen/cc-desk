@@ -66,7 +66,7 @@ function Agent({ agent, loadError, onRead }: { agent: NativeAgentView; loadError
   </details>;
 }
 
-/** Plain text from retained host records; summaries and patches never become HTML. */
+/** 仅展示保留的主进程记录中的纯文本，摘要与补丁不会被当作 HTML。 */
 export function NativeAgentSavedResult({ result }: { result: NativeAgentResult }) {
   const { agent, goal, patch } = result;
   return <>

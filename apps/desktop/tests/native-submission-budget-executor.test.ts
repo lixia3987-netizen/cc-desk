@@ -13,7 +13,7 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { NativeTaskSession } from '../src/main/engines/native/task-session';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error Local test-only protocol fixture has no declarations.
+// @ts-expect-error 本地测试专用协议装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type AutoCompact = 'off' | 'before_send' | 'before_send_and_during_run';

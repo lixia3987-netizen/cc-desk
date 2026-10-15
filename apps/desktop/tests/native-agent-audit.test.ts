@@ -24,7 +24,7 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 import { runNativeWorker, type NativeWorkerChild, type NativeWorkerFork } from '../src/main/engines/native/worker-host';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline } from '../src/main/engines/native/agent-worktrees';
-// @ts-expect-error Shared loopback Responses fixture has no declarations.
+// @ts-expect-error 共享的回环 Responses 测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const execute = promisify(execFile);
@@ -162,7 +162,7 @@ class AuditTerminal implements TerminalExecutor {
 }
 const capabilities: ExecutionCapabilities = { available: true, structured: true, terminal: true, approvals: true, resume: true, fork: true,
   commands: true, contextUsage: false, liveConfig: false, attachments: false };
-/** Inject only loss of a terminal tool response after a real approved file write. */
+/** 在真实且已批准的文件写入后，仅注入工具终态响应丢失的故障。 */
 const unknownChildWorker: NonNullable<NativeExecutorOptions['worker']> = options => {
   const child = Boolean(options.request.configuration?.delegated), original = options.tools;
   const tools = child ? { ...original, execute: async (...args: Parameters<typeof original.execute>) => {

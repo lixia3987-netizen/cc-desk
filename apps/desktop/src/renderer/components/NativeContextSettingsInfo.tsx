@@ -3,7 +3,7 @@ import type { EngineConfig } from '../../shared/execution';
 import type { NativeModelCapabilitySnapshot } from '../../shared/native-connections';
 import { ModelCapabilityInfo } from './ModelCapabilityInfo';
 
-/** Capability metadata is read-only and tied to the selected connection/model. */
+/** 能力元数据只读，并与选中的连接和模型绑定。 */
 export function NativeContextSettingsInfo({ config }: { config: EngineConfig }) {
   const [snapshot, setSnapshot] = useState<NativeModelCapabilitySnapshot>();
   const [loading, setLoading] = useState(false);
@@ -20,7 +20,7 @@ export function NativeContextSettingsInfo({ config }: { config: EngineConfig }) 
       if (!connection || cancelled) return;
       const result = await api.modelCapabilities({ id: connectionId, revision: connection.revision, model: model || undefined });
       if (!cancelled) setSnapshot(result);
-    }).catch(() => { /* Unknown metadata keeps the bounded fallback policy available. */ }).finally(() => { if (!cancelled) setLoading(false); });
+    }).catch(() => { /* 元数据未知时，仍可使用受限的回退策略。 */ }).finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, [connectionId, model]);
   return <div className="settings-resource-note" aria-label="模型容量">

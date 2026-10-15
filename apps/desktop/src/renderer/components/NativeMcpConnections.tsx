@@ -11,7 +11,7 @@ function editable(item: NativeMcpConnectionView): NativeMcpConnectionInput {
   return { id, revision, name, enabled, transport: 'http', protocolVersion, endpoint: item.endpoint, allowLoopbackHttp: item.allowLoopbackHttp, auth: { ...item.auth } };
 }
 
-/** Switching transports discards fields and credential modes from the previous transport. */
+/** 切换传输方式时，丢弃上一种传输方式的字段与凭据模式。 */
 export function switchMcpTransport(draft: NativeMcpConnectionInput, transport: 'http' | 'stdio'): NativeMcpConnectionInput {
   const { id, revision, name, enabled } = draft;
   return transport === 'stdio'
@@ -19,7 +19,7 @@ export function switchMcpTransport(draft: NativeMcpConnectionInput, transport: '
     : { id, revision, name, enabled, transport, protocolVersion: '2026-07-28', endpoint: '', allowLoopbackHttp: false, auth: { mode: 'none' } };
 }
 
-/** These inputs are literal JSON; neither command strings nor environment values are accepted. */
+/** 这些输入必须是字面量 JSON，不接受命令字符串或环境变量值。 */
 export function parseStdioInputs(argvText: string, environmentText: string): { argv: string[]; environment: Record<string, string> } {
   let argv: unknown, environment: unknown;
   try { argv = JSON.parse(argvText); environment = JSON.parse(environmentText); }
@@ -33,7 +33,7 @@ export function parseStdioInputs(argvText: string, environmentText: string): { a
   return { argv, environment: environment as Record<string, string> };
 }
 
-/** The only bridge call that receives the secret; clear even when invoke throws synchronously. */
+/** 这是唯一接收密钥的桥接调用；即使调用同步抛错，也要清空密钥。 */
 export function submitMcpCredential(api: Pick<NativeMcpConnectionsAPI, 'setCredential'>, draft: NativeMcpConnectionInput, input: { value: string }): Promise<NativeMcpConnectionView> {
   try {
     if (draft.transport === 'stdio' || !draft.id || !draft.revision || (draft.auth.mode !== 'memory' && draft.auth.mode !== 'encrypted')) throw new Error('请先保存需要凭据的 MCP 连接。');

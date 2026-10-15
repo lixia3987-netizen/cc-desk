@@ -48,7 +48,7 @@ test('complete multi-file preview exposes every path, exact hashes, operation an
   assert.match(markup, /&lt;script&gt;hello&lt;\/script&gt;/); assert.doesNotMatch(markup, /<script>/);
   assert.match(markup, /\[no newline\]/);
   assert.equal((markup.match(/完整改动差异/g) ?? []).length, 2);
-  // Diff lines remain literal preformatted text, including the final newline.
+  // 差异行保持原样预格式化文本，包括末尾换行。
   assert.match(markup, /\[CRLF\]\n<\/span>/);
 });
 

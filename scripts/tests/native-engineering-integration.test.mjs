@@ -60,8 +60,8 @@ async function fixture(t) {
   return { parent, candidate, batch, greenSource, newTest, protectedTest };
 }
 
-// The operator's immutable verifier and the candidate run in different processes.
-// These are local process/integrity checks, not real-model or Electron acceptance.
+// 操作者的不可变验证器与候选任务在不同进程中运行。
+// 这些检查仅验证本地进程与完整性，不代表真实模型或 Electron 验收。
 test('engineering verification preserves failed and successful attempts and refuses false completion', { timeout: 180_000 }, async t => {
   const context = await fixture(t);
   await initializeEngineeringBatch(context.batch, git(repository, ['rev-parse', 'HEAD']));

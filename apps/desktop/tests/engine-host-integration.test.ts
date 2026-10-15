@@ -18,9 +18,9 @@ import type { ChatSnapshot, ChatTurnResult, ChatPage, ChatSearchPage } from '../
 import type { Capabilities } from '../src/shared/types';
 import type { ExecutionEvent } from '../src/shared/execution-events';
 
-// The native file picker and CLI command paths use fixtures. The package, desktop
-// host, SessionCreation, SessionService IPC, title generator, subprocesses and
-// persistence remain real.
+// 原生文件选择器与 CLI 命令路径使用测试装置；软件包、桌面
+// 宿主、SessionCreation、SessionService IPC、标题生成器、子进程以及
+// 持久化仍使用真实实现。
 const require = createRequire(import.meta.url);
 const electronPath = require.resolve('electron');
 const previousElectron = require.cache[electronPath];

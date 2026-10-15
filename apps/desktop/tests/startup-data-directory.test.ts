@@ -89,8 +89,8 @@ async function evaluateMainStartup(options: MainStartupOptions, presentationErro
     requestSingleInstanceLock: () => { events.push('lock'); return false; },
     whenReady: () => { events.push('ready'); throw new Error('Unexpected service initialization.'); },
     on: () => { events.push('listener'); }, quit: () => { events.push('quit'); } };
-  // Evaluate the real entry point with Electron and service boundaries isolated;
-  // directory preparation still performs its real filesystem operation.
+  // 隔离 Electron 与服务边界，执行真实入口；
+  // 目录准备仍执行真实文件系统操作。
   const context = vm.createContext({ exports: {}, __dirname: path.dirname(mainFile), Error,
     process: { env: { WORKBENCH_DATA_DIR: options.developmentDirectory, WORKBENCH_TEST_MODE: options.isolatedTest === false ? '0' : '1' } },
     require: (name: string) => {

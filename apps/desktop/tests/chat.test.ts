@@ -17,7 +17,7 @@ const until = async (condition: () => boolean, timeout = 4000) => {
   const end = Date.now() + timeout;
   while (!condition()) { if (Date.now() > end) throw new Error('Timed out waiting for subprocess event'); await new Promise(resolve => setTimeout(resolve, 10)); }
 };
-// Bound only release waits so a missing cleanup transition names the stalled session.
+// 仅为等待释放设置时限，使缺失清理状态转换时能指出卡住的会话。
 async function released(runtime: ChatRuntime, id: string): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -26,8 +26,8 @@ async function released(runtime: ChatRuntime, id: string): Promise<void> {
     })]);
   } finally { if (timer) clearTimeout(timer); }
 }
-// A real subprocess implementing the wire contract from the official Python SDK.
-// This validates transport/lifecycle behavior; it does NOT authenticate to a model.
+// 真实子进程实现官方 Python SDK 的通信协议。
+// 本测试验证传输与生命周期行为，不会向模型进行身份认证。
 const fixture = String.raw`
 const readline = require('node:readline');
 const fs = require('node:fs');
@@ -532,7 +532,7 @@ test('CLI cancellation expires approval, interrupt ends only the turn, configura
   try {
     const cancelled = s.runtime.send(s.session.id, 'cancel', capabilities);
     await until(() => s.runtime.snapshot(s.session.id).pending.length === 1);
-    // A delayed observer must not miss approval because an 80 ms fixture timer expired.
+    // 不能因测试装置的 80 毫秒计时器到期而让延迟的观察者错过审批。
     await new Promise(resolve => setTimeout(resolve, 250));
     assert.equal(s.runtime.snapshot(s.session.id).pending.length, 1);
     const request = s.runtime.snapshot(s.session.id).pending[0];
@@ -819,8 +819,8 @@ test('idle transcript refresh appends only new source identities after a shared 
     assert.deepEqual(snapshot.messages.filter(message => message.role === 'assistant').map(message => message.text), ['same reply', 'same reply']);
     const count = snapshot.messages.length;
     await s.runtime.hydrate(s.session.id); assert.equal(s.runtime.snapshot(s.session.id).messages.length, count);
-    // A truncated or replaced transcript without a shared identity cannot safely
-    // be merged. Keep the local projection instead of guessing by text equality.
+    // 没有共同标识的截断或替换记录无法安全合并；
+    // 应保留本地投影，不能仅凭文本相同进行猜测。
     fs.writeFileSync(file, record('user', 'u1', 'original') + record('assistant', 'unrelated', 'same reply'));
     await s.runtime.hydrate(s.session.id); snapshot = s.runtime.snapshot(s.session.id);
     assert.equal(snapshot.messages.length, count); assert.deepEqual(snapshot.pending, []);
@@ -910,7 +910,7 @@ test('background launch acknowledgement remains running until its lifecycle conf
   try {
     const result = s.runtime.send(s.session.id, 'subtasks-background-ack', capabilities);
     await until(() => s.runtime.snapshot(s.session.id).messages.some(message => message.text === 'Agent launched'));
-    // This exceeds the old 100 ms completion window; progress now requires our release.
+    // 此时已超过旧的 100 毫秒完成窗口；现在必须由测试放行才能继续。
     await new Promise(resolve => setTimeout(resolve, 250));
     const tasks = s.store.state.sessions[0].subtasks!.tasks;
     assert.equal(tasks.length, 1); assert.equal(tasks[0].status, 'running'); assert.equal(tasks[0].background, true);
@@ -967,8 +967,8 @@ test('task_updated alone exposes pending, running and paused states and settles 
   try {
     const result = s.runtime.send(s.session.id, 'subtasks-updated-only', capabilities);
     await until(() => s.store.state.sessions[0].subtasks?.tasks.length === 2);
-    // A delayed observer must still see paused state; only its release may
-    // advance the fixture, not the former 100 ms completion timer.
+    // 延迟的观察者仍须看到暂停状态；只有观察者放行后
+    // 测试装置才能继续，不能由旧的 100 毫秒完成计时器推进。
     await new Promise(resolve => setTimeout(resolve, 250));
     assert.equal(s.store.state.sessions[0].subtasks!.tasks[0].status, 'paused');
     assert.equal(s.store.state.sessions[0].subtasks!.tasks[1].kind, 'shell');
@@ -1102,7 +1102,7 @@ test('confirmed clear survives restart before its new transcript exists and late
       const clearedId = s.store.state.sessions[0].execution.conversationId;
       assert.notEqual(clearedId, s.session.execution.conversationId);
       assert.equal(s.store.state.sessions[0].started, false);
-      // Local reports need not create a transcript for this empty identity.
+      // 本地报告无须为这个空标识创建对话记录。
       await s.runtime.send(s.session.id, '/context', capabilities);
       assert.equal(s.store.state.sessions[0].started, false);
       await s.runtime.shutdown();
@@ -1116,7 +1116,7 @@ test('confirmed clear survives restart before its new transcript exists and late
           return { file: process.execPath, args: [path.join(s.directory, 'fixture.cjs'), session.execution.conversationId!, path.join(s.directory, 'stdin.jsonl')] };
         },
       });
-      // Opening the command menu also starts a process, before the next prompt.
+      // 在下一条提示词之前，打开命令菜单也会启动进程。
       await restarted.prepareCommands(s.session.id, capabilities);
       assert.equal(launches[0][launches[0].indexOf('--session-id') + 1], clearedId);
       assert.ok(!launches[0].includes('--resume'));

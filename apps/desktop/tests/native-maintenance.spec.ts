@@ -9,7 +9,7 @@ import type { Session } from '../src/shared/types';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error The executable HTTP/SSE fixture is shared with agent-node tests.
+// @ts-expect-error 与 agent-node 测试共享这个可执行 HTTP/SSE 测试装置。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Fixture { baseURL: string; requests: Array<Record<string, unknown>>; errors: unknown[]; close(): Promise<void> }
@@ -163,7 +163,7 @@ test('native cancelling a hanging compaction preserves its original context and 
   } finally { try { await closeNativeApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 
-/** Simulate the exact durable records left by a host that died after a tool boundary. */
+/** 精确模拟宿主在工具边界之后崩溃留下的持久化记录。 */
 async function interruptLedger(data: string, cwd: string, session: Session, unknown: boolean) {
   const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId: session.execution.conversationId! });
   try {
@@ -184,7 +184,7 @@ async function interruptLedger(data: string, cwd: string, session: Session, unkn
     if (unknown) {
       const preparedCommand: PreparedTool = { call: command, definition: { name: command.name, description: 'Write marker', inputSchema: { type: 'object' }, risk: 'command' }, input: commandInput, inputDigest: 'fixture-command-digest', policyRevision: request.policyRevision, requiresApproval: true, preconditions: {} };
       await ledger.append(request.identity, { type: 'tool_prepared', prepared: preparedCommand, approval: { binding: { ...request.identity, toolCallId: command.id, inputDigest: preparedCommand.inputDigest, policyRevision: request.policyRevision }, decision: 'approved', expiresAt: Date.now() + 60_000 } });
-      // The effect exists, but there is deliberately no durable tool completion.
+      // 副作用已存在，但有意不写入持久化的工具完成记录。
       await fs.writeFile(path.join(cwd, 'effect-marker.txt'), 'executed\n');
     }
     return request.identity;

@@ -2,7 +2,7 @@ import type { ExecutionEvent } from '../../shared/execution-events';
 import { getSessionIdentity, type SessionIdentity } from '../../shared/execution';
 import type { Session } from '../../shared/types';
 
-/** Normalized events are the boundary between executors and application/IPC consumers. */
+/** 规范化事件构成执行器与应用及 IPC 消费方之间的边界。 */
 export class ExecutionEvents {
   private listeners = new Set<(event: ExecutionEvent) => void>();
   constructor(private onError?: (error: unknown) => void) {}
@@ -13,12 +13,12 @@ export class ExecutionEvents {
   emit(event: ExecutionEvent) {
     for (const listener of this.listeners) {
       try { listener(event); }
-      catch (error) { try { this.onError?.(error); } catch { /* Observers cannot interrupt execution or resource cleanup. */ } }
+      catch (error) { try { this.onError?.(error); } catch { /* 观察者不能中断执行或资源清理。 */ } }
     }
   }
 }
 
-/** Snapshots are copied: /clear must not mutate the previous identity in an event. */
+/** 快照使用副本：/clear 不能修改事件中的上一身份。 */
 export class ExecutionStatePublisher {
   private previous = new Map<string, { identity: SessionIdentity; signature: string }>();
   constructor(private events: ExecutionEvents) {}
@@ -28,7 +28,7 @@ export class ExecutionStatePublisher {
     for (const session of sessions) {
       const identity = getSessionIdentity(session);
       const previous = this.previous.get(session.id);
-      // Large user drafts are unrelated to executor state and have their own IPC.
+      // 大型用户草稿与执行器状态无关，并使用独立 IPC。
       const { draft: _draft, panelDrafts: _panelDrafts, ...metadata } = session;
       const signature = JSON.stringify(metadata);
       this.previous.set(session.id, { identity: { ...identity }, signature });

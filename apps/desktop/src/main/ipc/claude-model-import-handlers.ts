@@ -11,7 +11,7 @@ function privateInput<T>(schema: z.ZodType<T>): z.ZodType<T> {
   });
 }
 
-/** Uses the composition root's trusted renderer / main-frame gate. File paths are chosen in main only. */
+/** 使用组合根提供的可信渲染进程与主框架检查。文件路径仅在主进程中选择。 */
 export function registerClaudeModelImportHandlers(handle: Register, importer: ClaudeModelImporter): void {
   handle('claude:model-import-preview', privateInput(z.object({ source: z.enum(['default', 'file']) }).strict()), input => importer.preview(input));
   handle('claude:model-import', privateInput(z.object({

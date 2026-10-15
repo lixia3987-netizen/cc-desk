@@ -81,13 +81,13 @@ test('explicit native continuation survives queue persistence and participates i
     await restored.queue.resume(sessionId);
     const dispatched = await restored.waitForRun('continue selected task');
     assert.equal(dispatched.item.nativeTaskId, nativeTaskId);
-    // Execution ACK remains independent of whether an engineering task has human verification.
+    // 执行确认与工程任务是否经过人工验证保持独立。
     dispatched.result.resolve({ success: true, summary: '运行已结束，任务尚未验证' });
     await until(() => !restored!.queue.hasPending(sessionId));
     await restored.queue.submit(sessionId, 'continue selected task', [], 'task-request', { nativeTaskId });
     await tick(); assert.equal(restored.runs.length, 1);
   } finally {
-    // Both fixtures share the directory; finish the blocked original before final removal.
+    // 两个测试装置共享目录；最终删除前，先结束被阻塞的原始会话。
     f.queue.pauseAll();
     if (restored) await restored.close(); else await f.close();
   }
@@ -151,7 +151,7 @@ test('send now promotes the selected message and waits for both interrupt acknow
     assert.equal(f.runs.length, 1);
     interruptAck.resolve();
     await tick();
-    // An interrupt control acknowledgment alone does not release runtime.busy.
+    // 仅收到中断控制确认不会解除 runtime.busy 状态。
     assert.equal(f.runs.length, 1);
     f.runs[0].result.resolve(interrupted);
     await promotion;

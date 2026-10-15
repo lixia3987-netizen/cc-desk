@@ -13,9 +13,9 @@ export interface ProjectChangeSetOptions extends FilePolicyOptions { protectedPa
 export interface PreparedChangeSet { id: string; digest: string; input: ChangeSetInput; preview: NativeChangeSetPreview; resultMaxBytes: number }
 export interface ChangeSetApplyOptions {
   signal: AbortSignal;
-  /** Check exact run ownership, approval, policy and every applicable instruction scope. */
+  /** 检查当前运行的确切归属、审批、策略以及每个适用的指令作用域。 */
   assertCurrent(): void | Promise<void>;
-  /** Must durably commit before resolving. Completion receipts must survive cancellation. */
+  /** 必须先完成持久化提交才能返回结果。完成回执必须在取消后仍然保留。 */
   record(event: NativeChangeSetFileEvent): Promise<void>;
 }
 export class ChangeSetError extends Error {
@@ -27,7 +27,7 @@ const canonical = (value: unknown): string => value === null || typeof value !==
 const pathKey = (value: string) => value.normalize('NFC').toLowerCase();
 const forbiddenRule = (relative: string) => ['agents.md', 'claude.md'].includes(path.posix.basename(relative).toLowerCase());
 
-/** Complete static validation precedes all project reads. Paths retain their exact spelling. */
+/** 在读取任何项目数据前完成全部静态校验。路径保留原始写法。 */
 export function validateChangeSetInput(value: unknown, protectedPaths: readonly string[] = []): ChangeSetInput {
   if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => key !== 'changes')) fail('invalid_change_set', 'Expected only a changes array');
   const changes = (value as ChangeSetInput).changes;
@@ -69,7 +69,7 @@ function endings(source: string[]): NativeChangeSetLineEndings {
 }
 function renderLine(prefix: string, value: string): string {
   const label = ending(value), payload = label === 'CRLF' ? value.slice(0, -2) : label === 'no newline' ? value : value.slice(0, -1);
-  // JSON-escaped lines make CR/LF, tabs and literal marker-like text unambiguous in a renderer <pre>.
+  // 对各行进行 JSON 转义，使渲染器的 <pre> 中的 CR/LF、制表符及类似标记的字面文本不会产生歧义。
   return `${prefix}${JSON.stringify(payload)} [${label}]\n`;
 }
 function previewFile(index: number, patch: PreparedPatch, budget: { remaining: number }): NativeChangeSetFilePreview {
@@ -103,8 +103,8 @@ export class ProjectChangeSet {
   async prepare(value: ChangeSetInput, signal?: AbortSignal): Promise<PreparedChangeSet> {
     const input = validateChangeSetInput(value, this.options.protectedPaths); this.secrets(JSON.stringify(input));
     for (const change of input.changes) { this.secrets(change.path); this.secrets(change.content); }
-    // Serialize preparation so concurrent callers cannot exceed the retained-set cap or
-    // multiply the bounded previous-content read buffers while awaiting file IO.
+    // 串行执行准备工作，防止并发调用超出保留变更集的数量上限，或在等待文件 I/O 时
+    // 成倍增加用于读取旧内容的受限缓冲区。
     if (this.prepared.size + this.pendingPreparations >= CHANGE_SET_LIMITS.preparedSets) fail('change_set_capacity', 'Prepared change-set limit reached');
     this.pendingPreparations++;
     const operation = this.preparing.then(() => this.prepareValidated(input, signal)).finally(() => { this.pendingPreparations--; });

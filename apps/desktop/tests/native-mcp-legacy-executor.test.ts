@@ -16,10 +16,10 @@ import { NativeCredentialStore } from '../src/main/engines/native/credentials';
 import { NativeMcpConnectionStore } from '../src/main/engines/native/mcp-connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// Real loopback fixtures exercise model serialization and the MCP transport together.
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// 真实回环测试装置一同验证模型序列化与 MCP 传输。
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
@@ -277,7 +277,7 @@ test('failure while initializing a second legacy connection closes the first bef
   const f = await fixture();
   try {
     const second = await f.addMcp();
-    // Native session configuration sorts identifiers, so fail the later connection deterministically.
+    // 原生会话配置会对标识符排序，因此让较后的连接以确定的方式失败。
     const [initialized, failed] = f.mcpConnection.id < second.connection.id ? [f.mcp, second.service] : [second.service, f.mcp];
     failed.options.initializeFailure = true;
     await f.configure([f.mcpConnection.id, second.connection.id]);
@@ -302,7 +302,7 @@ test('worker failure after legacy discovery still deletes the session and releas
 });
 
 test('a legacy HTTP 404 never reinitializes or replays the dispatched call; a separately created conversation gets a fresh session', async () => {
-  // Two independent conversations share this test server; neither replays the other's model history.
+  // 两个独立会话共享此测试服务器；各自都不重放对方的模型历史。
   const f = await fixture({ callMode: 'not_found', modelReplay: false }); let pending: ReturnType<NativeStructuredExecutor['send']> | undefined;
   try {
     pending = f.executor.send(f.id, 'expired remote session', [], undefined, { requestId: 'legacy-404' });

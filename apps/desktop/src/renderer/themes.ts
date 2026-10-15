@@ -4,7 +4,7 @@ import { normalizeThemeId, THEME_APPEARANCE, type ThemeId } from '../shared/them
 export { DEFAULT_THEME } from '../shared/theme';
 export type { ThemeId } from '../shared/theme';
 
-/** Semantic colors are shared by the UI contrast audit and terminal palette. */
+/** 界面对比度检查与终端配色共用语义颜色。 */
 export interface ThemeDefinition {
   id: ThemeId;
   name: string;
@@ -460,7 +460,7 @@ export function applyTheme(id: unknown): ThemeId {
   return theme.id;
 }
 
-/** Return a fresh palette so xterm cannot mutate the shared theme definition. */
+/** 返回新的配色对象，避免 xterm 修改共享的主题定义。 */
 export function getTerminalTheme(id: ThemeId): ITheme {
   return { ...getTheme(id).terminal };
 }

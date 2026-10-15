@@ -12,11 +12,11 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage, responseEvents } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startChatCompletionsFixture, chatChunk } from '../../../packages/agent-node/tests/fixtures/chat-completions-server.mjs';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startAnthropicFixture } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
 
 type Protocol = 'responses' | 'chat-completions' | 'anthropic';

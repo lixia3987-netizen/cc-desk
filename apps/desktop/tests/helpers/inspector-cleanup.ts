@@ -1,8 +1,8 @@
 import type { ElectronApplication, TestInfo } from '@playwright/test';
 
-/** Runs in Electron's main process, before IPC discards nested Error causes. */
+/** 在 Electron 主进程中运行，早于 IPC 丢弃嵌套 Error 原因的时机。 */
 export function installInspectorStopDiagnostics({ ipcMain }: Pick<typeof import('electron'), 'ipcMain'>, sessionId: string) {
-  // Keep this callback self-contained: Playwright serializes it into Electron.
+  // 保持此回调自包含：Playwright 会将它序列化并传入 Electron。
   const tokens = new Set(['windows.tree', 'pty.release', 'resource.close', 'posix.release_inspection',
     'windows_snapshot', 'windows_terminate', 'windows_helper_release', 'running', 'timeout', 'spawn_error', 'helper_exit',
     'invalid_snapshot', 'identity_changed', 'identity_unavailable', 'unreleased', 'os_error', 'bootstrap', 'modules',
@@ -29,7 +29,7 @@ export function installInspectorStopDiagnostics({ ipcMain }: Pick<typeof import(
     if (value instanceof AggregateError) result.errors = value.errors.slice(0, 8).map(error => serializer.read(error, depth + 1));
     const prefix = 'Windows process descendants have not released. ';
     if (value instanceof Error && value.message.startsWith(prefix)) {
-      try { result.windows = serializer.read(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* Unknown payloads remain opaque. */ }
+      try { result.windows = serializer.read(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* 不解析未知载荷。 */ }
     }
     return result;
   } };
@@ -64,10 +64,10 @@ async function within<T>(work: Promise<T>, milliseconds: number, phase: string):
   } finally { if (timer) clearTimeout(timer); }
 }
 
-/** Failure-only process recovery never satisfies the normal release assertion. */
+/** 仅用于失败场景的进程恢复不能满足正常释放断言。 */
 export async function finishInspectorApp(app: ElectronApplication, sessionId: string,
   attach: TestInfo['attach'], failures: unknown[]) {
-  // Capture Playwright's original ChildProcess before closing its dispatcher.
+  // 关闭调度器之前，获取 Playwright 的原始 ChildProcess。
   const child = app.process();
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   let onExit: () => void = () => {};
@@ -87,11 +87,11 @@ export async function finishInspectorApp(app: ElectronApplication, sessionId: st
     const detail: Record<string, unknown> = { phase, exitCode: child.exitCode, signalCode: child.signalCode };
     detail.cleanup = await within(app.evaluate(readInspectorStopDiagnostics), 2_000, 'diagnostics')
       .catch(() => ({ diagnosticUnavailable: true }));
-    // Emit before recovery, so even an OS refusal cannot hide the stop failure.
+    // 恢复前先输出错误，确保即使操作系统拒绝恢复也不会隐藏停止失败。
     console.error(JSON.stringify({ phase: 'inspector.test.cleanup-error', detail }));
     if (!exited()) {
       try {
-        // Never re-resolve a numeric PID or claim this stopped the session tree.
+        // 不得重新解析数字 PID，也不能声称此操作停止了会话进程树。
         if (!child.kill('SIGKILL') && !exited()) throw new Error('Inspector test process termination was refused.');
         await within(actualExit, 5_000, 'failure recovery exit');
       } catch (recoveryError) {

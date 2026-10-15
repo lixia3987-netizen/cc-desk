@@ -35,7 +35,7 @@ async function waitForGroupRelease(pid: number): Promise<boolean> {
         }
         if (!live) return true;
       } else {
-        // CLI selection may deliberately strip PATH; process inspection uses the OS binary.
+        // CLI 选择逻辑可能刻意移除 PATH；进程检查使用操作系统的二进制文件。
         const result = await execFileAsync('/bin/ps', ['-eo', 'pgid=,stat='], { timeout: 1500, maxBuffer: 2 * 1024 * 1024 });
         if (!result.stdout.trim().split('\n').some(line => { const [group, state] = line.trim().split(/\s+/); return Number(group) === pid && state && !/^[ZX]/.test(state); })) return true;
       }
@@ -44,15 +44,15 @@ async function waitForGroupRelease(pid: number): Promise<boolean> {
   } while (Date.now() < deadline);
   return false;
 }
-// Internal script builder is exported only from this module for the real Windows fixture.
+// 内部脚本构建器仅从此模块导出，供真实 Windows 测试夹具使用。
 export function windowsTreeCleanupScript(pid: number, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number, rootChallenge?: string): string {
   if (rootChallenge !== undefined && !/^[a-f0-9-]{36}$/.test(rootChallenge)) throw new TypeError('Invalid root ownership challenge.');
-  // Retain parent anchors after exit and discover new descendants on every pass.
-  // Hold each Windows handle while checking creation time and terminating it.
-  // Production confirms a live root through its original ChildProcess handle
-  // after this helper has opened and retained its own handle to the numeric PID.
-  // Timestamp-only mode remains solely for the internal standalone test builder.
-  // A root already reported exited is a tombstone and can never be signaled.
+  // 进程退出后仍保留父进程锚点，并在每轮检查中发现新的后代进程。
+  // 检查创建时间及终止进程期间，持续持有各个 Windows 句柄。
+  // 在辅助进程打开并保留数字 PID 对应的句柄后，生产逻辑通过
+  // 原始 ChildProcess 句柄确认根进程仍然存活。
+  // 仅根据时间戳判断的模式只供内部独立测试构建器使用。
+  // 已报告退出的根进程仅作为墓碑记录，绝不能再向它发送信号。
   return `
 $ErrorActionPreference='Stop'
 $cleanupPhase='compile_handle_api'
@@ -185,7 +185,7 @@ do {
 exit 1
 `;
 }
-// Internal entry point also used by real Windows ownership regressions.
+// 真实 Windows 进程归属回归测试也使用此内部入口。
 export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams, 'pid' | 'kill'> & Partial<Pick<ChildProcessWithoutNullStreams, 'exitCode' | 'signalCode'>>, rootExited: boolean, spawnStartedAt: number, spawnCompletedAt: number): Promise<boolean> {
   if (!child.pid) return true;
   const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -206,7 +206,7 @@ export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams
           if (error) reject(Object.assign(error, { stderr })); else resolve();
         });
         let pending = '', confirmed = false;
-        helper.stdin?.on('error', () => { /* helper completion remains the release barrier */ });
+        helper.stdin?.on('error', () => { /* 辅助进程完成仍然是资源释放屏障 */ });
         helper.stdout?.on('data', (chunk: string | Buffer) => {
           if (!challenge || confirmed) return;
           const text = chunk.toString();
@@ -218,24 +218,24 @@ export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams
           pending += text;
           if (!pending.split(/\r?\n/).includes(`CLAUDE_ROOT_HELD:${challenge}`)) return;
           confirmed = true;
-          // libuv's uv_process_kill(handle, 0) checks the original process HANDLE.
-          // A live original process after helper capture proves this held PID was
-          // not recycled. No wall-clock tolerance or numeric-PID health check.
+          // libuv 的 uv_process_kill(handle, 0) 会检查原始进程 HANDLE。
+          // 辅助进程捕获句柄后原始进程仍存活，证明所持有的 PID
+          // 未被回收复用。不采用时钟容差或数字 PID 健康检查。
           let owned = false;
-          try { owned = child.kill(0); } catch { /* fail closed */ }
+          try { owned = child.kill(0); } catch { /* 无法确认时拒绝操作 */ }
           helper.stdin?.end(`${owned ? 'confirm' : 'reject'}:${challenge}\n`);
         });
       });
       return true;
     } catch (error) {
-      // execFile's message contains its complete command. Emit only our bounded
-      // phase marker so CI/support can diagnose release failures without commands.
+      // execFile 的错误消息包含完整命令。仅输出受限的阶段标记，
+      // 让 CI 及支持人员无需查看命令即可诊断释放失败。
       const failure = error as { stderr?: unknown; killed?: boolean };
       const phase = typeof failure.stderr === 'string' ? failure.stderr.match(/CLAUDE_TREE_CLEANUP_FAILED:([a-z_]{1,48})/)?.[1] : undefined;
-      // The original root can exit while PowerShell starts (including shutdown's
-      // original-handle escalation). Only its observed exit authorizes one fresh
-      // tombstone scan after the first helper physically closes. A numeric-PID
-      // probe or an arbitrary inspection failure must never authorize this path.
+      // PowerShell 启动期间，原始根进程可能退出（包括关闭时
+      // 通过原始句柄执行强制升级终止）。只有观测到其退出，才允许
+      // 在首个辅助进程完全关闭后重新扫描一次墓碑记录。数字 PID
+      // 探测或任意检查失败绝不能授权进入此路径。
       if (attempt === 0 && !exited && originalExited() && performance.now() < deadline &&
         (phase === 'open_root_handle' || phase === 'confirm_original_root')) {
         exited = true;
@@ -248,7 +248,7 @@ export async function stopWindowsTree(child: Pick<ChildProcessWithoutNullStreams
   return false;
 }
 
-/** Owns stdio framing, bounded control traffic and whole-process-tree termination. */
+/** 负责标准输入输出分帧、有界控制流量及整个进程树的终止。 */
 export class ClaudeConnection {
   readonly child: ChildProcessWithoutNullStreams;
   readonly controls = new Map<string, ControlWaiter>();
@@ -283,8 +283,8 @@ export class ClaudeConnection {
     child.stderr.on('data', (chunk: string) => { this.stderr = (this.stderr + chunk).slice(-8000); });
     child.on('error', error => events.error(messageOf(error)));
     child.stdin.on('error', error => { if (!this.ending && !this.rootExited) events.error('CLI 输入连接已关闭：' + error.message); });
-    // close waits for inherited descendant pipes; start cleanup at root exit so
-    // orphan tools cannot hold those pipes and the directory lease indefinitely.
+    // close 会等待后代继承的管道；根进程退出时就开始清理，
+    // 避免孤儿工具无限占用这些管道及目录租约。
     child.once('exit', () => { this.rootExited = true; this.terminate(true); });
     child.on('close', (code, signal) => events.close(code, signal));
   }
@@ -303,7 +303,7 @@ export class ClaudeConnection {
   finish() { if (!this.ending && !this.outputDiscarded) { try { this.decoder.finish(); } catch (error) { this.events.error(messageOf(error)); } } }
   write(value: WireObject) {
     if (this.ending || this.child.stdin.destroyed || !this.child.stdin.writable) throw new Error('CLI 输入连接已关闭。');
-    // Only one user turn is outstanding; control traffic is bounded separately.
+    // 同时仅有一个用户交互轮次未完成；控制流量另行限制。
     if (this.child.stdin.writableLength > 24 * 1024 * 1024) throw new Error('CLI 输入队列已满。');
     this.child.stdin.write(JSON.stringify(value) + '\n');
   }
@@ -324,9 +324,9 @@ export class ClaudeConnection {
     if (!preserveOutput) { this.ending = true; this.closeControls('会话进程已停止。'); }
     if (this.termination) return;
     if (process.platform === 'win32') {
-      // Windows Stop-Process is already forceful. Starting a second PowerShell
-      // snapshot on the POSIX escalation timer duplicates expensive CIM work
-      // and can make concurrent sessions exceed the physical release budget.
+      // Windows Stop-Process 已是强制终止操作。在 POSIX 升级
+      // 定时器上另启动 PowerShell 快照会重复昂贵的 CIM 查询，
+      // 并可能使并发会话超出物理资源释放预算。
       this.termination = (this.child.pid ? stopWindowsTree(this.child, this.rootExited, this.spawnStartedAt, this.spawnCompletedAt) : Promise.resolve(true)).then(stopped => {
         this.child.stdin.destroy();
         return stopped;
@@ -336,14 +336,14 @@ export class ClaudeConnection {
     const signal = (value: NodeJS.Signals): Promise<boolean> => {
       if (!this.child.pid) return Promise.resolve(true);
       return this.signalProcessGroup(this.child.pid, value).then(() => true, () => {
-        try { this.child.kill(value); } catch { /* Already exited. */ }
+        try { this.child.kill(value); } catch { /* 已经退出。 */ }
         return false;
       });
     };
     const first = signal('SIGTERM');
-    // Settle the initial signal attempt before closing the input endpoint.
+    // 先完成初次发送信号的尝试，再关闭输入端点。
     void first.then(() => this.child.stdin.destroy());
-    // Keep escalation even if the CLI root exits before an ignoring descendant.
+    // 即使 CLI 根进程先于忽略信号的后代退出，也保留升级终止操作。
     this.termination = new Promise(resolve => {
       this.killTimer = setTimeout(() => { void signal('SIGKILL').then(async last => resolve(last && (!this.child.pid || await waitForGroupRelease(this.child.pid)))); }, 1500);
     });

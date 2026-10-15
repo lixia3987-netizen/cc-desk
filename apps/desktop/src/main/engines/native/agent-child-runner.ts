@@ -36,7 +36,7 @@ export interface NativeAgentChildRunnerOptions {
 const encode = (value: unknown) => canonicalJson(JSON.parse(JSON.stringify(value)));
 const digest = (value: unknown) => createHash('sha256').update(encode(value)).digest('hex');
 
-/** Each delegated child owns its conversation, worker, processes and durable task ledger. */
+/** 每个委派子任务独立管理其会话、工作进程、进程及持久化任务账本。 */
 export async function runNativeAgentChild(input: NativeAgentChildInput, options: NativeAgentChildRunnerOptions): Promise<NativeAgentChildResult> {
   const identity = structuredClone(input.identity), identityKey = encode(identity);
   if (identity.sessionId === input.parentIdentity.sessionId || identity.conversationId === input.parentIdentity.conversationId || identity.runId === input.parentIdentity.runId ||
@@ -61,9 +61,9 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
     });
     const projectRoot = await fs.realpath(input.cwd), privateWorktrees = path.join(privateRoot, 'native', 'agent-worktrees');
     if (containsPath(privateRoot, projectRoot) && (!containsPath(privateWorktrees, projectRoot) || projectRoot === privateWorktrees)) throw new Error('Delegated project is not an authorized private worktree.');
-    // Production implementation worktrees live beside the Native metadata.
-    // A protected ancestor would reject the authorized project itself. Local
-    // tools still enforce this exact project root and reject outside/symlink paths.
+    // 生产环境的实现工作树位于 Native 元数据旁。
+    // 若保护祖先目录，会连已授权的项目本身也拒绝。本地
+    // 工具仍严格限定当前项目根目录，并拒绝外部路径及符号链接路径。
     const excludedRoots = containsPath(privateRoot, projectRoot) ? ['conversations', 'tasks', 'delegations'].map(name => path.join(privateRoot, 'native', name)) : [privateRoot];
     const instructions = await loadProjectInstructions({ projectRoot: input.cwd, excludedRoots, projectSkills: config.projectSkills }, signal);
     assertSafe(instructions);

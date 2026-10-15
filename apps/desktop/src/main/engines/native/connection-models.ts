@@ -12,7 +12,7 @@ interface ModelListRequest {
 }
 interface CachedCatalog { connectionId: string; revision: number; expiresAt: number; models: NativeModelMetadata[] }
 
-/** Explicit discovery holds a connection lock; automatic metadata reads use the same safe transport without a lock. */
+/** 显式发现持有连接锁；自动元数据读取使用相同的安全传输，但不加锁。 */
 export class NativeConnectionModelCatalog {
   private active?: ModelListRequest;
   private readonly recent = new Map<string, ModelListRequest>();
@@ -20,7 +20,7 @@ export class NativeConnectionModelCatalog {
   private closing = false;
   constructor(private readonly connections: ConnectionStore, private readonly options: {
     onChanged?(): void;
-    /** Internal test seam; renderer input cannot change transport limits. */
+    /** 内部测试接口；渲染进程输入不能修改传输限制。 */
     timeoutMs?: number;
   } = {}) {}
   isConnectionListing(id: string): boolean { return this.active?.input.id === id; }
@@ -28,7 +28,7 @@ export class NativeConnectionModelCatalog {
     const found = this.cached.get(connection.connectionId);
     return found && found.revision === connection.revision && found.expiresAt > Date.now() ? structuredClone(found.models) : undefined;
   }
-  /** Main-only automatic GET. The caller owns its short timeout, cancellation and revision validation. */
+  /** 仅主进程执行的自动 GET；调用方负责短超时、取消及修订校验。 */
   async read(connection: ResolvedNativeConnection, options: { signal: AbortSignal; timeoutMs: number }): Promise<NativeMetadataResult> {
     if (this.closing) return { code: 'cancelled', durationMs: 0 };
     const result = await readNativeModelMetadata(connection, { ...options, kind: 'list' });
@@ -72,7 +72,7 @@ export class NativeConnectionModelCatalog {
   cancelAll(): void { this.active?.controller.abort(); }
   async shutdown(): Promise<void> { this.closing = true; this.cancelAll(); await this.active?.promise; this.recent.clear(); this.cached.clear(); }
   resumeAfterFailedShutdown(): void { this.closing = false; }
-  private changed(): void { try { this.options.onChanged?.(); } catch { /* Notifications cannot alter a read-only result or its lock cleanup. */ } }
+  private changed(): void { try { this.options.onChanged?.(); } catch { /* 通知不能改变只读结果或锁的清理。 */ } }
   private remember(connection: ResolvedNativeConnection, result: NativeMetadataResult): void {
     if (result.code !== 'ok' || !result.models) return;
     const current = this.connections.list().connections.find(item => item.id === connection.connectionId);

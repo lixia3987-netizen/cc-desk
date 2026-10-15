@@ -11,7 +11,7 @@ const select = async (page: Page, title: string) => {
   await expect(page.getByRole('heading', { name: title, exact: true })).toBeVisible();
 };
 
-/** setInputFiles gives Electron real disk-backed Files, preserving webUtils paths. */
+/** setInputFiles 向 Electron 提供来自真实磁盘的 File，保留 webUtils 路径。 */
 async function dropNativeFiles(page: Page, files: string[], inspectHover = false) {
   await page.evaluate(() => {
     const input = document.createElement('input');
@@ -26,8 +26,8 @@ async function dropNativeFiles(page: Page, files: string[], inspectHover = false
     return data;
   });
   try {
-    // Exercise a descendant of the pane, including the real composer, so the
-    // browser's default file/text drop cannot silently alter the current draft.
+    // 测试面板中的后代元素，包括真实消息输入框，确保浏览器的
+    // 默认文件或文本拖放行为无法悄悄修改当前草稿。
     await editor(page).dispatchEvent('dragenter', { dataTransfer: transfer });
     await editor(page).dispatchEvent('dragover', { dataTransfer: transfer });
     if (inspectHover) {
@@ -85,7 +85,7 @@ test('file drop: native files stay pending across session switches and restart, 
     expect(wireText).toContain('需要内容时请使用 Read 工具读取');
     expect(wireText).not.toContain('Only attach this file when the user sends.');
 
-    // A running turn also permits staging files without adding a queued prompt.
+    // 正在运行的轮次也允许暂存文件，无须添加排队提示词。
     await editor(page).fill('仍未发送的后续草稿');
     await dropNativeFiles(page, [text]);
     await expect(page.locator('.attachment-chips')).toContainText('拖入说明.txt');

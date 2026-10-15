@@ -15,7 +15,7 @@ import { NativeConnectionModelCatalog } from '../src/main/engines/native/connect
 import { NativeModelCapabilityService } from '../src/main/engines/native/model-capabilities';
 import { createNativeConfig } from '../src/main/engines/native/config';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startAnthropicFixture } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;

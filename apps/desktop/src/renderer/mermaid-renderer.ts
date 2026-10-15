@@ -36,18 +36,18 @@ function configuration(themeId: ThemeId): MermaidConfig {
     },
     flowchart: { useMaxWidth: false }, sequence: { useMaxWidth: false },
   };
-  // Diagram directives/frontmatter cannot override host security or theme choices.
+  // 图表指令与前置元数据不能覆盖宿主的安全策略或主题选择。
   config.secure = ['secure', ...Object.keys(config)];
   return config;
 }
 
-/** Keep internal SVG references (markers/filters), never external resources. */
+/** 仅保留 SVG 内部引用，如标记和滤镜，不保留外部资源。 */
 function localUrls(value: string): string {
   return value.replace(/url\(\s*(['"]?)(.*?)\1\s*\)/gi, (_match, _quote, target: string) =>
     /^#[\w:.-]+$/.test(target.trim()) ? `url(${target.trim()})` : 'none');
 }
 
-/** Render in a measurable temporary host: chat tools/workflow details may be hidden. */
+/** 在可测量的临时容器中渲染，因为聊天工具或工作流详情可能隐藏。 */
 export function renderMermaid(source: string, themeId: ThemeId, signal: AbortSignal): Promise<string> {
   const work = async () => {
     signal.throwIfAborted();
@@ -59,7 +59,7 @@ export function renderMermaid(source: string, themeId: ThemeId, signal: AbortSig
     host.style.cssText = 'position:fixed;left:-10000px;top:0;width:1200px;visibility:hidden;pointer-events:none';
     document.body.appendChild(host);
     try {
-      // Mermaid has global configuration. Serialize initialize + render together.
+      // Mermaid 使用全局配置，应将初始化与渲染作为一个整体串行执行。
       mermaid.initialize(configuration(themeId));
       const { svg } = await mermaid.render(`cc-mermaid-${++sequence}`, source, host);
       signal.throwIfAborted();

@@ -4,7 +4,7 @@ import type { ExecutionRegistry } from './registry';
 
 export async function exportSession(registry: ExecutionRegistry, id: string, window: BrowserWindow | null) {
   const registration = registry.registration(registry.getSession(id));
-  // Reading records remains possible during maintenance or CLI discovery failure.
+  // 维护期间或 CLI 发现失败时仍可读取记录。
   if (!registration.capabilities().export) throw new Error('此会话执行器不支持导出。');
   const sources = await registration.executor.exports(id);
   if (!sources.length) throw new Error('此会话没有可导出的记录。');

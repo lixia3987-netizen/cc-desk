@@ -64,7 +64,7 @@ test('first send rejects unselected, deleted or changed source files and allows 
     const source = await f.file('draft.txt', 'first');
     await assert.rejects(f.drafts.stage('session', [{ path: source, selectionId: randomUUID() }], () => {}), /尚未选择或选择已失效/);
     const selected = await f.drafts.inspect([source]);
-    await fs.writeFile(source, 'other'); // Same length must still require reselection.
+    await fs.writeFile(source, 'other'); // 即使长度相同，仍须要求重新选择。
     await fs.utimes(source, new Date(1000), new Date(1000));
     await assert.rejects(f.drafts.stage('session', selected, () => {}), /选择后已变更，请重新选择/);
     await assert.rejects(fs.stat(f.directory), { code: 'ENOENT' });

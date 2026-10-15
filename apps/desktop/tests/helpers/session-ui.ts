@@ -10,7 +10,7 @@ export async function sessionAction(page: Page, title: string, action: string) {
   await page.getByRole('menu').getByRole('menuitem', { name: action, exact: true }).click();
 }
 
-/** Set up empty historical sessions without sending a user task through the new-session page. */
+/** 创建空的历史会话，无须通过新建会话页面发送用户任务。 */
 export async function createSessionFixture(page: Page, input: Partial<NewSession> & { title: string }) {
   const session = await page.evaluate(async serialized => {
     const input = JSON.parse(serialized) as Partial<NewSession> & { title: string };
@@ -23,10 +23,10 @@ export async function createSessionFixture(page: Page, input: Partial<NewSession
   return session;
 }
 
-/** Keep session creation and Git real; these UI fixtures do not run account-dependent Claude tasks. */
+/** 会话创建与 Git 使用真实实现；这些界面测试装置不运行依赖账号的 Claude 任务。 */
 export async function stubChatSubmission(app: ElectronApplication) {
-  // Electron launch resolves before the host has registered all IPC handlers.
-  // Install overrides only after startup, otherwise host registration can throw.
+  // Electron 启动完成时，宿主可能尚未注册全部 IPC 处理函数。
+  // 仅在启动后安装覆盖实现，否则宿主注册时可能抛出异常。
   const page = await app.firstWindow();
   await expect(page.locator('main.workspace')).toBeVisible();
   await app.evaluate(({ ipcMain }) => {

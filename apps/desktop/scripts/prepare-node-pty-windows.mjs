@@ -16,8 +16,8 @@ export const nodePtyPatch = Object.freeze({
 const patchUrl = new URL('../../../patches/node-pty-1.1.0-conpty.patch', import.meta.url);
 export const sha256 = value => createHash('sha256').update(value).digest('hex');
 
-// Apply only exact unified-diff hunks. No fuzz, path discovery or external git /
-// patch executable is involved; the complete input and output are hash checked.
+// 仅应用精确匹配的统一差异区块，不使用模糊匹配、路径发现或外部 git /
+// patch 可执行程序；完整的输入和输出均经过哈希校验。
 export function applyExactPatch(source, patch) {
   const input = source.split('\n'), lines = patch.replace(/\r\n/g, '\n').split('\n');
   const output = [];
@@ -70,8 +70,8 @@ export async function applyPinnedNodePtyPatch(root) {
     if (sha256(patched) !== hashes.after) throw new Error(`node-pty ${relative} patch output SHA-256 does not match the pinned fix.`);
     writes.push([file, patched]);
   }
-  // Validate every source first, so an unknown second file cannot leave the
-  // first modified. An interrupted write is rejected by the next hash check.
+  // 先验证所有源文件，避免第二个文件不符合预期时留下
+  // 已修改的第一个文件。中断的写入会在下次哈希校验时被拒绝。
   for (const [file, patched] of writes) await fs.writeFile(file, patched);
   return writes.length > 0;
 }
@@ -114,18 +114,18 @@ export async function prepareWindowsNodePty(root) {
   if (gypMetadata.version !== nodePtyPatch.nodeGypVersion) throw new Error('The pinned node-gyp version is required. Run npm ci.');
   await applyPinnedNodePtyPatch(root);
   console.log(`Building node-pty ${nodePtyPatch.version} with the cc-desk ConPTY fix (node-gyp ${gypMetadata.version}).`);
-  // node-pty uses N-API: this build is loaded by both Node tests and Electron.
-  // Always rebuild so a leftover prebuilt or partially built binary cannot pass.
-  // The patched backend needs only these two targets. The default rebuild also
-  // compiles legacy winpty sources that the ConPTY backend never loads; retain
-  // upstream's prebuilt winpty fallback and all existing compiler diagnostics.
+  // node-pty 使用 N-API：Node 测试和 Electron 均会加载此构建产物。
+  // 始终重新构建，避免遗留的预编译或未完整构建的二进制文件通过验证。
+  // 修补后的后端仅需要这两个目标。默认的重新构建还会
+  // 编译 ConPTY 后端从不加载的旧版 winpty 源码；保留
+  // 上游预编译的 winpty 回退文件以及所有现有编译器诊断信息。
   const result = spawnSync(process.execPath, windowsNodePtyBuildArguments(gyp), {
     cwd: root, stdio: 'inherit', windowsHide: true, timeout: 300_000,
   });
   if (result.error || result.status !== 0) {
     throw new Error('Patched node-pty build failed. Install Python 3 and Visual Studio 2022 C++ Build Tools with the Windows SDK and Spectre-mitigated libraries.', { cause: result.error });
   }
-  // node-gyp removes build/; restore upstream's ConPTY DLL payload afterwards.
+  // node-gyp 会删除 build/；完成后恢复上游附带的 ConPTY DLL 文件。
   const resources = spawnSync(process.execPath, [path.join(root, 'scripts', 'post-install.js')], {
     cwd: root, stdio: 'inherit', windowsHide: true, timeout: 30_000,
   });

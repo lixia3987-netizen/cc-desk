@@ -43,7 +43,7 @@ export function createNativeConfig(config: EngineConfig = { schemaVersion: 1, op
   return { schemaVersion: 1, options: parseNativeConfig(config) };
 }
 
-/** Fresh installations follow known model capacity; legacy configs keep their saved custom ceiling. */
+/** 全新安装使用已知模型容量；旧配置保留已保存的自定义上限。 */
 export function createNativeDefaultConfig(): EngineConfig {
   return createNativeConfig({ schemaVersion: 1, options: { inputBudgetMode: 'model' } });
 }

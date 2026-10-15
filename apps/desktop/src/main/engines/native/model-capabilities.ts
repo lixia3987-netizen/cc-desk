@@ -14,14 +14,14 @@ function immutable(snapshot: NativeModelCapabilitySnapshot): NativeModelCapabili
   for (const key of keys) if (snapshot.capabilities[key]) Object.freeze(snapshot.capabilities[key]);
   Object.freeze(snapshot.capabilities); return Object.freeze(snapshot);
 }
-/** Per-field precedence; partial provider metadata cannot erase another source's known fields. */
+/** 按字段确定优先级；供应商的不完整元数据不能抹除其他来源的已知字段。 */
 export function mergeNativeModelCapabilities(provider: NativeModelCapabilities | undefined, catalog: NativeModelCapabilities | undefined, fallback: NativeModelCapabilities): NativeModelCapabilities {
   const result: NativeModelCapabilities = {};
   for (const key of keys) { const selected = provider?.[key] ?? catalog?.[key] ?? fallback[key]; if (selected) result[key] = { ...selected }; }
   return result;
 }
 
-/** Main-only bounded metadata reads. No readiness/mutation lock, generation request or workspace write. */
+/** 仅主进程执行的有界元数据读取；不涉及就绪或修改锁、生成请求或工作区写入。 */
 export class NativeModelCapabilityService {
   private readonly cache = new Map<string, NativeModelCapabilitySnapshot>();
   private readonly pending = new Map<string, Pending>();
@@ -50,7 +50,7 @@ export class NativeModelCapabilityService {
     entry.promise = this.read(connection, entry.controller, options.timeoutMs ?? this.options.timeoutMs ?? 3000).then(snapshot => {
       if (snapshot.code !== 'cancelled' && snapshot.code !== 'configuration' && this.current(connection)) {
         this.cache.set(key, snapshot); while (this.cache.size > 200) this.cache.delete(this.cache.keys().next().value!);
-        try { this.options.onChanged?.(); } catch { /* Notifications cannot change safe metadata. */ }
+        try { this.options.onChanged?.(); } catch { /* 通知不能改变安全元数据。 */ }
       }
       return snapshot;
     }).finally(() => { if (this.pending.get(key) === entry) this.pending.delete(key); });

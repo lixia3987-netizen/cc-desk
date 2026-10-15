@@ -12,12 +12,12 @@ const INDEX_LIMIT = 2048;
 export const claudeProjects = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
 interface TranscriptFile { file: string; id: string; modified: number; size: number }
 interface IndexedTranscript { signature: string; entry: HistoryEntry | null }
-// Cache metadata only: conversation bodies and credentials never enter a persistent index.
+// 仅缓存元数据；对话正文及凭据绝不进入持久化索引。
 const metadata = new Map<string, IndexedTranscript>();
 const queries = new Map<string, { signature:string; entries:HistoryEntry[] }>();
 const QUERY_ENTRY_LIMIT = 20000;
 let parsedFiles = 0;
-/** Read-only counters for profiling the metadata cache; no transcript contents. */
+/** 用于分析元数据缓存性能的只读计数器，不包含对话记录内容。 */
 export function historyCacheStats() { return { parsedFiles, metadataEntries:metadata.size, queryEntries:[...queries.values()].reduce((sum,item)=>sum+item.entries.length,0) }; }
 
 function normalizedPath(value: string): string {
@@ -45,7 +45,7 @@ async function transcriptFiles(id?: string): Promise<TranscriptFile[]> {
       try {
         const info = await fs.lstat(file);
         if (info.isFile()) files.push({ file, id: name.slice(0, -6), modified: info.mtimeMs, size: info.size });
-      } catch { /* A transcript may disappear during a scan. */ }
+      } catch { /* 对话记录可能在扫描期间消失。 */ }
     }
   }
   return files.sort((a, b) => b.modified - a.modified || a.id.localeCompare(b.id));
@@ -116,7 +116,7 @@ async function indexFile(file: TranscriptFile, cache:ReadonlyMap<string,IndexedT
 
 export interface HistoryQuery { query?: string; offset?: number; limit?: number }
 export interface HistoryPage { entries: HistoryEntry[]; total: number; nextOffset: number | null }
-/** Project filtering precedes sorting/pagination; unrelated recent projects never hide older sessions. */
+/** 先筛选项目再排序或分页；不相关的近期项目不会遮蔽较早的会话。 */
 export async function queryHistory(cwd: string, options: HistoryQuery = {}): Promise<HistoryPage> {
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
   const limit = Math.max(1, Math.min(100, Math.floor(options.limit ?? 50)));
@@ -134,8 +134,8 @@ export async function queryHistory(cwd: string, options: HistoryQuery = {}): Pro
   if(cached?.signature===signature) {
     queries.delete(key);queries.set(key,cached);return page(cached.entries);
   }
-  // Freeze the previous generation during this scan. New misses cannot evict entries
-  // before we get to them when the number of transcripts exceeds the LRU capacity.
+  // 本次扫描期间冻结上一代缓存。对话记录数量超出 LRU 容量时，
+  // 新的未命中记录不能提前淘汰尚未扫描到的条目。
   const cachedMetadata=new Map(metadata);
   const projectMatches = new Map<string, boolean>();
   const entries: HistoryEntry[] = [];
@@ -166,7 +166,7 @@ export async function readHistory(cwd: string): Promise<HistoryEntry[]> {
   return (await queryHistory(cwd, { limit: 100 })).entries;
 }
 
-/** Return a readonly transcript source only after its metadata matches the requested project. */
+/** 仅在元数据匹配所请求的项目后，才返回只读对话记录来源。 */
 export async function findClaudeTranscript(cwd: string, id: string): Promise<string | undefined> {
   if (!uuid.test(id)) return undefined;
   const expected = await canonicalPath(cwd);
@@ -181,7 +181,7 @@ export interface TranscriptExportSummary {
   bytes: number; validRecords: number; malformedLines: number;
   format: 'claude-jsonl'; scope: 'available-transcript';
 }
-/** Export every available byte, including unknown/corrupt records, without modifying Claude's file. */
+/** 导出所有可用字节，包括未知或损坏记录，且不修改 Claude 的文件。 */
 export async function exportClaudeTranscript(cwd: string, id: string, destination: string): Promise<TranscriptExportSummary> {
   if (!uuid.test(id)) throw new Error('Claude 会话 ID 无效。');
   const sourceFile = await findClaudeTranscript(cwd, id);
@@ -193,7 +193,7 @@ export async function exportClaudeTranscript(cwd: string, id: string, destinatio
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   const temporary = destination + '.tmp-' + randomUUID();
   try {
-    // Fix the byte boundary for an actively growing conversation. This is an export-time snapshot.
+    // 为持续增长的对话固定字节边界，作为导出时的快照。
     const bytes = (await fs.stat(sourceFile)).size;
     if (bytes) await pipeline(createReadStream(sourceFile, { start: 0, end: bytes - 1 }), createWriteStream(temporary, { flags: 'wx', mode: 0o600 }));
     else await fs.writeFile(temporary, '', { flag: 'wx', mode: 0o600 });

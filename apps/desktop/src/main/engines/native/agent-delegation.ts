@@ -9,7 +9,7 @@ import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBas
 import { writeAgentArtifact, writeAgentReceipt } from './agent-artifacts';
 
 export interface NativeDelegationBudget {
-  /** Host-enforced, atomic gate shared with the parent and every sibling. */
+  /** 由宿主强制执行的原子门控，与父任务和所有同级任务共享。 */
   consume(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>;
   remainingMs(): number;
   snapshot(): { modelRequests: number; toolCalls: number };
@@ -22,7 +22,7 @@ export interface NativeAgentChildInput {
   title: string;
   goal: string;
   cwd: string;
-  /** These restrictions must be enforced by the host, never only by a prompt. */
+  /** 这些限制必须由宿主强制执行，不能仅依赖提示词。 */
   toolPolicy: 'read_only' | 'workspace_write';
   signal: AbortSignal;
   budget: NativeDelegationBudget;
@@ -63,7 +63,7 @@ export interface NativeDelegationReceipt {
   workspaceVerified?: boolean;
   artifact?: { patchPath: string; changedFiles: Array<{ path: string; status: string }>; head: string; baseCommit: string; sha256?: string; bytes?: number };
   result?: NativeAgentChildResult;
-  /** Stable host code only; provider or subprocess errors are never copied here. */
+  /** 此处只保留稳定的宿主错误码，绝不复制供应商或子进程错误。 */
   error?: string;
 }
 export interface NativeAgentDelegationOptions {
@@ -77,10 +77,10 @@ export interface NativeAgentDelegationOptions {
   worktreeRoot: string;
   budget: NativeDelegationBudget;
   assertOwnership(): Promise<void>;
-  /** Must create an independent context/worker; child hosts must not register delegation. */
+  /** 必须创建独立的上下文和工作进程；子任务宿主不得注册委派能力。 */
   runChild(input: NativeAgentChildInput): Promise<NativeAgentChildResult>;
   record?(receipt: NativeDelegationReceipt): Promise<void>;
-  /** Standard automatic write policy can disable the dialog, never the host restriction. */
+  /** 标准自动写入策略可以关闭对话框，但不能取消宿主限制。 */
   requiresApproval?: boolean;
 }
 export interface NativeAgentDelegationTools extends ToolPort { closeAll(): Promise<void> }
@@ -104,7 +104,7 @@ const encode = (value: unknown) => canonicalJson(JSON.parse(JSON.stringify(value
 const hash = (value: unknown) => createHash('sha256').update(encode(value)).digest('hex');
 interface CallState { prepared: PreparedTool; maxOutputBytes: number; baseline?: NativeAgentBaseline; execution?: Promise<ToolResult>; effectsStarted?: boolean }
 
-/** A batch is one parent tool call, so siblings remain parallel despite the serial core loop. */
+/** 一个批次对应父任务的一次工具调用，因此即使核心循环串行，同级任务仍可并行。 */
 export function createAgentDelegationTools(options: NativeAgentDelegationOptions): NativeAgentDelegationTools {
   const definitions = structuredClone(options.policy === 'read_only' ? toolDefinitions.slice(0, 1) : toolDefinitions);
   const states = new Map<string, CallState>(), operations = new Set<Promise<ToolResult>>(), children = new Set<AbortController>();
@@ -139,7 +139,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
       budget: options.budget.snapshot(), integration: 'Use read_agent_result with parentRunId and childId to review the retained patch and evidence. Integrate reviewed changes using normally approved tools; do not assume the child branch contains uncommitted changes. Execution completion does not prove acceptance.' };
     credentials(output);
     if (Buffer.byteLength(encode(output)) <= context.maxOutputBytes) return { status, output: JSON.parse(JSON.stringify(output)) };
-    // Full summaries/evidence remain durable; truncation is only model presentation.
+    // 完整摘要和证据仍会持久化；截断仅用于向模型展示。
     const references = { parentRunId: parentIdentity.runId, children: receipts.map(r => ({ childId: r.childId, taskId: r.taskId, runId: r.identity.runId,
       status: r.status, receiptPath: r.receiptPath })), budget: options.budget.snapshot(), details: 'Use read_agent_result with parentRunId and childId to read saved results and page through retained patches.' };
     if (Buffer.byteLength(encode(references)) <= context.maxOutputBytes) return { status, truncated: true, output: references };
@@ -162,7 +162,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, toolCallId: state.prepared.call.id, ...task,
         mode, status: 'prepared', createdAt: now, updatedAt: now, receiptPath: path.join(batchPath, childId, 'receipt.json'), cwd: options.cwd };
     });
-    // Persist intent before any worktree or child model operation. Exact repeats reuse execution.
+    // 任何工作树或子模型操作前先持久化执行意图；完全相同的重复调用复用已有执行。
     state.effectsStarted = true;
     try { for (const receipt of receipts) await save(receipt); }
     catch { return { status: 'unknown', output: { error: 'delegation_intent_unconfirmed', batchId } }; }
@@ -213,8 +213,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         else if (!result.committed) receipt.error = 'child_commit_unconfirmed';
       } catch (error) {
         abort.abort();
-        // A rejected child launch can have executed tools. Require recovery unless the
-        // host provides a durable terminal RunResult; never infer cancellation from signal.
+        // 子任务启动被拒绝时仍可能已执行工具。除非
+        // 宿主提供已持久化的终态 RunResult，否则必须恢复；绝不根据信号推断取消。
         receipt.status = childStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : signal.aborted ? 'cancelled' : 'failed';
         receipt.error = error instanceof NativeAgentWorktreeError ? error.code : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
       } finally {
@@ -238,8 +238,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
   const executeBatch = async (state: CallState, context: ToolExecutionContext): Promise<ToolResult> => {
     const count = reviewSchema.parse({ tasks: state.prepared.input.tasks }).tasks.length;
     if (launched + reserved + count > 16 || reserved + count > 4) return { status: 'not_executed', output: { error: 'delegation_capacity_exhausted' } };
-    // Reserve before the first await, including persistence/Git preparation, so
-    // concurrent tool calls cannot each observe an empty child capacity.
+    // 在首次 await 前完成预留，包括持久化和 Git 准备，以免
+    // 并发工具调用都观察到尚未占用的子任务容量。
     reserved += count;
     try { return await executeReservedBatch(state, context); }
     finally { reserved -= count; if (state.effectsStarted) launched += count; }

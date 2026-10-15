@@ -108,7 +108,7 @@ test('desktop runner signals its isolated wrapper and descendant without signall
     fs.writeFileSync(${JSON.stringify(siblingReady)}, 'ready');
     setInterval(() => {}, 1000);
   `], { stdio: 'ignore' });
-  // Isolate the fixture runner too, so a regression cannot signal the test host.
+  // 同时隔离测试装置的运行进程，避免回归问题向测试宿主发送信号。
   const running = spawn(process.execPath, [runner, '--list'], {
     env: { ...process.env, PATH: directory, DISPLAY: '' }, stdio: 'ignore', detached: true,
   });
@@ -144,7 +144,7 @@ test('desktop runner signals its isolated wrapper and descendant without signall
   } finally {
     if (timeout) clearTimeout(timeout);
     if (!childIds && fs.existsSync(identities)) childIds = JSON.parse(fs.readFileSync(identities, 'utf8'));
-    // Only fixture-owned IDs are eligible for cleanup, including the pre-fix failure path.
+    // 包括修复前的失败路径在内，只能清理属于测试装置的 ID。
     killOwned(childIds?.descendant); killOwned(childIds?.wrapper);
     if (running.exitCode === null && running.signalCode === null) killOwned(running.pid);
     killOwned(sibling.pid);

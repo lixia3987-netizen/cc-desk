@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
-// @ts-expect-error Build scripts are plain ESM and have no TypeScript declarations.
+// @ts-expect-error 构建脚本是普通 ESM，没有 TypeScript 类型声明。
 import { applyExactPatch, applyPinnedNodePtyPatch, conptyVerificationSource, nodePtyPatch, sha256, windowsNodePtyBuildArguments } from '../scripts/prepare-node-pty-windows.mjs';
 
 const require = createRequire(import.meta.url);
@@ -42,8 +42,8 @@ async function fixture(t: TestContext) {
         .split('\n').map(line => line[0] === '+' ? `-${line.slice(1)}` : line[0] === '-' ? `+${line.slice(1)}` : line).join('\n');
       source = applyExactPatch(source, reverse);
     }
-    // Exercise fresh upstream inputs even after postinstall has patched the
-    // installed dependency; otherwise repeatability can skip every patch hunk.
+    // 即使 postinstall 已修补安装的依赖，也要使用全新的上游输入进行测试；
+    // 否则重复运行可能跳过所有补丁块。
     assert.equal(sha256(source), nodePtyPatch.files[relative].before, relative);
     await fs.writeFile(path.join(root, relative), source);
   }
@@ -81,7 +81,7 @@ test('native verification rejects a stale binary or loader fallback even when th
   const select = async (directory: string) => fs.writeFile(loader,
     `exports.loadNativeModule = () => ({dir: ${JSON.stringify(directory)}, module: require(${JSON.stringify(directory + '/conpty.node')})});`);
   const verify = () => spawnSync(process.execPath, ['-e',
-    // Exercise the actual verifier with isolated JS stand-ins for native exports.
+    // 使用原生导出的独立 JS 替代实现，验证真实校验器。
     `require.extensions['.node'] = require.extensions['.js'];\n${conptyVerificationSource(root)}`,
   ], { encoding: 'utf8', timeout: 10_000 });
   await select('../build/Release');

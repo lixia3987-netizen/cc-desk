@@ -49,8 +49,8 @@ export function registerWorkspaceHandlers(handle: Register, ports: WorkspacePort
   });
   handle('worktree:info', idSchema, async id => {
     const session = ports.session(id);
-    // Read-only refreshes can outlive cleanup. Missing Git roots should produce
-    // unavailable metadata, while all mutation paths keep their strict checks.
+    // 只读刷新可能持续到清理之后。Git 根目录缺失时，应返回
+    // 不可用的元数据；所有修改路径仍保持严格检查。
     const directories = await ports.worktreeDirectories(session).catch(() => undefined);
     const blocked = directories ? ports.directoriesBusy(directories) : true;
     const info = await worktreeInfo(ports.worktreeBase(session), session.worktree ?? session.cwd, id, blocked);

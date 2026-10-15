@@ -17,9 +17,9 @@ import { createNativeConfig } from '../src/main/engines/native/config';
 import { NativeConnectionModelCatalog } from '../src/main/engines/native/connection-models';
 import { NativeModelCapabilityService } from '../src/main/engines/native/model-capabilities';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startAnthropicFixture } from '../../../packages/agent-node/tests/fixtures/anthropic-server.mjs';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;

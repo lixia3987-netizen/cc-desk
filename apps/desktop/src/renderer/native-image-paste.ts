@@ -3,14 +3,14 @@ import type { Attachment, Session } from '../shared/types';
 import type { ExecutionDescriptor } from '../shared/execution';
 import { executionUnavailable } from './EngineConfiguration';
 
-/** Snapshot only files supplied by this paste event; text remains browser-owned. */
+/** 仅为此次粘贴事件提供的文件创建快照，文本仍由浏览器处理。 */
 export function capturePastedFiles(transfer: Pick<DataTransfer, 'files'>, onFiles?: (files: File[]) => void): void {
   if (!onFiles) return;
   const files = Array.from(transfer.files);
   if (files.length) onFiles(files);
 }
 
-/** Shared with picker/drop imports: reserve synchronously, before reading bytes. */
+/** 与选择器及拖放导入共用：读取字节前先同步预留位置。 */
 export async function withAttachmentImport(pending: Set<string>, id: string, changed: (value: Set<string>) => void, action: () => Promise<void>): Promise<void> {
   if (pending.has(id)) return;
   pending.add(id); changed(new Set(pending));
@@ -31,7 +31,7 @@ export async function readNativePastedImages(files: readonly File[], existing: r
   if (!files.length) throw new Error('剪贴板中没有可添加的图片。');
   if (existing.length + files.length > NATIVE_IMAGE_MAX_COUNT) throw new Error('Native 待发送图片最多 4 张，请先移除部分图片。');
   let total = existing.reduce((sum, file) => sum + file.bytes, 0);
-  // Validate the whole selection before calling any File.arrayBuffer().
+  // 调用任何 File.arrayBuffer() 前，先校验整个选区。
   for (const file of files) {
     if (file.type !== 'image/png' && file.type !== 'image/jpeg') throw new Error('Native 粘贴图片仅支持 PNG / JPEG。');
     if (!Number.isSafeInteger(file.size) || file.size <= 0) throw new Error('剪贴板图片为空或无法读取，请重新复制图片。');

@@ -14,7 +14,7 @@ const attachmentPathSchema = z.string().min(1).max(4096).refine(
 );
 export const attachmentPathsSchema = z.array(attachmentPathSchema)
   .min(1, '请选择或拖入本机文件。').max(MAX_ATTACHMENT_COUNT, '一次最多添加 8 个附件。');
-// Names and sizes are only display hints. Staging uses the main-process record.
+// 名称和大小仅用于显示提示。暂存以主进程记录为准。
 export const draftAttachmentSelectionSchema = z.object({ selectionId: z.string().uuid(), path: attachmentPathSchema }).strict();
 export const draftAttachmentSelectionsSchema = z.array(draftAttachmentSelectionSchema.strip())
   .min(1, '请选择或拖入本机文件。').max(MAX_ATTACHMENT_COUNT, '一次最多添加 8 个附件。');
@@ -32,7 +32,7 @@ function sameFile(before: BigIntStats, after: BigIntStats): boolean {
     && before.size === after.size && before.mtimeNs === after.mtimeNs && before.ctimeNs === after.ctimeNs;
 }
 
-/** Pre-session selection is memory-only metadata; copies belong to a real session. */
+/** 会话创建前的选择仅保存内存元数据；副本归真实会话持有。 */
 export class DraftAttachments {
   private selections = new Map<string, Source>();
   private previews = new Set<string>();
@@ -63,7 +63,7 @@ export class DraftAttachments {
       this.selections.set(selectionId, source);
       return { ...source.attachment, selectionId };
     });
-    // Abandoned forms must not retain an unbounded list of local paths.
+    // 已放弃的表单不能无限保留本地路径列表。
     while (this.selections.size > MAX_DRAFT_ATTACHMENT_SELECTIONS) this.selections.delete(this.selections.keys().next().value!);
     return result;
   }
@@ -79,7 +79,7 @@ export class DraftAttachments {
     }
   }
 
-  /** Explicit selected-file view, with no session, staging, manifest or model operation. */
+  /** 显式查看已选文件，不涉及会话、暂存、清单或模型操作。 */
   async previewNative(selection: Pick<DraftAttachment, 'selectionId' | 'path'>): Promise<NativeImagePreview> {
     const selected = draftAttachmentSelectionSchema.parse(selection);
     const source = this.selections.get(selected.selectionId);
@@ -103,7 +103,7 @@ export class DraftAttachments {
       let bytes: Buffer;
       try {
         if (!sameFile(source.stat, await handle.stat({ bigint: true }))) throw unavailable();
-        // One extra byte detects a growing source without allocating from a new size.
+        // 多读一个字节即可检测源文件增长，无须按新大小分配内存。
         const buffer = Buffer.alloc(source.attachment.bytes + 1);
         let length = 0;
         while (length < buffer.length) {
@@ -137,8 +137,8 @@ export class DraftAttachments {
     let copies: Attachment[];
     try { copies = await (native ? this.attachments.addNative(id, expected.map(source => source.attachment.path)) : this.attachments.add(id, expected.map(source => source.attachment.path))); }
     catch (error) {
-      // Translate source races into actionable selection errors. Attachments.add
-      // already rolls back partial copies before rejecting.
+      // 将源文件竞态转成用户可处理的选择错误。Attachments.add
+      // 在拒绝之前已回滚复制了一部分的内容。
       await this.verify(expected);
       throw error;
     }

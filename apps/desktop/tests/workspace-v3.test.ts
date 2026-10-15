@@ -117,7 +117,7 @@ test('migration writes one unique exact backup and never replaces it during save
     assert.equal(f.backups().length, 2, 'restart and no-op flush create no extra migration backups');
     assert.equal(fs.readFileSync(migrationBackup, 'utf8'), f.original);
     assert.equal(fs.readFileSync(priorBackup, 'utf8'), 'older immutable backup\n');
-    // Restoring an older workspace later creates another independent backup.
+    // 稍后恢复旧工作区时，会创建另一个独立备份。
     const secondOriginal = JSON.stringify({ ...legacyState(), selectedSessionId: '' });
     fs.writeFileSync(f.file, secondOriginal);
     new StateStore(f.directory).flush();

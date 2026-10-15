@@ -1,6 +1,6 @@
 export type DiagnosticScope = 'user' | 'project' | 'local';
 
-/** Read-only discovery. Configured credentials and endpoints are never proof of connectivity. */
+/** 只读发现；已配置凭据与端点不能证明连接可用。 */
 export interface EnvironmentDiagnostics {
   checkedAt: number;
   cwd?: string;

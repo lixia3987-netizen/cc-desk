@@ -38,9 +38,9 @@ function boundedUtf8(content: unknown, maximum: number): content is string {
 }
 
 /**
- * Secure handle reads are adapted from desktop main/files.ts, intentionally copied
- * until the desktop preview can migrate without changing its public contract.
- * Node path checks are an optimistic boundary, not a hostile-local-process OS sandbox.
+ * 安全句柄读取逻辑改编自桌面的 main/files.ts，暂时有意复制，
+ * 待桌面预览能在保持公开接口契约的前提下迁移后再统一。
+ * Node 路径检查属于乐观校验边界，无法替代防范恶意本地进程的操作系统沙箱。
  */
 export class ProjectFiles {
   readonly maxFileBytes: number;
@@ -123,7 +123,7 @@ export class ProjectFiles {
     try {
       const before = await handle.stat({ bigint: true });
       if (before.size > BigInt(maximumBytes)) throw new Error(`File exceeds the ${maximumBytes} byte limit.`);
-      // Read the entire object even when callers later select a range: its version is never a fragment hash.
+      // 即使调用方随后只选取某个范围，也要读取完整对象：版本绝不能使用片段哈希。
       const buffer = Buffer.alloc(Number(before.size));
       let offset = 0;
       while (offset < buffer.length) {
@@ -144,7 +144,7 @@ export class ProjectFiles {
   }
   async entries(relative: string, limit: number, signal?: AbortSignal): Promise<{ names: string[]; truncated: boolean }> {
     const snapshot = await this.snapshot(relative, 'directory');
-    // Windows cannot reliably open directory handles with Node. Keep the same pre/post identity checks there.
+    // Windows 上 Node 无法可靠地打开目录句柄，因此仍需在操作前后进行相同的身份检查。
     const opened = process.platform === 'win32' ? undefined : await this.openSnapshot(snapshot);
     const directoryPath = process.platform === 'linux' ? `/proc/self/fd/${opened!.handle.fd}` : snapshot.absolute;
     const names: string[] = [];
@@ -185,10 +185,10 @@ export class ProjectFiles {
     if (previous.hash !== input.expectedHash) throw new Error('File version conflict; read the complete current version before retrying.');
     const offset = previous.content.indexOf(input.oldText);
     if (offset < 0) throw new Error('oldText does not exactly match the current file. Read again and include unchanged surrounding text.');
-    // Advance one code unit, not the match length: overlapping occurrences are ambiguous too.
+    // 每次只前进一个代码单元，而非整个匹配长度：重叠匹配同样会产生歧义。
     if (previous.content.indexOf(input.oldText, offset + 1) !== -1) throw new Error('oldText must match exactly once. Include more unchanged surrounding text.');
     const content = previous.content.slice(0, offset) + input.newText + previous.content.slice(offset + input.oldText.length);
-    // Reuse the same complete-file version checks and atomic publisher as apply_patch.
+    // 复用 apply_patch 的完整文件版本检查及原子发布逻辑。
     return this.preparePatch({ path: relative, content, expectedHash: input.expectedHash }, signal);
   }
   async applyPatch(prepared: PreparedPatch, signal?: AbortSignal, beforePublish?: () => void | Promise<void>): Promise<{ path: string; previousHash: string | null; hash: string; bytes: number; created: boolean }> {
@@ -208,8 +208,8 @@ export class ProjectFiles {
       temporaryCreated = true;
       try { await handle.writeFile(input.content, 'utf8'); if (previous) await handle.chmod(previous.mode); await handle.sync(); } finally { await handle.close(); }
       throwIfAborted(signal);
-      // Batch hosts recheck approval, ownership and instructions after temporary-file IO.
-      // Revalidate directory identity and the old file after the callback's own awaits.
+      // 批量操作的宿主会在临时文件 I/O 后重新检查审批、归属及指令。
+      // 回调内的异步等待完成后，重新校验目录身份和旧文件。
       if (beforePublish) await beforePublish();
       throwIfAborted(signal);
       await this.verify(parent);
@@ -222,7 +222,7 @@ export class ProjectFiles {
         await fs.rename(temporary, target);
         temporaryCreated = false;
       } else {
-        // Hard-link publication is atomic and refuses an existing target on every supported platform.
+        // 在所有受支持的平台上，硬链接发布都是原子操作，并且会拒绝已存在的目标。
         throwIfAborted(signal);
         await fs.link(temporary, target);
         await fs.unlink(temporary);

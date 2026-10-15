@@ -9,7 +9,7 @@ import { isSensitivePath, isWithin, normalizeProjectPath, ProjectFiles, throwIfA
 export type TaskWorkspace = NativeTaskWorkspace;
 export type TaskWorkspaceFile = TaskWorkspace['files'][number];
 export type TaskChangeSummary = NativeTaskChangeSummary;
-/** Receipt comparison needs no second copy of the complete file inventory. */
+/** 比较回执无需再复制一份完整文件清单。 */
 export type TaskCommandWorkspace = Pick<TaskWorkspace, 'fingerprint' | 'rootFingerprint' | 'complete'>;
 export interface TaskWorkspaceOptions {
   projectRoot: string; excludedRoots?: readonly string[]; signal?: AbortSignal;
@@ -17,7 +17,7 @@ export interface TaskWorkspaceOptions {
 }
 export interface TaskCommandEvidenceOptions {
   task: Pick<NativeTaskSnapshot, 'taskId' | 'identity' | 'planRevision' | 'acceptanceRevision'>; before: TaskCommandWorkspace; after: TaskCommandWorkspace;
-  /** Chosen by host UI/declared acceptance, never inferred from stdout. */
+  /** 由宿主界面或声明的验收条件指定，绝不从 stdout 推断。 */
   stepIds?: string[]; criterionIds?: string[]; now?: string;
 }
 
@@ -29,7 +29,7 @@ const DIRECTORY = process.platform === 'win32' ? 0 : constants.O_DIRECTORY;
 const sameObject = (a: BigIntStats, b: BigIntStats) => a.dev === b.dev && a.ino === b.ino && a.isFile() === b.isFile() && a.isDirectory() === b.isDirectory();
 const sameVersion = (a: BigIntStats, b: BigIntStats) => sameObject(a, b) && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
 
-/** Mirrors ProjectFiles' handle boundary, but hashes binary assets without decoding. */
+/** 遵循 ProjectFiles 的句柄边界，但对二进制资源直接哈希，不进行解码。 */
 async function readBytes(files: ProjectFiles, snapshot: PathSnapshot, maximum: number, check: () => void): Promise<{ bytes: Buffer; stat: BigIntStats }> {
   const handles: FileHandle[] = [];
   try {
@@ -71,7 +71,7 @@ function bound(value: number | undefined, fallback: number, maximum: number): nu
   return result;
 }
 
-/** Capture bytes, not HEAD: uncommitted and externally changed files participate. */
+/** 捕获文件字节而非 HEAD；包含未提交及被外部修改的文件。 */
 export async function captureTaskWorkspace(options: TaskWorkspaceOptions): Promise<TaskWorkspace> {
   const limits = options.limits ?? {};
   const maxEntries = bound(limits.maxEntries, 4000, 4000);
@@ -139,8 +139,8 @@ export async function captureTaskWorkspace(options: TaskWorkspaceOptions): Promi
       }
     };
     await walk('.', 0);
-    // Verify the whole read interval, including directory membership. A tree is
-    // still an optimistic observation, not an OS-level filesystem transaction.
+    // 验证整个读取期间的状态，包括目录成员关系。文件树仍是
+    // 乐观观察结果，而非操作系统级文件系统事务。
     for (const snapshot of checked) {
       check();
       await projectFiles.verify(snapshot, snapshot.kind === 'file');
@@ -158,7 +158,7 @@ export async function captureTaskWorkspace(options: TaskWorkspaceOptions): Promi
   };
 }
 
-/** Changes are observations since the task baseline, never an automatic rollback set. */
+/** 变更是相对任务基线的观察结果，绝非自动回滚集合。 */
 export function describeTaskChanges(baseline: TaskWorkspace, current: TaskWorkspace, maxPaths = 200): TaskChangeSummary {
   maxPaths = bound(maxPaths, 200, 4000);
   const comparable = baseline.rootFingerprint === current.rootFingerprint && JSON.stringify(baseline.scope) === JSON.stringify(current.scope);
@@ -178,13 +178,13 @@ export function describeTaskChanges(baseline: TaskWorkspace, current: TaskWorksp
   return result;
 }
 
-/** A command receipt stays unverified until a human reviews its relevance/coverage. */
+/** 人工审查相关性及覆盖范围前，命令回执保持未验证状态。 */
 export function commandEvidenceReceipt(prepared: PreparedTool, result: ToolResult, options: TaskCommandEvidenceOptions): NativeTaskEvidence | undefined {
   if (prepared.call.name !== 'run_command' || prepared.definition.risk !== 'command') return undefined;
   return makeCommandEvidenceReceipt(prepared, result, options);
 }
 
-/** Only the host's durable terminal observer may use a start_command call as evidence. */
+/** 只有宿主的持久化终态观察者可以将 start_command 调用作为证据。 */
 export function terminalCommandEvidenceReceipt(prepared: PreparedTool, result: ToolResult, options: TaskCommandEvidenceOptions): NativeTaskEvidence | undefined {
   if (prepared.call.name !== 'start_command' || prepared.definition.risk !== 'command') return undefined;
   return makeCommandEvidenceReceipt(prepared, result, options);

@@ -53,7 +53,7 @@ test('real ledger projection distinguishes successful startup from final command
     const running = (await f.snapshot()).nativeCommands!.items[0];
     assert.equal(running.status, 'running'); assert.equal(running.result, undefined);
     assert.equal(running.toolCallId, f.call.id); assert.equal(running.taskId, 'task-1');
-    // Even without a new ledger record, loss of host ownership removes a live-looking state.
+    // 即使没有新的账本记录，宿主所有权丢失后也须移除看似仍在运行的状态。
     f.setActive(false); assert.equal(f.projection.snapshot(f.id).nativeCommands!.items[0].status, 'unknown');
     f.setActive(true); assert.equal(f.projection.snapshot(f.id).nativeCommands!.items[0].status, 'running');
     await f.store.recordCommandEvent(f.req.identity, f.call, { commandId: f.commandId, status: 'finished', at, result });
@@ -81,8 +81,8 @@ test('retained directory ownership after host failure cannot keep an unclosed co
   const f = await fixture();
   try {
     await f.running(); await f.snapshot();
-    // isActive intentionally stays true, as it does while the executor keeps
-    // an unconfirmed directory lease isolated after a terminal write failure.
+    // isActive 有意保持为 true，与执行器在终态写入失败后
+    // 继续隔离尚未确认的目录租约时的行为一致。
     for (const state of ['error', 'interrupted', 'completed'] as const) {
       f.projection.state(f.id, state, 'Host terminal persistence could not be confirmed.');
       const command = f.projection.snapshot(f.id).nativeCommands!.items[0];

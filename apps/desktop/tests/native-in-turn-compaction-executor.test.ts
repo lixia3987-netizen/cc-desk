@@ -13,9 +13,9 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startChatCompletionsFixture } from '../../../packages/agent-node/tests/fixtures/chat-completions-server.mjs';
 
 type Protocol = 'responses' | 'chat-completions';
@@ -46,8 +46,8 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
   await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
-  // Distinct files make real inspection progress; repeatedly reading the same
-  // unchanged file is deliberately blocked by N3-03 after three batches.
+  // 不同文件代表实际检查进展；反复读取同一个未变化的文件，
+  // 会在三个批次后被 N3-03 有意阻止。
   for (const index of [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');

@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 
 const focusableSelector='button:not(:disabled),a[href],input:not(:disabled),select:not(:disabled),textarea:not(:disabled),[tabindex]:not([tabindex="-1"])';
 
-/** A single modal surface with keyboard containment and focus restoration. */
+/** 统一的模态界面，将键盘焦点限制在内部，并在关闭后恢复焦点。 */
 export function Dialog({label,className='',onClose,closeDisabled=false,children}:{label:string;className?:string;onClose:()=>void;closeDisabled?:boolean;children:ReactNode}) {
   const [host]=useState(()=>document.createElement('div'));
   const [opener]=useState(()=>document.activeElement instanceof HTMLElement?document.activeElement:null);

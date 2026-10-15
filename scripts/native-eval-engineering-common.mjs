@@ -65,7 +65,7 @@ export async function readJson(file, { maxBytes = 1024 * 1024 } = {}) {
   } finally { await handle.close(); }
 }
 
-/** Publish a new, durable JSON artifact; existing successes and failures are never replaced. */
+/** 发布新的持久化 JSON 文件；不覆盖已有的成功或失败记录。 */
 export async function createJson(file, value, { maxBytes = 1024 * 1024 } = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 8 * 1024 * 1024) throw new Error('Invalid engineering JSON byte budget.');
   const absolute = path.resolve(file), parent = await ordinaryDirectory(path.dirname(absolute));
@@ -86,7 +86,7 @@ export async function createJson(file, value, { maxBytes = 1024 * 1024 } = {}) {
       try { await directory.sync(); } finally { await directory.close(); }
     }
   } finally {
-    // Never remove a published artifact, including after a directory-sync failure.
+    // 不删除已发布的文件，即使目录同步失败也应保留。
     await fs.rm(temporary, { force: true }).catch(() => {});
   }
   return { file: absolute, digest: hashJson(value), published };
@@ -100,7 +100,7 @@ export function commandEnvironment() {
   };
 }
 
-/** Resolve only the supported immutable suite; a changed v1 requires a new version. */
+/** 仅解析受支持且不可变的测试集；修改 v1 时必须创建新版本。 */
 export async function loadEngineeringSuite() {
   await ordinaryDirectory(suiteRoot);
   const files = []; let totalBytes = 0;

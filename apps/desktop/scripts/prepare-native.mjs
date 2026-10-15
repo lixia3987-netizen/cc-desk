@@ -8,9 +8,9 @@ const root = path.dirname(require.resolve('node-pty/package.json'));
 
 if (process.platform === 'win32') await prepareWindowsNodePty(root);
 
-// node-pty 1.1.0 ships Darwin spawn-helper files without executable mode bits.
-// macOS uses posix_spawnp on this helper, so a successful npm install alone is
-// insufficient. Run after dependency installation, before tests and packaging.
+// node-pty 1.1.0 发布的 Darwin spawn-helper 文件缺少可执行权限位。
+// macOS 通过 posix_spawnp 调用此辅助程序，因此仅完成 npm install
+// 仍不够。应在依赖安装完成后、测试与打包开始前运行此脚本。
 if (process.platform !== 'win32') {
   const directories = ['prebuilds/darwin-arm64', 'prebuilds/darwin-x64', 'build/Release', 'build/Debug'];
   let prepared = 0;

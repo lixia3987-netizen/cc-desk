@@ -8,7 +8,7 @@ const object = (value: unknown): value is JsonObject => value !== null && typeof
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const invalid = (): never => { throw new RunStoreError('unsupported_protocol', 'Context maintenance requires complete supported native protocol items'); };
 
-/** Only the host's bounded inline image representation is accepted in user messages. */
+/** 用户消息仅接受宿主限制大小的内联图像表示。 */
 function validateUserContent(content: JsonValue, chat: boolean): void {
   if (typeof content === 'string') return;
   if (!Array.isArray(content) || !content.length) return invalid();
@@ -30,7 +30,7 @@ function validateUserContent(content: JsonValue, chat: boolean): void {
   try { validateUserImages(images); } catch { return invalid(); }
 }
 
-/** Preserve passive Responses extensions while rejecting unapproved image references. */
+/** 保留无执行语义的 Responses 扩展，同时拒绝未经批准的图像引用。 */
 export function validateResponsesImageInputs(context: ModelContext): void {
   for (const item of context.items) {
     if (!object(item)) continue;
@@ -44,7 +44,7 @@ export function validateResponsesImageInputs(context: ModelContext): void {
   }
 }
 
-/** Validate protocol structure without projecting away reasoning or tool fields. */
+/** 校验协议结构，不通过投影丢弃推理或工具字段。 */
 export function responsesPendingCalls(context: ModelContext): ToolCall[] {
   if (context.protocol.id !== 'openai-responses' || context.protocol.version !== 1) return invalid();
   const pending = new Map<string, ToolCall>();
@@ -56,7 +56,7 @@ export function responsesPendingCalls(context: ModelContext): ToolCall[] {
     } else if (item.type === 'function_call_output') {
       if (!nonempty(item.call_id) || typeof item.output !== 'string' || !pending.delete(item.call_id)) return invalid();
     } else if (item.type === 'reasoning') {
-      // Provider reasoning, encrypted content and extensions stay byte-for-byte JSON values.
+      // 提供方推理、加密内容及扩展保留为字节完全一致的 JSON 值。
     } else if (item.type === 'message' || item.type === undefined && item.role !== undefined) {
       if (pending.size || !['user', 'assistant'].includes(item.role as string)) return invalid();
       if (item.role === 'user') validateUserContent(item.content!, false);
@@ -85,7 +85,7 @@ export function contextSummaryItem(summary: string, protocol: ProtocolVersion = 
   return { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] };
 }
 
-/** Host snapshots remain historical assistant data, never instructions or approvals. */
+/** 宿主快照始终是历史助手数据，绝不作为指令或审批。 */
 export function runContinuityItem(continuity: string, protocol: ProtocolVersion): JsonValue {
   if (typeof continuity !== 'string' || !continuity.trim() || continuity.includes('\0') || Buffer.byteLength(continuity) > MAX_RUN_CONTINUITY_BYTES) {
     throw new RunStoreError('invalid_continuity', 'Run continuity data must be nonempty text within 32 KiB');
@@ -99,7 +99,7 @@ export function runContinuityItem(continuity: string, protocol: ProtocolVersion)
 }
 
 
-/** Chat Completions keeps native messages, including complete ordered tool calls/results. */
+/** Chat Completions 保留原生消息，包括完整且有序的工具调用和结果。 */
 export function chatCompletionsPendingCalls(context: ModelContext): ToolCall[] {
   if (context.protocol.id !== 'openai-chat-completions' || context.protocol.version !== 1 || context.continuation !== undefined) return invalid();
   const pending = new Map<string, ToolCall>();
@@ -125,7 +125,7 @@ export function chatCompletionsPendingCalls(context: ModelContext): ToolCall[] {
   }
   return [...pending.values()];
 }
-/** Anthropic keeps complete client tool and private thinking blocks for native replay. */
+/** Anthropic 保留完整的客户端工具块和私有思考块，供原生重放使用。 */
 export function anthropicPendingCalls(context: ModelContext): ToolCall[] {
   if (context.protocol.id !== 'anthropic-messages' || context.protocol.version !== 1 || context.continuation !== undefined) return invalid();
   const pending = new Map<string, ToolCall>();
@@ -179,7 +179,7 @@ export function nativeToolResultItems(protocol: ProtocolVersion, call: ToolCall,
   if (protocol.id === 'openai-responses') return [{ type: 'function_call_output', call_id: call.id, output: JSON.stringify(result) }];
   return invalid();
 }
-/** Validate the response's protocol-native calls before the host accepts worker effects. */
+/** 宿主接纳执行进程的副作用之前，先校验响应的原生协议调用。 */
 export function nativeResponseCalls(protocol: ProtocolVersion, items: JsonValue[]): ToolCall[] {
   if (protocol.id === 'anthropic-messages') {
     if (items.length !== 1 || !object(items[0]) || items[0].role !== 'assistant') return invalid();
@@ -190,8 +190,8 @@ export function nativeResponseCalls(protocol: ProtocolVersion, items: JsonValue[
     return chatCompletionsPendingCalls({ protocol, items });
   }
   if (protocol.id !== 'openai-responses' || protocol.version !== 1) return invalid();
-  // Worker output cannot introduce a new user attachment or turn model image
-  // output into previously approved input. Keep unrelated passive extensions.
+  // 执行进程输出不能引入新的用户附件，也不能把模型的图像
+  // 输出变为此前已批准的输入。保留不相关的无执行语义扩展。
   for (const item of items) {
     if (!object(item) || item.role !== undefined && item.role !== 'assistant' ||
         item.type === 'message' && item.role !== 'assistant' ||
@@ -205,14 +205,14 @@ export function nativeResponseCalls(protocol: ProtocolVersion, items: JsonValue[
     return { id: call.call_id, name: call.name, arguments: call.arguments };
   });
 }
-/** Compaction cannot execute tools or turn a refusal into an accepted summary. */
+/** 压缩不能执行工具，也不能将拒绝响应转为可接纳的摘要。 */
 export function isNativeTextSummary(protocol: ProtocolVersion, items: JsonValue[]): boolean {
   if (protocol.version !== 1) return false;
   if (protocol.id === 'anthropic-messages') {
     try {
       if (nativeResponseCalls(protocol, items).length) return false;
-      // The summary consumer extracts text only. Private blocks are validated,
-      // but never copied into the host-authored historical text summary.
+      // 摘要使用方只提取文本。私有块会被校验，
+      // 但绝不复制到宿主生成的历史文本摘要中。
       return Array.isArray((items[0] as JsonObject).content) && ((items[0] as JsonObject).content as JsonValue[]).some(part => object(part) && part.type === 'text' && typeof part.text === 'string' && part.text.trim().length > 0);
     } catch { return false; }
   }

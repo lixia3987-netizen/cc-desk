@@ -9,12 +9,12 @@ export function configureProvider(executor: StructuredExecutor, sessionId: strin
 }
 export function countResources(executor: ExecutionLifecycle, terminal: TerminalSnapshot) { return { count: executor.activeCount, status: terminal.status }; }
 
-// A host can create execution events without importing the desktop Session type.
+// 宿主可以创建执行事件，无需导入桌面端的 Session 类型。
 export function hostEvent(session: { id: string; execution: SessionExecution; status: SessionStatus }): ExecutionEvent {
   return { type: 'session.changed', identity: getSessionIdentity(session), status: session.status };
 }
 
-// A view can project chat, approvals and terminal data without DOM or Node types.
+// 视图可以投影聊天、审批及终端数据，无需依赖 DOM 或 Node 类型。
 export function viewState(snapshot: ChatSnapshot, approval: ChatApproval, decision: ChatDecision, chunk: TerminalChunk) {
   const resolved: ChatJournalEvent = { type: 'approval_resolved', requestId: approval.requestId, decision };
   const result: ChatTurnResult = { success: !snapshot.error, summary: snapshot.messages.at(-1)?.text ?? '' };

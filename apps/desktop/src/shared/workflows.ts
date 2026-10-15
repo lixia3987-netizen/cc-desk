@@ -1,6 +1,6 @@
 import type { NativeExecutionReceipt } from '@cc-desk/contracts/native-task';
 export type WorkflowNativeReceipt = NativeExecutionReceipt;
-/** Enabled after the Native executor enforces stage permissions and shared budgets. */
+/** Native 执行器实施阶段权限与共享预算约束后才启用。 */
 export const NATIVE_WORKFLOW_POLICIES_ENABLED = true;
 export type WorkflowGate = 'none' | 'manual' | 'native_task';
 export type WorkflowToolPolicy = 'read_only' | 'standard';
@@ -51,7 +51,7 @@ export interface WorkflowStage {
   nativeReceipts?: WorkflowNativeReceipt[];
 }
 
-/** A workflow keeps one local session, executor, and working directory throughout its life. */
+/** 工作流在整个生命周期中使用同一本地会话、执行器和工作目录。 */
 export interface WorkflowBinding {
   sessionId: string;
   providerId: string;
@@ -81,7 +81,7 @@ export interface NewWorkflow {
   goal: string;
   stages?: WorkflowStageDefinition[];
   pauseAfterEachStage?: boolean;
-  /** Includes the initial attempt. Retries always require an explicit user action. */
+  /** 包含首次尝试，每次重试都必须由用户明确操作触发。 */
   maxAttempts?: number;
   budget?: WorkflowBudget;
 }

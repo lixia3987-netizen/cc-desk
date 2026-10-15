@@ -9,7 +9,7 @@ interface ProbeResult { stdout: string; exitCode: number }
 export type DiagnosticRunner = (file: string, args: string[], options: {
   cwd?: string; env: Record<string, string>; timeout: number; maxBuffer: number; windowsHide: boolean;
 }) => Promise<ProbeResult>;
-/** Injection points isolate tests from the user's actual account and configuration. */
+/** 通过注入点将测试与用户真实账号和配置隔离。 */
 export interface DiagnosticOptions {
   home?: string;
   env?: Record<string, string>;
@@ -31,7 +31,7 @@ const isObject = (value: unknown): value is JsonObject => !!value && typeof valu
 const object = (value: unknown): JsonObject => isObject(value) ? value : {};
 const own = (value: JsonObject, key: string): unknown => Object.hasOwn(value, key) ? value[key] : undefined;
 
-/** Only the URL origin survives: never username, password, path, query or fragment. */
+/** 仅保留 URL 源，不保留用户名、密码、路径、查询参数或片段。 */
 export function sanitizedOrigin(value: unknown): string | undefined {
   if (typeof value !== 'string' || value.length > 8192) return undefined;
   try {
@@ -45,7 +45,7 @@ const runProcess: DiagnosticRunner = async (file, args, options) => {
     const result = await execFileAsync(file, args, options);
     return { stdout: result.stdout, exitCode: 0 };
   } catch (error) {
-    // Authentication status deliberately exits 1 when logged out. Ignore stderr entirely.
+    // 未登录时，认证状态命令特意以退出码 1 结束。完全忽略 stderr。
     const failure = error as { code?: unknown; stdout?: unknown };
     if (typeof failure.code === 'number' && typeof failure.stdout === 'string') {
       return { stdout: failure.stdout, exitCode: failure.code };
@@ -54,7 +54,7 @@ const runProcess: DiagnosticRunner = async (file, args, options) => {
   }
 };
 
-/** Parse only explicit status fields; email, account IDs, tokens and raw errors never leave main. */
+/** 仅解析明确的状态字段；邮箱、账号 ID、令牌和原始错误均不离开主进程。 */
 export function authenticationSummary(output: string, exitCode: number): EnvironmentDiagnostics['auth'] {
   try {
     const value: unknown = JSON.parse(output);
@@ -81,14 +81,14 @@ async function probeCLI(binary: string, projectPath: string | undefined, env: Re
   try {
     const version = await run(invocation.file, [...invocation.prefix, '--version'], probeOptions);
     if (version.exitCode !== 0) throw new Error();
-    // --version output is untrusted text too; retain a semver only, not arbitrary output.
+    // --version 输出也是不可信文本；仅保留语义化版本号，不保留任意输出。
     cli.version = version.stdout.match(/\b\d+\.\d+\.\d+\b/)?.[0];
     cli.runnable = true;
     const help = await run(invocation.file, [...invocation.prefix, 'auth', 'status', '--help'], probeOptions);
     if (help.exitCode !== 0 || !/\bauth\s+status\b/i.test(help.stdout) || !/--(?:json|text)\b/.test(help.stdout)) {
       return { cli, auth: { state: 'unsupported', message: '此 CLI 未声明支持登录状态查询，请在终端中检查 /status。' } };
     }
-    // Current CLI emits JSON by default; only add --json when this exact subcommand advertises it.
+    // 当前 CLI 默认输出 JSON；仅在该子命令明确支持时添加 --json。
     const args = [...invocation.prefix, 'auth', 'status'];
     if (/--json\b/.test(help.stdout)) args.push('--json');
     const status = await run(invocation.file, args, probeOptions);
@@ -113,7 +113,7 @@ async function readConfig(file: string, scope: DiagnosticScope, report: Environm
     return value;
   } catch (error) {
     const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
-    // JSON errors can include fragments of credentials. Never forward error.message.
+    // JSON 错误可能含有凭据片段。不能转发 error.message。
     report.configs.push({ scope, path: file, status: missing ? 'missing' : 'invalid',
       ...(missing ? {} : { message: '无法读取或解析配置；错误原文已隐藏。' }) });
     return {};
@@ -161,7 +161,7 @@ async function collectSkills(directory: string, scope: DiagnosticScope, report: 
         try {
           if (!(await fs.stat(file)).isFile()) continue;
           report.skills.push({ name: kind === 'skills' ? entry.name : entry.name.slice(0, -3), scope, path: file });
-        } catch { /* Broken symlinks and absent SKILL.md are not loadable skills. */ }
+        } catch { /* 失效符号链接或缺少 SKILL.md 的目录不能作为技能加载。 */ }
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') report.warnings.push(`${scope} ${kind} 目录无法读取。`);
@@ -169,7 +169,7 @@ async function collectSkills(directory: string, scope: DiagnosticScope, report: 
   }
 }
 
-/** Metadata-only discovery: does not launch MCP, run hooks, read credentials files or edit configs. */
+/** 仅发现元数据：不启动 MCP、不运行钩子、不读取凭据文件，也不修改配置。 */
 export async function diagnoseEnvironment(projectPath?: string, binary = '', options: DiagnosticOptions = {}): Promise<EnvironmentDiagnostics> {
   const env = options.env ?? environment();
   const home = options.home ?? os.homedir();
@@ -187,7 +187,7 @@ export async function diagnoseEnvironment(projectPath?: string, binary = '', opt
   const settings = await readConfig(path.join(configDir, 'settings.json'), 'user', report);
   collectProvider(object(settings.env), 'user', report);
   if (settings.apiKeyHelper) report.warnings.push('用户配置包含 apiKeyHelper；诊断不会主动执行该命令，也不显示命令内容。');
-  // A custom CLAUDE_CONFIG_DIR uses its own .claude.json; do not mix another account's metadata.
+  // 自定义 CLAUDE_CONFIG_DIR 使用自己的 .claude.json；不能混入其他账号的元数据。
   const globalFile = configuredDir ? path.join(configDir, '.claude.json') : path.join(home, '.claude.json');
   const global = await readConfig(globalFile, 'user', report);
   collectMcp(global.mcpServers, 'user', report);

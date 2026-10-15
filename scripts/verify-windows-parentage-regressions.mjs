@@ -5,9 +5,9 @@ import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import ts from 'typescript';
 
-// Compare the same real-process fixtures with the last failing implementation.
-// Only generated dist files are swapped; sources and the installed dependency
-// tree are unchanged, and restoration runs before any fixed-code test.
+// 使用相同的真实进程测试夹具，对比最后一次失败的实现。
+// 仅替换生成的 dist 文件；源码和已安装的依赖
+// 树保持不变，并在任何修复后代码的测试开始前恢复原文件。
 if (process.platform !== 'win32') throw new Error('This regression requires real Windows process handles.');
 const baseline = process.argv[2];
 if (!/^[a-f0-9]{40}$/.test(baseline ?? '')) throw new Error('Pass the full baseline commit SHA.');

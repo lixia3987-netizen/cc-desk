@@ -4,7 +4,7 @@ export function invokedCommand(prompt: string): string | undefined {
   return /^\/([^\s/]+)(?:\s|$)/u.exec(prompt.trimStart())?.[1];
 }
 
-/** A slash at the beginning of the prompt, with the caret in its command name. */
+/** 提示开头是斜杠，且光标位于命令名称内部。 */
 export function slashQuery(value: string, start: number, end: number): string | undefined {
   if (start !== end) return;
   const match = /^\s*\/([^\s/]*)/u.exec(value);

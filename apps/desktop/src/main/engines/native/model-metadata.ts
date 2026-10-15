@@ -22,7 +22,7 @@ export function nativeModelEndpoint(connection: ResolvedNativeConnection): URL {
   return url;
 }
 
-/** Null and zero in catalog schemas mean unknown. Malformed supplied limits reject the response. */
+/** 目录模式中的 null 和零表示未知；提供的限制格式错误时拒绝响应。 */
 export function parseNativeModelMetadata(value: unknown, protocol: ResolvedNativeConnection['protocol'], source: ModelCapabilitySource): NativeModelMetadata {
   if (!record(value) || !safeText(value.id)) return fail('protocol');
   const name = value.display_name ?? value.name;
@@ -33,7 +33,7 @@ export function parseNativeModelMetadata(value: unknown, protocol: ResolvedNativ
       const candidate = value[key];
       if (candidate === undefined || candidate === null || candidate === 0) continue;
       if (!tokenLimit(candidate)) return fail('protocol');
-      // Conflicting synonymous fields never widen a declared limit.
+      // 同义字段存在冲突时，绝不扩大声明的限制。
       selected = selected === undefined ? candidate : Math.min(selected, candidate);
     }
     return selected;
@@ -54,7 +54,7 @@ function statusFailure(status: number): MetadataFailure {
   return new MetadataFailure(code, status);
 }
 
-/** Shared GET-only transport. No provider response, errors, cursors, URL or credential crosses IPC. */
+/** 共享的仅 GET 传输；供应商响应、错误、游标、URL 及凭据均不跨越 IPC。 */
 export async function readNativeModelMetadata(connection: ResolvedNativeConnection, options: { signal: AbortSignal; timeoutMs?: number; kind: 'detail' | 'list' }): Promise<NativeMetadataResult> {
   const started = performance.now(), elapsed = () => Math.max(0, Math.round(performance.now() - started));
   const timeoutMs = options.timeoutMs ?? nativeMetadataLimits.timeoutMs;
@@ -96,13 +96,13 @@ export async function readNativeModelMetadata(connection: ResolvedNativeConnecti
       const url = new URL(endpoint);
       if (options.kind === 'list' && connection.protocol === 'anthropic') { url.searchParams.set('limit', String(nativeMetadataLimits.pageSize)); if (cursor) url.searchParams.set('after_id', cursor); }
       const response = await fetch(url, { method: 'GET', headers, signal: controller.signal, redirect: 'manual' });
-      if (!response.ok) { try { await response.body?.cancel(); } catch { /* Keep the fixed status. */ } throw statusFailure(response.status); }
+      if (!response.ok) { try { await response.body?.cancel(); } catch { /* 保留固定状态。 */ } throw statusFailure(response.status); }
       if (!response.body || !/^(?:application\/json|application\/[\w.+-]+\+json)(?:\s*;|\s*$)/i.test(response.headers.get('content-type') ?? '')) {
-        try { await response.body?.cancel(); } catch { /* Never expose rejected content. */ } fail('protocol');
+        try { await response.body?.cancel(); } catch { /* 绝不暴露被拒绝的内容。 */ } fail('protocol');
       }
       const declared = response.headers.get('content-length');
       if (declared && /^\d+$/.test(declared) && Number(declared) > nativeMetadataLimits.responseBytes - totalBytes) {
-        try { await response.body.cancel(); } catch { /* The limit remains authoritative. */ } fail('response_limit');
+        try { await response.body.cancel(); } catch { /* 限制仍是权威依据。 */ } fail('response_limit');
       }
       const reader = response.body.getReader();
       let text = '';
@@ -114,9 +114,9 @@ export async function readNativeModelMetadata(connection: ResolvedNativeConnecti
           try { text += decoder.decode(chunk.value, { stream: true }); } catch { fail('protocol'); }
         }
         try { text += decoder.decode(); } catch { fail('protocol'); }
-      } finally { try { await reader.cancel(); } catch { /* Return only fixed failures. */ } reader.releaseLock(); }
+      } finally { try { await reader.cancel(); } catch { /* 只返回固定的失败类型。 */ } reader.releaseLock(); }
       let body: unknown; try { body = JSON.parse(text); } catch { fail('protocol'); }
-      // Raw numeric echoes are not string nodes in decoded JSON; inspect both representations.
+      // 原始数字回显不属于解码后 JSON 的字符串节点；检查两种表示。
       assertNoModelCredential(text, connection.apiKey);
       assertNoModelCredential(body, connection.apiKey);
       if (options.kind === 'detail') { const item = parseNativeModelMetadata(body, connection.protocol, 'provider'); models.set(item.id, item); return completed(); }
@@ -132,7 +132,7 @@ export async function readNativeModelMetadata(connection: ResolvedNativeConnecti
             const next = item.capabilities[field], before = capabilities[field];
             if (next) capabilities[field] = { value: before ? Math.min(before.value, next.value) : next.value, source: 'catalog' };
           }
-          // Stable display metadata, conservative per-field limits across duplicate/page entries.
+          // 显示元数据保持稳定；对重复条目及各页条目按字段保守取限制。
           models.set(item.id, { ...previous, capabilities });
         }
         if (models.size > nativeMetadataLimits.models) fail('response_limit');

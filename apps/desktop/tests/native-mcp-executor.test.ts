@@ -16,10 +16,10 @@ import { NativeCredentialStore } from '../src/main/engines/native/credentials';
 import { NativeMcpConnectionStore } from '../src/main/engines/native/mcp-connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// Both model and MCP requests terminate on real local HTTP fixtures.
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// 模型与 MCP 请求都连接到真实的本地 HTTP 测试装置。
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;

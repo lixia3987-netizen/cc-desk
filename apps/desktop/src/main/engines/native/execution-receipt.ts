@@ -51,7 +51,7 @@ function receiptPath(directory: string, runId: string): string {
   if (!/^[a-f0-9-]{36}$/i.test(runId)) throw new Error('无效的执行回执身份。');
   return path.join(directory, 'native', 'execution-receipts', `${runId}.json`);
 }
-/** A duplicate dispatch reads its original receipt; it must never pick up later task edits or a new elapsed time. */
+/** 重复派发读取原始回执；绝不能采用后续任务修改或新的耗时。 */
 export async function readNativeExecutionReceipt(directory: string, result: RunResult): Promise<NativeExecutionReceipt | null> {
   let text: string;
   try { text = await fs.readFile(receiptPath(directory, result.identity.runId), 'utf8'); }

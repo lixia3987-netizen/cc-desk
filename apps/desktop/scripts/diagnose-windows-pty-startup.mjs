@@ -4,8 +4,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// Information only: real Runtime and full workspace checks remain the gates.
-// Never serialize getReport(): it contains commands, paths and environment data.
+// 仅用于提供信息；实际 Runtime 和完整工作区检查仍是通过验证的依据。
+// 不得序列化 getReport()：其中包含命令、路径和环境数据。
 if (process.platform === 'win32') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-pty-startup-'));
   const runtimeUrl = new URL('../src/main/runtime.ts', import.meta.url).href;
@@ -43,7 +43,7 @@ if (process.platform === 'win32') {
         const phases = new Set();
         let tail = '', bytes = 0, timedOut = false, spawnError = false;
         const timer = setTimeout(() => { timedOut = true; child.kill(); }, 15000);
-        // Retain only hardcoded phase tokens, never arbitrary child diagnostics.
+        // 仅保留硬编码的阶段标记，不保留子进程的任意诊断内容。
         child.stdout.on('data', chunk => {
           tail = (tail + chunk.toString()).slice(-4096);
           for (const phase of ['import-start', 'import-complete', 'report-start', 'report-complete',

@@ -10,7 +10,7 @@ export type TerminalSubtaskEvent =
   | { type: 'observe'; observation: SubtaskObservation }
   | { type: 'end'; status: 'interrupted' | 'failed' | 'unknown'; reason?: string };
 
-/** Public HTTP hook events only. SessionStart does NOT support HTTP. */
+/** 仅包含公开的 HTTP 钩子事件。SessionStart 不支持 HTTP。 */
 export const PTY_HOOK_EVENTS = [
   'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure',
   'Stop', 'StopFailure', 'Notification', 'SessionEnd', 'PostModelSwitch', 'Elicitation', 'ElicitationResult',
@@ -21,7 +21,7 @@ const hookInput = z.object({
   hook_event_name: z.enum(PTY_HOOK_EVENTS), session_id: z.uuid(),
   cwd: z.string().min(1).max(4096), agent_id: z.string().min(1).max(200).optional(),
   agent_type: z.string().max(200).optional(),
-  // Only the documented message is used; agent_transcript_path is deliberately never read.
+  // 仅使用文档规定的消息；刻意不读取 agent_transcript_path。
   last_assistant_message: z.string().max(1024 * 1024).transform(value => value.slice(0, 4000)).optional(),
   prompt_id: z.string().max(200).optional(), permission_mode: z.enum(permissionModes).optional(),
   prompt: z.string().max(1024 * 1024).transform(value => value.slice(0, 128 * 1024)).optional(),
@@ -31,7 +31,7 @@ const hookInput = z.object({
 });
 export type PtyHookInput = z.infer<typeof hookInput>;
 export type PtySubtaskEvent = TerminalSubtaskEvent;
-/** Claude observations have no access to the app's local session or provider identity. */
+/** Claude 观测无法访问应用的本地会话或提供商身份。 */
 export interface PtySessionPatch {
   conversationId?: string;
   terminalSync?: 'waiting' | 'synced' | 'unsupported';
@@ -47,7 +47,7 @@ interface ObservedAgent {
 }
 const MAX_BODY = 2 * 1024 * 1024;
 
-/** Conservative documented baseline: PostModelSwitch was added in 2.1.251. */
+/** 采用文档明确的保守基线：PostModelSwitch 在 2.1.251 中加入。 */
 export function supportsPtyHooks(capabilities: Capabilities): boolean {
   if (!capabilities.available || !capabilities.flags.includes('--settings')) return false;
   const match = capabilities.version.match(/(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:\s|$|\()/);
@@ -56,7 +56,7 @@ export function supportsPtyHooks(capabilities: Capabilities): boolean {
   return major > 2 || major === 2 && (minor > 1 || minor === 1 && patch >= 251);
 }
 
-/** Observes parent and child lifecycles without reading terminal output or making permission decisions. */
+/** 观测父任务及子任务生命周期，不读取终端输出，也不作权限决策。 */
 export class PtyHookObserver {
   private currentId: string;
   private retiredIds = new Set<string>();
@@ -72,14 +72,14 @@ export class PtyHookObserver {
   constructor(initialId: string, private onSubtask?: (event: PtySubtaskEvent) => void,
     private onPrompt?: (prompt: string) => void) { this.currentId = initialId; }
   private emitSubtask(event: PtySubtaskEvent) {
-    try { this.onSubtask?.(event); } catch { /* Observations must never block native tools or approvals. */ }
+    try { this.onSubtask?.(event); } catch { /* 观测绝不能阻塞原生工具或审批。 */ }
   }
   private endSubtasks(status: 'interrupted' | 'failed', reason: string) {
     this.emitSubtask({ type: 'end', status, reason });
     this.agents.clear(); this.turnId = undefined;
   }
   private observeAgent(input: PtyHookInput): null {
-    // Child hooks never establish an identity or modify main-session metadata.
+    // 子任务钩子绝不建立身份，也不修改主会话元数据。
     if (!input.agent_id || this.awaitingIdentity || input.session_id !== this.currentId) return null;
     let agent = this.agents.get(input.agent_id);
     if (input.hook_event_name === 'SubagentStart') {
@@ -89,7 +89,7 @@ export class PtyHookObserver {
         for (const [id, item] of this.agents) if (item.ended) this.agents.delete(id);
         if (this.agents.size >= 500) return null;
       }
-      // Claude reuses agent_id when resuming an agent, including within one parent prompt.
+      // Claude 在恢复 Agent 时复用 agent_id，同一父任务提示词中也如此。
       agent = { turnId: this.turnId, taskId: randomUUID(), promptId: input.prompt_id ?? this.promptId, ended: false,
         tools: new Set(), approvals: new Set(), questions: new Set(), eliciting: false };
       this.agents.set(input.agent_id, agent);
@@ -97,8 +97,8 @@ export class PtyHookObserver {
         turnId: agent.turnId, taskId: agent.taskId, agentId: input.agent_id, status: 'running', description: input.agent_type || '子代理' } });
       return null;
     }
-    // Internal agents sometimes emit only SubagentStop; these are not user-launched tasks.
-    // Background agents from a previous prompt remain valid until their own stop arrives.
+    // 内部 Agent 有时仅发出 SubagentStop；它们不是用户启动的任务。
+    // 上一条提示词的后台 Agent 仍然有效，直到其自身停止事件到达。
     if (!agent || agent.ended || agent.promptId && input.prompt_id && agent.promptId !== input.prompt_id) return null;
     if (input.hook_event_name === 'SubagentStop' || input.hook_event_name === 'StopFailure') {
       agent.ended = true;
@@ -137,11 +137,11 @@ export class PtyHookObserver {
     return this.approvals.size ? 'waiting_approval' : this.questions.size || this.eliciting ? 'waiting_input' : this.tools.size ? 'tool_running' : 'thinking';
   }
   accept(input: PtyHookInput): PtySessionPatch | null {
-    // Subagents inherit hooks and share the parent session_id. They must not replace parent state.
+    // 子 Agent 继承钩子并共享父任务的 session_id，禁止替换父任务状态。
     if (input.agent_id || input.hook_event_name === 'SubagentStart' || input.hook_event_name === 'SubagentStop') return this.observeAgent(input);
     if (this.awaitingIdentity) {
       if (input.session_id === this.currentId) return null;
-      this.retiredIds.delete(input.session_id); // Explicit /resume may return to an earlier conversation.
+      this.retiredIds.delete(input.session_id); // 显式执行 /resume 可能返回更早的对话。
     } else if (this.retiredIds.has(input.session_id)) return null;
     const switched = input.session_id !== this.currentId;
     if (switched) {
@@ -175,11 +175,11 @@ export class PtyHookObserver {
         this.emitSubtask({ type: 'begin', turnId: this.turnId });
       }
       this.promptId = input.prompt_id; this.clearTurn(); patch.taskState = 'thinking';
-      // Only an accepted main-session prompt can name the session; never parse terminal echo.
-      try { if (input.prompt !== undefined) this.onPrompt?.(input.prompt); } catch { /* Naming must not block a prompt. */ }
+      // 只有已接受的主会话提示词可以命名会话，绝不解析终端回显。
+      try { if (input.prompt !== undefined) this.onPrompt?.(input.prompt); } catch { /* 命名不得阻塞提示词。 */ }
       return patch;
     }
-    // Ignore delayed state observations from a previous prompt; model/config metadata still applies.
+    // 忽略来自上一条提示词的延迟状态观测；模型及配置元数据仍然适用。
     if (this.promptId && input.prompt_id && this.promptId !== input.prompt_id) return patch;
     const key = input.tool_use_id || input.tool_name || 'unknown';
     switch (input.hook_event_name) {
@@ -192,12 +192,12 @@ export class PtyHookObserver {
         patch.taskState = this.toolState(); break;
       case 'PostToolUse': case 'PostToolUseFailure':
         this.tools.delete(key); this.approvals.delete(key); this.questions.delete(key);
-        // PermissionRequest can omit tool_use_id; resolve the corresponding name fallback too.
+        // PermissionRequest 可能省略 tool_use_id，也要处理对应的名称回退。
         if (input.tool_name) { this.approvals.delete(input.tool_name); this.questions.delete(input.tool_name); }
         patch.taskState = this.toolState(); break;
       case 'Elicitation': this.eliciting = true; patch.taskState = this.toolState(); break;
       case 'ElicitationResult': this.eliciting = false; patch.taskState = this.toolState(); break;
-      // Stop is the latest observed end-of-response event. Other user hooks can request another turn.
+      // Stop 是最近观测到的响应结束事件；其他用户钩子可以请求再进行一轮交互。
       case 'Stop': this.clearTurn(); patch.taskState = 'completed'; break;
       case 'StopFailure': this.clearTurn(); this.endSubtasks('failed', '主会话响应失败。'); patch.taskState = 'error'; break;
       case 'Notification':
@@ -211,12 +211,12 @@ export class PtyHookObserver {
 }
 
 export interface PtyHookBridge {
-  /** JSON passed as one --settings argument, merged by Claude with existing settings. */
+  /** JSON 作为单个 --settings 参数传入，由 Claude 与现有设置合并。 */
   settings: string;
   close(): Promise<void>;
 }
 
-/** The endpoint is local to one live PTY run; it cannot execute commands or grant permissions. */
+/** 端点仅属于一次活跃的 PTY 运行，不能执行命令或授予权限。 */
 export async function createPtyHookBridge(initialId: string, onPatch: (patch: PtySessionPatch) => void,
   onSubtask?: (event: PtySubtaskEvent) => void, onPrompt?: (prompt: string) => void): Promise<PtyHookBridge> {
   const token = randomBytes(32).toString('hex');
@@ -245,8 +245,8 @@ export async function createPtyHookBridge(initialId: string, onPatch: (patch: Pt
       const parsed = hookInput.safeParse(input);
       if (!parsed.success) { reply(400); return; }
       const patch = observer.accept(parsed.data);
-      // No hook decision, context injection, or permission change is ever returned to Claude.
-      try { if (patch) onPatch(patch); } catch { /* Persistence/UI failures must not affect native approvals. */ }
+      // 绝不向 Claude 返回钩子决策、上下文注入或权限变更。
+      try { if (patch) onPatch(patch); } catch { /* 持久化或界面失败不得影响原生审批。 */ }
       reply(200);
     });
   });

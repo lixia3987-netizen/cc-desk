@@ -10,7 +10,7 @@ export function hasActiveSubtasks(session: Pick<Session, 'subtasks'>): boolean {
   return session.subtasks?.tasks.some(task => isSubtaskActive(task.status)) ?? false;
 }
 
-/** A connected CLI may be waiting for the next turn; process lifetime is not task lifetime. */
+/** 已连接的 CLI 可能正在等待下一轮输入，进程生命周期不等于任务生命周期。 */
 export function isSessionBusy(session: Pick<Session, 'kind' | 'execution' | 'status' | 'taskState' | 'terminalSync' | 'subtasks'>): boolean {
   if (session.status === 'stopping') return true;
   if (session.status !== 'running') return isTaskBusy(session.taskState);

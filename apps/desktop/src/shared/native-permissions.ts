@@ -8,7 +8,7 @@ export const NATIVE_PERMISSION_LABELS: Record<NativePermissionMode, string> = {
 
 const fileEditTools = new Set(['apply_patch', 'edit_file', 'apply_change_set']);
 
-/** Only the host's known file-edit tools qualify; remote writes still need approval. */
+/** 仅主进程已知的文件编辑工具符合条件，远程写入仍需审批。 */
 export function nativeAutoApproves(mode: NativePermissionMode, tool: { name: string; risk: string }): boolean {
   if (tool.name === 'ask_user') return false;
   return mode === 'bypassPermissions' || mode === 'acceptEdits' && tool.risk === 'write' && fileEditTools.has(tool.name);

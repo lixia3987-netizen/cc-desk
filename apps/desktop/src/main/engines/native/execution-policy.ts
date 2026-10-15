@@ -14,7 +14,7 @@ export function parseNativeExecutionPolicy(value: unknown): NativeExecutionPolic
 }
 const READ_ONLY_TOOLS = new Set(['list_directory', 'read_file', 'search', 'find_files', 'update_plan', 'read_task',
   'record_code_location', 'ask_user', 'delegate_review', 'read_agent_result']);
-/** A host allowlist, checked again during every prepare/validate/execute; tool risk annotations alone are insufficient. */
+/** 宿主白名单在每次 prepare/validate/execute 时重新检查；仅有工具风险注解还不够。 */
 export function restrictNativeTools(port: ToolPort, policy?: NativeExecutionPolicy): ToolPort {
   if (policy?.toolPolicy !== 'read_only') return port;
   const definitions = port.definitions.filter(item => READ_ONLY_TOOLS.has(item.name) && item.risk === 'read');

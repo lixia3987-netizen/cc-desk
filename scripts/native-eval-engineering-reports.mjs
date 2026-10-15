@@ -54,7 +54,7 @@ export async function loadEngineeringBatch(directory) {
   if (recordEntries.length !== manifest.slots.length || recordEntries.some(entry => !entry.isFile() || entry.isSymbolicLink() || !manifest.slots.some(slot => slot.recordFile === `records/${entry.name}`))) throw new Error('Engineering records must match every fixed batch slot exactly.');
   await ordinaryDirectory(path.join(root, 'attempts'));
   const records = new Map();
-  // Validate the entire matrix before any runner can execute a candidate.
+  // 在任何运行器执行候选任务前，先验证整个矩阵。
   for (const slot of manifest.slots) records.set(slot.runId, assertEngineeringRecord(await readJson(path.join(root, slot.recordFile)), slot, manifest));
   const slots = manifest.slots.map(slot => ({ ...slot, record: records.get(slot.runId), recordDigest: hashJson(records.get(slot.runId)), attempts: [] }));
   await collectAttempts(root, manifest, slots);

@@ -123,7 +123,7 @@ function registerIPC() {
     notify();
   });
   handle('workspace:snapshot',z.undefined(), () => ({ state:store.state, capabilities, executors:executors.descriptors(), cliUpdate:cliUpdates.state, platform:process.platform, dataPath:store.directory }));
-  // Explicit write-only bridge; browser clipboard permissions remain denied.
+  // 显式只写桥接；浏览器剪贴板权限仍被拒绝。
   handle('clipboard:write-text',z.string().max(4*1024*1024).refine(text=>Buffer.byteLength(text,'utf8')<=4*1024*1024,'复制内容不能超过 4 MiB。'),text=>clipboard.writeText(text));
   handle('project:choose',z.undefined(), async () => {
     const result = await dialog.showOpenDialog(window!,{ properties:['openDirectory'],title:'选择工作空间目录' });
@@ -164,7 +164,7 @@ function registerIPC() {
         services.assertEngineAvailable(providerId);
         settings.engineDefaults[providerId] = executors.defaultConfig(providerId, descriptor.mode, config);
       }
-      // Unknown provider defaults are retained as opaque, bounded JSON.
+      // 未知提供方默认值作为大小受限的不透明 JSON 保留。
     }
     store.change(s => { s.settings = settings; });
     const appearance=THEME_APPEARANCE[normalizeThemeId(settings.theme)];nativeTheme.themeSource=appearance.scheme;
@@ -204,7 +204,7 @@ function registerIPC() {
   handle('ide:choose',z.undefined(),async () => {
     const filters = process.platform === 'win32' ? [{name:'IDE 应用',extensions:['exe']}]
       : process.platform === 'darwin' ? [{name:'IDE 应用',extensions:['app']},{name:'所有文件',extensions:['*']}] : undefined;
-    // On macOS, .app packages remain selectable applications, not navigable folders.
+    // 在 macOS 上，.app 包仍可作为应用选择，不能当作文件夹进入。
     const result = await dialog.showOpenDialog(window!,{properties:['openFile'],title:'选择 IDE 应用',buttonLabel:'选择应用',filters});
     return result.canceled ? null : result.filePaths[0] ?? null;
   });
@@ -223,7 +223,7 @@ function createWindow() {
   window = new BrowserWindow({ width:1460,height:920,minWidth:980,minHeight:680,backgroundColor:THEME_APPEARANCE[normalizeThemeId(store.state.settings.theme)].background,title:'Claude Workbench',
     autoHideMenuBar:true,webPreferences:{ preload:path.join(__dirname,'../preload/index.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true } });
   window.webContents.setWindowOpenHandler(({url}) => {
-    try { const parsed=new URL(url);if(['https:','http:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)void shell.openExternal(parsed.href).catch(()=>{}); } catch { /* Ignore invalid links. */ }
+    try { const parsed=new URL(url);if(['https:','http:'].includes(parsed.protocol)&&!parsed.username&&!parsed.password)void shell.openExternal(parsed.href).catch(()=>{}); } catch { /* 忽略无效链接。 */ }
     return {action:'deny'};
   });
   window.webContents.on('will-navigate',event => event.preventDefault());
@@ -271,11 +271,11 @@ async function requestQuit() {
     connectionModelCatalog?.resumeAfterFailedShutdown();
     modelCapabilities?.resumeAfterFailedShutdown();
     closing=false;showWindow();reportPersistenceError();
-    // Keep the app open so the user can fix storage and retry; resources have
-    // already been stopped independently of the failing persistence operation.
+    // 保持应用打开，以便用户修复存储并重试；资源停止已独立于
+    // 失败的持久化操作完成。
   }
 }
-// Isolated E2E instances use a disposable data directory and do not acquire the OS singleton socket.
+// 隔离的端到端测试实例使用一次性数据目录，不占用操作系统单实例套接字。
 const isolatedTest = !app.isPackaged && process.env.WORKBENCH_TEST_MODE === '1' && !!process.env.WORKBENCH_DATA_DIR;
 function failStartup(error: unknown): void {
   allowQuit = true;

@@ -4,7 +4,7 @@ export const NATIVE_REVIEW_DRAFT_LIMIT = 60000;
 export const NATIVE_AGENT_PATCH_PAGE_CHARACTERS = 16000;
 const identityFields = ['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const;
 
-/** A reply is useful only for the selected host-owned child and exact requested page. */
+/** 响应仅对当前选中的主进程所属子任务和明确请求的页面有效。 */
 export function validateNativeAgentResult(result: NativeAgentResult, sessionId: string, agent: NativeAgentView, request: NativeAgentResultRequest): void {
   const selected = result.agent;
   if (result.acceptance !== 'not_assessed' || selected.childId !== request.childId || selected.batchId !== agent.batchId || selected.mode !== agent.mode ||
@@ -29,7 +29,7 @@ export function validateNativeAgentResult(result: NativeAgentResult, sessionId: 
   }
 }
 
-/** Closing a viewer or starting another read invalidates late replies and errors. */
+/** 关闭查看器或开始另一轮读取后，迟到的响应与错误均失效。 */
 export class NativeAgentResultReader {
   private generation = 0;
   constructor(private sessionId: string, private agent: NativeAgentView,
@@ -59,7 +59,7 @@ export function nativeAgentReviewPrompt(result: NativeAgentResult, opinion: stri
     uncertain ? '请核查这份子 Agent 保存成果和执行状态，先确认终局与已发生的操作，再讨论后续处理。' :
       agent.mode === 'implement' ? '请先审阅这份子 Agent 保存成果与验证证据。若适合整合，请核对父工作区当前版本，准备明确的文件差异，并通过父回合工具审批执行。' :
         '请审阅这份子 Agent 保存结果与验证证据，结合当前任务给出判断和后续建议。';
-  // Model titles and arbitrary request IDs stay in the read-only viewer, never in user instructions.
+  // 模型标题与任意请求 ID 仅保留在只读查看器中，不放入用户指令。
   return [intent, `父任务 ID：${agent.parentTaskId}`, `父会话：${agent.parentIdentity.sessionId}；conversation：${agent.parentIdentity.conversationId}`,
     `父执行回合：${agent.parentIdentity.runId}`,
     `委派批次：${agent.batchId}`, `子 Agent：${agent.childId}`, `子任务 ID：${agent.taskId}`,
@@ -72,7 +72,7 @@ export function nativeAgentReviewPrompt(result: NativeAgentResult, opinion: stri
     `我的审阅意见：\n${opinion.trim() || '请先检查实际改动、验证证据和未解决问题，再提出下一步建议。'}`].join('\n');
 }
 
-/** Preserve every character of the existing draft; refuse overflow without truncating it. */
+/** 保留现有草稿的每个字符；长度溢出时拒绝操作，不截断草稿。 */
 export function appendNativeAgentReviewDraft(draft: string, prompt: string): string {
   const next = draft + (draft ? '\n\n' : '') + prompt;
   if (next.length > NATIVE_REVIEW_DRAFT_LIMIT) throw new Error('追加后将超过输入框 60,000 个字符上限。请先缩短现有草稿或审阅意见。');

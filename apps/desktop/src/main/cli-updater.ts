@@ -41,12 +41,12 @@ function npmPackage(invocation: Invocation): boolean {
     const manifest = path.join(directory, 'package.json');
     try {
       if (fs.statSync(manifest).size <= 128 * 1024 && JSON.parse(fs.readFileSync(manifest, 'utf8')).name === '@anthropic-ai/claude-code') return true;
-    } catch { /* Not an npm package directory. */ }
+    } catch { /* 不是 npm 包目录。 */ }
     const parent = path.dirname(directory); if (parent === directory) break; directory = parent;
   }
   return false;
 }
-/** Resolve npm's standard Windows entry without executing or interpolating a CMD script. */
+/** 解析 npm 的标准 Windows 入口，不执行或插值 CMD 脚本。 */
 export function npmInvocation(launcher: string, env: Record<string, string>, platform = process.platform): Invocation {
   const npm = findExecutable(path.join(path.dirname(launcher), 'npm'), env, platform) ?? findExecutable('npm', env, platform);
   if (!npm) throw new Error('未找到 npm，无法查询当前 npm 仓库中的 Claude Code 版本。请检查 Node.js / npm 安装。');
@@ -76,12 +76,12 @@ async function releaseVersion(channel: Channel, fetch: Fetch): Promise<string> {
   } finally { clearTimeout(timer); }
 }
 
-/** Own the updater's process group so a timeout cannot leave an npm child installing in the background. */
+/** 持有更新器的进程组，避免超时后遗留仍在后台安装的 npm 子进程。 */
 export async function runUpdateCommand(invocation: Invocation, env: Record<string, string>, timeout = 10 * 60_000): Promise<void> {
   const child = spawn(invocation.file, [...invocation.prefix, 'update'], {
     env, cwd: os.homedir(), windowsHide: true, detached: process.platform !== 'win32', shell: false, stdio: ['ignore', 'pipe', 'pipe'],
   });
-  // Do not forward command output: it can contain registry credentials or proxy URLs.
+  // 不转发命令输出：其中可能包含软件源凭据或代理 URL。
   child.stdout.resume(); child.stderr.resume();
   let timedOut = false;
   let cleanup: Promise<void> | undefined;

@@ -311,14 +311,14 @@ test('close during initialization cannot send initialized/list/call or cancellat
   }, { customInitialize: true });
   const discovery = rejected(client.discoverTools(active()), 'closed');
   await seen.promise;
-  // Ensure the headers reached the client, without relying on an arbitrary sleep.
+  // 确认请求头已经到达客户端，不依赖任意时长的等待。
   await new Promise(resolve => setImmediate(resolve));
   await client.close();
   await discovery;
   assert.equal(requests.some(item => item.body?.method === 'notifications/cancelled'), false);
   assert.equal(requests.some(item => ['notifications/initialized', 'tools/list', 'tools/call'].includes(item.body?.method)), false);
-  // fetch may be aborted before its Response is observed, so deletion is possible
-  // only when the initialization headers were already captured locally.
+  // fetch 可能在其 Response 被观察到之前中止，因此只有初始化请求头
+  // 已在本地捕获时，才可能执行删除。
   assert.ok(requests.length <= 2);
 });
 
@@ -342,7 +342,7 @@ test('unresponsive cancellation is bounded and cannot relabel an earlier user ca
     if (body.method === 'tools/call') {
       response.writeHead(200, { 'content-type': 'text/event-stream' }); response.write(': waiting\n\n'); seen.resolve();
     }
-    // Keep notifications/cancelled open without acknowledging it.
+    // 保持 notifications/cancelled 打开，不返回确认。
   }, { customCancelled: true, client: { timeoutMs: 100 } });
   const controller = new AbortController();
   const call = rejected(client.callTool(tool, {}, controller.signal), 'cancelled', 'unknown');

@@ -7,7 +7,7 @@ interface Props {
   onClose: () => void; children: ReactNode;
 }
 
-/** Mount on first use; hiding a panel must not discard unfinished edits. */
+/** 首次使用时挂载；隐藏面板不能丢弃未完成的编辑。 */
 export function InspectorPanel({ id, title, open, onClose, children }: Props) {
   const [visited, setVisited] = useState(open);
   if (open && !visited) setVisited(true);

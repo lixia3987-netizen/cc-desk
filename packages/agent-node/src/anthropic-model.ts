@@ -5,10 +5,10 @@ import { anthropicPendingCalls, nativeToolResultItems } from './context-maintena
 import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 
 export type AnthropicAuthHeader = 'x-api-key' | 'authorization'
-/** A service root, gateway prefix, /v1 base, or complete /v1/messages endpoint. */
+/** 服务根地址、网关前缀、/v1 基础地址，或完整的 /v1/messages 端点。 */
 export interface AnthropicModelOptions extends ResponsesModelOptions { authHeader?: AnthropicAuthHeader }
 
-/** Never retains a provider body, URL, header, original exception, or credential. */
+/** 绝不保留提供方响应体、URL、请求头、原始异常或凭据。 */
 export class AnthropicModelError extends Error {
   constructor(readonly code: string, message: string, readonly httpStatus?: number) {
     super(message)
@@ -37,7 +37,7 @@ function supported(value: JsonObject, fields: readonly string[], reason: ModelFa
   if (Object.entries(value).some(([key, child]) => !fields.includes(key) && child !== null && child !== undefined)) failure('unsupported', 'The model returned unsupported continuation state.', reason)
 }
 
-/** Byte limits are enforced before feeding the CR/LF/CRLF and multiline SSE parser. */
+/** 输入支持 CR/LF/CRLF 和多行数据的 SSE 解析器之前，先执行字节限制。 */
 class EventStreamParser {
   private line = ''
   private data: string[] = []
@@ -90,7 +90,7 @@ function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
 
 const anthropicTools = (tools: readonly ToolDefinition[]): JsonObject[] => tools.map(tool => ({ name: tool.name, description: tool.description, input_schema: tool.inputSchema }))
 const estimateWithTools = (context: ModelContext, instructions: string, toolsJson: string): number => estimateContextInputTokens(context, instructions + toolsJson)
-/** Conservative UTF-8 estimate of native messages, instructions and the fixed tool catalog. */
+/** 对原生消息、指令和固定工具目录作保守的 UTF-8 估算。 */
 export function estimateAnthropicInputTokens(context: ModelContext, instructions = '', tools: readonly ToolDefinition[] = []): number {
   return estimateWithTools(context, instructions, canonicalJson(anthropicTools(tools)))
 }
@@ -207,8 +207,8 @@ export class AnthropicModel implements ModelPort {
           if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
           nextCounts.set(name, count)
         }
-        // Input counters may be reclassified as cache hits at completion. Merge
-        // the whole usage update before comparing the cumulative input total.
+        // 完成时，输入计数可能被重新归为缓存命中。比较累计输入总量之前，
+        // 先合并完整的用量更新。
         const inputTotal = (counts: Map<string, number>): number => ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].reduce((total, name) => total + (counts.get(name) ?? 0), 0)
         const nextInput = inputTotal(nextCounts)
         if (!Number.isSafeInteger(nextInput) || nextInput < inputTotal(tokenCounts) || (nextCounts.get('output_tokens') ?? 0) < (tokenCounts.get('output_tokens') ?? 0)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
@@ -217,8 +217,8 @@ export class AnthropicModel implements ModelPort {
       const deltas = new SafeModelDeltas(this.#apiKey, event => {
         try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
       })
-      // Private thinking and signatures participate in the same credential
-      // boundary as visible text, without producing display events.
+      // 私有思考内容和签名与可见文本遵循相同的凭据
+      // 保护边界，但不生成显示事件。
       const protectedDeltas = new SafeModelDeltas(this.#apiKey, () => {})
       const scanDelta = (text: string): void => protectedDeltas.push({ type: 'text_delta', text })
       const parser = new EventStreamParser((data, eventName) => {
@@ -374,7 +374,7 @@ export class AnthropicModel implements ModelPort {
       clearTimeout(timer)
       request.signal.removeEventListener('abort', cancel)
       controller.abort()
-      try { await reader?.cancel() } catch { /* transport already closed */ }
+      try { await reader?.cancel() } catch { /* 传输已关闭 */ }
       reader?.releaseLock()
     }
   }

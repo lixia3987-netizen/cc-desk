@@ -13,8 +13,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   build:
-    # Windows runs additional PTY gates and slower filesystem-heavy tests;
-    # reserve time for source E2E, packaging, and smoke tests after check.
+    # Windows 会执行额外的 PTY 验证及较慢的文件系统密集型测试；
+    # 为 check 之后的源码端到端测试、打包和冒烟测试预留时间。
     timeout-minutes: ${{ matrix.os == 'windows-2025' && 60 || 30 }}
     strategy:
       fail-fast: false
@@ -22,7 +22,7 @@ jobs:
         include:
           - os: windows-2025
             arch: x64
-          # Standard macos-15 is Apple Silicon; fail before packaging if that ever changes.
+          # 标准 macos-15 使用 Apple Silicon；若平台发生变化，在打包前报告失败。
           - os: macos-15
             arch: arm64
           - os: ubuntu-24.04
@@ -63,8 +63,8 @@ jobs:
           node scripts/verify-windows-parentage-regressions.mjs 4fb62e7299e394e591b74764f263c32f6bba54f7
           exit $LASTEXITCODE
       - id: check
-        # Keep a stuck test process from consuming the entire job budget and
-        # hiding its failure logs and platform diagnostics.
+        # 避免卡住的测试进程耗尽整个任务的时间预算，
+        # 导致失败日志和平台诊断信息无法保留。
         timeout-minutes: ${{ runner.os == 'Windows' && 30 || 10 }}
         run: npm run check
       - name: Diagnose native process release after a Windows check failure
@@ -88,14 +88,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - run: npm run test:e2e
       - name: Verify Windows terminal layout cleanup
-        # The full source suite exposed an intermittent stop failure after all
-        # layout assertions passed. Keep its targeted repeats as an independent
-        # required gate and retain their diagnostics even if source E2E failed.
+        # 完整源码测试曾在所有布局断言通过后出现偶发的停止失败；
+        # 将针对该问题的重复测试作为独立的必需验证，
+        # 即使源码端到端测试失败，也保留这些测试的诊断信息。
         if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
         timeout-minutes: 3
         run: npm run test:e2e -- tests/inspector.spec.ts --grep "vertical rail and stacked panels" --repeat-each=3 --output ../../test-results/windows-inspector
-      # Source E2E and packaged smoke are independent gates. A source failure
-      # must remain a failed job, but should not hide packaging diagnostics.
+      # 源码端到端测试和打包冒烟测试是独立验证。源码测试失败
+      # 必须使任务保持失败状态，同时仍需保留打包诊断信息。
       - id: package_windows
         if: ${{ !cancelled() && steps.check.outcome == 'success' && runner.os == 'Windows' }}
         run: npm run dist:win

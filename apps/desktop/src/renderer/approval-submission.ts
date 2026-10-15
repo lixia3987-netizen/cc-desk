@@ -1,7 +1,7 @@
 export type ApprovalBehavior = 'allow' | 'deny';
 export interface ApprovalSubmissionState { behavior: ApprovalBehavior; accepted: boolean }
 
-/** Keep a synchronous lock until the resolved approval leaves the snapshot. */
+/** 保持同步锁定，直到已处理的审批从快照中移除。 */
 export class ApprovalSubmission {
   state: ApprovalSubmissionState | undefined;
   async submit(
@@ -14,7 +14,7 @@ export class ApprovalSubmission {
     this.state = { behavior, accepted: false };
     changed(this.state);
     try {
-      // Let the optimistic UI paint before IPC can resume tool/model work.
+      // 先呈现乐观更新的界面，再让 IPC 恢复工具或模型执行。
       await beforeSend();
       await send();
       this.state = { behavior, accepted: true };

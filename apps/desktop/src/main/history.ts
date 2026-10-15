@@ -11,7 +11,7 @@ export {
 } from '@cc-desk/engine-claude/history';
 export type { HistoryEntry, HistoryPage } from '../shared/types';
 
-/** External transcript identity stays attached when results enter the desktop history UI. */
+/** 结果进入桌面历史界面时，仍携带外部对话记录身份。 */
 export async function queryHistory(cwd: string, options: HistoryQuery = {}): Promise<HistoryPage> {
   const page = await queryClaudeHistory(cwd, options);
   return { ...page, entries: page.entries.map(entry => ({ ...entry, providerId: 'claude' })) };

@@ -1,6 +1,6 @@
 import type { EngineConfig } from '../../shared/execution';
 
-/** Allow existing overrides to return to CLI configuration without managing CLI models here. */
+/** 允许现有覆盖项恢复为 CLI 配置，此处无需管理 CLI 模型。 */
 export function LegacyClaudeOverrides({ config, disabled, onChange }: { config: EngineConfig; disabled: boolean; onChange(config: EngineConfig): void }) {
   const model = config.options.model, effort = config.options.effort;
   const legacy = typeof model === 'string' && !!model || typeof effort === 'string' && !!effort && effort !== 'default';

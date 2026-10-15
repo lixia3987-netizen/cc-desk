@@ -28,7 +28,7 @@ export function normalizeSystemFonts(faces: readonly { family: unknown }[]): Sys
     const name = typeof face.family === 'string' ? face.family.trim() : '';
     if (!validSystemFamily(name)) continue;
     const key = name.toLocaleLowerCase('en-US');
-    try { if (!families.has(key)) families.set(key, {id:systemFontId(name),name}); } catch { /* Ignore malformed font metadata. */ }
+    try { if (!families.has(key)) families.set(key, {id:systemFontId(name),name}); } catch { /* 忽略格式错误的字体元数据。 */ }
   }
   return [...families.values()].sort((a,b)=>a.name.localeCompare(b.name,'zh-CN',{numeric:true,sensitivity:'base'}));
 }

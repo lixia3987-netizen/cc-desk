@@ -21,7 +21,7 @@ export function chatEvents(message = { role: 'assistant', content: '完成🙂' 
   return [...events, '[DONE]'];
 }
 
-/** Local HTTP/SSE service; handler({body,index,request}) may override message/events/raw. */
+/** 本地 HTTP/SSE 服务；handler({body,index,request}) 可覆盖 message/events/raw。 */
 export async function startChatCompletionsFixture(options = {}) {
   const requests = [];
   const errors = [];

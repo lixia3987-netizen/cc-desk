@@ -15,7 +15,7 @@ const MAX_FILE_BYTES = 32 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024;
 const MAX_ROOT_ENTRIES = 64;
 
-/** Only explicit project skill files are selectable; no HOME aliases or upward paths. */
+/** 仅可选择显式指定的项目技能文件；不允许 HOME 别名或向上的路径。 */
 export function normalizeProjectSkillPaths(paths: readonly string[]): string[] {
   if (!Array.isArray(paths) || paths.length > 16) throw new Error('Select at most 16 project skills.');
   const seen = new Set<string>();
@@ -23,7 +23,7 @@ export function normalizeProjectSkillPaths(paths: readonly string[]): string[] {
     const relative = normalizeProjectPath(value);
     const parts = relative.split('/');
     if (parts.length < 2 || parts.length > 22 || parts[0] === '~' || parts.at(-1) !== 'SKILL.md' || isSensitivePath(relative)) throw new Error('Only explicit, non-sensitive project-relative <directory>/SKILL.md paths are allowed (at most 21 directories).');
-    // A case-only alias can name the same file on Windows and default macOS volumes.
+    // 在 Windows 和默认 macOS 卷上，仅大小写不同的别名可能指向同一文件。
     const key = relative.toLowerCase();
     if (seen.has(key)) throw new Error('Duplicate project skill paths are not allowed.');
     seen.add(key);
@@ -44,7 +44,7 @@ function safeReadError(error: unknown): Error {
   return new Error('Project skill could not be read safely. Check the project file and permissions.');
 }
 
-/** Bounded discovery reads only SKILL.md at two fixed project roots, never HOME or frontmatter imports. */
+/** 有限发现过程仅读取两个固定项目根目录中的 SKILL.md，绝不读取 HOME 或前置元数据中的导入。 */
 export async function discoverProjectSkills(options: ProjectSkillOptions, signal?: AbortSignal): Promise<ProjectSkillDiscovery> {
   throwIfAborted(signal);
   const files = new ProjectFiles({ ...options, maxFileBytes: MAX_FILE_BYTES });
@@ -73,7 +73,7 @@ export async function discoverProjectSkills(options: ProjectSkillOptions, signal
         if (size > BigInt(MAX_FILE_BYTES)) { result.issues.push({ path: relative, message: 'Project skill exceeds the 32768 byte limit.' }); continue; }
         const remaining = MAX_TOTAL_BYTES - bytes;
         if (size > BigInt(remaining) || remaining === 0) { result.truncated = true; continue; }
-        // Bound the actual handle read too, even if the file grows after the size check.
+        // 即使文件在大小检查之后增大，也限制实际句柄读取量。
         const readLimit = Math.min(MAX_FILE_BYTES, remaining);
         const reader = new ProjectFiles({ ...options, maxFileBytes: readLimit });
         await files.verify(await reader.snapshot(relative), true);
@@ -82,7 +82,7 @@ export async function discoverProjectSkills(options: ProjectSkillOptions, signal
         catch (error) { bytes += readLimit; throw error; }
         bytes += source.bytes;
         throwIfAborted(signal);
-        // New bounded readers must still resolve to the original authorized root and file.
+        // 新建的限量读取器仍必须解析到原始授权的根目录和文件。
         await files.verify(source.snapshot, true);
         await files.verify(snapshot, true);
         result.entries.push({ path: relative, name, hash: source.hash, bytes: source.bytes });
@@ -96,13 +96,13 @@ export async function discoverProjectSkills(options: ProjectSkillOptions, signal
   return result;
 }
 
-/** Load only the host's explicit selection, failing closed when a selected file is unavailable. */
+/** 仅加载宿主显式选择的文件；所选文件不可用时默认拒绝。 */
 export async function loadProjectSkills(options: ProjectSkillLoadOptions, signal?: AbortSignal): Promise<{ sources: ProjectSkillSource[]; bytes: number }> {
   throwIfAborted(signal);
   const paths = normalizeProjectSkillPaths(options.paths);
   const perFile = options.maxFileBytes ?? MAX_FILE_BYTES;
   const totalLimit = options.maxTotalBytes ?? MAX_TOTAL_BYTES;
-  // Zero remaining bytes is useful when AGENTS/CLAUDE already consume the shared budget.
+  // AGENTS/CLAUDE 已耗尽共享预算时，允许剩余字节数为零仍有意义。
   if (!Number.isSafeInteger(totalLimit) || totalLimit < 0 || totalLimit > 256 * 1024) throw new Error('Invalid project skill total byte limit.');
   const files = new ProjectFiles({ ...options, maxFileBytes: perFile });
   const sources: ProjectSkillSource[] = [];

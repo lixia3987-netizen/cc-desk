@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState, type DragEvent as ReactDragEv
 const hasFiles = (transfer: DataTransfer | null) => !!transfer &&
   (Array.from(transfer.types).includes('Files') || Array.from(transfer.items).some(item => item.kind === 'file') || transfer.files.length > 0);
 
-/** File drops stage native files; ordinary text drags retain the browser's editing behavior. */
+/** 拖放文件会暂存原生文件，普通文本拖拽沿用浏览器的编辑行为。 */
 export function useChatFileDrop(disabled: boolean, onFiles: (files: File[]) => void) {
   const [dragging, setDragging] = useState(false);
   const depth = useRef(0);
@@ -14,8 +14,8 @@ export function useChatFileDrop(disabled: boolean, onFiles: (files: File[]) => v
     const dropped = (event: DragEvent) => { preventNavigation(event); reset(); };
     const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') reset(); };
     const visibility = () => { if (document.hidden) reset(); };
-    // A file released outside the pane, or on an inert pane during CLI update,
-    // must not navigate away from the desktop app.
+    // 文件放到面板外，或 CLI 更新期间处于禁用状态的面板上时，
+    // 不能导致页面导航离开桌面应用。
     window.addEventListener('dragover', preventNavigation, true);
     window.addEventListener('drop', dropped, true);
     window.addEventListener('dragend', reset);

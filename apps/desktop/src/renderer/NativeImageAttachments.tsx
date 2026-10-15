@@ -5,7 +5,7 @@ import type { Attachment } from '../shared/types';
 const size = (bytes: number) => `${(bytes / 1024).toFixed(1)} KiB`;
 const selectedType = (name: string) => /\.png$/i.test(name) ? 'PNG' : /\.jpe?g$/i.test(name) ? 'JPEG' : '不支持的格式';
 
-/** Read-only receipt: never resolves a historical filename into a filesystem URL. */
+/** 只读回执：不会将历史文件名解析为文件系统 URL。 */
 export function NativeImageAttachments({ images, onPreview }: { images: NativeImageAttachment[]; onPreview?: (index: number, image: NativeImageAttachment) => void }) {
   return <section className="native-image-history" aria-label="已提交图片记录">
     <ul>{images.map((image, index) => <li key={`${index}:${image.sha256}`}>

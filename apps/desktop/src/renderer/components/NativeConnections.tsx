@@ -53,7 +53,7 @@ const diagnosticMessages: Record<NativeConnectionTestCode, string> = {
   response_limit: '服务响应超过测试大小上限，已中止。',
 };
 
-/** Secrets remain in the uncontrolled password field only until the one write-only IPC. */
+/** 密钥仅保留在非受控密码输入框中，直到通过唯一的只写 IPC 提交。 */
 export interface NativeConnectionsProps {
   disabled?: boolean;
   active?: boolean;
@@ -120,8 +120,8 @@ export function NativeConnections({ disabled = false, active = true, editConnect
   useEffect(() => {
     if (!active || !api?.modelCapabilities || !data) return;
     let cancelled = false;
-    // Read one saved connection at a time; the main process bounds and caches
-    // metadata GETs. This never populates or selects the available-model picker.
+    // 每次读取一个已保存的连接；主进程限制并缓存
+    // 元数据 GET 请求，此操作不会填充或选择可用模型选择器。
     void (async () => {
       for (const item of data.connections.filter(item => item.ready)) {
         if (cancelled) return;
@@ -130,7 +130,7 @@ export function NativeConnections({ disabled = false, active = true, editConnect
           if (!cancelled && mounted.current && result.connectionId === item.id && result.revision === item.revision && result.model === item.model) {
             setModelCapabilities(values => ({ ...values, [item.id]: result }));
           }
-        } catch { /* Unknown metadata keeps the configured budget and connection usable. */ }
+        } catch { /* 元数据未知时，仍可使用配置的预算和连接。 */ }
       }
     })();
     return () => { cancelled = true; };
@@ -140,7 +140,7 @@ export function NativeConnections({ disabled = false, active = true, editConnect
   const anyDraftHasChanges = draftHasChanges || [...ordinaryDrafts.current.values()].some(item => JSON.stringify(item.draft) !== item.saved);
   useEffect(() => { onDirtyChange?.(anyDraftHasChanges); }, [anyDraftHasChanges, onDirtyChange]);
   useEffect(() => () => { onDirtyChange?.(false); }, [onDirtyChange]);
-  // Ordinary fields may survive navigation; write-only secrets never do.
+  // 普通字段可在导航后保留，只写密钥不能保留。
   useEffect(() => { clearSecret(); }, [draft]);
   const select = (value?: NativeConnectionInput, preserveCurrent = false) => {
     clearSecret();
@@ -189,7 +189,7 @@ export function NativeConnections({ disabled = false, active = true, editConnect
   const saveCredential = () => {
     if (draftHasChanges || !draft?.id || !draft.revision || draft.auth.mode === 'env' || !credential.current) return;
     const input = credential.current;
-    // Clear immediately after invoke, including synchronous bridge errors. Never keep a form draft.
+    // 调用后立即清空，包括桥接接口同步报错的情况；不保留表单草稿。
     void action(async () => {
       let request: Promise<NativeConnectionView>;
       try { request = api.setCredential({ id: draft.id!, revision: draft.revision!, mode: draft.auth.mode as 'memory' | 'encrypted', secret: input.value }); }

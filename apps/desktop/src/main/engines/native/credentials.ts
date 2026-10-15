@@ -1,4 +1,4 @@
-/** Synchronous Electron safeStorage only. Async storage uses a different proof. */
+/** 仅支持同步 Electron safeStorage；异步存储使用不同的证明。 */
 export interface NativeSafeStorage {
   isEncryptionAvailable(): boolean;
   getSelectedStorageBackend?(): string;

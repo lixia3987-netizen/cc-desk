@@ -7,7 +7,7 @@ export type WireObject = Record<string, unknown>;
 export const object = (value: unknown): WireObject => value !== null && typeof value === 'object' && !Array.isArray(value) ? value as WireObject : {};
 export const string = (value: unknown): string => typeof value === 'string' ? value : '';
 
-/** CLI stdout is newline-delimited JSON, not one JSON object per read(). */
+/** CLI 标准输出是以换行分隔的 JSON，并非每次 read() 对应一个 JSON 对象。 */
 export class JsonLineDecoder {
   private pending = '';
   constructor(private consume: (value: WireObject) => void, private limit = 8 * 1024 * 1024) {}
@@ -40,7 +40,7 @@ export function chatArguments(session: Session, capabilities: Capabilities, hasT
   return args;
 }
 
-/** Paths have already been selected/validated by the main-process IPC boundary. */
+/** 路径已由主进程的 IPC 边界完成选择及校验。 */
 export async function userContent(text: string, attachments: string[] = []): Promise<WireObject[]> {
   if (attachments.length > 8) throw new Error('一次最多添加 8 个附件。');
   const content: WireObject[] = [{ type: 'text', text }];
@@ -56,7 +56,7 @@ export async function userContent(text: string, attachments: string[] = []): Pro
       content.push({ type: 'text', text: '附件：' + path.basename(file) });
       content.push({ type: extension === '.pdf' ? 'document' : 'image', source: { type: 'base64', media_type: media[extension], data: (await fs.readFile(file)).toString('base64') } });
     } else {
-      // Do not eagerly read binaries or entire repositories into model context.
+      // 不要提前将二进制文件或整个仓库读入模型上下文。
       content.push({ type: 'text', text: '用户选择的本地附件路径：' + JSON.stringify(file) + '。需要内容时请使用 Read 工具读取。' });
     }
   }

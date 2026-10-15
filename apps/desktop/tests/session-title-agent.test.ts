@@ -209,7 +209,7 @@ for (const reason of ['continuous oversized output', 'explicit abort'] as const)
     } finally {
       controller.abort();
       await running?.catch(() => {});
-      for (const pid of [childPid, rootPid]) if (pid && titleFixtureProcessRunning(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* The owned fixture just exited. */ } }
+      for (const pid of [childPid, rootPid]) if (pid && titleFixtureProcessRunning(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* 所属测试装置刚刚退出。 */ } }
       await f.cleanup();
     }
   });

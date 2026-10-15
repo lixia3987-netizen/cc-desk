@@ -12,7 +12,7 @@ export interface SessionTitleRequest {
 }
 export type SessionTitleGenerator = (request: SessionTitleRequest) => Promise<string | undefined>;
 
-/** Optional background metadata work, independent of the user's conversation and turn result. */
+/** 可选后台元数据任务，独立于用户会话和轮次结果。 */
 export class SessionTitles {
   private cleanupFailures = new Set<string>();
   private jobs = new Map<string, { controller: AbortController; completion: Promise<void> }>();
@@ -30,7 +30,7 @@ export class SessionTitles {
     const controller = new AbortController();
     const job = { controller, completion: Promise.resolve() };
     this.jobs.set(id, job);
-    // Queue after the accepted message. Model latency and failures never delay the foreground turn.
+    // 在消息接收后入队。模型延迟和失败不能拖延前台轮次。
     job.completion = Promise.resolve().then(async () => {
       if (controller.signal.aborted) return;
       const generated = await this.generate({ session: structuredClone(session), settings: this.store.state.settings,
@@ -47,8 +47,8 @@ export class SessionTitles {
       this.onState();
     }).catch(error => {
       if (error instanceof SessionTitleCleanupError) this.cleanupFailures.add(id);
-      // Keep the default label on auth/network/protocol errors; a later message may retry.
-      // In particular, never fall back to copying or truncating the user message.
+      // 认证、网络或协议错误时保留默认名称；后续消息可重试。
+      // 尤其不能回退到复制或截断用户消息的方式。
     }).finally(() => { if (this.jobs.get(id) === job) this.jobs.delete(id); });
   }
   cancel(id: string): Promise<void> {

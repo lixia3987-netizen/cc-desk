@@ -39,7 +39,7 @@ test('workflow follows real result completion and topological dependencies, pers
         return { success: true, summary: `artifact-${calls.length}` };
       },
     });
-    // Definitions need not be supplied in execution order.
+    // 定义无须按执行顺序提供。
     const run = engine.create({ sessionId: binding.sessionId, goal: 'Ship feature', stages: [steps[2], steps[1], steps[0]] });
     engine.start(run.id);
     await tick();

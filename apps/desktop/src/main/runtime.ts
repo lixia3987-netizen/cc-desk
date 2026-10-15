@@ -28,7 +28,7 @@ export class TerminalBuffer {
   }
 }
 
-// Fixed lifecycle labels retain the original OS code/cause without adding argv or environment data.
+// 固定生命周期标签保留原始操作系统错误码和原因，不附加 argv 或环境数据。
 function cleanupPhase(error: unknown, phase: string): Error {
   const failure = error instanceof Error ? error : new Error('终端资源清理失败。', { cause: error });
   try { Object.defineProperty(failure, 'cleanupPhase', { value: phase, enumerable: true, configurable: true }); return failure; }
@@ -75,7 +75,7 @@ export class Runtime {
   isBusy(id: string) { return this.has(id); }
   private reportError(error: unknown) {
     this.lifecycleError = error instanceof Error ? error : new Error(String(error));
-    try { this.options.onError?.(this.lifecycleError); } catch { /* Error reporting must never prevent cleanup. */ }
+    try { this.options.onError?.(this.lifecycleError); } catch { /* 错误报告不能阻止清理。 */ }
   }
   private guard(action: () => void) { try { action(); } catch (error) { this.reportError(error); } }
   private trackCleanup(id: string, cleanup: Promise<void>, entry?: ProcessEntry) {
@@ -166,7 +166,7 @@ export class Runtime {
     this.titles.assertReleased(id);
     const session = this.getSession(id);
     if (this.running.has(id) || this.stopping.has(id) || this.starting.has(id)) return;
-    // A cancelled metadata process may still be draining; it cannot block a new foreground launch.
+    // 已取消的元数据进程可能仍在排空；不能阻止新的前台启动。
     void this.titles.cancel(id);
     if (session.archived) throw new Error('请先取消归档，再启动会话。');
     if (session.identityPending) throw new Error('CLI 已切换会话，但新会话身份尚未确认。请从历史记录重新导入目标会话，避免恢复错误的对话。');
@@ -213,7 +213,7 @@ export class Runtime {
       resource = launch.resource;
       if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       this.emit(id, '\r\n\x1b[90m── ' + (session.started ? '重新连接' : '启动会话') + ' · ' + new Date().toLocaleString() + ' ──\x1b[0m\r\n');
-      // Output observers may synchronously enter maintenance before native spawn.
+      // 输出观察者可能在原生创建进程前同步进入维护状态。
       if (this.shuttingDown || this.maintenance || this.sessionMaintenance.has(id) || this.cancelledStarts.has(id)) throw new Error('已取消启动会话。');
       const spawnStartedAt = Date.now();
       const child = spawnTerminal(launch, session.cwd);
@@ -226,8 +226,8 @@ export class Runtime {
       child.onExit(({ exitCode }) => {
         entry.rootExited = true;
         if (this.running.get(id) !== entry) return;
-        // Root exit does not release descendants, forwarding workers or hooks.
-        // Keep UI state and ownership aligned until the same cleanup has settled.
+        // 根进程退出不会释放子孙进程、转发工作线程或钩子。
+        // 同一次清理完成之前，保持界面状态与所有权一致。
         this.running.delete(id);
         void this.titles.cancel(id);
         this.stopping.set(id, entry);
@@ -238,15 +238,15 @@ export class Runtime {
         this.guard(() => this.update(id, { status: 'stopping', exitCode,
           taskState: entry.ending ? 'interrupted' : exitCode !== 0 ? 'error' : this.store.state.sessions.find(session => session.id === id)?.taskState,
           error: !entry.ending && exitCode !== 0 ? `会话进程退出码 ${exitCode}，请查看终端中的错误。` : undefined }));
-        // Explicit stop already owns the process-tree cleanup. A natural exit
-        // still owns PTY and launcher resources, including on POSIX.
+        // 显式停止已负责进程树清理。自然退出仍负责
+        // PTY 和启动器资源，在 POSIX 上也是如此。
         entry.cleanup ??= this.trackCleanup(id, (async () => {
           try {
             if (process.platform === 'win32') await this.stopWindowsTree(entry);
             else await this.stopPosixTree(entry);
           } finally {
             if (process.platform === 'win32') await this.releasePty(id, entry);
-            else entry.released = true; // node-pty closes the POSIX descriptor before onExit.
+            else entry.released = true; // node-pty 在 onExit 之前关闭 POSIX 描述符。
             await this.closeResource(id, entry);
           }
         })(), entry);
@@ -264,7 +264,7 @@ export class Runtime {
       this.update(id, { started: true, status: 'running', error: undefined, exitCode: undefined, taskState: undefined,
         terminalSync: launch.terminalSync });
     } catch (error) {
-      // A successful spawn followed by a failed state write still owns a real process.
+      // 成功创建进程后即使状态写入失败，仍持有真实进程。
       if (spawned) await this.beginStop(id, spawned);
       else if (resource) await this.trackCleanup(id, Promise.resolve().then(() => resource!.close()));
       this.guard(() => this.update(id,{ status: !this.cleanupErrors.has(id) && (this.cancelledStarts.has(id) || this.shuttingDown) ? 'stopped' : 'error', error: String((error as Error).message).slice(0,1000) }));
@@ -288,7 +288,7 @@ export class Runtime {
     const entry = this.running.get(id);
     if (!entry || entry.ending) throw new Error('会话没有运行。请先启动或恢复。');
     entry.process.write('\x03');
-    // Ctrl-C is only a request: background agents may continue until a hook or process exit confirms otherwise.
+    // Ctrl-C 仅是请求：后台 Agent 可能继续运行，直到钩子或进程退出证实已停止。
     this.update(id, { taskState: 'interrupted' });
   }
   stop(id: string) {
@@ -296,20 +296,20 @@ export class Runtime {
     if (this.starting.has(id)) this.cancelledStarts.add(id);
     const entry = this.running.get(id);
     if (!entry || entry.ending) return;
-    // Start resource cleanup first: failed persistence must not make stop irreversible.
+    // 先启动资源清理：持久化失败不能使停止操作无法重试。
     void this.beginStop(id, entry);
     this.guard(() => this.flush());
     this.update(id,{ status: 'stopping' });
   }
-  /** Physical release only. Queue/workflow acknowledgements belong to SessionService. */
+  /** 仅处理物理释放。队列和工作流确认由 SessionService 负责。 */
   async whenReleased(id: string): Promise<void> {
     await this.titles.cancel(id);
     this.titles.assertReleased(id);
     await this.startCompletions.get(id);
     const entry = this.running.get(id) ?? this.stopping.get(id);
     if (entry) {
-      // An interactive terminal may run indefinitely. Once cleanup begins its
-      // failure must reject even if a descendant still holds the PTY open.
+      // 交互终端可能长期运行。清理开始之后，即使某个子孙进程
+      // 仍保持 PTY 打开，清理失败也必须拒绝返回。
       while (!entry.cleanup && (this.running.get(id) === entry || this.stopping.get(id) === entry)) await new Promise(resolve => setTimeout(resolve, 25));
       await entry.cleanup;
       if (this.cleanupErrors.has(id)) throw new Error('终端清理失败，工作目录未释放。', { cause: this.cleanupErrors.get(id) });
@@ -363,10 +363,10 @@ export class Runtime {
     entry.release = this.trackCleanup(id, (async () => {
       try {
         if (process.platform === 'win32') await releaseWindowsPty(entry.process);
-        else { try { entry.process.kill(); } catch { /* Native handle is already closed. */ } }
+        else { try { entry.process.kill(); } catch { /* 原生句柄已关闭。 */ } }
         entry.released = true;
       } catch (error) { throw cleanupPhase(error, 'pty.release'); } finally {
-        // The caller releases ownership after launcher and process-tree cleanup.
+        // 启动器和进程树清理完成后，由调用方释放所有权。
         this.trimBuffers();
       }
     })(), entry);
@@ -379,7 +379,7 @@ export class Runtime {
       const processes = result.stdout.trim().split('\n').map(line => line.trim().split(/\s+/).map(Number));
       let changed = true;
       while (changed) { changed = false; for (const [pid,parent] of processes) if (ids.has(parent) && !ids.has(pid)) {ids.add(pid);changed=true;} }
-    } catch { /* Fall back to the owned process group. */ }
+    } catch { /* 回退到本应用持有的进程组。 */ }
     let failure: unknown;
     const signal = async (name: NodeJS.Signals) => {
       for (const pid of [...ids].reverse()) {
@@ -390,12 +390,12 @@ export class Runtime {
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') failure = cleanupPhase(error, 'signal.group.' + name); }
     };
     await signal('SIGTERM');
-    // Keep this cleanup even when the root exits before an ignoring descendant.
-    // This is a tracked Promise, independent of the root PTY's exit event.
+    // 即使根进程早于忽略信号的子孙进程退出，也保留此清理任务。
+    // 这是受跟踪的 Promise，独立于根 PTY 的退出事件。
     await new Promise<void>(resolve => setTimeout(resolve,1500));
     await signal('SIGKILL');
-    // Signal delivery (or an OS error racing exit) is not release proof. Fresh
-    // inspection decides whether every retained PID and group member is gone.
+    // 信号送达（或与退出竞态发生的操作系统错误）不能证明释放。重新
+    // 检查才能确定所有保留 PID 和进程组成员均已消失。
     const deadline = Date.now() + 2000;
     for (;;) {
       try {
@@ -418,8 +418,8 @@ export class Runtime {
     return this.posixSnapshotHasLiveMembers(result.stdout, ids, group);
   }
   private posixSnapshotHasLiveMembers(output: string, ids: ReadonlySet<number>, group: number): boolean {
-    // A running ps must include at least itself. Empty or malformed output is
-    // unavailable release evidence, never proof that the owned tree is empty.
+    // 运行中的 ps 至少应包含自身。空输出或格式错误的输出
+    // 表示释放依据不可用，不能证明所持有的进程树为空。
     const lines = output.trim().split('\n');
     const rows = lines.map(line => {
       const fields = line.trim().split(/\s+/);
@@ -455,7 +455,7 @@ export class Runtime {
     this.trimBuffers();
     return result;
   }
-  /** Terminal replay is bounded retention, never represented as the complete conversation. */
+  /** 终端重放只保留有界记录，不视为完整会话。 */
   exportLogs(id: string): string {
     this.getSession(id);
     this.flush();
@@ -464,7 +464,7 @@ export class Runtime {
     const header = '# cc-desk terminal log\n# Scope: retained terminal output only (previous + current, up to 10 MiB).\n# Older output may have rotated out; this is not a complete conversation transcript.\n# Exported at: ' + new Date().toISOString() + '\n\n';
     return header + Buffer.concat(retained).toString('utf8');
   }
-  /** Call before removing session metadata; active processes must be stopped and awaited first. */
+  /** 移除会话元数据前调用；必须先停止活动进程并等待完成。 */
   forget(id: string, options: { deleteLogs?: boolean } = {}): void {
     if (this.has(id)) throw new Error('请先停止会话，再删除其运行数据。');
     this.flush();
@@ -476,7 +476,7 @@ export class Runtime {
   }
   async shutdown(): Promise<void> {
     await (this.shutdownPromise ??= this.performShutdown());
-    // Resource cleanup is idempotent, but saving must be retried after a disk fault.
+    // 资源清理具有幂等性，但磁盘故障后必须重试保存。
     this.store.flush();
     this.titles.assertReleased();
     if (this.activeCount || this.cleanupErrors.size) throw new Error('无法确认全部终端进程和资源已释放，请检查残留进程后重试。', { cause: this.cleanupErrors.values().next().value });
@@ -489,8 +489,8 @@ export class Runtime {
     for (const id of ids) {
       if (value) {
         this.sessionMaintenance.add(id);
-        // A prepare begun before the barrier stays cancelled even if maintenance
-        // finishes before the provider returns its launch resources.
+        // 屏障建立前开始的准备操作仍保持取消，即使维护已在
+        // 提供方返回启动资源之前结束。
         if (this.starting.has(id)) this.cancelledStarts.add(id);
       } else this.sessionMaintenance.delete(id);
     }
@@ -535,7 +535,7 @@ export class Runtime {
       try { await this.beginStop(id, entry); await this.releasePty(id, entry); }
       catch (error) { failures.push(error); this.reportError(error); }
     }
-    // Root exit is not proof that descendants, taskkill, or launcher resources have finished.
+    // 根进程退出不能证明子孙进程、taskkill 或启动器资源均已结束。
     const pending = () => [...this.cleanups].filter(([, id]) => includes(id)).map(([cleanup]) => cleanup);
     for (let cleanups = pending(); cleanups.length; cleanups = pending()) await Promise.all(cleanups);
     await titlesStopped;

@@ -14,12 +14,12 @@ async function within<T>(work: Promise<T>, milliseconds: number, label: string):
   } finally { if (timer) clearTimeout(timer); }
 }
 
-/** Retain shutdown failures, but never leave a quit-confirmation dialog blocking CI. */
+/** 保留关闭失败信息，同时避免退出确认对话框阻塞 CI。 */
 export function closeNativeApp(app: ElectronApplication): Promise<void> {
   const existing = cleanups.get(app);
   if (existing) return existing;
-  // Playwright disposes its application dispatcher after close. Capture the real
-  // process once, before any close, and share this promise with finally blocks.
+  // Playwright 在关闭后销毁应用调度器。须在任何关闭操作前获取一次真实
+  // 进程，并将该 Promise 与 finally 块共享。
   const child = app.process();
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   const cleanup = (async () => {
@@ -49,13 +49,13 @@ export function closeNativeApp(app: ElectronApplication): Promise<void> {
         }))), 2_000, 'Native shutdown diagnostics').catch(problem => ({ error: String(problem) }));
         await page.screenshot({ path: test.info().outputPath('native-shutdown.png'), timeout: 2_000 }).catch(() => {});
       }
-      // This is failure-only cleanup of the process created by this test. The
-      // force kill never converts a failed graceful shutdown into a passing test.
+      // 仅在失败时清理本测试创建的进程。强制终止不能将
+      // 正常关闭失败变为测试通过。
       if (!exited() && child.pid) {
         try {
           if (process.platform === 'win32') await execFileAsync('taskkill.exe', ['/pid', String(child.pid), '/T', '/F'], { timeout: 5_000, windowsHide: true });
           else {
-            // Playwright launches POSIX Electron in its own detached process group.
+            // Playwright 在独立的脱离进程组中启动 POSIX Electron。
             try { process.kill(-child.pid, 'SIGKILL'); }
             catch (problem) { if ((problem as NodeJS.ErrnoException).code !== 'ESRCH') throw problem; child.kill('SIGKILL'); }
           }

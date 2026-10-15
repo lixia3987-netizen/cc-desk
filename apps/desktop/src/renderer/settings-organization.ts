@@ -18,7 +18,7 @@ export const engineGroupTitles: Record<EngineSettingsGroup, string> = {
   recovery: '失败恢复', permissions: '权限与审批', tools: '会话工具',
 };
 
-/** Filter presentation only; the full configuration remains the saved draft. */
+/** 筛选仅影响展示，保存的草稿仍包含完整配置。 */
 export function engineFieldsForGroup(descriptor: ExecutionDescriptor | undefined, group: EngineSettingsGroup, config: EngineConfig): EngineConfigField[] {
   if (!descriptor) return [];
   const fields = descriptor.configuration?.fields ?? [];

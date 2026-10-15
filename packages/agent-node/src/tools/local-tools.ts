@@ -49,18 +49,18 @@ function exactFields(input: JsonObject, required: string[], optional: string[] =
 export interface LocalToolOptions extends FilePolicyOptions {
   supervisor: ProcessSupervisor;
   ownerId: string;
-  /** Host proves the current run/generation still owns its directory lease. */
+  /** 由宿主确认当前运行或代次仍持有其目录租约。 */
   assertOwnership?: (identity: RunIdentity) => void | Promise<void>;
-  /** Instructions actually supplied to the model before its first tool request. */
+  /** 在模型首次发起工具请求前实际提供给它的指令。 */
   initialInstructions?: ProjectInstructions;
   projectSkills?: readonly string[];
-  /** Resolved model credentials for this run, never serialized in tool input. */
+  /** 已解析的本次运行模型凭据，绝不序列化到工具输入中。 */
   forbiddenValues?: readonly string[];
   maxScanEntries?: number;
   maxOperationMs?: number;
-  /** Trusted host-only durable progress. Required before any grouped file effect. */
+  /** 仅宿主可用的可信持久化进度。执行任何成组文件操作前必须具备。 */
   recordChangeSetEvent?: (identity: RunIdentity, call: ToolCall, event: NativeChangeSetFileEvent) => Promise<void>;
-  /** Host owns run-scoped processes and their durable lifecycle. The guard must run after intent persistence and immediately before launch. */
+  /** 宿主管理运行作用域内的进程及其持久化生命周期。必须在持久化启动意图后、实际启动前立即执行守卫检查。 */
   startCommand?: (prepared: PreparedTool, context: ToolExecutionContext, command: { cwd: string; beforeStart(): Promise<void> }) => Promise<ToolResult>;
 }
 interface PreparedState {
@@ -198,8 +198,8 @@ export class LocalToolPort implements ToolPort {
       requiresApproval: definition.risk !== 'read' || isSensitivePath(targetPath),
       preconditions: { instructions: asJson(instructions.sources.map(({ path: instructionPath, scope, hash }) => ({ path: instructionPath, scope, hash }))), instructionDigest: instructions.digest, expectedHash: patch?.input.expectedHash ?? null, ownerId: this.options.ownerId },
     };
-    // Concurrent preparation must not substitute another payload for the same
-    // call while async path/instruction/regex validation is in flight.
+    // 并发准备时，不得在异步路径、指令及正则校验期间
+    // 为同一次调用替换为另一份载荷。
     const concurrent = this.prepared.get(key);
     if (concurrent) {
       if (concurrent.identity !== identityKey(context.identity) || canonical(asJson(concurrent.prepared)) !== canonical(asJson(prepared))) throw new Error('Tool call identity was reused during preparation.');
@@ -251,16 +251,16 @@ export class LocalToolPort implements ToolPort {
     await this.options.assertOwnership?.(context.identity);
     throwIfAborted(context.signal);
     this.state(prepared, context);
-    // Share the in-flight read/cache receipt, and recheck ownership even when
-    // serving its cached value. Repeating a call cannot create a fresh scan.
+    // 共享正在处理的读取或缓存回执，即使返回缓存值也要重新检查归属。
+    // 重复调用不能触发新的扫描。
     state.searchExecution ??= this.executePrepared(prepared, context, approval);
     return structuredClone(await state.searchExecution);
   }
   private async prepareChangeSet(call: ToolCall, input: JsonObject, inputDigest: string, context: ToolExecutionContext, definition: ToolDefinition): Promise<PreparedTool> {
     exactFields(input, ['changes']);
     this.credentials(input);
-    // Reject the entire group's sensitive/rule targets, aliases, malformed text
-    // and aggregate limits before any instruction lookup or previous-file read.
+    // 在查询指令或读取旧文件前，拒绝整个组中的敏感或规则文件目标、路径别名、格式错误的文本
+    // 以及超出总量限制的输入。
     const { changes } = validateChangeSetInput(input, this.options.projectSkills);
     const scopes: NonNullable<PreparedState['changeSetInstructions']> = [];
     for (const change of changes) {
@@ -291,7 +291,7 @@ export class LocalToolPort implements ToolPort {
       executed: false, maxOutputBytes: context.maxOutputBytes, changeSet, changeSetInstructions: scopes });
     return structuredClone(prepared);
   }
-  /** No file-version check here: earlier items in this group may already be applied. */
+  /** 此处不检查文件版本：同一组中较早的项目可能已经应用。 */
   private async assertChangeSetCurrent(prepared: PreparedTool, state: PreparedState, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<void> {
     const check = () => {
       throwIfAborted(context.signal); this.state(prepared, context);
@@ -325,8 +325,8 @@ export class LocalToolPort implements ToolPort {
       try {
         const applied: NativeChangeSetResult = await this.changeSets.apply(state.changeSet, { signal: context.signal,
           assertCurrent: () => this.assertChangeSetCurrent(prepared, state, context, approval),
-          // After-effect receipts must still be saved if cancellation arrives.
-          // This callback grants no permission to execute the next file.
+          // 即使收到取消请求，也必须保存操作完成后的回执。
+          // 此回调不会授予执行下一个文件操作的权限。
           record: event => record(run, call, structuredClone(event)),
         });
         const output = asJson(applied); this.credentials(output);
@@ -336,8 +336,8 @@ export class LocalToolPort implements ToolPort {
         state.result = structuredClone(result);
         return result;
       } catch {
-        // Never pass through the generic lossy output fallback after grouped
-        // effects. The durable per-file receipts remain the recovery source.
+        // 完成成组操作后，绝不能使用通用的有损输出回退。
+        // 仍应以各文件的持久化回执作为恢复依据。
         const result: ToolResult = { status: 'unknown', output: { error: 'change_set_execution_unconfirmed' } };
         state.result = result; return result;
       }
@@ -363,8 +363,8 @@ export class LocalToolPort implements ToolPort {
       } else if (prepared.call.name === 'start_command') {
         if (!this.options.startCommand) throw new Error('Run-scoped commands are unavailable.');
         const beforeStart = async () => {
-          // validate() forbids replay once execution starts. Recheck its exact
-          // authority here after the host has durably saved its launch intent.
+          // validate() 禁止在执行开始后重放。在宿主持久化保存启动意图后，
+          // 于此处重新检查本次调用的确切授权。
           throwIfAborted(context.signal); this.state(prepared, context);
           await this.options.assertOwnership?.(context.identity);
           const binding = { ...context.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: context.policyRevision };

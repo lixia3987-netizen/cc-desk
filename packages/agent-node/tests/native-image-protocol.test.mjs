@@ -38,7 +38,7 @@ for (const [label, Model, chat] of [['Responses', ResponsesModel, false], ['Chat
     assert.deepEqual(chat ? server.requests[1].messages : server.requests[1].input, history)
     assert.deepEqual(server.errors, [])
     const context = { protocol: model.protocol, items }
-    // Empty tool catalog serializes to [] in both estimators; image bytes retain their full cost.
+    // 两个估算器都将空工具目录序列化为 []；图像字节仍按完整大小计入成本。
     assert.equal(model.estimateInputTokens(context), estimateContextInputTokens(context, '[]'))
   })
 

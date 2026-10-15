@@ -66,7 +66,7 @@ interface ProjectionEntry {
   override?: { taskState: TaskState; error?: string };
 }
 
-/** Rebuildable UI projection. The native ledger is the only model context source. */
+/** 可重建的界面投影；原生账本是模型上下文的唯一来源。 */
 export class NativeProjection {
   private entries = new Map<string, ProjectionEntry>();
   private serial = new Map<string, Promise<void>>();
@@ -117,8 +117,8 @@ export class NativeProjection {
     }
     const count = store.usage.records;
     const latest = store.replay(Math.max(0, count - 1), 1)[0];
-    // An empty ledger cannot erase a pre-existing display record. It may mean
-    // the authoritative model ledger was lost, not that this is a new chat.
+    // 空账本不能抹除既有显示记录。这可能意味着
+    // 权威模型账本丢失，而非这是新聊天。
     if ((!latest || count === 1 && latest.event.type === 'conversation_created') && await this.preserveMissingContext(id, old)) return;
     if (!latest || old.conversationId === store.conversationId && old.seq === latest.seq && old.hash === latest.hash) return;
     const records: RunStoreRecord[] = [];
@@ -224,8 +224,8 @@ export class NativeProjection {
       } else if (event.type === 'run_finished') {
         currentTerminal = true;
         const result = event.result;
-        // A failed request can consume service tokens without yielding a durable response.
-        // Earlier reported usage is then partial and cannot price the complete run.
+        // 失败的请求可能消耗服务令牌，却没有产生可持久化响应。
+        // 此时此前报告的用量仅为部分用量，不能据此计算整个运行的费用。
         const costUSD = !failures.has(runId) && result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
           ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
         const failure = failures.get(runId);
@@ -292,7 +292,7 @@ export class NativeProjection {
       const modelCapabilities = model ? nativeModelCapabilityUsage(configuration.modelCapabilities, model) : undefined;
       let budget;
       try { budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: nativeModelBudget(options, modelCapabilities?.capabilities).maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }); }
-      catch { /* Unknown protocol records remain readable, with no invented budget. */ }
+      catch { /* 未知协议记录仍可读取，不虚构预算。 */ }
       projected.push({ seq: latest.seq, event: { type: 'context', context: {
         ...(model ? { model, requestModel: model } : {}),
         ...(modelCapabilities ? { modelCapabilities, ...(modelCapabilities.capabilities.contextWindow ? { contextWindow: modelCapabilities.capabilities.contextWindow.value } : {}) } : {}),
@@ -316,8 +316,8 @@ export class NativeProjection {
         await handle.sync();
       } finally { await handle.close(); }
       old.history.flush();
-      // This projection never writes bounded snapshots. Removing a legacy cache
-      // before publishing the atomic journal makes either crash outcome replayable.
+      // 此投影绝不写入有界快照。在发布原子日志前移除旧缓存，
+      // 可使两种崩溃结果都能通过重放恢复。
       await fsp.rm(path.join(this.directory, `${id}.json`), { force: true });
       await fsp.rename(temporary, file);
       if (process.platform !== 'win32') {
@@ -327,17 +327,17 @@ export class NativeProjection {
     } finally { await fsp.rm(temporary, { force: true }); }
     const history = this.history();
     const snapshot = history.get(id);
-    // ChatHistory correctly treats restored live states as interrupted. This
-    // host still owns a live run, so use the current committed state in memory.
+    // ChatHistory 会正确地把恢复出的运行中状态视为已中断。当前
+    // 宿主仍拥有活动运行，因此使用内存中当前已提交的状态。
     if (this.isActive(id)) snapshot.taskState = finalState;
     const stream = old.stream && (streamEpochs.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
     let agents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity) : undefined;
-    // A receipt callback can arrive while the ledger projection awaits file I/O.
-    // Keep that newest host fact when publishing the rebuilt snapshot.
+    // 账本投影等待文件 I/O 时，回执回调可能到达。
+    // 发布重建快照时保留这条最新的宿主事实。
     agents?.merge(this.entry(id).agents);
-    // Continuing the parent must not erase the last retained collaboration.
-    // Candidates come from this conversation's ledger, never renderer paths.
+    // 继续父任务时不得抹除最后保留的协作记录。
+    // 候选项来自当前会话的账本，绝不来自渲染进程路径。
     if (agents && !agents.snapshot().items.length && !agents.snapshot().incomplete) {
       const previousAgents = this.entry(id).agents;
       const candidates = store.listRuns().toReversed().filter(run => run.identity.runId !== currentIdentity?.runId &&
@@ -375,7 +375,7 @@ export class NativeProjection {
 
   hasMissingContext(id: string): boolean { return this.missingContext.has(id); }
   notifyTask(id: string): void { this.changed(id); }
-  /** The executor calls this only after the bound child receipt is durably saved. */
+  /** 只有绑定的子任务回执已持久化后，执行器才调用此方法。 */
   nativeAgent(id: string, receipt: NativeDelegationReceipt): void {
     const entry = this.entry(id), parent = receipt.parentIdentity;
     if (parent.sessionId !== id || entry.currentIdentity && (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => parent[key] !== entry.currentIdentity![key])) throw new Error('子 Agent 不属于当前父回合。');
@@ -387,8 +387,8 @@ export class NativeProjection {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
-    // An active entry can remain solely to quarantine its directory after an
-    // unconfirmed cleanup or journal failure. It is not evidence of live work.
+    // 活动条目可能仅因清理未确认或日志失败而保留，
+    // 以便隔离其目录；这并不能证明工作仍在运行。
     const terminalOverride = !!entry.override && ['completed', 'interrupted', 'error'].includes(entry.override.taskState);
     if (entry.commands?.items.length) snapshot.nativeCommands = snapshotNativeCommands(entry.commands,
       this.isActive(id) && !entry.currentTerminal && !terminalOverride ? entry.currentIdentity?.runId : undefined);

@@ -18,9 +18,9 @@ import { autoCompactBeforeSend } from '../src/main/engines/native/automatic-comp
 import { parseNativeConfig } from '../src/main/engines/native/config';
 import { createInRunCompaction } from '../src/main/engines/native/in-run-compaction';
 import { prepareNativeContextSummary } from '../src/main/engines/native/context-summary';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Local protocol fixture has no declarations.
+// @ts-expect-error 本地协议测试装置没有类型声明。
 import { startChatCompletionsFixture } from '../../../packages/agent-node/tests/fixtures/chat-completions-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
@@ -145,8 +145,8 @@ for (const protocol of ['responses', 'chat-completions'] as const) {
       await started;
       const changed = await f.add('changed.png', 1);
       await assert.rejects(f.executor.send(f.id, 'inspect', [changed], undefined, { requestId: 'active-picture' }), /不同/);
-      // Alter the original staged file after capture; the active request retains
-      // its bytes, but a duplicate attempting to reuse new bytes is refused.
+      // 捕获后修改原始暂存文件；当前请求保留原有字节，
+      // 但尝试复用新字节的重复请求会被拒绝。
       await fs.writeFile(f.imagePath, png(1));
       await assert.rejects(f.executor.send(f.id, 'inspect', [f.imagePath], undefined, { requestId: 'active-picture' }), /不同|变更|无效/);
       release(); assert.equal((await original).success, true); assert.deepEqual(await duplicate, await original);

@@ -110,7 +110,7 @@ test('cancelling Windows Job preparation never launches and waits for both physi
     await tick();
     assert.ok(helper.kills > 0);
     assert.ok(f.guardian.kills > 0);
-    // A response buffered before cancellation must not authorize a late launch.
+    // 取消前缓冲的响应不能授权延迟到达的启动操作。
     f.guardian.emit('message', { type: 'challenge-response', nonce: helper.nonce });
     helper.stdout.write('{"type":"ready"}\n');
     await tick();
@@ -200,8 +200,8 @@ for (const loss of ['invalid output', 'failed result', 'helper exit']) {
       await tick();
       assert.equal(f.messages.some(message => message.type === 'launch'), false);
       if (loss === 'invalid output') {
-        // One data callback resolves ready, then invalidates the same Job before
-        // the supervisor's await continuation can send the launch message.
+        // 单次数据回调先完成 ready，再使同一 Job 失效，发生在监督器的
+        // await 续接有机会发送启动消息之前。
         helper.stdout.write('{"type":"ready"}\ninvalid-json\n');
       } else if (loss === 'failed result') {
         helper.stdout.write('{"type":"ready"}\n' + JSON.stringify({
@@ -221,8 +221,8 @@ for (const loss of ['invalid output', 'failed result', 'helper exit']) {
       assert.equal(supervisor.has('lost-ready'), true);
     } finally {
       for (const helper of f.helpers) helper.finish();
-      // The mocked OS handles are closed, but the deliberately failed Job must
-      // keep its logical owner occupied instead of inventing release evidence.
+      // 模拟的操作系统句柄已关闭，但有意设置为失败的 Job 仍须
+      // 占用其逻辑所有者，不能凭空生成释放证据。
       await supervisor.dispose().catch(() => {});
       f.restore();
     }

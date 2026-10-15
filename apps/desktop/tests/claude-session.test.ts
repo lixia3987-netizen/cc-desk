@@ -38,7 +38,7 @@ test('context report labels and absent metadata retain capacity until the bound 
     assert.equal(changedWithoutUsage?.requestModel, 'different-model');
     assert.equal(requestContext(repeated, {}, undefined, 'absent usage'), undefined);
   }
-  // Legacy saved reports have no requestModel binding and must remain readable.
+  // 旧版保存的报告没有 requestModel 绑定，仍须保持可读取。
   const legacy = { model: 'Sonnet', contextWindow: 200000, inputTokens: 30000, source: 'context-command' as const, status: 'ready' as const };
   assert.equal(requestContext(legacy, { input_tokens: 12000 }, 'claude-sonnet-4-6', 'resumed')?.contextWindow, 200000);
 });
@@ -56,7 +56,7 @@ test('command catalogs preserve CLI metadata, custom overrides, aliases and repl
   assert.equal(matchingCommands(update, 'review')[0].name, 'team:review');
   assert.equal(matchingCommands(update, '压缩')[0].name, 'compact');
   assert.equal(normalizeCommands([{ name: 'resume', builtin: false }], initial)[0].disabledReason, undefined);
-  // Current CLI omits builtin entirely for a skill shadowing a built-in name.
+  // 当前 CLI 会对名称覆盖内置技能的技能完全省略 builtin 字段。
   assert.equal(normalizeCommands([{ name: 'resume', description: '自定义 Skill' }], initial)[0].kind, 'skill');
   assert.equal(normalizeCommands(['compact'], initial).length, 1);
 });

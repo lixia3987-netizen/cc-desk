@@ -15,12 +15,12 @@ const manifestSchema = z.object({ version:z.literal(1), items:z.array(z.object({
 })).max(10000) });
 type Item = z.infer<typeof manifestSchema>['items'][number];
 
-/** Parse the shared staging format without loading, collecting or mutating drafts. */
+/** 解析共享暂存格式，不加载、收集或修改草稿。 */
 export function parseStagedAttachmentManifest(value:unknown):ReadonlyArray<Item> {
   return manifestSchema.parse(value).items;
 }
 
-/** Only explicitly imported bytes recorded in the private manifest can be sent. */
+/** 仅允许发送私有清单中记录的、显式导入的字节。 */
 export class Attachments {
   private entries = new Map<string, Item[]>();
   private operations = new Map<string, Promise<unknown>>();
@@ -45,7 +45,7 @@ export class Attachments {
       if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('附件清单无法读取，原文件已保留。');
     }
     const retained=new Set(items.map(item=>item.file));
-    // Legacy UUID files may still be referenced by transcripts; collect only our staging namespace.
+    // 旧版 UUID 文件可能仍被对话记录引用；仅回收本应用的暂存命名空间。
     for(const name of await fs.readdir(folder).catch((error:NodeJS.ErrnoException)=>{if(error.code==='ENOENT')return [];throw error;})) {
       if(stagedName.test(name)&&!retained.has(name))await fs.rm(path.join(folder,name),{force:true});
     }
@@ -63,9 +63,9 @@ export class Attachments {
   private attachment(id:string,item:Item):Attachment {return {path:path.join(this.folder(id),item.file),name:item.name,bytes:item.bytes};}
   list(id:string):Promise<Attachment[]> {return this.serial(id,async()=> (await this.load(id)).filter(item=>item.draft).map(item=>this.attachment(id,item)));}
   add(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected);}
-  /** Native staging is atomic with draft validation; Claude retains its existing limits. */
+  /** Native 暂存与草稿校验原子执行；Claude 保留现有限制。 */
   addNative(id:string,selected:string[]):Promise<Attachment[]> {return this.addFiles(id,selected,true);}
-  /** Stage one explicit paste atomically, preserving all existing draft and sent ownership. */
+  /** 原子暂存一次显式粘贴，保留所有现有草稿和已发送文件的所有权。 */
   addNativePastedImages(id:string,images:NativePastedImage[],checkAdmission?:()=>void):Promise<Attachment[]> {
     return this.serial(id,async()=>{
       checkAdmission?.();
@@ -93,7 +93,7 @@ export class Attachments {
         checkAdmission?.();
         return added.map(item=>this.attachment(id,item));
       } catch(error) {
-        // If restoration fails, keep bytes rather than leave a manifest with missing references.
+        // 若恢复失败，保留字节，避免留下引用缺失的清单。
         if(saved)await this.save(id,items);
         await Promise.all(added.map(item=>fs.rm(path.join(folder,item.file),{force:true})));
         throw error;
@@ -126,8 +126,8 @@ export class Attachments {
         }
         return added.map(item=>this.attachment(id,item));
       } catch(error) {
-        // Restore the prior draft manifest before removing this call's new files.
-        // If restoring fails, preserve bytes conservatively for later recovery.
+        // 删除本次调用新增的文件前，先恢复原有草稿清单。
+        // 若恢复失败，谨慎保留字节，以便后续恢复。
         if(native&&saved)await this.save(id,items);
         await Promise.all(added.map(item=>fs.rm(path.join(folder,item.file),{force:true})));throw error;
       }
@@ -147,7 +147,7 @@ export class Attachments {
     return files;
   }
   validate(id:string,files:string[]=[]):Promise<string[]> {return this.serial(id,()=>this.validateFiles(id,files));}
-  /** Commit references before sending. A failed dispatch keeps files conservatively. */
+  /** 发送前提交引用。派发失败时谨慎保留文件。 */
   retain(id:string,files:string[]):Promise<void> {return this.serial(id,async()=>{
     if(!files.length)return;
     await this.validateFiles(id,files);const wanted=new Set(files);
@@ -157,18 +157,18 @@ export class Attachments {
     if(!files.length)return;const wanted=new Set(files);
     await this.save(id,(await this.load(id)).map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,retained:true,draft:false}:item));
   });}
-  /** Move picker drafts into durable submission ownership before returning its ack. */
+  /** 返回确认前，将选择器草稿转交给持久化提交记录持有。 */
   acceptQueued(id:string,files:string[],commit:(names:string[])=>void):Promise<void> {return this.serial(id,async()=>{
     await this.validateFiles(id,files);
     const previous=await this.load(id),wanted=new Set(files);
     if(files.some(file=>!previous.some(item=>item.draft&&path.join(this.folder(id),item.file)===file)))throw new Error('附件已发送或不在当前草稿中，请重新添加附件。');
-    // Keep drafts visible until queue ownership is durable. A crash between these
-    // commits can leave an extra draft flag, never a hidden unaccepted attachment.
+    // 在队列所有权持久化之前保持草稿可见。这些提交之间发生崩溃时，
+    // 可能留下额外的草稿标记，但不会隐藏尚未接收的附件。
     if(files.length)await this.save(id,previous.map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,retained:true}:item));
     commit(files.map(file=>previous.find(item=>path.join(this.folder(id),item.file)===file)!.name));
     if(files.length) {
       try { await this.save(id,(await this.load(id)).map(item=>wanted.has(path.join(this.folder(id),item.file))?{...item,draft:false}:item)); }
-      catch { /* Queue owns the files now. IPC filters them; dispatch retries the durable flag before sending. */ }
+      catch { /* 文件已归队列持有。IPC 会过滤这些文件；派发时会先重试持久化标记，再发送。 */ }
     }
   });}
   removeFile(id:string,file:string):Promise<void> {return this.serial(id,async()=>{

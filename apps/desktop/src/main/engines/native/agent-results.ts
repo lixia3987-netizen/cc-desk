@@ -38,7 +38,7 @@ export class NativeAgentResultReadError extends Error {
 }
 function failure(code: NativeAgentResultReadErrorCode): never { throw new NativeAgentResultReadError(code); }
 
-/** No caller-controlled path: every component comes from a bound, parsed host receipt. */
+/** 不接受调用方控制的路径：每个路径部分都来自已绑定并解析的宿主回执。 */
 async function assertPatchDirectories(dataDirectory: string, file: string): Promise<void> {
   const root = path.resolve(dataDirectory), directory = path.dirname(file), relative = path.relative(root, directory);
   if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) failure('patch_unsafe');
@@ -61,7 +61,7 @@ async function readPatch(dataDirectory: string, file: string): Promise<Buffer> {
     const opened = await handle.stat();
     if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) failure('patch_unsafe');
     if (opened.size > MAX_NATIVE_AGENT_PATCH_BYTES) failure('patch_too_large');
-    // A bounded read also handles a file growing after stat without allocating its new size.
+    // 有界读取也能处理 stat 后文件增长的情况，无需按增长后的大小分配内存。
     const buffer = Buffer.alloc(opened.size + 1);
     let read = 0;
     while (read < buffer.byteLength) {
@@ -89,7 +89,7 @@ const splitSurrogate = (text: string, offset: number) => offset > 0 && offset < 
   text.charCodeAt(offset - 1) >= 0xd800 && text.charCodeAt(offset - 1) <= 0xdbff &&
   text.charCodeAt(offset) >= 0xdc00 && text.charCodeAt(offset) <= 0xdfff;
 
-/** Read preserved facts; this never resumes work, reads arbitrary files or accepts a task. */
+/** 读取已保留的事实；绝不恢复工作、读取任意文件或接收任务。 */
 export async function readNativeAgentResult(dataDirectory: string, parent: RunIdentity, request: NativeAgentResultRequest,
   options: { forbiddenValues?: readonly string[] } = {}): Promise<NativeAgentResult> {
   const parsed = requestSchema.safeParse(request);
@@ -127,7 +127,7 @@ export async function readNativeAgentResult(dataDirectory: string, parent: RunId
   if (splitSurrogate(text, offset)) offset--;
   let end = Math.min(text.length, offset + (input.patchCharacters ?? 16000));
   if (splitSurrogate(text, end)) end--;
-  // A one-character request at a surrogate pair still makes forward progress.
+  // 即使单字符请求落在代理对上，也应保持向前读取进度。
   if (end === offset && offset < text.length) end = Math.min(text.length, offset + 2);
   result.patch = { sha256, integrity: receipt.artifact.sha256 === undefined ? 'legacy_unverified' : 'verified',
     text: text.slice(offset, end), offset, nextOffset: end < text.length ? end : null, totalCharacters: text.length, totalBytes: bytes.byteLength };

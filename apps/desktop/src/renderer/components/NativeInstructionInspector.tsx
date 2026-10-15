@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { NativeInstructionsPreview, NativeSkillPreview } from '../../shared/native-skills';
 
-/** Plain text only: source content cannot create links, execute HTML, or trigger imports. */
+/** 仅展示纯文本：源内容不能创建链接、执行 HTML 或触发导入。 */
 export function NativeSourcePreview({ source }: { source: NativeSkillPreview | NativeInstructionsPreview['sources'][number] }) {
   return <details className="native-source-preview" open>
     <summary>{source.path}</summary>

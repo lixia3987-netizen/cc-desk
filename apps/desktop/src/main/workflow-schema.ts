@@ -56,7 +56,7 @@ const stageSchema = stageDefinitionSchema.extend({
   gateReason: z.string().max(4000).optional(), confirmation: z.object({ decision: z.enum(['approve', 'reject']), reason: z.string().max(4000), at: date }).strict().optional(),
   taskId: z.string().uuid().optional(), executionIds: z.array(z.string().uuid()).max(3).optional(), nativeReceipts: z.array(workflowNativeReceiptSchema).max(3).optional(),
 }).strict();
-// Only persisted v1 records may omit the executor identity. New bindings must declare it.
+// 仅持久化的 v1 记录可省略执行器身份。新绑定必须声明该身份。
 const storedBindingSchema = workflowBindingSchema.extend({
   providerId: providerIdSchema.default('claude'), executionMode: z.literal('structured').default('structured'),
 });

@@ -89,7 +89,7 @@ async function writeJsonAtomically(file, value) {
   const temporary = path.join(path.dirname(file), `.native-eval-${randomUUID()}.tmp`);
   try {
     await fs.writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-    // rename replaces an existing symlink itself, never follows its destination.
+    // rename 会替换现有符号链接本身，不会沿链接访问目标。
     await fs.rename(temporary, file);
   } finally { await fs.rm(temporary, { force: true }); }
 }

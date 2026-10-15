@@ -205,8 +205,8 @@ test('overlapping preparation keeps the first exact binding and enforces the cac
   } finally { await f.dispose(); }
 });
 
-// Windows rejects quotes in filenames. Run the portable UTF-8 byte-budget case
-// everywhere, plus JSON-escaped paths on filesystems that support them.
+// Windows 不允许文件名包含引号。所有环境都运行可移植的 UTF-8 字节预算用例，
+// 支持相应文件名的文件系统还要运行 JSON 转义路径用例。
 for (const namePart of process.platform === 'win32' ? ['界文'] : ['界文', '界"'])
 test(`output budget includes Unicode paths and scoped instructions before persistence (${JSON.stringify(namePart)})`, async () => {
   const f = await fixture();

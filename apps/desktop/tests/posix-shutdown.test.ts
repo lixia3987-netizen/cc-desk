@@ -63,8 +63,8 @@ test('structured shutdown also awaits verification of Darwin EPERM after its rea
     if (target === -pid && name === 'SIGKILL') { groupErrors++; throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' }); }
     return kill(target, name);
   });
-  // The production timer is unref'ed; this fixture explicitly awaits it even once
-  // the child's last stdio handle has closed.
+  // 生产环境计时器已取消引用；即使子进程最后一个标准 I/O 句柄已经关闭，
+  // 本测试装置也会显式等待它。
   const keepAlive = setInterval(() => {}, 1000);
   try {
     connection.terminate();

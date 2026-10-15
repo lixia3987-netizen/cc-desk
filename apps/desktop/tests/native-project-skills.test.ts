@@ -12,8 +12,8 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// A real local HTTP/SSE fixture replaces only the remote model.
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// 真实的本地 HTTP/SSE 测试装置仅替换远端模型。
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;

@@ -37,7 +37,7 @@ export interface CodeLocationToolOptions {
   assertOwnership(): Promise<void>;
 }
 
-/** The model selects a range; only the host can create its content and durable evidence. */
+/** 模型选择范围；只有宿主可以生成其内容及持久化证据。 */
 export function createCodeLocationTool(options: CodeLocationToolOptions): ToolPort {
   const identity = structuredClone(options.identity), identityKey = encode(identity), taskId = options.taskId;
   const files = new ProjectFiles({ projectRoot: options.projectRoot, excludedRoots: options.excludedRoots });
@@ -89,8 +89,8 @@ export function createCodeLocationTool(options: CodeLocationToolOptions): ToolPo
       if (encode(input) !== encode(raw) || normalizeProjectPath(input.path) !== input.path || isSensitivePath(input.path) || input.endLine < input.startLine || input.endLine - input.startLine >= 80) throw new Error('位置工具参数或行范围无效。');
       credentials(input); taskFor(input);
       const instructions = await load(input.path, context.signal); credentials(instructions);
-      // Reserve a bounded receipt before writing: success can never be truncated
-      // after a durable metadata mutation simply because instructions were large.
+      // 写入前预留有界回执，确保完成持久化元数据修改后，
+      // 不会仅因指令过大而截断成功结果。
       const largestReceipt = receipt(Number.MAX_SAFE_INTEGER, `location-${'f'.repeat(40)}`, {
         path: input.path, startLine: input.startLine, endLine: input.endLine, fileHash: input.expectedHash,
         fileBytes: 1024 * 1024, excerptHash: 'f'.repeat(64),
@@ -101,8 +101,8 @@ export function createCodeLocationTool(options: CodeLocationToolOptions): ToolPo
         preconditions: { taskId, interaction: 'task_location', instructionDigest: instructions.digest } };
       await guard(context);
       taskFor(input);
-      // Independent prepare calls may overlap their scope reads. Recheck the
-      // exact-call binding and both capacity bounds after the final await.
+      // 独立的 prepare 调用可能并发读取范围。在最后一次 await 后重新检查
+      // 精确调用绑定及两个容量边界。
       const raced = states.get(call.id);
       if (raced) {
         if (encode(raced.prepared.call) !== encode(call)) throw new Error('位置调用标识已使用。');

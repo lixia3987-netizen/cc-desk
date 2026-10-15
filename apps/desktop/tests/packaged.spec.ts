@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { extractFile, listPackage } from '@electron/asar';
 import { persistedStateSchema as legacyWorkspaceSchema } from '../src/shared/workspace-v2';
-// @ts-expect-error The shared loopback-only protocol fixture is implemented in JavaScript.
+// @ts-expect-error 共享的仅限回环访问协议测试装置由 JavaScript 实现。
 import { startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type Target = { format: string; artifact: string; executable: string; arch: string };
@@ -35,8 +35,8 @@ test('packaged default profile: unchanged application identity and userData with
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
   }
-  // Claim this previously absent directory exclusively before the app can read
-  // it. EEXIST is a failure, including a race with another process creating it.
+  // 应用读取前，以独占方式创建此前不存在的目录。包括其他进程
+  // 同时创建该目录的竞争情况在内，EEXIST 都表示失败。
   await fs.mkdir(profile, { mode: 0o700 });
   const ownedProfile = await fs.lstat(profile);
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-default-profile-'));
@@ -79,8 +79,8 @@ test('packaged default profile: unchanged application identity and userData with
     try {
       if (app) await app.close();
     } finally {
-      // Do not delete a profile while its process may still be using it. A
-      // failed launch with no observable child leaves evidence for the CI run.
+      // 进程可能仍在使用用户配置目录时，不要删除它。启动失败且没有
+      // 可观察到的子进程时，应为 CI 运行保留证据。
       if (!launchAttempted || (child && (child.exitCode !== null || child.signalCode !== null))) {
         const current = await fs.lstat(profile);
         if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== ownedProfile.dev || current.ino !== ownedProfile.ino) {
@@ -116,7 +116,7 @@ for (const target of targets) {
     const commandMarker = 'packaged-native-command-' + randomUUID();
     const fixture = await startResponsesFixture({ task: {
       path: 'fixture.txt', content,
-      // This is the Playwright Node host, not the packaged Electron GUI executable.
+      // 这是 Playwright 的 Node 宿主，而非打包后的 Electron 图形界面可执行文件。
       command: { executable: process.execPath, argv: ['-e', 'require("node:fs").writeFileSync("command-result.txt", process.argv[1]);', commandMarker], cwd: '.' },
     } });
     const secret = 'sk-packaged-native-dummy-' + randomUUID();
@@ -132,7 +132,7 @@ for (const target of targets) {
       expect(await fs.realpath(identity.profile)).toBe(await fs.realpath(profile));
       expect(identity.appPath).toMatch(/[/\\][Rr]esources[/\\]app\.asar$/);
       expect(listPackage(identity.appPath, { isPack: false }).map(file => file.replaceAll('\\', '/'))).toContain('/dist/native/worker.cjs');
-      // ASAR traversal uses the host path.sep, including Windows.
+      // ASAR 遍历使用宿主的 path.sep，Windows 上也是如此。
       expect(extractFile(identity.appPath, path.join('dist', 'native', 'worker.cjs')).length).toBeGreaterThan(1024);
       const page = await app.firstWindow();
       page.on('pageerror', error => errors.push(error.message));
@@ -163,8 +163,8 @@ for (const target of targets) {
       const sessionId = created.session.id;
       await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).pending[0]?.toolName, sessionId)).toBe('apply_patch');
       expect(await fs.readFile(path.join(project, 'fixture.txt'), 'utf8')).toBe('before packaged native task\n');
-      // Observe the real Electron utility process while it waits for normal IPC approval.
-      // Neither the executor nor the worker launch is replaced by a test implementation.
+      // 在真实 Electron 实用工作进程等待正常 IPC 审批时观察它。
+      // 执行器和工作进程启动都不替换为测试实现。
       const utility = await app!.evaluate(({ app }) => app.getAppMetrics().find(metric => metric.type === 'Utility' && (metric.name === 'cc-desk native agent' || metric.serviceName === 'cc-desk native agent')));
       expect(utility?.pid).toBeGreaterThan(0);
       expect(utility?.pid).not.toBe(launchedProcess!.pid);
@@ -247,14 +247,14 @@ for (const target of targets) {
         packaged: app.isPackaged, arch: process.arch, profile: app.getPath('userData'),
         appPath: app.getAppPath(), executable: process.execPath, name: app.getName(), version: app.getVersion(),
       }));
-      // Assert isolation before the renderer is allowed to perform any test mutation.
+      // 允许渲染进程执行任何测试修改前，先断言隔离状态。
       expect(identity.packaged).toBe(true);
       expect(identity.arch).toBe(target.arch);
       expect(await fs.realpath(identity.profile)).toBe(await fs.realpath(profile));
       expect(identity.appPath).toMatch(/[/\\][Rr]esources[/\\]app\.asar$/);
       expect(await fs.realpath(identity.executable)).toBe(await fs.realpath(target.executable));
-      // A workspace root manifest must never become the installed application's
-      // identity: Electron also derives the default profile name from this name.
+      // 工作区根目录清单绝不能成为已安装应用的标识；
+      // Electron 还会从该名称推导默认用户配置目录名。
       expect(identity.name).toBe('Claude Workbench');
       expect(identity.version).toBe(desktopManifest.version);
       const packagedManifest = JSON.parse(extractFile(identity.appPath, 'package.json').toString('utf8'));
@@ -271,8 +271,8 @@ for (const target of targets) {
     };
     const close = async () => {
       const launched = app!;
-      // Playwright disposes its application channel on close; retain the native
-      // child handle while that channel is still available to inspect real exit status.
+      // Playwright 关闭时会销毁应用通道；须在通道仍可用时保留原生
+      // 子进程句柄，以检查真实退出状态。
       const child = launchedProcess!;
       await launched.close();
       app = undefined;
@@ -283,13 +283,13 @@ for (const target of targets) {
     try {
       let page = await launch();
       await expect(page.getByRole('heading', { name: /让每个想法/ })).toBeVisible();
-      // A release must not retain stale bundled font files from an earlier build.
+      // 发布版本不能保留先前构建中捆绑的过期字体文件。
       const archivePath = await app!.evaluate(({app}) => app.getAppPath());
       expect(listPackage(archivePath,{isPack:false}).filter(file => /@fontsource-variable|font-licenses|noto-(?:sans|serif)-sc|jetbrains-mono/.test(file))).toEqual([]);
       expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions).toHaveLength(0);
-      // Native folder dialogs are outside Playwright; use the application's normal validated IPC.
-      // Existing Shell sessions remain supported through validated IPC after the
-      // first-send page restricts new tasks to structured agent engines.
+      // 原生文件夹对话框不受 Playwright 控制；使用应用正常且经过校验的 IPC。
+      // 首次发送页面将新任务限制为结构化 Agent 引擎后，
+      // 仍通过已校验的 IPC 支持现有 Shell 会话。
       await page.evaluate(async p => {
         const project = await window.desktop.addProject(p);
         const session = await window.desktop.createSession({ projectId: project.id, title: '打包程序终端验证', kind: 'shell', providerId: 'shell', mode: 'terminal', engineConfig: { schemaVersion: 1, options: {} }, isolated: false });
@@ -300,7 +300,7 @@ for (const target of targets) {
       await expect(page.locator('.status-tag').first()).toContainText('运行中');
       const suffix = randomUUID().replaceAll('-', '');
       const marker = `PACKAGED_PTY_OK_${suffix}`;
-      // The full marker never appears in the typed command, so input echo cannot pass this test.
+      // 输入的命令中不会出现完整标记，因此单靠输入回显不能通过本测试。
       const command = process.platform === 'win32'
         ? `Write-Output ('PACKAGED_' + 'PTY_OK_${suffix}')`
         : `printf '\\n%s%s\\n' 'PACKAGED_' 'PTY_OK_${suffix}'`;
@@ -322,16 +322,16 @@ for (const target of targets) {
       expect(persisted.sessions).toHaveLength(1);
       expect(persisted.sessions[0].title).toBe('打包程序终端验证');
       expect(persisted.sessions[0].status).toBe('stopped');
-      // Older version-1 workspaces lack these optional fields. Keep their existing
-      // project, session identity and transcript, then reopen with the packaged app.
+      // 较早的第 1 版工作区缺少这些可选字段。保留现有项目、
+      // 会话标识和对话记录，再使用打包应用重新打开。
       delete persisted.settings.notifications;
       delete persisted.settings.closeToTray;
       delete persisted.settings.engineDefaults;
       persisted.settings.defaultPermissionMode = 'default';
       persisted.version = 1;
       for (const session of persisted.sessions) {
-        // This fixture was created through validated Shell IPC. A v1 Shell still
-        // required the old generic fields, although it never used Claude options.
+        // 此测试装置通过已校验的 Shell IPC 创建。第 1 版 Shell 仍要求
+        // 旧的通用字段，尽管它从未使用 Claude 选项。
         expect(session.kind).toBe('shell');
         expect(session.engineConfig).toEqual({ schemaVersion: 1, options: {} });
         Object.assign(session, { model: '', effort: 'default', permissionMode: 'default' });
@@ -341,8 +341,8 @@ for (const target of targets) {
         delete session.execution;
         for (const key of ['adapter', 'draft', 'taskState', 'terminalSync', 'identityPending']) delete session[key];
       }
-      // Check the unmodified historical reader without replacing our v1 input
-      // with its transformed v2 output. The app must perform the real migration.
+      // 检查未经修改的历史读取器，不将第 1 版输入替换为转换后的
+      // 第 2 版输出。应用必须执行真实迁移。
       expect(legacyWorkspaceSchema.parse(persisted).version).toBe(2);
       const legacyBytes = Buffer.from(JSON.stringify(persisted, null, 4) + '\n');
       await fs.writeFile(workspaceFile, legacyBytes);
@@ -360,9 +360,9 @@ for (const target of targets) {
       expect(state.sessions[0].execution).toEqual({ providerId: 'shell', mode: 'terminal' });
       expect(state.sessions[0].engineConfig).toEqual({ schemaVersion: 1, options: {} });
       for (const key of ['model', 'effort', 'permissionMode', 'claudeId']) expect(state.sessions[0]).not.toHaveProperty(key);
-      // Migration is dirty until a critical save/flush. Use normal packaged IPC
-      // for two distinct saves: the second rotates .bak but must not touch the
-      // immutable, byte-for-byte pre-v3 backup.
+      // 迁移在关键保存或刷新之前仍有未保存修改。通过正常的打包应用 IPC
+      // 执行两次独立保存：第二次轮换 .bak，但不得更改
+      // 不可变且逐字节保留的第 3 版之前备份。
       await page.evaluate(id => window.desktop.updateSession({ id, title: '打包程序终端验证 · v3' }), state.sessions[0].id);
       const backups = async () => (await fs.readdir(profile)).filter(name => name.startsWith('workspace.pre-v3.')).sort();
       const migrationBackups = await backups();
@@ -395,8 +395,8 @@ for (const target of targets) {
       }
       expect(errors).toEqual([]);
       await close();
-      // Reopen the same real executable against the now-persisted v3 workspace.
-      // No second migration or additional immutable backup may occur.
+      // 使用相同的真实可执行文件，重新打开已持久化的第 3 版工作区。
+      // 不能再次迁移或额外创建不可变备份。
       page = await launch();
       const restored = (await page.evaluate(() => window.desktop.snapshot())).state;
       expect(restored.version).toBe(3);

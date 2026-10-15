@@ -45,7 +45,7 @@ try {
   if (process.platform === 'win32') {
     const zip = await artifact(`${prefix}windows-x64-portable.zip`);
     const zipDirectory = path.join(directory, 'zip');
-    // Environment arguments avoid interpolating filesystem paths into PowerShell source.
+    // 通过环境变量传递参数，避免将文件系统路径插入 PowerShell 源码。
     run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:WORKBENCH_ARCHIVE -DestinationPath $env:WORKBENCH_EXTRACT -Force'], {
       env: { ...process.env, WORKBENCH_ARCHIVE: zip, WORKBENCH_EXTRACT: zipDirectory },
     });
@@ -56,11 +56,11 @@ try {
     }
     const setup = await artifact(`${prefix}windows-x64-setup.exe`);
     const installDirectory = path.join(directory, 'installed');
-    // NSIS requires /D= last and unquoted, including destinations containing spaces.
+    // NSIS 要求 /D= 位于最后且不加引号，即使目标路径包含空格也一样。
     run(setup, ['/S', `/D=${installDirectory}`], { windowsVerbatimArguments: true });
     uninstaller = path.join(installDirectory, `Uninstall ${productName}.exe`);
     await add('windows-nsis-installed', setup, path.join(installDirectory, `${productName}.exe`));
-    // The self-extracting portable launcher is shipped but not confused with ZIP/NSIS coverage.
+    // 同时发布自解压便携启动器，但不将其视为 ZIP/NSIS 测试覆盖。
     await artifact(`${prefix}windows-x64-portable.exe`);
   } else if (process.platform === 'darwin') {
     const zip = await artifact(`${prefix}macos-arm64-portable.zip`);
@@ -89,7 +89,7 @@ try {
     const appImageDirectory = path.join(directory, 'appimage');
     await fs.mkdir(appImageDirectory);
     await fs.chmod(appImage, 0o755);
-    // Extraction exercises the release AppImage without depending on FUSE on hosted runners.
+    // 通过解压验证发布的 AppImage，避免依赖托管执行环境中的 FUSE。
     run(appImage, ['--appimage-extract'], { cwd: appImageDirectory, stdio: 'ignore' });
     await add('linux-appimage-extracted', appImage, path.join(appImageDirectory, 'squashfs-root', name));
   } else {
@@ -115,7 +115,7 @@ try {
 } finally {
   if (mounted) run('hdiutil', ['detach', mounted]);
   if (uninstaller) {
-    // NSIS self-copies unless _?= is used; direct execution lets the test await removal.
+    // NSIS 默认会自我复制，除非使用 _?=；直接执行可让测试等待卸载完成。
     run(uninstaller, ['/S', `_?=${path.dirname(uninstaller)}`], { windowsVerbatimArguments: true });
   }
   await fs.rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });

@@ -8,18 +8,18 @@ export interface StartupDataDirectoryOptions {
   isPackaged: boolean;
 }
 
-/** Resolve an authorized profile root once, before services derive their storage paths. */
+/** 在各服务推导存储路径前，一次性解析已授权的配置根目录。 */
 export function prepareStartupDataDirectory(options: StartupDataDirectoryOptions): string {
   const profile = options.profileDirectory;
   if (profile && (!path.isAbsolute(profile) || profile.length > 4096)) {
     throw new Error('自定义数据目录必须是有效的绝对路径。');
   }
-  // Electron's default userData lookup can create that directory. Do not touch
-  // it when an explicit profile already determines the authorized root.
+  // Electron 默认的 userData 查询可能创建该目录。若显式配置
+  // 已经确定已授权根目录，则不能访问默认目录。
   const selected = profile || (!options.isPackaged && options.developmentDirectory) || options.defaultDirectory();
   const directory = path.resolve(selected);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  // The selected root may use a system alias (for example /var on macOS).
-  // Descendant paths still pass their own symlink and containment guards.
+  // 选定根目录可能使用系统别名（例如 macOS 上的 /var）。
+  // 下级路径仍须通过各自的符号链接和范围检查。
   return realpathSync.native(directory);
 }

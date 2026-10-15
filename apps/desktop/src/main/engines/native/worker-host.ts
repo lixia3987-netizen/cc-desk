@@ -32,13 +32,13 @@ export type NativeWorkerFork = (modulePath: string, args: string[], options: Nat
 export interface NativeWorkerOptions {
   request: Omit<AgentRunRequest, 'signal'>;
   model: NativeModelOptions;
-  /** Main-process guards, never included in worker startup data. */
+  /** 主进程守卫，绝不包含在工作进程启动数据中。 */
   forbiddenValues?: readonly (string | undefined)[];
   tools: ToolPort;
   store: RunStore;
   approvals: ApprovalPort;
   contextMaintenance?: ContextMaintenancePort;
-  /** Host-owned aggregate capacity, shared by workflow/delegation workers. */
+  /** 宿主管理的总容量，由工作流及委派工作进程共享。 */
   consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>;
   activePause?: NativeActivePauseSource;
   onEvent(event: AgentEvent): void | Promise<void>;
@@ -53,7 +53,7 @@ export class NativeWorkerError extends Error {
     this.name = 'NativeWorkerError';
   }
 }
-/** The caller must retain directory/resource ownership when this is thrown. */
+/** 抛出此错误时，调用方必须保留目录及资源所有权。 */
 export class NativeWorkerCleanupError extends NativeWorkerError {
   readonly cleanupUnconfirmed = true;
   constructor() { super('cleanup_unconfirmed', 'Native worker or tool resource release could not be confirmed.'); this.name = 'NativeWorkerCleanupError'; }
@@ -104,8 +104,8 @@ function result(value: unknown, expected: RunIdentity): asserts value is RunResu
 
 function workerEnvironment(secrets: readonly (string | undefined)[]): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
-  // No inherited authentication, Node options, preload hooks, proxy credentials,
-  // or diagnostic settings. Tools receive a separate environment in ToolPort.
+  // 不继承认证、Node 选项、预加载钩子、代理凭据
+  // 或诊断设置；工具在 ToolPort 中获得独立环境。
   for (const name of ['SystemRoot', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'LANG', 'LC_ALL', 'TZ']) {
     const value = process.env[name];
     if (value !== undefined && !secrets.some(secret => secret && value.includes(secret))) env[name] = value;
@@ -128,7 +128,7 @@ interface ToolState {
   result?: ToolResult;
 }
 
-/** Host-owned stores, approvals and tools remain authoritative across worker loss. */
+/** 工作进程丢失后，宿主管理的存储、审批及工具仍是权威依据。 */
 export async function runNativeWorker(options: NativeWorkerOptions): Promise<RunResult> {
   const startedAt = performance.now();
   if (options.signal.aborted) throw new NativeWorkerError('cancelled', 'Native worker start cancelled.');
@@ -217,8 +217,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       options.signal.removeEventListener('abort', cancel);
       child.off('message', onMessage);
       child.off('exit', onExit);
-      // Keep a no-op error listener: a delayed diagnostic must never be logged as
-      // an unhandled EventEmitter error after ownership has been handed back.
+      // 保留一个空操作错误监听器；所有权归还后，迟到的诊断绝不能
+      // 被记录为未处理的 EventEmitter 错误。
       child.off('error', onError);
       child.on('error', () => {});
     }
@@ -227,7 +227,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       shutdownTimer = setTimeout(() => {
         shutdownTimer = undefined;
         if (!exited) {
-          try { child.kill(); } catch { /* confirmed exit is still required */ }
+          try { child.kill(); } catch { /* 仍必须确认进程已退出 */ }
         }
         hardTimer = setTimeout(() => {
           if (settled) return;
@@ -235,8 +235,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           settled = true;
           cleanup();
           reject(new NativeWorkerCleanupError());
-          // Keep consuming output and observing in-flight operations; the caller
-          // retains the recovery barrier until a separate reconciliation.
+          // 继续消费输出并观察正在进行的操作；调用方
+          // 保留恢复屏障，直到单独完成对账。
         }, 10_000);
         checkFinished();
       }, 10_000);
@@ -249,8 +249,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       if (!failure) failure = error;
       cancelControllers();
       if (!exited) {
-        // Avoid recursively calling post() if the worker channel itself failed.
-        try { child.postMessage({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity }); } catch { /* kill fallback */ }
+        // 工作进程通道自身失败时，避免递归调用 post()。
+        try { child.postMessage({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity }); } catch { /* 回退为终止进程 */ }
       }
       armShutdown();
       checkFinished();
@@ -264,14 +264,14 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     function closeDiagnostics(): void {
       if (!exited || settled) return;
       for (const stream of streams) {
-        // Electron utilityProcess diagnostics are host-owned PassThroughs. On
-        // exit it removes their listeners and nulls its getters without ending
-        // them, so waiting for EOF/close alone never proves release. Tools and
-        // their descendants are owned separately by the host ToolPort.
+        // Electron utilityProcess 诊断使用宿主管理的 PassThrough。退出时，
+        // 它会移除监听器并将访问器置空，却不结束
+        // 这些流，因此仅等待 EOF/close 不能证明释放。工具及其
+        // 后代进程由宿主 ToolPort 独立管理。
         try { if (!stream.destroyed) stream.destroy?.(); }
         catch { failure ??= new NativeWorkerError('stdio'); }
-        // destroyed only means close was requested. closed is the actual local
-        // read-handle release proof even when Electron removes close listeners.
+        // destroyed 只表示已请求关闭；closed 才是本地读取句柄实际
+        // 释放的证明，即使 Electron 已移除关闭监听器。
         if (stream.closed === true || stream.readableEnded === true) streams.delete(stream);
       }
       if (streams.size) diagnosticTimer = setTimeout(closeDiagnostics, 25);
@@ -330,8 +330,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     }
 
     async function dispatch(method: string, args: unknown, signal: AbortSignal): Promise<unknown> {
-      // Ordinary model outcomes are indivisible with their stream boundary.
-      // Reject even event RPCs until validation, projection and commit settle.
+      // 普通模型结果及其流边界是不可分割的整体。
+      // 校验、投影及提交结束前，连事件 RPC 也应拒绝。
       if (modelJournalInFlight) invalid();
       if (method === 'store.beginRun') {
         const item = fields(args, ['identity', 'input', 'inputDigest', 'userItems', 'protocol', 'configuration', 'policyRevision']);
@@ -352,8 +352,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       if (!begun || done) invalid();
       if (maintenanceUncertain || modelJournalUncertain) invalid();
       if (maintenanceFailed && method !== 'store.checkpoint' && method !== 'store.append' && method !== 'event') invalid();
-      // A context switch is a complete boundary operation. A compromised worker
-      // cannot race it with another store mutation or tool/approval request.
+      // 上下文切换是一项完整边界操作。被攻陷的工作进程
+      // 不能通过其他存储修改或工具、审批请求与之竞争。
       if (maintenanceInFlight && method !== 'event') invalid();
       if (method === 'host.consumeBudget') {
         const item = fields(args, ['kind', 'identity']);
@@ -401,8 +401,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           maintenanceSource = undefined;
           return clone(result);
         } catch (error) {
-          // The ledger may already contain a replacement. Only an uncommitted
-          // recovery result with this exact old context may cross the channel.
+          // 账本可能已包含替换记录。只有尚未提交且属于此精确旧上下文的
+          // 恢复结果可以跨越通道。
           maintenanceUncertain = true;
           if (isObject(error) && error.cleanupUnconfirmed === true) stop(new NativeWorkerCleanupError());
           throw error;
@@ -447,9 +447,9 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             fields(event, ['type', 'response']);
             if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
             response = validResponse(event.response);
-            // The completed response replaces streamed text in the projection.
-            // Release the credential guard's withheld suffix before that durable
-            // replacement, so it cannot appear as a new partial response later.
+            // 完整响应替换投影中的流式文本。
+            // 进行该持久化替换前，释放凭据守卫暂扣的末尾内容，
+            // 防止随后被显示为新的部分响应。
             const flushing = projectionChain.then(async () => {
               safeDeltas.finish();
               while (projectionQueue.length) await options.onEvent(projectionQueue.shift()!);
@@ -467,8 +467,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             toolResult(event.result);
             state = toolStates.get(event.call.id);
             if (state?.executing || event.result.status === 'unknown') invalid();
-            // A thrown command/write after invocation has an unknown effect. The
-            // worker cannot manufacture a cancellation/failure and close its ledger.
+            // 命令或写入调用后抛出错误时，其效果未知。工作进程
+            // 不得虚构取消或失败结果并关闭账本。
             if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
             if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
             if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
@@ -491,7 +491,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
           } else if (event.type === 'model_request_failed') {
             activeAttempt = undefined; modelFailureClosed = true;
-            // Failed partial output is never replayed into a later terminal projection.
+            // 失败的部分输出绝不重放到后续终态投影中。
             safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
             if (event.retryDelayMs !== undefined) { retries++; retryNotBefore = Date.now() + event.retryDelayMs; }
           } else if (event.type === 'model_response' && response) {
@@ -606,8 +606,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           started = true;
           clearTimeout(startupTimer);
           if (failure || abort.signal.aborted) return;
-          // Worker-local timing begins only after startup. Charge host preparation,
-          // fork and readiness to this same run before passing on its remainder.
+          // 工作进程内部计时只在启动后开始。传递剩余额度前，将宿主准备、
+          // fork 和就绪过程都计入同一次运行。
           budget.maxActiveMs = Math.floor(budget.maxActiveMs - activeElapsed());
           if (budget.maxActiveMs < 1) {
             stop(new NativeWorkerError('active_time_budget', 'Native worker startup exhausted the active time budget.'));
@@ -632,8 +632,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         if (message.type === 'rpc_cancel') {
           fields(message, ['type', 'version', 'identity', 'seq', 'requestId']);
           if (typeof message.requestId !== 'string') invalid();
-          // A cancellation can race the reply. Unknown IDs are allowed only for
-          // older requests belonging to this run; they never cancel another run.
+          // 取消操作可能与回复竞争。未知 ID 仅允许用于
+          // 当前运行的较早请求，绝不取消其他运行。
           const prefix = `${runIdentity.runId}:`;
           const requestedSeq = message.requestId.startsWith(prefix) ? Number(message.requestId.slice(prefix.length)) : NaN;
           if (!Number.isSafeInteger(requestedSeq) || requestedSeq < 1 || requestedSeq >= message.seq) invalid();

@@ -1,7 +1,7 @@
 import type { RunIdentity } from '@cc-desk/agent-core';
 import { sameRun } from './worker-protocol';
 
-/** One host-owned gate covers the parent, its summaries, and every registered child worker. */
+/** 一个由宿主管理的门控覆盖父任务、其摘要以及所有已注册的子工作进程。 */
 export class NativeAggregateBudget {
   private counts = { modelRequests: 0, toolCalls: 0 };
   private owners = new Map<string, RunIdentity>();
@@ -23,7 +23,7 @@ export class NativeAggregateBudget {
     const field = kind === 'model' ? 'modelRequests' : 'toolCalls';
     const ceiling = kind === 'model' ? this.limits.maxModelRequests : this.limits.maxToolCalls;
     if (this.counts[field] >= ceiling) return false;
-    // No await between checking and reserving: concurrent child RPCs cannot overspend.
+    // 检查与预留之间没有 await，防止并发子进程 RPC 超出预算。
     this.counts[field]++;
     return true;
   }

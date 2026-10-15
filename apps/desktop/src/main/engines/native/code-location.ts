@@ -8,7 +8,7 @@ export interface CodeLocationInput {
 }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 
-/** Preserve original line endings; a terminal newline does not add a phantom line. */
+/** 保留原始行结束符；末尾换行不额外生成空行。 */
 export function extractCodeLines(content: string, startLine: number, endLine: number): string {
   if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine || endLine - startLine >= 80) throw new Error('位置必须是连续的 1–80 行。');
   const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];

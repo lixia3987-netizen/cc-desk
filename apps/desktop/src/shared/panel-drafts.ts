@@ -27,5 +27,5 @@ export const emptyWorkflowDraft = (): WorkflowDraft => ({
 });
 export const emptyGitReviewDraft = (): GitReviewDraft => ({ selected: '', staged: false, feedback: {} });
 
-/** Renderer-only updater; the validated resulting section is sent through IPC. */
+/** 仅用于渲染进程的更新函数，通过 IPC 发送校验后的配置区域。 */
 export type UpdateDraft<T> = (update: (current: T) => T) => void;

@@ -1,6 +1,6 @@
 import { ClaudeConnection as EngineConnection } from '@cc-desk/engine-claude';
 import { signalPosixGroup } from '../../posix-process-group';
-/** Compatibility constructor for the shared POSIX resource-lifecycle tests. */
+/** 为共享 POSIX 资源生命周期测试提供兼容构造器。 */
 export class ClaudeConnection extends EngineConnection {
   constructor(
     invocation: ConstructorParameters<typeof EngineConnection>[0],

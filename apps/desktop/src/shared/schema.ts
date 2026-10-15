@@ -15,7 +15,7 @@ export const sessionExecutionSchema = z.object({
   forkFrom: conversationIdSchema.optional(),
   imported: z.boolean().optional(),
 }).strict();
-/** Bound unknown provider data before recursive consumers can inspect it. */
+/** 递归处理方检查未知的提供方数据前，先限制其范围。 */
 function boundedJsonObject(value: unknown): value is Record<string, JsonValue> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const queue: { value: unknown; depth: number }[] = [{ value, depth: 0 }];
@@ -121,7 +121,7 @@ export const stateSchema = z.object({
 function migrateConfig(providerId: string, options: { model: string; effort: string; permissionMode: string }): EngineConfig {
   if (providerId === 'claude') return { schemaVersion: 1, options };
   if (providerId === 'shell') return { schemaVersion: 1, options: options.model || options.effort !== 'default' || options.permissionMode !== 'default' ? { legacy: options } : {} };
-  // Version zero has no implied Claude semantics. Only its provider may migrate it.
+  // 版本零不隐含 Claude 语义，只能由其提供方迁移。
   return { schemaVersion: 0, options };
 }
 const migratedV3Schema = persistedV2Schema.transform((state, context): z.infer<typeof stateSchema> => {
@@ -139,5 +139,5 @@ const migratedV3Schema = persistedV2Schema.transform((state, context): z.infer<t
   }
   return result.data;
 });
-/** Only disk reads accept legacy formats. Every live change validates v3. */
+/** 仅磁盘读取接受旧版格式，每次实时变更都按 v3 校验。 */
 export const persistedStateSchema = z.union([stateSchema, migratedV3Schema]);

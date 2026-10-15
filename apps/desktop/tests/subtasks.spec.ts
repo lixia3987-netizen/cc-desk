@@ -8,7 +8,7 @@ import { randomUUID } from 'node:crypto';
 import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { Subtask } from '../src/shared/subtasks';
 
-/** Use the same standard npm layout as a real installation, including on Windows. */
+/** 使用与真实安装相同的标准 npm 布局，Windows 上也是如此。 */
 async function protocolFixture(directory: string) {
   const prefix = path.join(directory, 'npm CLI'), pkg = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
   const npm = path.join(prefix, 'node_modules', 'npm', 'bin'), config = path.join(directory, 'claude-config');
@@ -66,7 +66,7 @@ process.stdin.on('end', () => { clearInterval(interval); process.exit(0); });
 `);
   const cli = path.join(prefix, 'claude.cmd');
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
-  // Keep the real update banner visible without depending on an external npm registry.
+  // 保持真实更新横幅可见，不依赖外部 npm 包注册源。
   const npmScript = "console.log(JSON.stringify('2.1.10'));\n";
   await fs.writeFile(path.join(npm, 'npm-cli.js'), npmScript);
   await fs.writeFile(path.join(prefix, 'npm.cmd'), '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
@@ -124,7 +124,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     const errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     await expect(page.getByRole('heading', { name: f.first.title, exact: true })).toBeVisible();
-    // 652 px is the content height of a 680 px macOS window, excluding its title bar.
+    // 高度为 680 px 的 macOS 窗口去除标题栏后，内容高度为 652 px。
     await app.evaluate(({ BrowserWindow }) => {
       const window = BrowserWindow.getAllWindows()[0];
       window.setMinimumSize(980, 652);
@@ -137,7 +137,7 @@ test('subtasks: real protocol updates counts, deduplicates events, and keeps pro
     await page.getByRole('button', { name: '发送任务', exact: true }).click();
     await counts(page, 2, 2, 0);
     const panel = page.getByRole('region', { name: '子任务状态', exact: true });
-    // Exercise the smallest chat width before making more room by hiding the inspector.
+    // 隐藏检查面板扩大空间之前，先验证最小聊天区宽度。
     await page.getByRole('button', { name: '展开子任务', exact: true }).click();
     await expect(panel.locator('.subtask-row')).toHaveCount(2);
     await expect(panel).toBeInViewport({ ratio: 1 });

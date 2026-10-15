@@ -72,14 +72,14 @@ type StoredConnection = z.infer<typeof persistedConnectionSchema>;
 const maximumFileBytes = 1024 * 1024;
 
 export interface NativeMcpConnectionStoreOptions {
-  /** Include initialization, approval waits and cleanup, not only tool execution. */
+  /** 包含初始化、审批等待及清理阶段，不仅限于工具执行。 */
   isConnectionActive?(id: string): boolean;
-  /** Include archived sessions so removing a connection cannot silently break their references. */
+  /** 包含已归档会话，以免移除连接时无声破坏其引用。 */
   isConnectionReferenced?(id: string): boolean;
   environment?: NodeJS.ProcessEnv;
 }
 
-/** Main-only snapshot. Never put this object in IPC responses or a journal. */
+/** 仅供主进程使用的快照；绝不将此对象放入 IPC 响应或日志中。 */
 interface ResolvedNativeMcpConnectionBase {
   readonly connectionId: string;
   readonly revision: number;
@@ -97,14 +97,14 @@ export interface ResolvedNativeMcpStdioConnection extends ResolvedNativeMcpConne
   readonly protocolVersion: '2025-11-25';
   readonly executable: string;
   readonly argv: readonly string[];
-  /** Resolved values, deliberately excluded from public metadata and persistence. */
+  /** 解析后的值，明确排除在公开元数据及持久化范围之外。 */
   readonly environment: Readonly<Record<string, string>>;
-  /** Safe source names for startup review; never contains resolved values. */
+  /** 用于启动审查的安全来源名称；绝不包含解析后的值。 */
   readonly environmentSources: Readonly<Record<string, string>>;
 }
 export type ResolvedNativeMcpConnection = ResolvedNativeMcpHttpConnection | ResolvedNativeMcpStdioConnection;
 
-/** Preserve the complete endpoint path (including its trailing slash). Transports must reject redirects. */
+/** 保留完整端点路径，包括末尾斜杠；传输层必须拒绝重定向。 */
 export function validateNativeMcpEndpoint(value: string, allowLoopbackHttp: boolean): string {
   let url: URL;
   try {
@@ -119,7 +119,7 @@ export function validateNativeMcpEndpoint(value: string, allowLoopbackHttp: bool
   return url.toString();
 }
 
-/** Metadata and encrypted blobs are separate from workspace state and model connections. */
+/** 元数据及加密数据块独立于工作区状态和模型连接。 */
 export class NativeMcpConnectionStore {
   private connections: StoredConnection[] = [];
   private loadError?: string;
@@ -136,14 +136,14 @@ export class NativeMcpConnectionStore {
     return { connections: this.connections.map(item => this.view(item)), storage: this.credentials.protection(), ...(this.loadError ? { error: this.loadError } : {}) };
   }
 
-  /** Main-only redaction values; readiness and activity never waive credential protection.
-   * Never serialize this collection to IPC, logs, model input or a run journal. */
+  /** 仅主进程使用的脱敏值；就绪或活动状态绝不豁免凭据保护。
+   * 绝不将此集合序列化到 IPC、日志、模型输入或运行日志中。 */
   protectedValues(): readonly string[] {
     const values = new Set<string>();
     for (const item of this.connections) {
       if (item.transport === 'stdio') {
-        // Read each existing source independently: one missing/invalid mapping
-        // can prevent launch but must not expose the remaining mapped secrets.
+        // 独立读取每个已有来源：某个映射缺失或无效
+        // 可以阻止启动，但不得暴露其他映射中的秘密信息。
         for (const source of Object.values(item.environment)) {
           const value = this.environment[source];
           if (typeof value === 'string' && value.length) values.add(value);
@@ -156,7 +156,7 @@ export class NativeMcpConnectionStore {
         else if (item.auth.mode === 'memory') value = this.credentials.get(this.credentialKey(item.id));
         else if (item.auth.mode === 'encrypted' && item.ciphertext) value = this.credentials.decrypt(item.ciphertext);
         if (typeof value === 'string' && value.length) values.add(value);
-      } catch { /* An unavailable encrypted value must not discard other credentials. */ }
+      } catch { /* 某个加密值不可用时，不得丢弃其他凭据。 */ }
     }
     return Object.freeze([...values]);
   }
@@ -237,7 +237,7 @@ export class NativeMcpConnectionStore {
     return Object.freeze({ transport: 'http', connectionId: item.id, revision: item.revision, name: item.name, endpoint, protocolVersion: item.protocolVersion, allowLoopbackHttp: item.allowLoopbackHttp, ...(bearerToken ? { bearerToken } : {}) });
   }
 
-  /** Check a run's metadata snapshot without exposing or resolving its credential again. */
+  /** 检查运行的元数据快照，不再次暴露或解析其凭据。 */
   assertCurrent(input: { id: string; revision: number }): void {
     this.assertLoaded();
     const parsed = nativeMcpConnectionReferenceSchema.safeParse(input);
@@ -306,7 +306,7 @@ export class NativeMcpConnectionStore {
     } catch { throw new Error('MCP 连接保存失败，请检查配置大小、磁盘空间和数据目录权限。'); }
     finally {
       if (fd !== undefined) fs.closeSync(fd);
-      try { fs.unlinkSync(temporary); } catch { /* A completed rename removes the temporary file. */ }
+      try { fs.unlinkSync(temporary); } catch { /* 重命名完成后，临时文件已被移除。 */ }
     }
   }
 }

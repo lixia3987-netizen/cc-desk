@@ -35,7 +35,7 @@ const taskStatus = (value: unknown): SubtaskStatus | undefined => {
 };
 
 
-/** Translates Claude protocol frames into normalized chat, approval and child-task state. */
+/** 将 Claude 协议帧转换为标准化的聊天、审批及子任务状态。 */
 export class ClaudeEvents {
   readonly context: ClaudeContext;
   constructor(private output: EventOutput, private subtasks: SubtaskTracker, private backgroundResultTimeoutMs = 120_000) {
@@ -51,9 +51,9 @@ export class ClaudeEvents {
     entry.contextRequest = undefined;
     const previous = entry.expectedId;
     entry.expectedId = nextId; entry.enforceIdentity = true;
-    // A confirmed reset creates an empty identity. Claude may not write its
-    // transcript until the next prompt, so it cannot require --resume yet.
-    // An unchanged ID provides no evidence that the old history was discarded.
+    // 已确认的重置会创建空白身份。Claude 可能直到下一条提示词
+    // 才写入对话记录，因此此时还不能要求 --resume。
+    // ID 未变不足以证明旧历史已被丢弃。
     this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: nextId, forkFrom: undefined, imported: undefined },
       ...(nextId !== previous ? { started: false } : {}) });
     this.output.history.get(id).usage = undefined;
@@ -76,8 +76,8 @@ export class ClaudeEvents {
     const parent = string(frame.parent_tool_use_id) || undefined;
     if (type === 'conversation_reset' && !parent) { this.resetConversation(id, entry, string(frame.new_conversation_id)); return; }
     if (!parent && (type === 'system' && frame.subtype === 'init' || type === 'result') && uuid(frame.session_id)) {
-      // Older CLIs report /clear's new ID only on the result. All unrelated
-      // identity changes retain the existing fail-closed behavior.
+      // 旧版 CLI 仅在结果中报告 /clear 的新 ID。其他不相关的
+      // 身份变更仍沿用无法确认时拒绝操作的行为。
       if (entry.enforceIdentity && frame.session_id !== entry.expectedId && entry.turn?.resetRequested) this.resetConversation(id, entry, string(frame.session_id));
       if (entry.enforceIdentity && frame.session_id !== entry.expectedId) throw new Error('CLI 返回了不同的会话 ID，已停止以避免恢复到错误会话。原会话标识已保留。');
       if (this.output.session(id).execution.conversationId !== frame.session_id) this.output.update(id, { execution: { ...this.output.session(id).execution, conversationId: frame.session_id } });
@@ -140,7 +140,7 @@ export class ClaudeEvents {
     if (type === 'result' && parent) {
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
       this.subtasks.observe(id, { source: 'stream', kind: 'agent', toolUseId: parent, status: failed ? 'failed' : 'completed', phase: 'finish', summary: string(frame.result) || (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : undefined), durationMs: number(frame.duration_ms) });
-      // Child results report a child lifecycle; they cannot end or rewrite the parent turn.
+      // 子任务结果描述子任务生命周期，不能结束或重写父任务的交互轮次。
       this.settleBackgroundTask(id, entry, parent);
       return;
     }
@@ -153,8 +153,8 @@ export class ClaudeEvents {
       this.context.capacity(id, entry, frame.modelUsage);
       snapshot.usage = { inputTokens: number(usage.input_tokens), outputTokens: number(usage.output_tokens), cacheReadTokens: number(usage.cache_read_input_tokens), cacheCreationTokens: number(usage.cache_creation_input_tokens), costUSD: number(frame.total_cost_usd), durationMs: number(frame.duration_ms), turns: number(frame.num_turns) };
       const failed = frame.is_error === true || (typeof frame.subtype === 'string' && frame.subtype !== 'success');
-      // /context is a local report and may also leave a fresh identity without
-      // any transcript. Real prompts and tool calls still establish history.
+      // /context 是本地报告，也可能生成没有对话记录的新身份；
+      // 实际提示词及工具调用仍会建立历史记录。
       if (!failed && !entry.turn.resetApplied && entry.turn.command !== 'context' && !this.output.session(id).started) this.output.update(id, { started: true });
       const summary = string(frame.result);
       const error = failed ? (Array.isArray(frame.errors) ? frame.errors.map(String).join('\n') : summary || string(frame.subtype) || 'Claude 执行失败。') : undefined;
@@ -175,8 +175,8 @@ export class ClaudeEvents {
     if (entry.backgroundTimer) clearTimeout(entry.backgroundTimer);
     entry.backgroundTimer = undefined;
     if (!entry.waitingBackgroundResult || !entry.turn || entry.turn.interrupted || entry.tasks.size || entry.approvals.size || entry.connection.ending) return;
-    // This is an inactivity deadline. Progress restarts it and human approval
-    // pauses it, so a long healthy continuation cannot be stopped by wall time.
+    // 这是无活动超时期限。进度会重新计时，人工审批会暂停计时，
+    // 因此健康的长时间续行不会因总经过时间而被停止。
     entry.backgroundTimer = setTimeout(() => {
       entry.backgroundTimer = undefined;
       if (entry.turn && entry.waitingBackgroundResult && !entry.tasks.size && !entry.approvals.size) this.output.fail(id, entry, '后台子任务已结束，但 CLI 未返回最终结果。会话已停止，可恢复后继续；工作流没有自动进入下一阶段。');
@@ -196,9 +196,9 @@ export class ClaudeEvents {
     toolUseId ??= taskId ? entry.backgroundTaskTools.get(taskId) : undefined;
     if (!taskId && !toolUseId) return;
     if (taskId && toolUseId) {
-      // A resumed agent can retain its agent id with a fresh tool invocation.
-      // Keep execution keys distinct and do not let an old terminal replay
-      // replace the alias belonging to its newer invocation.
+      // 恢复的 Agent 可以沿用自身 ID，同时使用新的工具调用。
+      // 保持执行键彼此独立，并避免旧终态的重放覆盖
+      // 属于较新调用的别名。
       if (!terminalTask(status) || !entry.backgroundTaskTools.has(taskId)) entry.backgroundTaskTools.set(taskId, toolUseId);
       if (entry.backgroundTaskTools.get(taskId) === toolUseId) entry.tasks.delete('task:' + taskId);
     }
@@ -248,8 +248,8 @@ export class ClaudeEvents {
       const status = subtype === 'task_started' || subtype === 'task_progress' ? 'running' : taskStatus(patch.status);
       const taskId = string(frame.task_id); const toolUseId = string(frame.tool_use_id) || undefined;
       const usage = object(frame.usage);
-      // Description-only task_updated frames have no status transition. Preserve
-      // the observed status rather than inventing a running task from a label.
+      // 仅包含描述的 task_updated 帧不产生状态变化；保留
+      // 已观测状态，不因标签而臆造正在运行的任务。
       const activity = this.output.session(id).subtasks;
       const matches = (activity?.tasks ?? []).filter(task => toolUseId ? task.toolUseId === toolUseId : taskId && (task.taskId === taskId || task.kind === 'agent' && task.agentId === taskId));
       const current = matches.filter(task => task.turnId === activity?.turnId);
@@ -265,8 +265,8 @@ export class ClaudeEvents {
           lastTool: string(frame.last_tool_name) || undefined, toolUses: number(usage.tool_uses), totalTokens: number(usage.total_tokens), durationMs: number(usage.duration_ms),
           ...(typeof patch.is_backgrounded === 'boolean' ? { background: patch.is_backgrounded } : subtype === 'task_started' ? { background: true } : {}),
         });
-        // Waiting for the CLI must remain correct even when the bounded UI
-        // projection has no room for another task row.
+        // 即使有界的界面投影已没有空间显示新的任务行，
+        // 等待 CLI 的逻辑仍必须保持正确。
         if (taskId) this.backgroundTask(entry, taskId, task?.toolUseId ?? toolUseId, task?.status ?? observed);
       }
       if (subtype === 'task_started') this.output.system(id, '子任务开始：' + (string(frame.description) || taskId));

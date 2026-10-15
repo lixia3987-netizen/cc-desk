@@ -17,7 +17,7 @@ function CodeBlock({children}:{children?:ReactNode}) {
   return <div className="message-code"><div className="message-code-heading"><span>{language??'代码'}</span><button className="text-button" aria-label="复制代码" onClick={()=>void copy()}>{copied?<Check size={13}/>:<Copy size={13}/>} {failed?'复制失败':copied?'已复制':'复制代码'}</button></div><pre>{children}</pre></div>;
 }
 
-/** CommonMark + GFM; raw HTML stays literal text and links retain the parser's safe URL policy. */
+/** 使用 CommonMark 与 GFM；原始 HTML 保持为字面文本，链接沿用解析器的安全 URL 策略。 */
 export const MessageText=memo(function MessageText({text}:{text:string}) {
   return <div className="message-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[[rehypeHighlight,{detect:false,ignoreMissing:true}]]} components={{pre:CodeBlock,a:({children,href,title})=><a href={href} title={title} target="_blank" rel="noopener noreferrer">{children}</a>,img:({alt})=><span className="markdown-image-label">[图片{alt?': '+alt:''}]</span>}}>{text}</ReactMarkdown></div>;
 });

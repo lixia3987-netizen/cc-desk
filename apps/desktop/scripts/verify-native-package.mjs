@@ -22,8 +22,8 @@ export default async function verifyNativePackage(context) {
     }
   }
   const executable = path.join(context.appOutDir, `${context.packager.appInfo.productFilename}.exe`);
-  // Run the actual packaged Electron executable and its ASAR loader. A source
-  // check alone cannot prove builder copied the patched native module.
+  // 运行实际打包的 Electron 可执行文件及其 ASAR 加载器。仅检查源码
+  // 无法证明构建器已经复制修补后的原生模块。
   verifyBuiltConpty(path.join(resources, 'app.asar', 'node_modules', 'node-pty'), executable, true);
   console.log(`Verified packaged ConPTY fix: ${sha256(packaged)}`);
 }

@@ -12,7 +12,7 @@ async function workspace(configured = false) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-ide-'));
   const data = path.join(directory, 'data'), now = new Date().toISOString();
   const projectPath = path.join(directory, 'base project');
-  // These characters must arrive literally as one argument, without shell interpretation.
+  // 这些字符必须作为一个参数原样传入，不能经过 Shell 解释。
   const worktreePath = path.join(directory, process.platform === 'win32' ? 'isolated project' : "工作目录 ;$(touch injected) & 'quoted'");
   await fs.mkdir(data);
   await fs.mkdir(projectPath);
@@ -42,7 +42,7 @@ async function workspace(configured = false) {
   return { directory, data, project, session, executable, log, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
-/** Mock only the native picker; the renderer, preload and trusted IPC handler remain real. */
+/** 仅模拟原生选择器；渲染进程、预加载脚本和可信 IPC 处理函数仍使用真实实现。 */
 async function pickerResult(app: ElectronApplication, selected: string | null) {
   await app.evaluate(({ dialog }, value) => {
     dialog.showOpenDialog = (async () => ({ canceled: value === null, filePaths: value === null ? [] : [value] })) as typeof dialog.showOpenDialog;
@@ -91,7 +91,7 @@ test('ide: configure an application through a draft, cancel safely and preserve 
     await settings.getByRole('tab', { name: '工作区与IDE', exact: true }).click();
     await settings.getByRole('tab', { name: '外部 IDE', exact: true }).click();
     await expect(settings.getByLabel('IDE 应用路径', { exact: true })).toHaveValue(f.executable);
-    // Editing an already saved path and closing the modal must also preserve it.
+    // 编辑已保存的路径后关闭对话框，也必须保留该路径。
     await settings.getByLabel('IDE 应用路径', { exact: true }).fill('');
     await settings.getByRole('button', { name: '关闭弹窗', exact: true }).click();
     await expect(settings.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');

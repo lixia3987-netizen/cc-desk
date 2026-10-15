@@ -12,7 +12,7 @@ async function git(cwd: string, ...args: string[]) { return (await execFileAsync
 async function init(repo: string) {
   await fs.mkdir(repo, { recursive: true });
   await git(repo, 'init', '-b', 'main');
-  // Fixture bytes must not depend on the host's checkout newline policy.
+  // 测试装置字节不能依赖宿主的检出换行策略。
   await git(repo, 'config', 'core.autocrlf', 'false');
   await git(repo, 'config', 'user.name', 'Workbench Tests');
   await git(repo, 'config', 'user.email', 'tests@example.invalid');

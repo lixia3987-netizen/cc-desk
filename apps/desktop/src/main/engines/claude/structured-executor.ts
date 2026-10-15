@@ -11,7 +11,7 @@ import type { StateStore } from '../../store';
 import { claudeExports } from './exports';
 import { validateClaudeSession } from './capabilities';
 
-/** Claude flags and wire protocol terminate here; callers use the execution port. */
+/** Claude 参数和传输协议在此收束；调用方使用执行端口。 */
 export class ClaudeStructuredExecutor implements StructuredExecutor {
   private runtime: ChatRuntime;
   constructor(private store: StateStore, private capabilities: () => Capabilities, events: ExecutionEvents, options: ChatRuntimeOptions = {}) {

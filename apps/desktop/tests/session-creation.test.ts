@@ -26,7 +26,7 @@ function fixture() {
     if (!session) throw new Error('Missing fixture session');
     return session;
   });
-  // Creation must not dispatch a turn or launch a process.
+  // 创建操作不能派发轮次或启动进程。
   const unexpected = () => { throw new Error('Unexpected execution during creation'); };
   const executor: TerminalExecutor = {
     activeCount: 0, has: () => false, isBusy: () => false,
@@ -108,7 +108,7 @@ test('forks preserve their provider source identity, source directory and provid
 test('unknown providers and invalid allocated identities reject before Git preparation', async () => {
   const f = fixture();
   try {
-    // This directory is deliberately not a Git repository: Git must never run first.
+    // 此目录有意不设为 Git 仓库：不能先运行 Git。
     await assert.rejects(f.creation.create(f.input({ providerId: 'missing.engine', isolated: true })), /不支持创建会话|未安装/);
     await assert.rejects(f.creation.create(f.input({ conversationId: 'invalid-native-id', isolated: true })), /Claude.*UUID/);
     f.register('rejected.engine', () => { throw new Error('Provider identity rejected'); });
@@ -137,7 +137,7 @@ test('isolated session creation forwards the selected ref and keeps an empty wor
   const git = async (...args: string[]) => (await execFileAsync('git', args, { cwd: f.projectPath })).stdout.trim();
   try {
     await git('init', '-b', 'main');
-    // Keep fixture checkout bytes stable when Windows enables autocrlf globally.
+    // Windows 全局启用 autocrlf 时，也须保持测试装置检出的字节稳定。
     await git('config', 'core.autocrlf', 'false');
     await git('config', 'user.name', 'Workbench Tests'); await git('config', 'user.email', 'tests@example.invalid');
     fs.writeFileSync(path.join(f.projectPath, 'file.txt'), 'initial\n');

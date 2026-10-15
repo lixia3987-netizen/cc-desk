@@ -8,7 +8,7 @@ import type { AddressInfo } from 'node:net';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeConnectionModelCatalog } from '../src/main/engines/native/connection-models';
 import { NativeModelCapabilityService, mergeNativeModelCapabilities } from '../src/main/engines/native/model-capabilities';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const secret = 'model-capability-service-artificial-main-key';

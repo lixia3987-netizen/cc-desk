@@ -15,7 +15,7 @@ export interface ClaudeTerminalLaunchSpec {
   resource?: { close(): Promise<void> };
   terminalSync?: 'waiting' | 'synced' | 'unsupported';
 }
-/** Only provider setup: the PTY host owns all spawned processes and launch resources. */
+/** 仅设置提供商；PTY 宿主负责所有启动进程及启动资源。 */
 export class ClaudeTerminalLaunchBuilder {
   constructor(private launch: ClaudeLaunchHost, private capabilities: () => ClaudeCapabilities) {}
   async prepare(session: ClaudeSession, callbacks: ClaudeTerminalCallbacks): Promise<ClaudeTerminalLaunchSpec> {

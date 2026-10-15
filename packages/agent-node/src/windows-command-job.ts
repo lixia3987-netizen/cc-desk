@@ -14,23 +14,23 @@ export interface WindowsCommandJobDiagnostic {
 }
 
 export interface WindowsCommandJob {
-  /** True requires an empty owned job AND the helper's physical close event. */
+  /** 仅当持有的 Job 已为空且辅助进程已触发实际关闭事件时才为真。 */
   stop(timeoutMs: number): Promise<boolean>;
   readonly diagnostic: WindowsCommandJobDiagnostic;
   readonly whenClosed: Promise<void>;
   readonly closed: boolean;
-  /** Recheck immediately before launch: readiness can be revoked by later input or exit. */
+  /** 启动前立即复查：后续输入或退出可能撤销就绪状态。 */
   readonly usable: boolean;
 }
 
 export interface WindowsCommandJobOptions {
   guardianPid: number;
-  /** Respond to this fresh nonce over the original guardian's Node IPC channel. */
+  /** 通过原始守护进程的 Node IPC 通道回应这个新的 nonce。 */
   challenge: (nonce: string) => Promise<void>;
   timeoutMs: number;
   environment: NodeJS.ProcessEnv;
   signal?: AbortSignal;
-  /** The caller retains this barrier even when binding rejects. */
+  /** 即使绑定被拒绝，调用方仍须保留此屏障。 */
   onHelper?: (helper: ChildProcess, whenClosed: Promise<void>) => void;
 }
 
@@ -45,7 +45,7 @@ function validTimeout(timeoutMs: number): void {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new TypeError('Invalid Windows job timeout.');
 }
 
-/** Internal builder for real Windows regressions; no commands, paths or secrets enter this script. */
+/** 用于真实 Windows 回归测试的内部构建器；该脚本不接收命令、路径或密钥。 */
 export function buildWindowsCommandJobScript(guardianPid: number, nonce: string, timeoutMs: number): string {
   validTimeout(timeoutMs);
   if (!Number.isSafeInteger(guardianPid) || guardianPid < 2 || guardianPid > 2_147_483_647 || !/^[a-f0-9]{64}$/.test(nonce)) {
@@ -178,7 +178,7 @@ exit ([CommandJobOwner]::Run(${guardianPid},'${nonce}',${timeoutMs}))
 const stages = new Set<WindowsCommandJobDiagnostic['stage']>(['compile', 'open', 'challenge', 'bind', 'active', 'terminate', 'query', 'closed']);
 const resultCodes = new Set<WindowsCommandJobDiagnostic['code']>(['released', 'timeout', 'protocol_error', 'ownership_unconfirmed', 'bind_failed', 'query_failed', 'terminate_failed']);
 
-/** Internal transport seam for deterministic lifecycle tests on every platform. */
+/** 用于各平台确定性生命周期测试的内部传输接口。 */
 export function connectWindowsCommandJob(options: WindowsCommandJobOptions, helper: ChildProcess, nonce: string): Promise<WindowsCommandJob> {
   validTimeout(options.timeoutMs);
   let resolveReady!: (job: WindowsCommandJob) => void;
@@ -191,7 +191,7 @@ export function connectWindowsCommandJob(options: WindowsCommandJobOptions, help
   let exitCode: number | null = null;
   let stopping: Promise<boolean> | undefined;
   let diagnostic: WindowsCommandJobDiagnostic = { phase: 'windows_job', code: 'running', stage: 'compile' };
-  const killHelper = () => { try { helper.kill('SIGKILL'); } catch { /* physical close still required */ } };
+  const killHelper = () => { try { helper.kill('SIGKILL'); } catch { /* 仍须等待实际关闭 */ } };
   const rejectBinding = () => {
     if (settled) return;
     settled = true;
@@ -220,8 +220,8 @@ export function connectWindowsCommandJob(options: WindowsCommandJobOptions, help
       stopping = new Promise<boolean>(resolve => {
         const timer = setTimeout(() => {
           diagnostic = { ...diagnostic, code: 'timeout' };
-          // KILL_ON_JOB_CLOSE still attempts to stop the tree; without empty-job
-          // evidence this attempt cannot authorize releasing the owner.
+          // KILL_ON_JOB_CLOSE 仍会尝试停止进程树；若无 Job 已为空的
+          // 证据，本次尝试就不能授权释放所有者。
           killHelper();
           resolve(false);
         }, timeoutMs);
@@ -280,7 +280,7 @@ export function connectWindowsCommandJob(options: WindowsCommandJobOptions, help
       if (line) receive(line);
     }
   });
-  // Drain diagnostic stderr without reflecting arbitrary executable output.
+  // 持续读取诊断标准错误输出，不向外传递任意可执行程序的输出。
   helper.stderr?.on('data', () => {});
   helper.stdin?.on('error', () => fail('helper_exit'));
   helper.once('error', () => fail('spawn_error'));
@@ -302,17 +302,17 @@ export function connectWindowsCommandJob(options: WindowsCommandJobOptions, help
   return ready;
 }
 
-/** Bind a private non-breakaway job before the caller authorizes guardian launch. */
+/** 在调用方授权守护进程启动前，绑定一个不允许脱离的私有 Job。 */
 export function createWindowsCommandJob(options: WindowsCommandJobOptions): Promise<WindowsCommandJob> {
   const nonce = randomBytes(32).toString('hex');
   const script = buildWindowsCommandJobScript(options.guardianPid, nonce, options.timeoutMs);
   if (options.signal?.aborted) return Promise.reject(new WindowsCommandJobError({ phase: 'windows_job', code: 'cancelled', stage: 'compile' }));
   const systemRoots = Object.entries(options.environment).filter(([key]) => key.toUpperCase() === 'SYSTEMROOT');
   const systemRoot = systemRoots.length === 1 ? systemRoots[0][1] : undefined;
-  // Credential filtering may remove even operational environment values. Never
-  // replace that absence with a PATH/cwd lookup or values from process.env.
-  // win32.isAbsolute alone also accepts \Windows, which depends on the current
-  // drive. SystemRoot must be the supplied, fully qualified local Windows root.
+  // 凭据过滤可能连运行配置环境值也一并移除；绝不能
+  // 使用 PATH/cwd 查找或 process.env 中的值填补缺失项。
+  // 仅使用 win32.isAbsolute 也会接受依赖当前驱动器的 \Windows；
+  // SystemRoot 必须是传入的、完全限定的本地 Windows 根目录。
   if (typeof systemRoot !== 'string' || !path.win32.isAbsolute(systemRoot)
     || !/^[a-z]:[\\/]/i.test(systemRoot) || /[\0\r\n]/.test(systemRoot)) {
     return Promise.reject(new WindowsCommandJobError({ phase: 'windows_job', code: 'spawn_error', stage: 'compile' }));

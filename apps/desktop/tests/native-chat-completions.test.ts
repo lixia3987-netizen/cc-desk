@@ -13,7 +13,7 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
 import { summarizeNativeContext } from '../src/main/engines/native/context-summary';
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startChatCompletionsFixture } from '../../../packages/agent-node/tests/fixtures/chat-completions-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;

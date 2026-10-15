@@ -17,52 +17,52 @@ export interface CommandResult {
   signal: NodeJS.Signals | null;
   stdout: string;
   stderr: string;
-  /** Bytes received, including bytes discarded after the shared output limit. */
+  /** 已接收的字节数，包括超出共享输出上限后丢弃的字节。 */
   outputBytes: number;
   truncated: boolean;
   timedOut: boolean;
   cancelled: boolean;
   cleanup: 'released' | 'cleanup_failed';
-  /** Fixed stage/counters only: never command text, paths, environment, or helper stderr. */
+  /** 仅包含固定阶段与计数器，绝不包含命令文本、路径、环境或辅助进程的标准错误输出。 */
   cleanupDiagnostic?: ProcessCleanupDiagnostic;
   error?: string;
 }
 
 export interface CommandSnapshot {
-  /** True only after the guardian reports that the actual executable spawned. */
+  /** 仅在守护进程报告实际可执行程序已启动后才为真。 */
   started: boolean;
   stopping: boolean;
-  /** The first containment cleanup attempt has finished, possibly unsuccessfully. */
+  /** 首次进程隔离清理尝试已结束，但可能未成功。 */
   settled: boolean;
-  /** A copy, including currently retained complete UTF-8 prefixes. */
+  /** 返回副本，其中包含当前保留的完整 UTF-8 前缀。 */
   result: CommandResult;
 }
 
-/** Host-owned finite command; no PID is exposed as control authority. */
+/** 宿主持有的有限时长命令；不暴露可用作控制凭据的 PID。 */
 export interface CommandHandle {
-  /** False if the process could not start or was cancelled before startup. */
+  /** 若进程无法启动或启动前已取消，则为假。 */
   readonly started: Promise<boolean>;
-  /** A frozen-in-time copy after the first cleanup attempt. */
+  /** 首次清理尝试后固定下来的快照副本。 */
   readonly closed: Promise<CommandResult>;
   snapshot(): CommandSnapshot;
-  /** Stops only this command. Failed cleanup can be retried without revoking its owner. */
+  /** 仅停止此命令；清理失败时可重试，无需撤销其所有者。 */
   stop(): Promise<CommandResult>;
 }
 
-/** Main-process-only, explicitly approved, bidirectional process input. */
+/** 仅供主进程使用、经明确批准的双向进程输入。 */
 export interface StdioProcessRequest {
   executable: string;
   argv: string[];
   cwd: string;
-  /** Resolved explicit mappings; never inherited provider credentials. */
+  /** 已解析的显式映射，绝不继承供应商凭据。 */
   environment?: Record<string, string>;
-  /** Must consume synchronously and keep its own bounded protocol buffer. */
+  /** 必须同步消费数据，并自行维护有大小上限的协议缓冲区。 */
   onStdout: (data: Buffer) => void;
   startupTimeoutMs?: number;
   maxInputBytes?: number;
 }
 
-/** No process output, paths, executable, argv, or environment are returned. */
+/** 不返回进程输出、路径、可执行程序、argv 或环境。 */
 export interface StdioProcessResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -73,12 +73,12 @@ export interface StdioProcessResult {
 }
 
 export interface StdioProcessHandle {
-  /** Bounded pending input, with completion after the pipe write callback. */
+  /** 待写入的输入有大小上限，在管道写入回调后完成。 */
   write(data: string | Uint8Array): Promise<void>;
   endInput(): Promise<void>;
-  /** Settles after the first cleanup attempt; cleanup_failed retains ownership. */
+  /** 首次清理尝试后结束等待；cleanup_failed 状态仍保留所有权。 */
   readonly closed: Promise<StdioProcessResult>;
-  /** Idempotent while pending; a failed cleanup may be retried. */
+  /** 等待期间保持幂等；清理失败后可重试。 */
   close(): Promise<StdioProcessResult>;
 }
 
@@ -109,7 +109,7 @@ function safeOsCode(error: unknown): NonNullable<ProcessCleanupDiagnostic['osCod
 }
 
 export interface ProcessSupervisorOptions {
-  /** Only the fixed operational allowlist is copied; never provider credentials. */
+  /** 仅复制固定的运行环境白名单，绝不复制供应商凭据。 */
   environment?: NodeJS.ProcessEnv;
   defaultTimeoutMs?: number;
   maxTimeoutMs?: number;
@@ -117,7 +117,7 @@ export interface ProcessSupervisorOptions {
   maxOutputBytes?: number;
   cleanupTimeoutMs?: number;
   terminationGraceMs?: number;
-  /** Defaults to the current runtime, including Electron's built-in Node runtime. */
+  /** 默认使用当前运行时，包括 Electron 内置的 Node 运行时。 */
   nodeExecutable?: string;
 }
 
@@ -127,18 +127,18 @@ const ENVIRONMENT_KEYS = new Set([
   'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL', 'LC_CTYPE',
 ]);
 
-// Node/libuv make_program_env restores these Windows keys from the host when
-// absent (nodejs/node v22.x, deps/uv/src/win/process.c required_vars). Explicit
-// empty entries prevent that fallback; no additional host values are copied.
+// Node/libuv 的 make_program_env 会在这些 Windows 环境变量缺失时从宿主恢复它们；
+// 参见 nodejs/node v22.x 的 deps/uv/src/win/process.c 中的 required_vars。显式设置
+// 空值可阻止该回退行为；不会复制其他宿主环境值。
 const WINDOWS_BACKFILLED_KEYS = [
   'HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'PATH', 'SYSTEMDRIVE', 'SYSTEMROOT',
   'TEMP', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'WINDIR',
 ];
 
-/** No NODE_OPTIONS, shell startup hooks, npm config, or model/provider variables. */
+/** 不包含 NODE_OPTIONS、Shell 启动钩子、npm 配置或模型及供应商变量。 */
 export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: readonly string[] = []): NodeJS.ProcessEnv {
-  // Node's JS launcher also restores NODE_V8_COVERAGE on every platform unless
-  // the supplied environment owns that key. Empty disables coverage inheritance.
+  // Node 的 JS 启动器也会在所有平台恢复 NODE_V8_COVERAGE，除非
+  // 提供的环境自身已有该键；空值可禁用覆盖率配置继承。
   const result: NodeJS.ProcessEnv = { NODE_V8_COVERAGE: '' };
   const blocked = new Set<string>();
   const windows = process.platform === 'win32';
@@ -161,7 +161,7 @@ const STDIO_BLOCKED_ENVIRONMENT_NAMES = new Set([
   'PHPRC', 'PHP_INI_SCAN_DIR', '__PROTO__', 'PROTOTYPE', 'CONSTRUCTOR',
 ]);
 
-/** Shared with the connection store: explicit mappings cannot alter launch/runtime hooks. */
+/** 与连接存储共用：显式映射不能修改启动或运行时钩子。 */
 export function assertStdioEnvironmentName(name: string): void {
   if (typeof name !== 'string' || !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)
     || STDIO_BLOCKED_ENVIRONMENT_NAMES.has(name.toUpperCase())
@@ -170,7 +170,7 @@ export function assertStdioEnvironmentName(name: string): void {
   }
 }
 
-/** Copies at most sixteen explicitly resolved values; no ambient environment is copied. */
+/** 最多复制十六个显式解析的值；不复制外部环境变量。 */
 export function validateStdioEnvironment(environment: Record<string, string> = {}): Record<string, string> {
   if (!environment || typeof environment !== 'object' || Array.isArray(environment)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(environment))
@@ -192,8 +192,8 @@ export function validateStdioEnvironment(environment: Record<string, string> = {
   return result;
 }
 
-// The guardian waits for host authorization before launching the command. Windows
-// first binds it to an owned Job; POSIX uses its detached process group.
+// 守护进程会等待宿主授权后再启动命令。在 Windows 上，
+// 先将其绑定到持有的 Job；在 POSIX 上则使用它的独立进程组。
 const GUARDIAN = String.raw`
 const { spawn } = require('node:child_process');
 let started = false;
@@ -320,8 +320,8 @@ function appendOutput(output: CapturedOutput, data: Buffer): void {
 
 function boundedText(output: CapturedOutput): string {
   const buffer = Buffer.concat(output.chunks, output.bytes);
-  // Do not turn a cut UTF-8 sequence into a replacement character beyond the
-  // byte budget. Arbitrary invalid bytes can also expand when decoded to UTF-8.
+  // 不要将截断的 UTF-8 序列转换为替换字符，以免超过
+  // 字节预算；任意无效字节在解码为 UTF-8 时也可能膨胀。
   const text = new TextDecoder('utf-8').decode(buffer, { stream: true });
   if (Buffer.byteLength(text) <= buffer.length) return text;
   let bytes = 0;
@@ -346,13 +346,13 @@ async function groupIsLive(pid: number): Promise<boolean> {
     throw error;
   }
   if (process.platform !== 'linux') return true;
-  // Container init processes do not always reap orphan zombies promptly. A zombie
-  // has no executing code or open descriptors and must not retain a directory lease.
-  // Any unreadable live member is conservatively treated as a cleanup failure.
+  // 容器的初始化进程未必及时回收孤儿僵尸进程。僵尸进程
+  // 已无执行代码或打开的描述符，不应继续占用目录租约。
+  // 任何无法读取的存活成员都保守地视为清理失败。
   return (await linuxLiveProcesses({ group: pid })).length > 0;
 }
 
-/** procfs may expose host PIDs while Node runs in a nested PID namespace. */
+/** Node 在嵌套 PID 命名空间中运行时，procfs 可能暴露宿主的 PID。 */
 export async function linuxLiveProcesses(filter?: { pid?: number; group?: number }): Promise<{ pid: number; group: number }[]> {
   if (process.platform !== 'linux') throw new Error('Linux process inspection is unavailable.');
   const namespace = await readlink('/proc/self/ns/pid');
@@ -377,7 +377,7 @@ export async function linuxLiveProcesses(filter?: { pid?: number; group?: number
 
 export interface WindowsRootIdentity {
   rootExited: boolean;
-  /** UTC yyyyMMddHHmmssffffff from the original process HANDLE, when available. */
+  /** 可用时，从原始进程 HANDLE 获取格式为 yyyyMMddHHmmssffffff 的 UTC 时间。 */
   created?: string;
   spawnStartedAt?: number;
   spawnCompletedAt?: number;
@@ -390,13 +390,13 @@ const standaloneWindowsOwners = new Map<number, {
 }>();
 
 /**
- * An unqualified PID is an exited-parent anchor, never authority to kill a live
- * process. An original-HANDLE creation identity is the preferred exact anchor.
- * Following descendants otherwise requires the original parent's birth lower
- * bound (spawnStartedAt), including when the root already exited. A live root
- * additionally needs spawnCompletedAt. Node does not
- * expose the original Windows HANDLE, so initial capture is not an absolute
- * identity guarantee against PID reuse inside that same millisecond window.
+ * 未经身份验证的 PID 只用于标识已退出的父进程，绝不能作为终止存活
+ * 进程的依据。优先使用从原始 HANDLE 获取的创建标识作为精确锚点。
+ * 否则，跟踪后代必须保留原始父进程的创建时间下界
+ * （spawnStartedAt），即使根进程已退出也如此。存活的根进程
+ * 还需要 spawnCompletedAt。Node 不会
+ * 暴露原始 Windows HANDLE，因此初始采集无法绝对保证
+ * 在同一个毫秒时间窗口内发生 PID 重用时仍能正确识别进程。
  */
 export async function stopWindowsProcessTree(pid: number, timeoutMs = 10000, identity?: WindowsRootIdentity): Promise<void> {
   if (process.platform !== 'win32' || !Number.isSafeInteger(pid) || pid <= 1) throw new Error('Invalid Windows process tree.');
@@ -429,11 +429,11 @@ export async function stopWindowsProcessTree(pid: number, timeoutMs = 10000, ide
 }
 
 /**
- * Host-owned finite command execution. stopOwner is a release barrier and revokes
- * that owner permanently; use a fresh run/generation identity for later work.
- * Failed cleanup remains visible in has()/activeCount until a successful retry.
- * This supervises ordinary process groups/trees, not a system sandbox: a hostile
- * program can escape a POSIX group, so approved commands must be trusted.
+ * 宿主持有的有限时长命令执行。stopOwner 作为资源释放屏障，会永久撤销
+ * 该所有者；后续任务应使用新的运行或代次标识。
+ * 清理失败会持续反映在 has()/activeCount 中，直到重试成功。
+ * 此处监管普通进程组或进程树，而非系统沙箱：恶意
+ * 程序可逃离 POSIX 进程组，因此批准的命令必须可信。
  */
 export class ProcessSupervisor {
   private readonly environment: NodeJS.ProcessEnv;
@@ -504,15 +504,15 @@ export class ProcessSupervisor {
       notifyStarted(false);
       throw error;
     });
-    // Callers commonly await startup before observing the closure promise.
-    // Keep a rejected validation result observable without an interim unhandled rejection.
+    // 调用方通常会先等待启动完成，再观察关闭 Promise。
+    // 保留可观察的校验拒绝结果，同时避免期间出现未处理的拒绝。
     void closed.catch(() => {});
     return {
       started: whenStarted, closed, snapshot,
       stop: async () => {
         if (!record) return closed;
-        // Preserve a natural exit that already started cleanup. A later stop
-        // still retries failed containment without rewriting the exit reason.
+        // 保留已经开始清理的自然退出原因。后续停止操作
+        // 仍会重试失败的进程隔离清理，但不改写退出原因。
         if (!record.cleanupRequested) record.result.cancelled = true;
         await this.stopRecord(record);
         await closed;
@@ -595,9 +595,9 @@ export class ProcessSupervisor {
         ended = true;
         input.end();
         closing = (async () => {
-          // Normal shutdown gives the server a bounded chance to observe EOF.
-          // Natural exit begins the same containment cleanup; cancellation and
-          // owner revocation still start the immediate stopRecord barrier.
+          // 正常关闭会给服务器一个有时限的机会，以便观察到 EOF。
+          // 自然退出会启动相同的进程隔离清理；取消和
+          // 撤销所有者仍会立即启动 stopRecord 屏障。
           const deadline = Date.now() + Math.min(250, this.cleanupTimeoutMs);
           while (!record.cleanupRequested && !record.closed && Date.now() < deadline) await delay(10);
           await this.stopRecord(record);
@@ -625,9 +625,9 @@ export class ProcessSupervisor {
     };
     if (signal?.aborted) return result;
 
-    // Credentials resolved for this run may be stored in an otherwise operational
-    // variable (for example LANG). Scrub values in both guardian and tool envs,
-    // without changing another concurrent run's launch environment.
+    // 为本次运行解析的凭据可能存储在通常用于运行配置的
+    // 变量中（例如 LANG）。应清除守护进程和工具环境中的这些值，
+    // 同时不改变其他并发运行的启动环境。
     const launchEnvironment = commandEnvironment(this.environment, stdio ? [...forbiddenValues, ...Object.values(stdio.environment)] : forbiddenValues);
     if (!path.isAbsolute(command.executable) && !/[\\/]/.test(command.executable)
       && !Object.entries(launchEnvironment).some(([key, value]) => key.toUpperCase() === 'PATH' && Boolean(value))) {
@@ -673,7 +673,7 @@ export class ProcessSupervisor {
         void this.stopRecord(record);
       }
     });
-    // Long-lived protocol stderr is drained and discarded, never retained or returned.
+    // 持续读取并丢弃长连接协议的标准错误输出，绝不保留或返回。
     child.stderr!.on('data', (data: Buffer) => { if (!stdio) capture(record.stderr, data); });
     child.stdin?.on('error', () => {
       if (record.cleanupRequested) return;
@@ -721,8 +721,8 @@ export class ProcessSupervisor {
         void this.stopRecord(record);
         return;
       }
-      // Windows preparation has its own bounded budget. The command's execution
-      // budget starts only after containment is ready and launch is authorized.
+      // Windows 准备阶段有独立的时限。命令执行的
+      // 时限仅在进程隔离就绪并获得启动授权后才开始计时。
       if (process.platform === 'win32') startTimer();
       record.commandLaunched = true;
       child.send({ type: 'launch', command: launchCommand, environment: stdio ? { ...launchEnvironment, ...stdio.environment } : launchEnvironment, stdio: Boolean(stdio) }, error => {
@@ -748,8 +748,8 @@ export class ProcessSupervisor {
           });
           launch();
         } catch (error) {
-          // Preparation never authorizes command execution on failure. Its helper
-          // and the empty guardian still have to reach their physical barriers.
+          // 准备阶段失败时绝不授权执行命令；辅助进程
+          // 和尚未启动命令的守护进程仍须到达各自实际关闭的屏障。
           record.windowsPreparationAbort!.abort();
           if (error instanceof WindowsCommandJobError) record.windowsPreparationDiagnostic = error.diagnostic;
           if (!result.cancelled) result.error = 'Unable to contain the command runtime; the command was not executed.'
@@ -845,8 +845,8 @@ export class ProcessSupervisor {
         record.result.error = 'Command process cleanup failed; the owner remains occupied. ' + JSON.stringify(diagnostic);
       } else delete record.result.cleanupDiagnostic;
       if (released) this.records.delete(record);
-      // Always keep draining until the bounded release attempt finishes. Failed
-      // cleanup is retained as occupied even though host stream handles are closed.
+      // 始终持续读取输出，直到有时限的释放尝试结束。清理失败时，
+      // 即使宿主流句柄已关闭，仍保留资源占用状态。
       if (!released) { record.child.stdin?.destroy(); record.child.stdout?.destroy(); record.child.stderr?.destroy(); }
       record.result.stdout = boundedText(record.stdout);
       record.result.stderr = boundedText(record.stderr);
@@ -860,15 +860,15 @@ export class ProcessSupervisor {
   private async releaseTree(record: CommandRecord): Promise<boolean> {
     const deadline = Date.now() + this.cleanupTimeoutMs;
     if (!record.pid) {
-      // A failed spawn has no process to signal and emits no exit event, but its
-      // Node stdio/IPC handles still have to reach the close barrier.
+      // 启动失败时没有可发送信号的进程，也不会触发 exit 事件，但其
+      // Node 标准输入输出及 IPC 句柄仍须到达关闭屏障。
       while (!record.closed && Date.now() < deadline) await delay(10);
       if (!record.closed) record.result.cleanupDiagnostic!.code = 'timeout';
       return record.closed;
     }
     if (process.platform === 'win32') {
-      // Cancelling preparation cannot launch a command later. The original Node
-      // ChildProcess handle is authority to stop this still-empty guardian.
+      // 取消准备后不得再启动命令。原始 Node
+      // ChildProcess 句柄是停止这个尚未启动命令的守护进程的控制依据。
       if (!record.commandLaunched && !record.guardianExited) record.child.kill('SIGKILL');
       let preparing = !!record.windowsPreparation;
       void record.windowsPreparation?.then(() => { preparing = false; });
@@ -895,8 +895,8 @@ export class ProcessSupervisor {
         });
         if (!released) return false;
       } else if (record.commandLaunched) {
-        // An authorized launch always has a bound Job. There is no snapshot
-        // fallback that could mistake a missing ancestry chain for release.
+        // 获得授权的启动始终已绑定 Job；不采用可能将缺失祖先链
+        // 误认为资源已释放的快照回退方式。
         record.result.cleanupDiagnostic!.code = 'ownership_unconfirmed';
         return false;
       }
@@ -906,8 +906,8 @@ export class ProcessSupervisor {
         record.result.cleanupDiagnostic!.code = 'timeout';
         return false;
       }
-      // Zero Job members, helper close, and the guardian's process/IPC/stdio close
-      // are separate required barriers. Root exit alone never proves release.
+      // Job 成员数归零、辅助进程关闭，以及守护进程的进程、IPC 和标准输入输出关闭，
+      // 是分别必需满足的屏障；仅根进程退出绝不能证明资源已释放。
       record.result.cleanupDiagnostic!.phase = 'windows_streams';
       while (!record.closed && Date.now() < deadline) await delay(10);
       if (!record.closed || !record.guardianExited) record.result.cleanupDiagnostic!.code = 'timeout';

@@ -14,7 +14,7 @@ function isWithin(root: string, target: string): boolean {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
 }
 
-/** Renderer inputs are always project-relative; resolve symlinks before touching data. */
+/** 渲染进程输入始终为项目相对路径；访问数据前先解析符号链接。 */
 export async function resolveProjectFile(root: string, relative: string, allowMissing = false): Promise<string> {
   if (!relative || relative.length > 4096 || /[\x00-\x1f\\]/.test(relative) || path.isAbsolute(relative) || path.win32.isAbsolute(relative)) throw new Error('文件路径必须是项目内的相对路径。');
   const parts = relative.split('/');
@@ -58,13 +58,13 @@ async function identities(root: string, target: string): Promise<{ path: string;
 }
 
 /**
- * Linux opens each canonical component relative to an already opened directory
- * via procfs, refusing replacement symlinks at every step. Before returning bytes
- * it also checks the kernel-reported handle location. On macOS/Windows Node has
- * no openat / handle-final-path API: matching pre/open/post file and ancestor IDs
- * detects ordinary replacement races, but is not a native atomic sandbox against
- * a hostile process coordinating repeated ABA renames. Such a sandbox needs native
- * openat/F_GETPATH or CreateFile/GetFinalPathNameByHandle support.
+ * Linux 通过 procfs，相对于已打开的目录逐个打开
+ * 规范化路径组件，并在每一步拒绝被替换的符号链接。返回字节前
+ * 还检查内核报告的句柄位置。macOS 和 Windows 上的 Node 没有
+ * openat 或句柄最终路径 API：匹配打开前、打开后及后置检查中的文件和祖先 ID
+ * 可检测普通替换竞态，但不能作为原生原子沙箱，抵御
+ * 反复协调执行 ABA 重命名的恶意进程。此类沙箱需要原生
+ * openat/F_GETPATH 或 CreateFile/GetFinalPathNameByHandle 支持。
  */
 export async function readProjectFile(root: string, relative: string): Promise<ProjectFile> {
   const canonicalRoot = await fs.realpath(root);
@@ -103,7 +103,7 @@ export async function readProjectFile(root: string, relative: string): Promise<P
     const size = Number(stat.size);
     const buffer = Buffer.alloc(Math.min(size, MAX_FILE_BYTES));
     const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    // Never return data until the opened object and its ancestry are revalidated.
+    // 重新验证已打开对象及其祖先之前，不能返回数据。
     await verify();
     const bytes = buffer.subarray(0, bytesRead);
     const binary = bytes.includes(0);
@@ -145,7 +145,7 @@ export async function listProjectFiles(root: string, query = ''): Promise<Projec
       if (!(await fs.stat(resolved)).isFile()) continue;
       if (files.length >= MAX_FILES) { truncated = true; break; }
       files.push(candidate);
-    } catch { /* Broken links, deleted files and paths outside the project are omitted. */ }
+    } catch { /* 省略失效链接、已删除文件和项目范围外的路径。 */ }
   }
   return { files, truncated };
 }

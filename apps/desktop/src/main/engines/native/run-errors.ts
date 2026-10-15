@@ -56,7 +56,7 @@ export interface NativeRunErrorDetails {
   partial?: boolean;
 }
 
-/** Only stable categories and validated counts enter a UI diagnostic, never provider error text. */
+/** 只有稳定分类及已验证计数可以进入界面诊断，绝不包含供应商错误文本。 */
 export function nativeModelFailureMessage(failure: ModelFailureDiagnostic, partial: boolean, retryDelayMs?: number): string {
   const category = modelFailureCategory(failure.category);
   const safeRetry = !partial && failure.retryable === true &&
@@ -68,7 +68,7 @@ export function nativeModelFailureMessage(failure: ModelFailureDiagnostic, parti
   return `${MODEL_FAILURE_MESSAGES[category]}${diagnostic}${partial ? PARTIAL_OUTPUT_MESSAGE : ''}`;
 }
 
-/** Stable runtime reasons remain in the native ledger; the desktop shows actionable explanations. */
+/** 稳定的运行时原因保留在原生账本中；桌面端展示可采取行动的说明。 */
 export function nativeRunError(reason: string, details?: NativeRunErrorDetails): string {
   const messages: Record<string, string> = {
     context_budget: '上下文超过运行预算，已停止发送下一次模型请求。可在上下文面板手动压缩、调整输入预算，或新建会话继续。',

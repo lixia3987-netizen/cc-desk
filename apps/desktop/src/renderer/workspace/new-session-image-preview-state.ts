@@ -16,7 +16,7 @@ export function isNewSessionImagePreviewCurrent(selection: NewSessionImagePrevie
       : isPastedDraftAttachment(file) && file.image.mimeType === selection.file.image.mimeType && file.image.dataUrl === selection.file.image.dataUrl));
 }
 
-/** Memory-only paste data is not a saved receipt. Check its bounds before decoding pixels. */
+/** 仅存于内存的粘贴数据不是已保存的回执，解码像素前需检查其大小限制。 */
 export function validateUnsavedPastedImage(file: NativePastedDraftAttachment): string {
   const fail = () => { throw new Error('图片预览数据无效，请重新粘贴图片。'); };
   const { mimeType, dataUrl } = file.image;
@@ -55,7 +55,7 @@ export function validateUnsavedPastedImage(file: NativePastedDraftAttachment): s
   return dataUrl;
 }
 
-/** One explicit, unsaved selection; closing or superseding it discards late bytes. */
+/** 仅保留一个明确且未保存的选区，关闭或替换选区后丢弃迟到的字节数据。 */
 export class NewSessionImagePreviewController {
   private generation = 0;
   private value: NewSessionImagePreviewState = { status: 'idle' };

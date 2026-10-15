@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-/** Every update writes only disposable fixture files. No real CLI or registry is used. */
+/** 每次更新仅写入可丢弃的测试装置文件，不使用真实 CLI 或包注册源。 */
 export async function cliUpdateFixture(root: string) {
   const prefix = path.join(root, 'cli space'), pkg = path.join(prefix, 'node_modules', '@anthropic-ai', 'claude-code');
   const npm = path.join(prefix, 'node_modules', 'npm', 'bin'), config = path.join(root, 'claude-config');
@@ -57,7 +57,7 @@ process.stdin.on('end',()=>process.exit(0));
   const cli = path.join(prefix, 'claude.cmd');
   await fs.writeFile(cli, '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
   await fs.writeFile(path.join(prefix, 'npm.cmd'), '@echo off\r\nexit /b 99\r\n', { mode: 0o755 });
-  // POSIX npm uses the same standard script, while the fake CLI intentionally exercises CMD resolution.
+  // POSIX npm 使用相同的标准脚本，模拟 CLI 则特意验证 CMD 解析过程。
   if (process.platform !== 'win32') await fs.writeFile(path.join(prefix, 'npm'), '#!/usr/bin/env node\n' + constants + await fs.readFile(path.join(npm, 'npm-cli.js'), 'utf8').then(text => text.slice(constants.length)), { mode: 0o755 });
   return { cli, version, mode, log, pids, config, prefix };
 }

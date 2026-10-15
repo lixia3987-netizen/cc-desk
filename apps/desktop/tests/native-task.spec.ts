@@ -8,7 +8,7 @@ import type { NativeTaskPlan, NativeTaskSnapshot } from '@cc-desk/contracts/nati
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error Shared real HTTP/SSE fixture has no TypeScript declarations.
+// @ts-expect-error 共享的真实 HTTP/SSE 测试装置没有 TypeScript 类型声明。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const secret = 'sk-native-task-electron-dummy-never-persist';
@@ -63,7 +63,7 @@ async function workspace(planOnly = false, locationOnly = false) {
     if (!done.has(`${prefix}-implemented`)) return call('implemented', 'update_plan', {
       expectedRevision: done.get(`${prefix}-read-task`)!.output.task!.revision, plan: plan(true), explanation: '实现和命令检查已结束，保留人工核验条件。',
     });
-    // Deliberately overclaim in model prose; the UI must use host evidence instead.
+    // 有意让模型文字夸大结果；界面必须使用宿主证据。
     return { output: [assistantMessage(`${prefix}-final`, '模型声称任务已全部实现并且验收通过。')] };
   } });
   return { directory, data, cwd, projectId, fixture,
@@ -111,8 +111,8 @@ async function review(page: Page, id: string, criterionId: string) {
     ? '已核对实际文件、保留的原内容与命令退出码，当前条件满足。' : '逐项条件和改动范围均已人工核对，确认当前版本的任务验收。');
   await form.getByRole('button', { name: criterionId ? '记录人工核验' : '确认任务验收', exact: true }).click();
   await expect.poll(async () => (await snapshot(page, id)).nativeTask!.revision).toBeGreaterThan(previous.revision);
-  // A new durable revision remounts the form. Wait for that render before the
-  // next review so a late snapshot cannot erase fields filled on the old form.
+  // 新的持久化修订会重新挂载表单。下一次评审前须等待该渲染完成，
+  // 避免迟到的快照清除旧表单上已填写的字段。
   await expect(form).not.toHaveAttribute('open', '');
 }
 
@@ -155,7 +155,7 @@ test('native task UI survives approval-time reload and keeps model completion se
     await expect(panel(page).locator('.native-task-overview')).toContainText('验证：验收通过');
     const approved = (await snapshot(page, session.id)).nativeTask!;
     await fs.appendFile(path.join(f.cwd, 'feature.txt'), 'external edit after verification\n');
-    // Exercise the registered focus-resynchronization path without a polling loop.
+    // 无须轮询循环，直接验证已注册的焦点重同步路径。
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
     await openChatAssistance(page, 'task');
     await expect(panel(page).locator('.native-task-overview')).toContainText('验证：证据已过期');

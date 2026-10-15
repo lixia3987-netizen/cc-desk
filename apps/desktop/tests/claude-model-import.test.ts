@@ -306,7 +306,7 @@ test('Claude imports sanitize encryption exceptions and do not overwrite existin
 test('Claude import encrypted credential is committed once, persists across restart, and never crosses IPC', async () => {
   const safeStorage = {
     isEncryptionAvailable: () => true,
-    // A deterministic fake OS vault keeps the fixture secret out of its serialized representation.
+    // 使用行为确定的模拟系统凭据库，防止测试凭据出现在序列化结果中。
     encryptString: (value: string) => Buffer.from(Buffer.from(value, 'utf8').map(byte => byte ^ 0x5a)),
     decryptString: (value: Buffer) => Buffer.from(Buffer.from(value).map(byte => byte ^ 0x5a)).toString('utf8'),
   };

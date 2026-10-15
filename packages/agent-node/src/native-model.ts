@@ -4,7 +4,7 @@ import { ChatCompletionsModel, estimateChatCompletionsInputTokens } from './chat
 import { AnthropicModel, estimateAnthropicInputTokens, type AnthropicAuthHeader } from './anthropic-model.js';
 
 export type NativeModelProtocol = 'responses' | 'chat-completions' | 'anthropic';
-/** Optional discriminator preserves existing Responses connection and worker callers. */
+/** 可选的类型判别字段兼容现有 Responses 连接及执行进程调用方。 */
 export interface NativeModelOptions extends ResponsesModelOptions { protocol?: NativeModelProtocol; authHeader?: AnthropicAuthHeader }
 
 export function nativeModelProtocol(protocol: NativeModelProtocol = 'responses'): ProtocolVersion {
@@ -20,7 +20,7 @@ export function createNativeModel(options: NativeModelOptions): ModelPort {
   if (protocol === 'anthropic') return new AnthropicModel(transport);
   throw new Error('Unsupported native model protocol.');
 }
-/** Uses the persisted context discriminator, never a mutable connection's current value. */
+/** 使用已持久化的上下文类型判别字段，绝不使用可变连接的当前值。 */
 export function estimateNativeInputTokens(context: ModelContext, instructions = '', tools: readonly ToolDefinition[] = []): number {
   if (context.protocol.version === 1 && context.protocol.id === 'openai-responses') return estimateResponsesInputTokens(context, instructions, tools);
   if (context.protocol.version === 1 && context.protocol.id === 'openai-chat-completions') return estimateChatCompletionsInputTokens(context, instructions, tools);
@@ -28,7 +28,7 @@ export function estimateNativeInputTokens(context: ModelContext, instructions = 
   throw new Error('Unsupported native model context.');
 }
 const object = (value: JsonValue): value is { [key: string]: JsonValue } => value !== null && typeof value === 'object' && !Array.isArray(value);
-/** Only user-visible assistant text/refusals; never opaque reasoning or tool arguments. */
+/** 仅提取用户可见的助手文本或拒绝内容；绝不提取不透明推理或工具参数。 */
 export function extractNativeAssistantText(items: readonly JsonValue[]): string {
   return items.flatMap(item => {
     if (!object(item)) return [];

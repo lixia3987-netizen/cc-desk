@@ -5,7 +5,7 @@ import type { Register } from './registration';
 import type { StateStore } from '../store';
 import type { NativeInstructionsPreview, NativeSkillPreview, NativeSkillsListResult } from '../../shared/native-skills';
 
-/** The trusted renderer supplies an identity, never a filesystem root. */
+/** 可信渲染进程提供身份，不提供文件系统根路径。 */
 export function registerNativeSkillHandlers(handle: Register, store: StateStore): void {
   const sessionIdSchema = z.string().min(1).max(100);
   const pathSchema = z.string().min(1).max(4096);

@@ -3,7 +3,7 @@ import type { NativeCommandSnapshot, NativeCommandView } from '../../../shared/c
 
 const MAX_VISIBLE_COMMANDS = 64;
 
-/** Only dedicated host events carry lifecycle facts; tool text and model prose are not parsed. */
+/** 只有专用宿主事件承载生命周期事实；不解析工具文本或模型说明。 */
 export function projectNativeCommands(records: RunStoreRecord[]): NativeCommandSnapshot {
   const commands = new Map<string, NativeCommandView>();
   let omitted = 0;
@@ -27,7 +27,7 @@ export function projectNativeCommands(records: RunStoreRecord[]): NativeCommandS
   return { items: [...commands.values()].reverse(), omitted };
 }
 
-/** Host ownership is transient, so a restart/finished run never restores a live-looking command. */
+/** 宿主所有权是临时的，因此重启或运行结束后绝不恢复为看似仍在执行的命令。 */
 export function snapshotNativeCommands(saved: NativeCommandSnapshot, activeRunId?: string): NativeCommandSnapshot {
   const snapshot = structuredClone(saved);
   for (const command of snapshot.items) {

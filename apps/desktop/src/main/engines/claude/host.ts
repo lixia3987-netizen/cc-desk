@@ -9,9 +9,9 @@ import { signalPosixGroup } from '../../posix-process-group';
 import type { StateStore } from '../../store';
 import { claudeSessionPatch, projectClaudeSession } from './session';
 
-const observe = (callback: () => void) => { try { callback(); } catch { /* Observers cannot change execution or persistence outcomes. */ } };
+const observe = (callback: () => void) => { try { callback(); } catch { /* 观察者不能改变执行或持久化结果。 */ } };
 
-/** The only structured Claude adapter with access to application persistence and display policies. */
+/** 唯一可访问应用持久化及显示策略的结构化 Claude 适配器。 */
 export function createClaudeHost(store: StateStore, onState: () => void, onConversation: (id: string) => void, titleGenerator?: SessionTitleGenerator): ClaudeHost {
   const titles = new SessionTitles(store, () => observe(onState), titleGenerator);
   return {

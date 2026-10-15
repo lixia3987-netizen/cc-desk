@@ -7,7 +7,7 @@ export interface ClaudeCapabilities { executable: string; version: string; avail
 export interface ClaudeSettings { claudePath: string }
 export interface ClaudeConfig { model: string; effort: Effort; permissionMode: PermissionMode }
 
-/** Runtime projection only: application preferences, titles and project registries stay with the host. */
+/** 仅包含运行时投影；应用偏好、标题及项目注册表保留在宿主中。 */
 export interface ClaudeSession extends ClaudeConfig {
   id: string; kind: 'agent' | 'shell'; execution: SessionExecution; cwd: string; projectPath?: string;
   started: boolean; archived: boolean; status: SessionStatus; taskState?: TaskState;
@@ -18,7 +18,7 @@ export type ClaudeSessionPatch = Partial<Pick<ClaudeSession,
   'execution' | 'started' | 'status' | 'taskState' | 'error' | 'exitCode' | 'model' | 'effort' | 'permissionMode' | 'observedPermissionMode'
 >>;
 
-/** Structural projection shared with the host's subtask tracker, without depending on its implementation. */
+/** 与宿主的子任务跟踪器共享的结构投影，不依赖其实现。 */
 export type SubtaskStatus = 'pending' | 'running' | 'paused' | 'waiting_approval' | 'waiting_input' | 'completed' | 'failed' | 'stopped' | 'interrupted' | 'unknown';
 export interface Subtask {
   id: string; turnId: string; source: 'stream' | 'hooks'; kind: 'agent' | 'shell' | 'task';

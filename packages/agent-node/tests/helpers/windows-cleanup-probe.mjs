@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { commandEnvironment } from '../../dist/process-supervisor.js';
 
-// CI-only comparison. Never print inherited environment, process tables, or
-// untrusted helper output. No file or target-process mutations and no API calls.
-// Each bounded probe owns and, if necessary, terminates only its helper handle.
+// 仅供 CI 对比。绝不打印继承的环境变量、进程表或
+// 不可信的辅助进程输出。不修改文件或目标进程，也不调用 API。
+// 每次有限探测仅持有自己的辅助进程句柄，必要时也只终止该句柄对应的进程。
 if (process.platform !== 'win32') process.exit(0);
 const executable = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const scripts = {

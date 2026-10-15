@@ -32,7 +32,7 @@ function uuid(value: unknown, label: string): asserts value is string {
 function hash(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) fail('invalid_task', 'Invalid workspace fingerprint');
 }
-/** Mirrors the portable relative-path syntax of ProjectFiles without a Node dependency. */
+/** 沿用 ProjectFiles 可移植的相对路径语法，不依赖 Node。 */
 function locationPath(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !value || value.length > 4096 || /[\x00-\x1f\x7f\\:]/.test(value) ||
       value.split('/').some(part => !part || part === '.' || part === '..' || part.toLowerCase() === '.git' || /[. ]$/.test(part) || /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(part))) {
@@ -49,8 +49,8 @@ function validateLocation(value: unknown): void {
   if (typeof value.excerpt !== 'string' || value.excerpt.length > NATIVE_TASK_LIMITS.locationExcerptBytes || value.excerpt.includes('\0')) fail('invalid_task', 'Invalid code location excerpt');
   const encoded = new TextEncoder().encode(value.excerpt);
   if (encoded.byteLength > NATIVE_TASK_LIMITS.locationExcerptBytes || new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(encoded) !== value.excerpt) fail('invalid_task', 'Code location excerpt must be bounded valid UTF-8');
-  // The host checks the actual file/range and both SHA-256 values before committing.
-  // This portable reducer validates their formats; it does not read files or hash text.
+  // 宿主在提交之前核验实际文件或范围，以及两个 SHA-256 值。
+  // 此可移植归约器仅校验其格式，不读取文件，也不对文本计算哈希。
 }
 function time(value: unknown): asserts value is string {
   if (typeof value !== 'string' || value.length > 40 || !Number.isFinite(Date.parse(value))) fail('invalid_task', 'Invalid task timestamp');
@@ -159,7 +159,7 @@ function validateChanges(value: unknown): void {
   if (typeof value.complete !== 'boolean' || typeof value.truncated !== 'boolean' || value.attribution !== 'observed_since_task_start') fail('invalid_task', 'Invalid workspace change summary');
   strings(value.added, 'added path', 4000); strings(value.modified, 'modified path', 4000); strings(value.removed, 'removed path', 4000);
 }
-/** Evidence results are scoped; human review of requirement coverage is a separate gate. */
+/** 证据结果限定于其作用域；需求覆盖情况的人工审核属于独立关卡。 */
 export function deriveNativeTaskVerification(task: NativeTaskSnapshot): NativeTaskVerification {
   if (task.review?.status === 'rejected') return 'failed';
   const statuses = task.criteria.map(criterion => getNativeTaskCriterionVerification(task, criterion.id));
@@ -205,7 +205,7 @@ export function validateNativeTaskSnapshot(value: unknown): asserts value is Nat
 }
 function invalidate(task: NativeTaskSnapshot): void { task.evidence.forEach(evidence => { evidence.stale = true; }); delete task.review; }
 function structure(plan: NativeTaskPlan): unknown { return { goal: plan.goal, steps: plan.steps.map(({ id, title, dependsOn }) => ({ id, title, dependsOn })) }; }
-/** Pure reducer. The caller authenticates host-only mutations and persists before publishing. */
+/** 纯归约器。调用方验证仅允许宿主执行的变更，并在发布前完成持久化。 */
 export function applyNativeTaskUpdate(previous: NativeTaskSnapshot | null, update: NativeTaskUpdate, now: string): NativeTaskSnapshot {
   keys(update, ['identity', 'taskId', 'mutationId', 'expectedRevision', 'mutation'], 'update');
   validateNativeTaskIdentity(update.identity); uuid(update.taskId, 'taskId'); text(update.mutationId, 'mutation id', 256); integer(update.expectedRevision, 'expected revision'); time(now);

@@ -10,7 +10,7 @@ import type { ChatSnapshot } from '../src/shared/chat';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error The shared HTTP/SSE fixture has no TypeScript declarations.
+// @ts-expect-error 共享的 HTTP/SSE 测试装置没有 TypeScript 类型声明。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Body { input: Array<Record<string, unknown>>; tools: Array<{ name: string; description: string; parameters: ToolDefinition['inputSchema'] }>; instructions?: string }
@@ -39,8 +39,8 @@ async function workspace() {
     if (regularRequests === 1) {
       const definitions: ToolDefinition[] = body.tools.map(tool => ({ name: tool.name, description: tool.description, inputSchema: tool.parameters, risk: 'read' }));
       const baseline = estimateResponsesInputTokens({ protocol: { id: 'openai-responses', version: 1 }, items: body.input as JsonValue[] }, body.instructions, definitions);
-      // Two complete model/tool batches reach the threshold; the first alone
-      // remains below it. The summary prefix and retained batch each still fit.
+      // 两个完整的模型与工具批次会达到阈值；只有第一个批次时仍未达到阈值。
+      // 摘要前缀和保留批次各自仍可容纳在预算内。
       padding = Math.max(1024, Math.floor((maxInputTokens * 0.94 - baseline) / 2));
     }
     if (regularRequests <= 2) return { output: [assistantMessage(`details-${regularRequests}`, `IN_TURN_BATCH_${regularRequests}_${'x'.repeat(padding)}`, 'commentary'),
@@ -76,8 +76,8 @@ async function configure(app: ElectronApplication, projectId: string, fixture: F
   await closeSessionSettings(page);
   await page.evaluate(({ id, goal }) => window.desktop.submitChat(id, goal), { id: session.id, goal });
   await expect.poll(async () => (await snapshot(page, session.id)).nativeContextMaintenance?.compactionTrigger).toBe('in_turn');
-  // The host exposes its phase before the summary worker reaches HTTP. Wait
-  // for the gated summary request before asserting counts or cancelling it.
+  // 宿主会在摘要工作进程发起 HTTP 请求前公开其阶段。断言数量或取消前，
+  // 须先等待受控的摘要请求到达。
   await expect.poll(() => fixture.requests.length).toBe(3);
   expect(fixture.requests[2].tools).toHaveLength(0);
   const meter = page.locator('details.context-meter');
@@ -132,8 +132,8 @@ test('cancelling native in-turn compaction stops the active turn without a saved
   try {
     app = await f.launch(); const { page, session, meter } = await configure(app, f.projectId, f.fixture);
     await meter.getByRole('button', { name: '取消压缩', exact: true }).click();
-    // Aborting marks the turn interrupted before the summary worker finishes
-    // cleanup and persists its failed receipt. Wait for that terminal state.
+    // 中止会先将轮次标记为已中断，随后摘要工作进程才完成清理
+    // 并持久化失败回执。须等待这个终态。
     await expect.poll(async () => {
       const current = await snapshot(page, session.id);
       return { taskState: current.taskState, compacting: current.nativeContextMaintenance?.compacting,

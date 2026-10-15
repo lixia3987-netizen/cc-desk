@@ -95,7 +95,7 @@ export function PromptEditor({ value, onChange, onSend, onPasteFiles, placeholde
           target.setSelectionRange(next.caret, next.caret);
           return;
         }
-        // Restore before the next keystroke, never in a delayed animation frame.
+        // 在下一次按键前恢复，不要放到延迟的动画帧中处理。
         pendingSelection.current = next;
         onChange(next.value);
       }

@@ -4,18 +4,18 @@ import type { ClaudeCapabilities, ClaudeSession, ClaudeSessionPatch, Subtask, Su
 
 export interface ClaudeSessions {
   get(id: string): ClaudeSession | undefined;
-  /** Commit synchronously and atomically. Confirmed configuration patches merge with current stored values; failures must throw. */
+  /** 同步且原子地提交。已确认配置补丁与当前存储值合并；失败必须抛出。 */
   update(id: string, patch: ClaudeSessionPatch): void;
 }
 export interface ClaudeHistory {
-  /** A controlled mutable projection: repeated reads preserve references until explicitly replaced. */
+  /** 受控的可变投影：在被显式替换前，重复读取始终保留引用。 */
   get(id: string): ChatSnapshot;
   getMessage(id: string, messageId: string): ChatMessage | undefined;
   upsertMessage(id: string, message: ChatMessage): void;
-  /** Record the complete event before applying a bounded UI projection. Critical write failures throw. */
+  /** 应用有界界面投影前记录完整事件，关键写入失败必须抛出。 */
   append(id: string, event: ChatJournalEvent): void;
   changed(id: string): void;
-  /** Durable barrier used before resolving turns and releasing ownership. Errors must propagate. */
+  /** 完成交互轮次及释放归属责任前使用的持久化屏障；错误必须向上传播。 */
   flush(): void;
   delete(id: string): void;
   exportPath(id: string): string;
@@ -34,19 +34,19 @@ export interface ClaudeLaunchHost {
   environment(): Record<string, string>;
   invocation(env: Record<string, string>): { file: string; prefix: string[] };
 }
-/** Host-owned auxiliary jobs may hold the session directory after a foreground turn. */
+/** 宿主管理的辅助作业可能在前台交互轮次结束后仍占用会话目录。 */
 export interface ClaudeMetadata {
   readonly ids: readonly string[];
   has(id: string): boolean;
   assertReleased(id?: string): void;
-  /** Resolve only after cleanup settles; retain failures for assertReleased. */
+  /** 仅在清理结束后完成；保留失败信息供 assertReleased 使用。 */
   cancel(id: string): Promise<void>;
   cancelAll(): Promise<void>;
 }
 export interface ClaudeHost {
   metadata?: ClaudeMetadata;
   sessions: ClaudeSessions;
-  /** Delayed projection writes report errors back into the runtime; the host must not merely log them. */
+  /** 延迟投影写入将错误报告给运行时，宿主不能仅记录日志。 */
   conversations(callbacks: { isActive(id: string): boolean; onError(id: string, error: Error): void }): { history: ClaudeHistory; archive: ClaudeArchive };
   subtasks(onState: () => void): ClaudeSubtasks;
   launch: ClaudeLaunchHost;
@@ -54,6 +54,6 @@ export interface ClaudeHost {
   signalProcessGroup(pid: number, signal: NodeJS.Signals): Promise<void>;
   onState(): void;
   onConversation(id: string): void;
-  /** Called only after a non-command prompt has been accepted by the CLI input pipe. */
+  /** 仅在 CLI 输入管道接受非命令提示词之后调用。 */
   onAcceptedPrompt(id: string, text: string, capabilities: ClaudeCapabilities): void;
 }

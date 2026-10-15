@@ -33,7 +33,7 @@ export interface McpStdioToolConnection extends McpConnectionBase {
   protocolVersion: '2025-11-25';
   executable: string;
   argv: readonly string[];
-  /** Resolved values stay in the host and only enter this service's process. */
+  /** 解析后的值保留在宿主内，只传入此服务的进程。 */
   environment: Readonly<Record<string, string>>;
   environmentSources: Readonly<Record<string, string>>;
 }
@@ -43,11 +43,11 @@ interface McpClient {
   callTool(tool: McpTool, input: import('@cc-desk/agent-core').JsonObject, signal: AbortSignal): Promise<import('@cc-desk/agent-core').JsonObject>;
   close(): Promise<void>;
 }
-/** The host owns this handle until all local requests have settled. */
+/** 所有本地请求结束之前，宿主持有此句柄。 */
 export interface ManagedMcpToolPort extends ToolPort { close(): Promise<void> }
 export interface McpToolOptions {
   connections: McpToolConnection[];
-  /** Supplied only after the host has approved and durably reserved local startup. */
+  /** 仅在宿主批准并持久化预留本地启动资源之后提供。 */
   stdio?: { supervisor: ProcessSupervisor; ownerId: string; cwd: string; assertStartupCurrent(): void | Promise<void> };
   forbiddenValues?: readonly (string | undefined)[];
   assertOwnership?: () => void | Promise<void>;
@@ -68,7 +68,7 @@ interface PreparedState {
   result?: ToolResult;
 }
 
-/** Independent JSON complexity and known-secret checks surround schema validation. */
+/** 结构校验前后另行执行 JSON 复杂度及已知敏感信息检查。 */
 function checkedJson(value: unknown, forbidden: readonly string[]): asserts value is JsonValue {
   let nodes = 0;
   const seen = new Set<object>();
@@ -130,7 +130,7 @@ class McpToolPort implements ManagedMcpToolPort {
     checkedJson(json(call), this.forbidden);
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('MCP tool arguments must be a JSON object.');
     assertMcpToolInput(entry.remote.inputSchema, input);
-    const inputDigest = hash(canonical(input)); // The core contract hashes input only; policyRevision binds the catalog snapshot.
+    const inputDigest = hash(canonical(input)); // 核心契约仅对输入计算哈希；policyRevision 绑定工具目录快照。
     const key = this.key(call, context);
     const existing = this.prepared.get(key);
     if (existing) {
@@ -184,8 +184,8 @@ class McpToolPort implements ManagedMcpToolPort {
       if (state.result) return structuredClone(state.result);
       if (state.executed) return { status: 'unknown', output: { error: 'mcp_tool_already_started' } };
       this.approval(prepared, context, approval);
-      // Revalidate after the durable prepared marker too. Remote tools are not transactional;
-      // this prevents using a catalog we already know changed, without claiming server-side atomicity.
+      // 持久化准备标记后也重新校验。远程工具不具有事务性；
+      // 此检查避免使用已知发生变更的目录，但不保证服务端原子性。
       await this.validate(prepared, context);
       await this.options.assertOwnership?.();
       this.state(prepared, context);
@@ -209,7 +209,7 @@ class McpToolPort implements ManagedMcpToolPort {
       if (bytes(output) > context.maxOutputBytes) result = { status: 'unknown', output: { error: 'mcp_output_budget_exceeded' }, truncated: true };
       else result = { status: output.isError === true ? 'failed' : 'completed', output };
     } catch (error) {
-      // Never forward remote error strings or AbortSignal.reason into model/journal output.
+      // 绝不将远程错误字符串或 AbortSignal.reason 转发到模型或日志输出中。
       result = { status: error instanceof McpClientError ? error.outcome : 'unknown', output: { error: 'mcp_tool_execution_failed' } };
     }
     state.result = structuredClone(result);
@@ -220,7 +220,7 @@ class McpToolPort implements ManagedMcpToolPort {
 async function closeClients(clients: McpClient[]): Promise<void> {
   const results = await Promise.allSettled(clients.map(async client => client.close()));
   if (results.some(result => result.status === 'rejected')) {
-    // Only a failure to settle local requests reaches here. Remote DELETE is best effort.
+    // 仅本地请求无法结束时才会进入此处。远程 DELETE 只尽力执行。
     throw Object.assign(new Error('MCP 本地请求清理尚未确认。'), { cleanupUnconfirmed: true });
   }
 }
@@ -228,7 +228,7 @@ async function closeClients(clients: McpClient[]): Promise<void> {
 export async function createMcpToolPort(options: McpToolOptions, signal: AbortSignal): Promise<ManagedMcpToolPort> {
   stopped(signal);
   if (!Array.isArray(options.connections) || options.connections.length > MAX_CONNECTIONS) throw new Error('MCP connection budget exceeded.');
-  // A server must never echo credentials belonging to another selected connection/model.
+  // 服务端绝不能回显属于其他已选连接或模型的凭据。
   const forbidden = [...new Set([...(options.forbiddenValues ?? []), ...options.connections.flatMap(connection => connection.transport === 'stdio' ? Object.values(connection.environment) : [connection.bearerToken])].filter((value): value is string => typeof value === 'string' && value.length > 0))];
   const entries: Entry[] = [];
   const ids = new Set<string>();
@@ -248,7 +248,7 @@ export async function createMcpToolPort(options: McpToolOptions, signal: AbortSi
       options.assertConnectionCurrent?.(connection.connectionId, connection.revision);
       if (connection.transport === 'stdio' && !options.stdio) throw new Error('MCP stdio requires an approved host process owner.');
       if (connection.transport === 'stdio') {
-        // A preceding service's discovery may have consumed most of the startup approval window.
+        // 前一个服务的发现过程可能已消耗大部分启动审批有效期。
         await options.stdio!.assertStartupCurrent();
         stopped(signal);
       }
@@ -295,7 +295,7 @@ export async function createMcpToolPort(options: McpToolOptions, signal: AbortSi
   }
 }
 
-/** Route exact names only, reject collisions, and bind each prepared definition to its owner. */
+/** 仅按精确名称路由，拒绝名称冲突，并将每个准备后的定义绑定到其所有者。 */
 export function composeToolPorts(ports: ToolPort[]): ToolPort {
   const routes = new Map<string, { port: ToolPort; definition: ToolDefinition }>();
   for (const port of ports) for (const definition of port.definitions) {

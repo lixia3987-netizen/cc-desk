@@ -19,7 +19,7 @@ export class StateStore {
     fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
     this.file = path.join(directory, 'workspace.json');
     if (fs.existsSync(this.file)) {
-      // Fail closed: never replace corrupt user data with an empty workspace.
+      // 失败时拒绝继续：不能用空工作区替换损坏的用户数据。
       try {
         const original = fs.readFileSync(this.file, 'utf8');
         const stored = JSON.parse(original);
@@ -46,7 +46,7 @@ export class StateStore {
     }
   }
   get persistenceError() { return this.writeError; }
-  /** Critical changes remain synchronous. Only reproducible observations/drafts may opt into batching. */
+  /** 关键变更保持同步。仅可重建的观测结果和草稿可选择批量处理。 */
   change(update: (draft: AppState) => void, options: { defer?: boolean } = {}): boolean {
     const next = structuredClone(this.state);
     update(next);
@@ -66,8 +66,8 @@ export class StateStore {
         this.flushTimer = setTimeout(() => {
           try { this.flush(); }
           catch (error) {
-            // Retain dirty state for explicit retry; background failures never escape a timer.
-            try { this.options.onError?.(error as Error); } catch { /* Reporting must not crash the app. */ }
+            // 保留待写入状态以便显式重试；后台失败不能逃逸定时器回调。
+            try { this.options.onError?.(error as Error); } catch { /* 错误报告不能使应用崩溃。 */ }
           }
         }, this.options.writeDelayMs ?? 150);
         this.flushTimer.unref();
@@ -79,7 +79,7 @@ export class StateStore {
     }
     return true;
   }
-  /** Flush all deferred changes; a failure is observable and leaves them available for retry. */
+  /** 刷新所有延迟变更；失败可被观测，且保留变更以便重试。 */
   flush(): void {
     if (this.flushTimer) clearTimeout(this.flushTimer);
     this.flushTimer = undefined;
@@ -96,14 +96,14 @@ export class StateStore {
   private persist(state: AppState) {
     const temp = this.file + '.tmp';
     try {
-      // A rolling .bak is overwritten on subsequent saves. Preserve the exact
-      // pre-migration bytes separately before the first v3 replacement.
+      // 轮换的 .bak 会在后续保存时覆盖。应在首次 v3 替换前，
+      // 单独保留迁移前的原始字节。
       if (this.migrationSource !== undefined && !this.migrationBackup) {
         const backup = path.join(this.directory, `workspace.pre-v3.${randomUUID()}.json`);
         const fd = fs.openSync(backup, 'wx', 0o600);
         let complete = false;
         try { fs.writeFileSync(fd, this.migrationSource); fs.fsyncSync(fd); complete = true; }
-        finally { fs.closeSync(fd); if (!complete) { try { fs.unlinkSync(backup); } catch { /* Original workspace is untouched. */ } } }
+        finally { fs.closeSync(fd); if (!complete) { try { fs.unlinkSync(backup); } catch { /* 原工作区未被改动。 */ } } }
         this.migrationBackup = backup;
       }
       const fd = fs.openSync(temp, 'w', 0o600);

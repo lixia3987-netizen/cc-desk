@@ -16,11 +16,11 @@ function normalizePath(value: string): string {
 
 function isAbsolute(value: string, platform: NodeJS.Platform): boolean {
   if (platform !== 'win32') return path.posix.isAbsolute(value);
-  // A leading backslash alone is relative to the current drive on Windows.
+  // Windows 上，单个前导反斜杠表示相对于当前驱动器。
   return path.win32.isAbsolute(value) && /^(?:[a-z]:[/\\]|[/\\]{2}[^/\\]+[/\\][^/\\]+)/i.test(value);
 }
 
-/** Build an argument vector; the configured path is never parsed as a command. */
+/** 构造参数向量，不把配置路径解析为命令。 */
 export function ideInvocation(configuredPath: string | undefined, cwd: string, platform: NodeJS.Platform = process.platform): IdeInvocation {
   const application = normalizePath(configuredPath ?? '');
   if (!application) throw new Error('请先在设置中选择用于打开项目的 IDE 应用。');
@@ -80,7 +80,7 @@ function launchError(error?: unknown, code?: number | null, signal?: NodeJS.Sign
 
 const ignoreLateError = () => {};
 
-/** Opening a GUI must not keep the workbench alive or wait for the editor to close. */
+/** 打开图形界面不能阻止工作台退出，也不能等待编辑器关闭。 */
 export async function openIde(configuredPath: string | undefined, cwd: string, options: IdeOptions = {}): Promise<void> {
   const platform = options.platform ?? process.platform;
   const invocation = ideInvocation(configuredPath, cwd, platform);
@@ -100,7 +100,7 @@ export async function openIde(configuredPath: string | undefined, cwd: string, o
       child.removeListener('spawn', onSpawn);
       child.removeListener('exit', onExit);
       child.removeListener('error', onError);
-      // A late child-process error must not crash the desktop after handoff.
+      // 交接完成后，迟到的子进程错误不能使桌面应用崩溃。
       child.once('error', ignoreLateError);
       child.unref();
       if (error) reject(error); else resolve();
@@ -108,8 +108,8 @@ export async function openIde(configuredPath: string | undefined, cwd: string, o
     const onError = (error: Error) => finish(launchError(error));
     const onExit = (code: number | null, signal: NodeJS.Signals | null) => finish(code === 0 ? undefined : launchError(undefined, code, signal));
     const onSpawn = () => {
-      // `open` exits after LaunchServices hands off the request. Direct executables
-      // may stay alive indefinitely, so only observe their initial startup failure.
+      // LaunchServices 交接请求后，`open` 会退出。直接启动的可执行文件
+      // 可能长期运行，因此只观测其初始启动失败。
       timer = setTimeout(() => finish(invocation.appBundle ? new Error('IDE 启动请求超时，请检查该应用能否手动打开后重试。') : undefined), invocation.appBundle ? 15_000 : 500);
     };
     child.once('error', onError);

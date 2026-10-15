@@ -9,7 +9,7 @@ import path from 'node:path';
 
 const capabilities = { available: true, executable: process.execPath, version: 'fixture', flags: [], efforts: ['default'] };
 
-/** No Electron, desktop imports, StateStore or application state shape are required. */
+/** 无需 Electron、桌面端导入、StateStore 或应用状态结构。 */
 function setup(count = 1, { throwObservers = false, invocation, metadata } = {}) {
   const sessions = new Map(Array.from({ length: count }, () => {
     const id = randomUUID();
@@ -164,7 +164,7 @@ test('whenReleased rejects a known failed tree cleanup even while inherited stre
     const connection = fixture.runtime.entries.get(id).connection;
     const originalTermination = connection.termination;
     assert.equal(originalTermination, undefined, 'the fixture must have a live, unclosed connection before injecting a failed release');
-    // Model the exact state of a failed tree release while close is still pending.
+    // 模拟 close 仍待完成时，进程树释放失败的准确状态。
     connection.termination = Promise.resolve(false);
     try {
       await assert.rejects(fixture.runtime.whenReleased(id), /工作目录未释放/);
@@ -174,8 +174,8 @@ test('whenReleased rejects a known failed tree cleanup even while inherited stre
   } catch (error) { failure = error; }
   try { await fixture.runtime.shutdown(); }
   catch (cleanup) {
-    // Preserve the real release failure: a second shutdown rejection must not
-    // replace it with the less specific aggregate seen in the Windows runner.
+    // 保留真实的释放失败信息；第二次关闭拒绝不能将其
+    // 替换为 Windows 测试运行器中出现的较模糊的聚合错误。
     if (failure) throw new AggregateError([failure, cleanup], `Release fixture failed: ${failure.message}; shutdown failed: ${cleanup.message}`);
     throw cleanup;
   }

@@ -1,6 +1,6 @@
-/** The application's stable session ID is separate from a provider's conversation ID. */
+/** 应用的稳定会话 ID 与提供商的对话 ID 相互独立。 */
 export type ExecutionMode = 'structured' | 'terminal';
-/** Persisted provider-owned configuration. Credentials must not be stored here. */
+/** 持久化的提供商配置，禁止在此存储凭据。 */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export interface EngineConfig { schemaVersion: number; options: Record<string, JsonValue> }
 export interface EngineConfigField {
@@ -32,12 +32,12 @@ export function getSessionIdentity(session: { id: string; execution: SessionExec
   return { sessionId: session.id, ...session.execution };
 }
 
-/** Providers own their conversation namespace; an absent identity never owns a conversation. */
+/** 提供商管理各自的对话命名空间；缺失的身份绝不关联任何对话。 */
 export function sameConversation(a: SessionExecution, b: SessionExecution): boolean {
   return Boolean(a.conversationId && b.conversationId && a.providerId === b.providerId && a.conversationId === b.conversationId);
 }
 
-/** Public operations, independent of any CLI flags or transport protocol. */
+/** 公共操作，与 CLI 参数或传输协议无关。 */
 export interface ExecutionCapabilities {
   available: boolean;
   error?: string;
@@ -51,7 +51,7 @@ export interface ExecutionCapabilities {
   liveConfig: boolean;
   attachments: boolean;
   recoverContext?: boolean;
-  /** Explicit context summarization, distinct from rebuilding an empty conversation. */
+  /** 显式摘要上下文，与重建空白对话相区分。 */
   compactContext?: boolean;
   export?: boolean;
 }
@@ -62,32 +62,32 @@ export interface ExecutionDescriptor {
   capabilities: ExecutionCapabilities;
   configuration?: EngineConfiguration;
   maintenance?: boolean;
-  /** External history import is distinct from continuing a local session. */
+  /** 导入外部历史与继续本地会话是不同操作。 */
   history?: boolean;
 }
 
 export type ModelCapabilitySource = 'provider' | 'catalog' | 'fallback';
 export interface ModelCapabilityValue<T> { value: T; source: ModelCapabilitySource }
-/** Missing limits remain unknown; sources apply to each field independently. */
+/** 缺失的上限保持未知；各字段分别记录其来源。 */
 export interface ModelTokenCapabilities {
   contextWindow?: ModelCapabilityValue<number>;
   maxInputTokens?: ModelCapabilityValue<number>;
   maxOutputTokens?: ModelCapabilityValue<number>;
 }
 
-/** Provider measurements and local budgets stay separate; model windows are never guessed. */
+/** 提供商测量值与本地预算相互独立，绝不猜测模型的上下文窗口。 */
 export interface ContextUsage {
   model?: string;
-  /** Model selected when the turn starts; response routing names and report labels do not replace it. */
+  /** 交互轮次开始时选定的模型；响应路由名称及报告标签不会将其替换。 */
   requestModel?: string;
-  /** Provider's selected model/alias, retained across process restarts. */
+  /** 提供商选定的模型或别名，在进程重启后保留。 */
   selectionModel?: string;
   inputTokens?: number;
   contextWindow?: number;
   measuredAt?: string;
   source?: 'request' | 'context-command';
   modelCapabilities?: { model: string; capabilities: ModelTokenCapabilities; resolvedAt?: string; conservative?: boolean };
-  /** Local pre-request limits. This is neither a provider measurement nor the model's window. */
+  /** 请求前的本地上限，既不是提供商测量值，也不是模型的上下文窗口。 */
   budget?: {
     estimatedInputTokens: number;
     maxInputTokens: number;
@@ -109,6 +109,6 @@ export interface SessionCommand {
   disabledReason?: string;
 }
 
-/** Resource lifecycle, separate from a turn's TaskState. */
+/** 资源生命周期，与交互轮次的 TaskState 相互独立。 */
 export type SessionStatus = 'idle' | 'running' | 'stopping' | 'stopped' | 'error';
 export interface TerminalChunk { sessionId: string; seq: number; data: string }

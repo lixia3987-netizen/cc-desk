@@ -3,7 +3,7 @@ import type { HistoryPage } from '../../shared/types';
 export interface HistoryQuery { providerId?: string; query?: string; offset?: number; limit?: number }
 type Source = (cwd: string, options: Omit<HistoryQuery, 'providerId'>) => Promise<{ entries: { id: string; title: string; cwd: string; modifiedAt: string }[]; total: number; nextOffset: number | null }>;
 
-/** External transcripts have provider namespaces independent of local display journals. */
+/** 外部对话记录采用提供方命名空间，与本地显示日志相互独立。 */
 export class HistorySources {
   private sources = new Map<string, Source>();
   register(providerId: string, source: Source) {

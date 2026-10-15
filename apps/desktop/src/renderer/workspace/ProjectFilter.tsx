@@ -5,7 +5,7 @@ import './project-filter.css';
 
 interface Props { projects: Project[]; value: string; onChange: (id: string) => void }
 
-/** Select-only combobox: keep keyboard focus on the trigger while navigating options. */
+/** 仅供选择的组合框：浏览选项时，将键盘焦点保持在触发按钮上。 */
 export function ProjectFilter({ projects, value, onChange }: Props) {
   const id = useId(), root = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false), [activeId, setActiveId] = useState(value);

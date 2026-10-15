@@ -2,7 +2,7 @@ import path from 'node:path';
 
 export const ENGINEERING_USAGE = 'engineering-init <empty-operator-directory> <40-character-app-commit> [--unlimited-budget] | engineering-readiness <operator-directory> | engineering-verify <operator-directory> <run-id> <candidate-directory> [--timeout-ms <1..300000>] | engineering-report <operator-directory> <new-report.json> | engineering-compare <left-report.json> <right-report.json>';
 
-/** Engineering commands are separate from the original three smoke-task commands. */
+/** 工程评估命令与原有的三个冒烟任务命令相互独立。 */
 export async function engineeringCommand(args) {
   const [command, first, second, third] = args;
   if (command === 'engineering-readiness') {

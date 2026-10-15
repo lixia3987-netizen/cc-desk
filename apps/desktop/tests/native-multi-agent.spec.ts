@@ -12,7 +12,7 @@ import { closeNativeApp } from './helpers/native-app-cleanup';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import type { NativeAgentResult } from '../src/shared/chat';
-// @ts-expect-error The executable HTTP fixture is shared with agent-node regressions.
+// @ts-expect-error 与 agent-node 回归测试共享这个可执行 HTTP 测试装置。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const execute = promisify(execFile), secret = 'sk-native-multi-agent-fixture-protected';

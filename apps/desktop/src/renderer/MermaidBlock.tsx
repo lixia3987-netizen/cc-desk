@@ -34,7 +34,7 @@ export function MermaidBlock({ source }: { source: string }) {
     }
     let intersecting = typeof IntersectionObserver === 'undefined';
     const update = () => setVisible(intersecting && details.every(parent => parent.open));
-    // Chromium may report intersection for descendants of a closed <details>.
+    // Chromium 可能仍报告已收起的 <details> 内部元素与视口相交。
     details.forEach(parent => parent.addEventListener('toggle', update));
     const observer = typeof IntersectionObserver === 'undefined' ? undefined : new IntersectionObserver(([entry]) => {
       intersecting = entry.isIntersecting; update();
@@ -45,7 +45,7 @@ export function MermaidBlock({ source }: { source: string }) {
   useEffect(() => {
     if (mode !== 'preview' || !visible || current || oversized) return;
     const controller = new AbortController();
-    // A stream may update a fence many times; only render after a short quiet period.
+    // 流式输出可能多次更新代码围栏，仅在短暂稳定后渲染。
     const timer = setTimeout(() => {
       void renderMermaid(source, theme, controller.signal).then(svg => {
         if (!controller.signal.aborted) setPreview({ source, theme, svg });

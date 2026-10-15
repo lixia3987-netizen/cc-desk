@@ -4,10 +4,10 @@ import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type Res
 import { chatCompletionsPendingCalls } from './context-maintenance.js'
 import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 
-/** API base excludes /chat/completions. Limits and credential policy match Responses. */
+/** API 基础地址不含 /chat/completions。限制和凭据策略与 Responses 一致。 */
 export type ChatCompletionsModelOptions = ResponsesModelOptions
 
-/** Never retains a provider body, URL, header, original exception, or credential. */
+/** 绝不保留提供方响应体、URL、请求头、原始异常或凭据。 */
 export class ChatCompletionsModelError extends Error {
   constructor(readonly code: string, message: string, readonly httpStatus?: number) {
     super(message)
@@ -35,7 +35,7 @@ const guard = (value: unknown, credential: string | undefined): void => {
   }
 }
 
-/** Byte limits are enforced before feeding this CR/LF/CRLF and multiline SSE parser. */
+/** 输入此支持 CR/LF/CRLF 和多行数据的 SSE 解析器之前，先执行字节限制。 */
 class EventStreamParser {
   private line = ''
   private data: string[] = []
@@ -102,7 +102,7 @@ const chatTools = (tools: readonly ToolDefinition[]): JsonObject[] => tools.map(
 }))
 const estimateWithTools = (context: ModelContext, instructions: string, toolsJson: string): number => estimateContextInputTokens(context, instructions + toolsJson)
 
-/** Conservative UTF-8 estimate, including the exact tool catalog; never billed usage. */
+/** 保守的 UTF-8 估算，包含精确的工具目录；绝不代表计费用量。 */
 export function estimateChatCompletionsInputTokens(context: ModelContext, instructions = '', toolDefinitions: readonly ToolDefinition[] = []): number {
   return estimateWithTools(context, instructions, canonicalJson(chatTools(toolDefinitions)))
 }
@@ -113,8 +113,8 @@ const supportedDelta = new Set(['role', 'content', 'refusal', 'tool_calls'])
 const supportedCall = new Set(['index', 'id', 'type', 'function'])
 const supportedFunction = new Set(['name', 'arguments'])
 function assertSupportedFields(value: JsonObject, fields: ReadonlySet<string>): void {
-  // Message extensions can carry continuation state (e.g. vendor reasoning).
-  // Reject active unknown fields instead of silently discarding that state.
+  // 消息扩展可能携带续接状态，例如提供方的推理内容。
+  // 拒绝具有执行语义的未知字段，避免静默丢弃这些状态。
   if (Object.entries(value).some(([key, child]) => !fields.has(key) && child !== null)) failure('unsupported', 'The model returned an unsupported message extension.')
 }
 
@@ -311,8 +311,8 @@ export class ChatCompletionsModel implements ModelPort {
           usage = usageFrom(event.usage)
           seenUsage = true
         }
-        // Top-level metadata (model, fingerprint, obfuscation) has no message
-        // semantics and is intentionally not replayed as conversation history.
+        // 顶层元数据（model、fingerprint、obfuscation）没有消息
+        // 语义，因此有意不将其作为对话历史重放。
       })
       for (;;) {
         const chunk = await reader.read()
@@ -335,7 +335,7 @@ export class ChatCompletionsModel implements ModelPort {
       const message: JsonObject = { role: 'assistant', content: text }
       if (refusal !== null) message.refusal = refusal
       if (toolCalls.length) message.tool_calls = toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: call.arguments } }))
-      // Also scans decoded argument JSON, protecting against escaped credentials.
+      // 同时扫描解码后的参数 JSON，防止通过转义隐藏凭据。
       guard(message, this.#apiKey)
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       deltas.finish()
@@ -353,7 +353,7 @@ export class ChatCompletionsModel implements ModelPort {
       clearTimeout(timer)
       request.signal.removeEventListener('abort', cancel)
       controller.abort()
-      try { await reader?.cancel() } catch { /* transport already closed */ }
+      try { await reader?.cancel() } catch { /* 传输已关闭 */ }
       reader?.releaseLock()
     }
   }

@@ -4,7 +4,7 @@ import { ExecutionRegistry } from './registry';
 import type { ExecutionSubmission, StructuredExecutor } from './ports';
 import { OfflineHistory } from './offline-history';
 
-/** Route by each persisted execution identity, never by a concrete provider class. */
+/** 依据各条持久化执行身份路由，不依据具体提供方类。 */
 export class StructuredExecutions {
   private offline?: OfflineHistory;
   constructor(private registry: ExecutionRegistry, directory?: string) { if (directory) this.offline = new OfflineHistory(directory); }
@@ -70,12 +70,12 @@ export class StructuredExecutions {
   async whenReleased(id: string) {
     const executor = this.get(id);
     if (executor.whenReleased) return executor.whenReleased(id);
-    // Optional legacy executors can prove release only through their explicit idle barrier.
+    // 可选旧版执行器只能通过显式空闲屏障证明资源已释放。
     await executor.stopIdle(id);
     if (executor.has(id) || executor.isBusy(id)) throw new Error('执行器未能证明资源已释放。');
   }
   async stopIdle(id: string) {
-    // Callers also release directories containing terminal sessions.
+    // 调用方还会释放包含终端会话的目录。
     if (this.registry.getSession(id).execution.mode === 'structured') await this.get(id).stopIdle(id);
   }
   forget(id: string) { if (this.registry.getSession(id).execution.mode === 'structured') this.get(id).forget(id); }

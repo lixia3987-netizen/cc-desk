@@ -41,7 +41,7 @@ export function anthropicEvents(content = [{ type: 'text', text: '完成🙂' }]
   return [...events, messageDelta(options.stopReason ?? (content.some(block => block.type === 'tool_use') ? 'tool_use' : 'end_turn'), options.usage), messageStop()];
 }
 
-/** Real loopback HTTP transport; request bodies and headers stay in memory for assertions. */
+/** 真实回环 HTTP 传输；请求体和请求头仅保留在内存中供断言使用。 */
 export async function startAnthropicFixture(options = {}) {
   const requests = [], requestHeaders = [], requestPaths = [], errors = [], sockets = new Set();
   const server = http.createServer(async (request, response) => {

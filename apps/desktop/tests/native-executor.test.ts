@@ -15,8 +15,8 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
 import { changeNativePermissionForNextTurn } from '../src/main/native-session-permission';
-// The package fixture is shared with real utilityProcess and packaged acceptance tests.
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// 此软件包测试装置与真实 utilityProcess 测试和打包验收测试共享。
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, responseEvents, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const sentinel = 'sk-native-executor-sentinel-never-persist';
@@ -237,8 +237,8 @@ for (const reflected of ['text', 'tool_arguments', 'interleaved_text'] as const)
         const filler = { type: 'response.function_call_arguments.delta', output_index: 0, item_id: 'fc_filler', delta: ' '.repeat(key.length * 3) };
         return [{ ...event, delta: event.delta!.slice(0, midpoint) }, filler, { ...event, delta: event.delta!.slice(midpoint) }, filler];
       }
-      // Both transport chunks and decoded SSE deltas split the credential. No
-      // single delta contains it, so whole-event-only filtering is insufficient.
+      // 传输分块与解码后的 SSE 增量都拆分了凭据。没有任何单个增量
+      // 包含完整凭据，因此仅对完整事件过滤并不足够。
       return [...event.delta!].map(delta => ({ ...event, delta }));
     });
     return { output, events, splitBytes: 7 };
@@ -321,8 +321,8 @@ test('snapshot-only history remains readable and permanently read-only after rec
 
 test('native shutdown waits through an empty writer-lock opening and late history reads cannot reopen it', async t => {
   const f = await fixture();
-  // safeDirectory resolves the ledger root. macOS temp roots and test TMPDIR
-  // aliases can spell the same directory differently from fs.open's real path.
+  // safeDirectory 解析账本根目录。macOS 临时目录和测试 TMPDIR 的别名
+  // 可能与 fs.open 的真实路径写法不同，但仍指向同一目录。
   const root = await fs.realpath(path.join(f.data, 'native', 'conversations'));
   const lock = path.join(root, f.conversationId, '.writer-lock');
   const originalOpen = fs.open.bind(fs);

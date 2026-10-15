@@ -6,12 +6,12 @@ export { MCP_PROTOCOL_VERSION, McpClientError, type McpTool, type McpProtocolVer
 
 export interface McpHttpClientOptions {
   endpoint: string
-  /** Explicit revision selection; no protocol downgrade or automatic retry. */
+  /** 显式选择协议版本；不降级协议，也不自动重试。 */
   protocolVersion?: McpProtocolVersion
   allowLoopbackHttp?: boolean
   bearerToken?: string
   forbiddenValues?: readonly (string | undefined)[]
-  /** Applies to the entire discovery operation, including all catalog pages. */
+  /** 覆盖整个发现操作，包括工具目录的所有分页。 */
   timeoutMs?: number
 }
 
@@ -39,7 +39,7 @@ function toolHeaders(tool: McpTool, input: JsonObject): Record<string, string> {
       if (!object(value)) fail('tool_arguments')
       value = own(value, key) ? value[key] : undefined
     }
-    // The transport explicitly omits null and absent arguments.
+    // 传输层显式省略值为 null 或缺失的参数。
     if (value === null || value === undefined) continue
     if ((parameter.type === 'string' && typeof value !== 'string') ||
         (parameter.type === 'boolean' && typeof value !== 'boolean') ||
@@ -79,7 +79,7 @@ class SseParser {
 
 interface Operation { signal: AbortSignal; sentCall: boolean; bytes: number; serverPings: number }
 
-/** Explicitly join body cancellation even when fetch does not forward its abort. */
+/** 即使 fetch 不转发中止信号，也显式等待响应体取消完成。 */
 function responseReader(response: Response, signal: AbortSignal): {
   reader: ReadableStreamDefaultReader<Uint8Array>
   close(): Promise<void>
@@ -89,15 +89,15 @@ function responseReader(response: Response, signal: AbortSignal): {
   let cancellation: Promise<void> | undefined
   const cancel = (): void => { cancellation ??= reader.cancel().catch(() => undefined) }
   signal.addEventListener('abort', cancel, { once: true })
-  // Abort can occur between fetch resolving and this body acquiring its reader.
+  // fetch 完成之后、响应体取得读取器之前，仍可能发生中止。
   if (signal.aborted) cancel()
   return {
     reader,
     async close() {
       signal.removeEventListener('abort', cancel)
       cancel()
-      // A second reader.cancel() may resolve while the first upstream cleanup
-      // is still pending. Join the original promise before releasing ownership.
+      // 首次上游清理仍在进行时，第二次 reader.cancel() 可能已完成。
+      // 释放所有权之前，先等待原始 Promise 完成。
       await cancellation
       reader.releaseLock()
     },
@@ -157,7 +157,7 @@ export class McpHttpClient {
         for (const candidate of result.tools) {
           let tool: McpTool
           try { tool = validateTool(candidate, this.legacy) } catch (error) {
-            // MCP requires excluding invalid header annotations without hiding other tools.
+            // MCP 要求排除无效的请求头注解，同时不能隐藏其他工具。
             if (error instanceof McpClientError && error.code === 'tool_schema') continue
             throw error
           }
@@ -214,7 +214,7 @@ export class McpHttpClient {
       await this.postAcknowledged({ jsonrpc: '2.0', method: 'notifications/initialized' }, operation.signal)
       this.#hasTools = hasTools
     })()
-    // Concurrent discovery shares the handshake, but an aborted waiter does not cancel it.
+    // 并发发现共用握手，但等待方被中止时不会取消该握手。
     await new Promise<void>((resolve, reject) => {
       const abort = (): void => { reject(new McpClientError('cancelled', 'not_executed')) }
       if (operation.signal.aborted) { abort(); return }
@@ -224,15 +224,15 @@ export class McpHttpClient {
     this.assertAvailable(operation.signal)
   }
 
-  /** Abort and join every local request before best-effort remote session disposal. */
+  /** 尽力释放远程会话之前，中止并等待所有本地请求结束。 */
   close(): Promise<void> {
     if (this.#closePromise) return this.#closePromise
     this.#closed = true
     for (const controller of this.#controllers) controller.abort()
     this.#closePromise = (async () => {
       await Promise.all([...this.#pending])
-      // A handshake can be settling after its caller was aborted; it may never
-      // continue into tools/list or tools/call after this point.
+      // 调用方中止后，握手仍可能正在结束；此后绝不能
+      // 继续进入 tools/list 或 tools/call。
       await this.#initialization?.catch(() => undefined)
       if (this.legacy && this.#sessionId) {
         const controller = new AbortController()
@@ -240,10 +240,10 @@ export class McpHttpClient {
         try {
           const response = await fetch(this.#endpoint, { method: 'DELETE', headers: this.headers(), signal: controller.signal,
             redirect: 'error', credentials: 'omit', cache: 'no-store', referrerPolicy: 'no-referrer' })
-          // DELETE is advisory: 404/405 and all other failures cannot establish
-          // that a remote task stopped, and do not retain local session ownership.
+          // DELETE 仅是建议性操作：404/405 及任何其他失败都不能证明
+          // 远程任务已停止，也不会因此继续持有本地会话所有权。
           await response.body?.cancel().catch(() => undefined)
-        } catch { /* No remote body, headers or diagnostic escape cleanup. */ }
+        } catch { /* 清理过程不泄露远程响应体、请求头或诊断内容。 */ }
         finally { clearTimeout(timer); controller.abort() }
       }
     })()
@@ -344,7 +344,7 @@ export class McpHttpClient {
     const timer = setTimeout(() => controller.abort(), LIMIT.cleanupMs)
     try {
       await this.postAcknowledged({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } }, controller.signal, true)
-    } catch { /* Cancellation acknowledgement never proves whether the tool ran. */ }
+    } catch { /* 取消确认绝不能证明工具是否执行过。 */ }
     finally { clearTimeout(timer); controller.abort() }
   }
 
@@ -358,7 +358,7 @@ export class McpHttpClient {
     } } })
     this.assertNoSecrets(body)
     if (Buffer.byteLength(body) > LIMIT.requestBytes) fail('request_limit')
-    // Once fetch receives a call, transport failures cannot prove whether it executed.
+    // fetch 一旦接收到调用，传输失败就无法证明该调用是否执行过。
     if (method === 'tools/call') operation.sentCall = true
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
     let bodyReader: ReturnType<typeof responseReader>
@@ -378,7 +378,7 @@ export class McpHttpClient {
       let result: JsonObject | undefined
       const pings: JsonValue[] = []
       const sse = contentType === 'text/event-stream' ? new SseParser(data => {
-        if (data === '') return // Empty SSE primers carry no JSON-RPC message.
+        if (data === '') return // 空的 SSE 预热数据不携带 JSON-RPC 消息。
         if (result !== undefined) fail('response_schema')
         const message = this.parse(data)
         if (this.legacy && message.jsonrpc === '2.0' && message.method === 'ping' && own(message, 'id') &&

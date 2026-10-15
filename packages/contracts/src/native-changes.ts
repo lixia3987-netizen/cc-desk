@@ -2,7 +2,7 @@ export type NativeChangeSetLineEndings = 'none' | 'lf' | 'crlf' | 'cr' | 'mixed'
 export interface NativeChangeSetFilePreview {
   index: number; path: string; kind: 'create' | 'replace';
   beforeHash: string | null; afterHash: string; beforeBytes: number; afterBytes: number;
-  /** Complete changed region, including line ending and missing-final-newline markers. Not a minimal diff. */
+  /** 完整的变更区域，包含换行符及末尾缺少换行符的标记；并非最小差异。 */
   diff: string;
   lineEndings: { before: NativeChangeSetLineEndings; after: NativeChangeSetLineEndings };
   noFinalNewline: { before: boolean; after: boolean };
@@ -11,7 +11,7 @@ export interface NativeChangeSetPreview {
   schemaVersion: 1; digest: string; atomic: false;
   files: NativeChangeSetFilePreview[]; totalContentBytes: number; previewBytes: number;
 }
-/** beforeHash/afterHash are the exact approved old/intended-new versions, not guesses from disk. */
+/** beforeHash/afterHash 是已批准的旧版本及预期新版本的准确哈希，绝不根据磁盘内容猜测。 */
 export interface NativeChangeSetFileEvent {
   changeSetDigest: string; index: number; path: string;
   status: 'prepared' | 'applied' | 'not_applied' | 'unknown';
@@ -23,12 +23,12 @@ export interface NativeChangeSetFileResult {
 }
 export interface NativeChangeSetResult {
   digest: string; atomic: false; status: 'completed' | 'partial' | 'not_applied' | 'unknown';
-  /** False means a host progress or final tool receipt is missing or failed to durably commit. */
+  /** 为 false 表示缺少宿主进度回执或最终工具回执，或这些回执未能持久化提交。 */
   receiptCommitted: boolean;
   files: NativeChangeSetFileResult[]; errorCode?: string;
 }
 
-/** Portable UTF-8 accounting; malformed UTF-16 is never accepted as a preview. */
+/** 可移植的 UTF-8 字节计数；格式错误的 UTF-16 绝不作为预览接受。 */
 export function nativeChangeSetUtf8Bytes(value: string): number {
   let bytes = 0;
   for (let index = 0; index < value.length; index++) {

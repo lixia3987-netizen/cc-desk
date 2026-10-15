@@ -18,13 +18,13 @@ async function statPath(file: string): Promise<BigIntStats | undefined> {
 async function verifyPath(snapshot: PathSnapshot): Promise<void> {
   const current = await statPath(snapshot.file);
   const equal = snapshot.stat?.isDirectory() && current?.isDirectory()
-    // Sibling writes in a shared ancestor (e.g. /tmp) do not change our lookup.
+    // 共享祖先目录（例如 /tmp）中的同级写入不会改变我们的查找。
     ? snapshot.stat.dev === current.dev && snapshot.stat.ino === current.ino && snapshot.stat.mode === current.mode
     : snapshot.stat !== undefined && current !== undefined && same(snapshot.stat, current);
   if (snapshot.stat === undefined ? current !== undefined : !equal) changed();
 }
 
-/** Inspect every ancestor, including rootDirectory ancestors; never resolve through links. */
+/** 检查每层祖先目录，包括 rootDirectory 的祖先；绝不通过链接解析。 */
 async function captureDirectories(directory: string): Promise<PathSnapshot[]> {
   const ancestors = [directory];
   while (path.dirname(ancestors[0]!) !== ancestors[0]) ancestors.unshift(path.dirname(ancestors[0]!));
@@ -44,7 +44,7 @@ async function captureFile(file: string, maximum: number): Promise<OpenSnapshot>
   if (!stat) return snapshot;
   if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1n) unsafe();
   if (stat.size > BigInt(maximum)) throw new RunStoreError('limit_exceeded', 'Persisted store file exceeds its configured limit');
-  // NONBLOCK prevents a replaced FIFO from blocking open before fstat can reject it.
+  // NONBLOCK 防止被替换的 FIFO 在 fstat 有机会拒绝它之前阻塞打开操作。
   const handle = await open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
   try {
     const actual = await handle.stat({ bigint: true });
@@ -56,8 +56,8 @@ async function captureFile(file: string, maximum: number): Promise<OpenSnapshot>
 
 async function readSnapshot(snapshot: OpenSnapshot): Promise<string | undefined> {
   if (!snapshot.handle || !snapshot.stat) return undefined;
-  // Read exactly the captured length. A live append can never turn this into an
-  // unbounded readFile() allocation or an indefinite growing-file read.
+  // 严格读取已捕获的长度。运行中的追加绝不能使其变成
+  // 不限制大小的 readFile() 内存分配，或无限读取持续增长的文件。
   const size = Number(snapshot.stat.size);
   const buffer = Buffer.alloc(size);
   for (let offset = 0; offset < size;) {
@@ -71,7 +71,7 @@ async function readSnapshot(snapshot: OpenSnapshot): Promise<string | undefined>
   catch { throw new RunStoreError('corrupt_store', 'Persisted store snapshot is not valid UTF-8'); }
 }
 
-/** No lock, mkdir, chmod, cleanup or recovery. The callback only replays captured data. */
+/** 不加锁、不 mkdir、不 chmod、不清理也不恢复。回调仅重放已捕获的数据。 */
 export async function readStoreSnapshot<T>(directory: string, limits: { maxJournalBytes: number; maxCheckpointBytes: number },
   inspect: (journal: string | undefined, checkpoint: string | undefined) => T): Promise<T> {
   const files: OpenSnapshot[] = [];

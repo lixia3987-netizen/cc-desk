@@ -44,8 +44,8 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
   const app = await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } });
   const page = await app.firstWindow();
   await expect(page.getByRole('button', { name: /新建会话/ })).toBeVisible();
-  // Creation, directory selection, persistence and renderer/preload IPC are real.
-  // Control only creation timing and the account-dependent submission response.
+  // 创建、目录选择、持久化以及渲染进程和预加载脚本的 IPC 都使用真实实现。
+  // 仅控制创建时机与依赖账号的提交响应。
   await app.evaluate(({ ipcMain }) => {
     type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
     const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
@@ -137,7 +137,7 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await page.getByRole('dialog', { name: '设置与连接', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
     await expect(permission).toHaveValue('plan');
     await permission.selectOption('acceptEdits');
-    // Saving unrelated defaults and refreshing the snapshot must preserve an explicit draft choice.
+    // 保存无关默认值并刷新快照时，必须保留草稿中明确选择的值。
     await form.getByRole('button', { name: '新会话设置', exact: true }).click();
     await page.getByRole('tab', { name: '运行与权限', exact: true }).click();
     await page.getByRole('tab', { name: '运行限制', exact: true }).click();

@@ -66,7 +66,7 @@ test('IPC validators reject path injection and invalid IDs; Claude validates its
   }
   for(const permissionMode of ['auto','unknown','bypassPermissions --model injected']) {
     const config={schemaVersion:1,options:{model:'',effort:'default',permissionMode}};
-    // The workspace only validates bounded provider JSON; Claude owns these semantics.
+    // 工作区仅校验受限的提供方 JSON；具体语义由 Claude 负责。
     assert.equal(sessionInputSchema.safeParse({...input,engineConfig:config}).success,true);
     assert.throws(()=>parseClaudeConfig(config),/权限模式无效/);
   }
@@ -106,7 +106,7 @@ test('IDE preference migrates old settings, persists a custom application and ca
     const restored=new StateStore(dir);
     assert.equal(restored.state.settings.idePath,idePath);
     assert.equal(restored.state.sessions.length,1);
-    // A missing application can be repaired in settings later; it must not block loading the workspace.
+    // 缺失的应用可稍后在设置中修复，不能阻止工作区加载。
     for(const invalid of ['app\0.exe','app\n.exe','app\t.exe','x'.repeat(4097)]){
       assert.throws(()=>restored.change(state=>{state.settings.idePath=invalid;}));
       assert.equal(new StateStore(dir).state.settings.idePath,idePath);
@@ -196,8 +196,8 @@ test('deferred observations batch into one snapshot and critical changes durably
 test('failed deferred persistence reports the error and retains validated state for explicit retry', { timeout: 5000 }, async () => {
   const dir = temp(); let failed!: (error: Error) => void;
   let deadline!: NodeJS.Timeout;
-  // Production flush timers intentionally do not keep an exiting app alive.
-  // Keep this test's wait alive, while still failing if error reporting never occurs.
+  // 生产环境的刷新计时器有意不阻止应用退出。
+  // 保持本测试的等待有效；若错误上报始终没有发生，仍须让测试失败。
   const failure = new Promise<Error>((resolve, reject) => {
     failed = resolve;
     deadline = setTimeout(() => reject(new Error('Deferred persistence did not report its failure.')), 4000);

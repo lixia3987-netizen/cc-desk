@@ -83,8 +83,8 @@ test('submission guard is reserved synchronously before first read and repeated 
     })], [], () => true, async () => { writes++; return staged; });
   });
   assert.equal(readStarted, true);
-  // App supplies this predicate to useChatSubmission; actual DOM Enter remains
-  // part of the pending Windows/Electron acceptance check.
+  // App 将此判断函数提供给 useChatSubmission；实际 DOM 回车行为仍属于
+  // 尚待执行的 Windows/Electron 验收检查。
   assert.equal(pending.has('origin'), true);
   await withAttachmentImport(pending, 'origin', () => {}, async () => { duplicates++; });
   assert.equal(duplicates, 0); assert.equal(writes, 0);

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ChatSnapshot, ChatSnapshotVersion } from '../shared/chat';
 
-/** One host authority for queue and conversation notifications, including Claude/offline history. */
+/** 由单一宿主权威统一管理队列和会话通知，包括 Claude 和离线历史。 */
 export class ChatSnapshotClock {
   private versions = new Map<string, { revision: number; eventSequence: number }>();
   constructor(readonly hostEpoch: string = randomUUID()) {}
@@ -15,8 +15,8 @@ export class ChatSnapshotClock {
     return { hostEpoch: this.hostEpoch, ...this.next(id, true), ...(conversationId ? { conversationId } : {}) };
   }
   snapshot(snapshot: ChatSnapshot, conversationId?: string): ChatSnapshot {
-    // Reads also get an ordering number: hydration and evidence invalidation can
-    // discover newer durable data without receiving a live process notification.
+    // 读取操作也分配顺序号：状态恢复与依据失效处理可能
+    // 在未收到实时进程通知时发现更新的持久化数据。
     const version: ChatSnapshotVersion = { hostEpoch: this.hostEpoch, ...this.next(snapshot.sessionId, false),
       ...(conversationId ? { conversationId } : {}),
       ...(snapshot.nativeRun ? { conversationId: snapshot.nativeRun.conversationId, runId: snapshot.nativeRun.runId, workerGeneration: snapshot.nativeRun.workerGeneration } : {}) };

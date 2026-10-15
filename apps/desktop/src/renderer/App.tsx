@@ -104,7 +104,7 @@ export function App() {
       const options = { ...pending.input.engineConfig.options, ...defaults.options };
       if (pending.permissionOverridden) options.permissionMode = pending.input.engineConfig.options.permissionMode;
       if (engine.providerId === 'native') {
-        // Connection/model choices are owned by the draft, while its policy follows settings.
+        // 连接与模型选择由草稿自行保存，策略则沿用设置。
         options.connectionId = pending.input.engineConfig.options.connectionId ?? '';
         options.model = pending.input.engineConfig.options.model ?? '';
       }
@@ -203,7 +203,7 @@ export function App() {
   const updateCLI = () => {
     if (cliActionPending.current) return;
     cliActionPending.current = true; setCLIActionBusy(true); setError('');
-    // Maintenance is scoped by each descriptor; other engines remain interactive.
+    // 维护范围由各个描述项限定，其他引擎仍可交互。
     void persistDrafts().then(() => window.desktop.updateCLI()).catch(report).finally(() => { cliActionPending.current = false; setCLIActionBusy(false); });
   };
   const checkCLIUpdate = () => { void window.desktop.checkCLIUpdate().catch(report); };
@@ -219,16 +219,16 @@ export function App() {
     if (!activeId || !structured || !executionCapabilities?.attachments || readOnly) return; let cancelled = false;
     const revision = attachmentRevisions.current.get(activeId) ?? 0;
     void window.desktop.listAttachments(activeId).then(files => {
-      // A delayed refresh must not restore an accepted chip or replace files
-      // added while switching back to this session.
+      // 延迟刷新的结果不能恢复已接收的附件标签，也不能替换
+      // 切回此会话期间新增的文件。
       if (!cancelled && revision === (attachmentRevisions.current.get(activeId) ?? 0)) setAttachments(old => ({ ...old, [activeId]: files }));
     }).catch(error => { if (!cancelled) report(error); });
     return () => { cancelled = true; };
   }, [activeId, structured, executionCapabilities?.attachments, readOnly, report]);
   const openNew = (_kind: 'agent' | 'shell' = 'agent', fork?: Session, targetProjectId?: string, continuation?: Session, nativeConnectionId?: string) => {
     if (continuation) {
-      // A continuation creates an editable draft. It must never enter first-send
-      // staging, whose saveDraft would replace the host-generated handoff text.
+      // 继续会话会创建可编辑的草稿，不能进入首次发送的
+      // 暂存流程，否则 saveDraft 会替换主进程生成的交接文本。
       const engine = executors.find(item => item.providerId === 'claude' && item.mode === 'structured');
       setDraft({ projectId: continuation.projectId, title: '', kind: 'agent', providerId: 'claude',
         mode: 'structured', engineConfig: newSessionEngineDefaults(engine, state?.settings), isolated: false,
@@ -311,8 +311,8 @@ export function App() {
     try {
       const session = await owner.submission.submit(owner.input, text, files);
       clearSentDraft(session.id, text);
-      // Acceptance is final even if a later snapshot read fails. Make the
-      // acknowledged session available before its debounced state broadcast.
+      // 即使后续读取快照失败，接收结果也已确定；应在
+      // 防抖状态广播到达前，让已确认的会话可用。
       const current = latestState.current;
       if (current && !current.sessions.some(item => item.id === session.id)) {
         const next = { ...current, sessions: [session, ...current.sessions] };
@@ -368,8 +368,8 @@ export function App() {
     const session = latestState.current?.sessions.find(session => session.id === id);
     const engine = latestExecutors.current.find(item => item.providerId === session?.execution.providerId && item.mode === session?.execution.mode);
     if (latestBusy.current || pendingAttachmentImports.current.has(id) || !session || session.archived || session.execution.mode !== 'structured' || !engine?.capabilities.attachments || executionUnavailable(engine, session)) return;
-    // Reserve before the picker/preload or clipboard byte read, so Enter and
-    // repeated paste cannot race even before React renders the indicator.
+    // 在打开选择器、调用预加载接口或读取剪贴板字节前预留位置，避免回车和
+    // 重复粘贴在 React 渲染提示前发生竞争。
     await withAttachmentImport(pendingAttachmentImports.current, id, setAttachmentImports, async () => {
       attachmentRevisions.current.set(id, (attachmentRevisions.current.get(id) ?? 0) + 1);
       setError(''); let failed = false;
@@ -381,8 +381,8 @@ export function App() {
       } catch (error) { failed = true; report(error); }
       if (latestState.current?.sessions.some(session => session.id === id)) {
         const revision = attachmentRevisions.current.get(id) ?? 0;
-        // Include older drafts even if their initial load was overtaken by this
-        // import. Apply to the originating session after a selection change.
+        // 即使此次导入先于旧草稿的初始加载完成，也要纳入
+        // 这些旧草稿；切换选中会话后，仍应用到原会话。
         try {
           const files = await window.desktop.listAttachments(id);
           if (revision === (attachmentRevisions.current.get(id) ?? 0) && latestState.current?.sessions.some(session => session.id === id)) changeAttachments(id, () => files);
@@ -473,8 +473,8 @@ export function App() {
               onRemoveAttachment={path => void perform(async () => { await window.desktop.removeAttachment(active.id, path); changeAttachments(active.id, files => files.filter(file => file.path !== path)); })}
               onAttachmentsSent={files => {
                 if (!files.length) return;
-                // Every picker import has a fresh staged path, even when the
-                // same source file is selected again while acceptance is pending.
+                // 每次通过选择器导入都会生成新的暂存路径，即使
+                // 尚未确认接收时又选择了同一个源文件。
                 const submittedPaths = new Set(files.map(file => file.path));
                 changeAttachments(active.id, current => current.filter(file => !submittedPaths.has(file.path)));
               }} />}

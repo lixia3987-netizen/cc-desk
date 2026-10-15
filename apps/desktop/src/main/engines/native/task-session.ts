@@ -8,12 +8,12 @@ import type { NativeTaskReviewInput } from '../../../shared/native-task';
 import { captureTaskWorkspace, commandEvidenceReceipt, describeTaskChanges, terminalCommandEvidenceReceipt, type TaskCommandWorkspace, type TaskWorkspace } from './task-evidence';
 import { sameRun } from './worker-protocol';
 
-/** A failed metadata write may already be durable: core must stop rather than retry. */
+/** 元数据写入失败时可能已持久化；核心必须停止，不能重试。 */
 export class TaskLocationCommitError extends Error {}
 export class TaskLocationCapacityError extends Error {}
 function rethrowKnownCapacity(error: unknown): void {
-  // NativeTaskStore emits this typed error before opening its temporary file.
-  // Generic I/O and post-publication errors still have an uncertain outcome.
+  // NativeTaskStore 在打开临时文件前抛出此类型化错误。
+  // 通用 I/O 错误及发布后错误仍具有不确定结果。
   if (error instanceof NativeTaskError && error.code === 'limit_exceeded') throw new TaskLocationCapacityError('任务记录容量已满。');
 }
 const sameWorkspaceObservation = (left: TaskWorkspace | undefined, right: TaskWorkspace) => Boolean(left &&
@@ -28,7 +28,7 @@ interface CommandObservation {
   terminal?: NativeTaskEvidence;
 }
 
-/** Host-only task metadata. Run receipts and queue ACKs remain authoritative for execution. */
+/** 仅宿主管理的任务元数据；运行回执及队列 ACK 仍是执行的权威依据。 */
 export class NativeTaskSession {
   constructor(readonly store: NativeTaskStore, private options: {
     projectRoot: string; excludedRoots: string[];
@@ -68,7 +68,7 @@ export class NativeTaskSession {
         JSON.stringify(task.workspace.current.issues) === JSON.stringify(current.issues)) return task;
     return this.mutate(task, { type: 'workspace', ...(!task.workspace ? { baseline } : {}), current, changes: describeTaskChanges(baseline, current) });
   }
-  /** Called after a plan commit, including after a compaction; the task lives outside model context. */
+  /** 计划提交后调用，包括压缩后；任务保存在模型上下文之外。 */
   planCommitted(task: NativeTaskSnapshot): Promise<void> {
     return this.enqueue(async () => {
       this.options.changed(task); await this.workspace(task.taskId);
@@ -81,14 +81,14 @@ export class NativeTaskSession {
       }
       for (const [key, command] of this.commands) {
         if (!command.terminal || command.taskId !== task.taskId || !sameRun(command.identity, task.identity)) continue;
-        // The execution receipt is already durable elsewhere. Never retry an
-        // uncertain metadata publication by replaying or reattaching a command.
+        // 执行回执已在其他位置持久化。绝不通过重放或重新附加命令
+        // 来重试结果不确定的元数据发布。
         this.commands.delete(key);
         await this.publishCommand(this.store.read(task.taskId)!, command);
       }
     });
   }
-  /** After approval, before durable preparation/spawn; failure still permits a safe no-start outcome. */
+  /** 审批之后、持久化准备及 spawn 之前调用；此时失败仍可安全地判定为未启动。 */
   commandStarted(options: { taskId: string; identity: RunIdentity; prepared: PreparedTool; signal: AbortSignal }): Promise<void> {
     return this.enqueue(async () => {
       const { taskId, identity, prepared, signal } = options;
@@ -109,23 +109,23 @@ export class NativeTaskSession {
         stepIds: task?.steps.filter(step => step.status === 'in_progress').map(step => step.id) ?? [], overlap });
     });
   }
-  /** Called once after the host ledger has durably committed the real terminal/cleanup receipt. */
+  /** 宿主账本持久化提交真实终态及清理回执后调用一次。 */
   commandTerminated(options: { taskId: string; identity: RunIdentity; callId: string; result: ToolResult }): Promise<void> {
     return this.enqueue(async () => {
       const key = this.commandKey(options.identity, options.callId), command = this.commands.get(key);
       if (!command || command.terminal || command.taskId !== options.taskId || !sameRun(command.identity, options.identity)) return;
       const task = this.store.read(options.taskId);
       if (task && !sameRun(task.identity, options.identity)) { this.commands.delete(key); return; }
-      // A command still running after an uncertain cleanup cannot authenticate
-      // an after snapshot, even if its currently observed bytes match.
+      // 清理结果不确定后仍在运行的命令，不能验证执行后快照，
+      // 即使当前观察到的字节相匹配。
       const output = options.result.output;
       const released = output !== null && typeof output === 'object' && !Array.isArray(output) && output.cleanup === 'released';
       let after: TaskWorkspace;
       try { after = await this.capture(); }
       catch { after = { ...command.before, complete: false, files: [], scope: [], issues: ['命令终止后的工作区无法完整核查。'], capturedAt: new Date().toISOString() }; }
       if (command.overlap || !released) command.before = { ...command.before, complete: false };
-      // Keep only the 8 KiB summary/digest while waiting for a plan; the full
-      // bounded logs remain in the authoritative command ledger.
+      // 等待计划时只保留 8 KiB 摘要及哈希；完整的
+      // 有界日志仍保存在权威命令账本中。
       try {
         this.options.assertSafe(options.result);
         command.terminal = terminalCommandEvidenceReceipt(command.prepared, options.result, {
@@ -148,7 +148,7 @@ export class NativeTaskSession {
     if (command.overlap) evidence.reason += ' 命令期间存在其他命令或文件操作，不能独立确认检查范围。';
     await this.mutate(task, { type: 'evidence', evidence }, `receipt:${command.identity.runId}:${command.prepared.call.id}`);
   }
-  /** Records a host file observation directly in the task store, independently of run-journal completion. */
+  /** 直接在任务存储中记录宿主文件观察，不依赖运行日志是否完成。 */
   recordCodeLocation(options: {
     taskId: string; identity: RunIdentity; expectedRevision: number; mutationId: string; signal: AbortSignal;
     assertCurrent(): Promise<void>;
@@ -172,8 +172,8 @@ export class NativeTaskSession {
       };
       const current = await this.capture(options.signal);
       await options.assertCurrent();
-      // Refresh in its own CAS mutation. Never consume an unseen new revision to
-      // append evidence in the same call: the model must read_task and try again.
+      // 通过独立 CAS 修改刷新。绝不使用尚未读取的新修订，
+      // 在同次调用中追加证据；模型必须先 read_task，再重试。
       if (!sameWorkspaceObservation(task.workspace?.current, current)) return publishWorkspace(current);
       const evidence = await options.createEvidence(task);
       this.options.assertSafe(evidence);
@@ -185,7 +185,7 @@ export class NativeTaskSession {
         if (!sameWorkspaceObservation(task.workspace?.current, fresh)) {
           changedWorkspace = fresh; throw new Error('记录保存前工作区已改变。');
         }
-        // Keep the actual file re-read last, after scope/ownership/scan awaits.
+        // 在范围、所有权及扫描的 await 之后，最后才实际重新读取文件。
         await options.assertEvidenceCurrent(evidence);
       };
       try {
@@ -220,7 +220,7 @@ export class NativeTaskSession {
         if (before) this.baseline ??= before;
         const result = await tools.execute(prepared, context, approval);
         if (before) {
-          // The effect has already happened. Observation failure must not replace its real receipt.
+          // 操作效果已经发生；观察失败不得替换真实回执。
           let after: TaskWorkspace;
           try { after = await this.capture(); }
           catch { after = { ...before, complete: false, issues: ['工具执行后的工作区无法完整核查。'], capturedAt: new Date().toISOString() }; }
@@ -230,7 +230,7 @@ export class NativeTaskSession {
       },
     };
   }
-  /** Only called after NativeRunStore has durably accepted the exact tool completion. */
+  /** 只有 NativeRunStore 已持久化接受精确的工具完成结果后才调用。 */
   committed(taskId: string, identity: RunIdentity, event: RunJournalEvent): Promise<void> {
     return this.enqueue(async () => {
       if (event.type === 'tool_completed') {
@@ -252,7 +252,7 @@ export class NativeTaskSession {
       }
     });
   }
-  /** Idle refresh rechecks external edits and repairs only metadata, never execution. */
+  /** 空闲刷新重新检查外部修改，只修复元数据，绝不重新执行。 */
   inspect(taskId: string): Promise<NativeTaskSnapshot | undefined> {
     return this.enqueue(async () => { await this.workspace(taskId); return this.store.read(taskId) ?? undefined; });
   }

@@ -36,7 +36,7 @@ export function nativeAgentReceiptDirectory(dataDirectory: string, parent: RunId
   identity.parse(parent);
   return path.join(dataDirectory, 'native', 'delegations', parent.conversationId, parent.runId);
 }
-/** Only durable host receipts are projected; model prose and generic tool outputs are ignored. */
+/** 只投影已持久化的宿主回执；忽略模型文本及通用工具输出。 */
 export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIdentity): NativeAgentView {
   const value = receiptSchema.parse(receipt);
   if (!sameIdentity(value.parentIdentity, parent) || value.identity.sessionId === parent.sessionId || value.identity.conversationId === parent.conversationId || value.identity.runId === parent.runId ||
@@ -73,7 +73,7 @@ function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receipt
   return { parentRunId: parent.runId, items: all.slice(0, 16), omitted: Math.max(0, all.length - 16), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
 }
 
-/** Keeps and exposes all (at most sixteen) parent-run receipts. */
+/** 保留并展示父任务运行的全部回执，最多十六条。 */
 export class NativeAgentProjection {
   private items = new Map<string, NativeAgentView>();
   private retained = new Map<string, NativeDelegationReceipt>();
@@ -97,7 +97,7 @@ export class NativeAgentProjection {
     this.retained.set(view.childId, structuredClone(receipt));
   }
   snapshot(active = false): NativeAgentSnapshot { return snapshot(this.items.values(), this.parent, this.receiptDirectory, active, this.incomplete); }
-  /** Verified host records for directory quarantine/recovery; never authorizes a new worker. */
+  /** 用于目录隔离和恢复的已验证宿主记录；绝不据此授权新工作进程。 */
   receipts(): NativeDelegationReceipt[] { return structuredClone([...this.retained.values()]); }
   merge(current: NativeAgentProjection | undefined): void {
     if (!current || !sameIdentity(current.parent, this.parent)) return;
@@ -113,7 +113,7 @@ export class NativeAgentProjection {
   markIncomplete(): void { this.incomplete = true; }
 }
 
-/** Bounded, symlink-free read of the current parent run; never adopts an old worker. */
+/** 有界读取当前父任务运行，禁止符号链接；绝不接管旧工作进程。 */
 export async function loadNativeAgents(dataDirectory: string, parent: RunIdentity): Promise<NativeAgentProjection> {
   const directory = nativeAgentReceiptDirectory(dataDirectory, parent), projection = new NativeAgentProjection(parent, directory);
   try {

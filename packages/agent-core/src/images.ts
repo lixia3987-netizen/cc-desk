@@ -7,8 +7,8 @@ export const MAX_USER_IMAGES_BYTES = 1024 * 1024
 const invalid = (): never => { throw new Error('Invalid user images: expected bounded inline PNG or JPEG data') }
 const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
 
-/** Validate transport data without resolving URLs or exposing image contents in errors.
- * The host separately validates the selected file format before constructing this value. */
+/** 校验传输数据，不解析 URL，也不在错误中暴露图像内容。
+ * 宿主在构造此值之前会单独校验所选文件的格式。 */
 export function validateUserImages(images: unknown): asserts images is UserImage[] {
   if (!Array.isArray(images) || images.length > MAX_USER_IMAGES) return invalid()
   let total = 0
@@ -21,8 +21,8 @@ export function validateUserImages(images: unknown): asserts images is UserImage
     const data = image.dataUrl.slice(prefix.length)
     if (!data.length || data.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) return invalid()
     const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0
-    // Nonzero unused bits are a noncanonical encoding and must not create aliases
-    // for the exact image bytes bound into the submission digest.
+    // 未使用位非零属于非规范编码，不得为提交摘要绑定的
+    // 精确图像字节产生别名。
     if (padding === 2 && (alphabet.indexOf(data[data.length - 3]!) & 15) !== 0 ||
         padding === 1 && (alphabet.indexOf(data[data.length - 2]!) & 3) !== 0) return invalid()
     const bytes = data.length / 4 * 3 - padding

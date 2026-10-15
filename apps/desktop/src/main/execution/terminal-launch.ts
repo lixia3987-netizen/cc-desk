@@ -1,7 +1,7 @@
 import type { Session } from '../../shared/types';
 import type { SubtaskObservation } from '../subtask-tracker';
 
-/** Launchers report observed metadata, never replace the local or provider identity. */
+/** 启动器报告观测到的元数据，不替换本地身份或提供方身份。 */
 export type TerminalSessionUpdate = Partial<Pick<Session,
   'taskState' | 'terminalSync' | 'identityPending' | 'engineConfig' | 'observedPermissionMode'
 >> & { conversationId?: string };
@@ -27,7 +27,7 @@ export interface TerminalLaunchSpec {
   terminalSync?: Session['terminalSync'];
 }
 
-/** Owns provider setup only; Runtime owns every spawned process and launch resource. */
+/** 仅负责提供方初始化；Runtime 持有所有派生进程与启动资源。 */
 export interface TerminalLauncher {
   prepare(session: Session, callbacks: TerminalLaunchCallbacks): Promise<TerminalLaunchSpec>;
 }

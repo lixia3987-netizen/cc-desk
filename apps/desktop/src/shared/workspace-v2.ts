@@ -1,4 +1,4 @@
-/** Frozen v1/v2 disk readers. Live IPC and writes use schema.ts (v3). */
+/** 已冻结的 v1/v2 磁盘读取器，实时 IPC 与写入使用 schema.ts（v3）。 */
 import { z } from 'zod';
 import { THEME_IDS } from './theme';
 import { PERMISSION_MODES } from './permissions';
@@ -96,7 +96,7 @@ const legacySessionSchema = sessionFieldsSchema.extend({
 }).strict();
 const legacyStateSchema = z.object({ version: z.literal(1), ...workspaceFields, sessions: z.array(legacySessionSchema) });
 
-/** Disk compatibility is isolated from live writes: only one identity is ever persisted. */
+/** 磁盘兼容处理与实时写入隔离，持久化时始终只保存一个标识。 */
 export const persistedStateSchema = z.union([stateSchema, legacyStateSchema.transform((state): z.infer<typeof stateSchema> => ({
   ...state, version: 2 as const,
   sessions: state.sessions.map(({ kind, claudeId, resumeFrom, imported, adapter, ...session }) => ({

@@ -65,7 +65,7 @@ async function read(options: NativeTaskStoreReadOptions): Promise<TaskFile> {
   return value;
 }
 
-/** Separate from runtime journal: it cannot acknowledge or replay an execution side effect. */
+/** 独立于运行日志：不能确认或重放任何执行副作用。 */
 export class NativeTaskStore {
   private queue: Promise<unknown> = Promise.resolve();
   private closed = false;
@@ -86,7 +86,7 @@ export class NativeTaskStore {
   list(): NativeTaskSnapshot[] { return clone(this.state.tasks); }
   apply(update: NativeTaskUpdate, writeOptions: NativeTaskWriteOptions = {}): Promise<NativeTaskSnapshot> {
     if (this.closed || this.closing) return Promise.reject(new NativeTaskError('store_closed', 'Task store is closing or closed'));
-    // Snapshot input immediately: callers cannot alter a queued or in-flight write.
+    // 立即为输入创建快照：调用方不能修改排队或正在进行的写入。
     const request = clone(update);
     const operation = this.queue.then(() => this.write(request, writeOptions));
     this.queue = operation.catch(() => {});
@@ -100,7 +100,7 @@ export class NativeTaskStore {
     const receipt = this.state.receipts.find(item => item.taskId === update.taskId && item.mutationId === update.mutationId);
     if (receipt) {
       if (receipt.digest !== requestDigest) fail('mutation_conflict', 'Mutation id was already used with another payload');
-      // Return current durable state, never roll the caller back to the old receipt revision.
+      // 返回当前持久化状态，绝不让调用方退回旧回执版本。
       return this.read(update.taskId)!;
     }
     const previous = this.state.tasks.find(task => task.taskId === update.taskId) ?? null;
@@ -125,7 +125,7 @@ export class NativeTaskStore {
       await this.options.fault?.('before_write');
       const handle = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);
       try { await handle.writeFile(data, 'utf8'); await handle.sync(); await this.options.fault?.('after_sync'); } finally { await handle.close(); }
-      // Never replace a link/non-private file created while this instance was live.
+      // 绝不替换本实例存活期间创建的链接或非私有文件。
       const persisted = await readRegularFile(destination, MAX_BYTES);
       if (persisted === undefined ? Boolean(this.state.hash) : persisted !== canonicalNativeTask(this.state)) fail('writer_lost', 'Task snapshot changed outside its writer');
       await this.options.fault?.('before_rename');
@@ -142,8 +142,8 @@ export class NativeTaskStore {
     } finally { await unlink(temporary).catch(error => { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }); }
   }
   close(): Promise<void> {
-    // A failed release remains owned and retryable. Do not admit more writes
-    // after closing starts, even if the lock was removed before directory fsync failed.
+    // 释放失败时继续持有所有权，并允许重试。开始关闭后，
+    // 即使锁已在目录 fsync 失败之前移除，也不接纳新的写入。
     this.closing = true;
     const operation = this.queue.then(async () => { if (!this.closed) { await this.release(); this.closed = true; } });
     this.queue = operation.catch(() => {});

@@ -4,9 +4,9 @@ import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
 import type { NativeAgentSnapshot, NativeAgentApprovalScope } from './native-agents.js';
 export type { NativeAgentView, NativeAgentSnapshot, NativeAgentApprovalScope, NativeAgentResultRequest, NativeAgentResult, NativeAgentPatchPage } from './native-agents.js';
-/** State of a turn, independent of the lifetime of the CLI process. */
+/** 一轮交互的状态，与 CLI 进程的生命周期无关。 */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
-/** Immutable metadata of the bytes submitted with one Native user message. Never a file path or image payload. */
+/** 随一条 Native 用户消息提交的字节数据的不可变元数据，绝不包含文件路径或图像载荷。 */
 export interface NativeImageAttachment {
   name: string;
   mimeType: 'image/png' | 'image/jpeg';
@@ -33,14 +33,14 @@ export interface ChatMessage {
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
-  /** Submitted image version metadata; no live link to the original or staged file. */
+  /** 已提交图像版本的元数据，不与原始文件或暂存文件保持实时关联。 */
   nativeImageAttachments?: NativeImageAttachment[];
-  /** Structured host projection of durable multi-file effects. */
+  /** 由宿主提供的、持久化多文件影响的结构化投影。 */
   nativeChangeSetResult?: NativeChangeSetResult;
   nativeChangeSetState?: 'pending' | 'running' | 'not_executed' | 'result';
-  /** The visible text or tool input omits content retained in the event journal. */
+  /** 可见文本或工具输入省略了事件日志中保留的内容。 */
   truncated?: boolean;
-  /** Stable CLI identity used when reconciling a stopped session with its transcript. */
+  /** 用于将已停止会话与其对话记录核对的稳定 CLI 身份。 */
   sourceId?: string;
 }
 export interface ChatQuestion {
@@ -52,23 +52,23 @@ export interface ChatApproval {
   requestId: string; toolName: string; input: Record<string, unknown>;
   kind: 'permission' | 'question'; questions?: ChatQuestion[];
   createdAt: string; toolUseId?: string;
-  /** Complete approval preview; never replaced with a truncated JSON string. */
+  /** 完整的审批预览，绝不替换为截断的 JSON 字符串。 */
   nativeChangeSet?: NativeChangeSetPreview;
-  /** Host-bound child owner and workspace; independent from untrusted tool input. */
+  /** 宿主绑定的子任务归属方及工作区，与不可信的工具输入无关。 */
   nativeDelegation?: NativeAgentApprovalScope;
 }
 export interface ChatDecision {
   behavior: 'allow' | 'deny'; message?: string;
-  /** AskUserQuestion answers are keyed by the exact question text. */
+  /** AskUserQuestion 的回答以完整的问题文本为键。 */
   answers?: Record<string, string>;
 }
 export interface ChatUsage {
   inputTokens?: number; outputTokens?: number;
   cacheReadTokens?: number; cacheCreationTokens?: number;
-  /** CLI-reported estimate; this is not the user's subscription quota. */
+  /** CLI 报告的估算值，并非用户的订阅额度。 */
   costUSD?: number; durationMs?: number; turns?: number;
 }
-/** Derived from the native ledger by the host; the renderer never decides recovery safety. */
+/** 由宿主根据原生账本派生；渲染进程绝不判断恢复是否安全。 */
 export interface NativeRecoveryStatus {
   status: 'recoverable' | 'blocked' | 'acknowledged';
   headHash: string;
@@ -76,10 +76,10 @@ export interface NativeRecoveryStatus {
   reason?: string;
   tools: { completed: number; notExecuted: number; unknown: number };
 }
-/** Metadata only, derived from the same durable head as the maintenance view. */
+/** 仅包含元数据，与维护视图取自同一持久化日志头。 */
 export type NativeContextCompactionPreview = {
   status: 'available';
-  /** Independently serialized local context sizes, not provider tokens or net savings. */
+  /** 单独序列化的本地上下文大小，并非提供商的 token 数或净节省量。 */
   summarizableBytes: number;
   retainedBytes: number;
   retainedImages: number;
@@ -91,13 +91,13 @@ export type NativeContextCompactionPreview = {
 export interface NativeContextMaintenance {
   headHash: string;
   canCompact: boolean;
-  /** Local inspection does not request a summary or guarantee its size or quality. */
+  /** 本地检查不会请求摘要，也不保证摘要的大小或质量。 */
   preview?: NativeContextCompactionPreview;
   compacting?: boolean;
   compactionTrigger?: 'manual' | 'automatic' | 'in_turn';
   autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' };
   lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' | 'in_turn' };
-  /** Host-owned receipt. A summary response alone is not a committed compaction. */
+  /** 宿主管理的回执。仅收到摘要响应并不代表压缩已提交。 */
   inTurn?: {
     status: 'attempted' | 'committed' | 'failed' | 'unknown';
     runId: string; createdAt: string;
@@ -106,12 +106,12 @@ export interface NativeContextMaintenance {
     summaryCostUSD?: number;
   };
 }
-/** Host lifetime and observable state ordering; independent from durable task revisions. */
+/** 宿主生命周期及可观测状态的顺序，与持久化任务修订号无关。 */
 export interface ChatSnapshotVersion {
   hostEpoch: string; revision: number; eventSequence: number;
   conversationId?: string; runId?: string; workerGeneration?: number;
 }
-/** Read-only host ledger projection. Starting or finishing a command is not task acceptance. */
+/** 宿主账本的只读投影。启动或结束命令不代表任务验收通过。 */
 export interface NativeCommandView {
   commandId: string; taskId: string; runId: string; toolCallId: string;
   command: NativeCommandDescriptor;
@@ -119,17 +119,17 @@ export interface NativeCommandView {
   preparedAt: string; runningAt?: string; finishedAt?: string;
   timeoutMs: number; maxOutputBytes: number;
   result?: NativeCommandResult;
-  /** No durable terminal receipt; never attach to a process by its old PID. */
+  /** 缺少持久化终态回执；绝不根据旧 PID 重新关联进程。 */
   missingTerminal?: boolean;
 }
 export interface NativeCommandSnapshot {
-  /** Newest 64 commands, including every command from the current run (at most 8). */
+  /** 最近 64 条命令，包含当前运行的所有命令（最多 8 条）。 */
   items: NativeCommandView[];
   omitted: number;
 }
 export interface ChatSnapshot {
   sessionId: string; taskState: TaskState;
-  /** Read with this snapshot, so a lost workspace event cannot leave the pane stopping forever. */
+  /** 随此快照一同读取，避免工作区事件丢失后面板永远停留在停止中。 */
   sessionStatus?: SessionStatus;
   messages: ChatMessage[]; pending: ChatApproval[];
   usage?: ChatUsage; model?: string; permissionMode?: string;
@@ -142,24 +142,24 @@ export interface ChatSnapshot {
   nativeCommands?: NativeCommandSnapshot;
   nativeAgents?: NativeAgentSnapshot;
   version?: ChatSnapshotVersion;
-  /** The current process's command catalog; never restored from disk. */
+  /** 当前进程的命令目录，绝不从磁盘恢复。 */
   commands?: SessionCommand[];
   mcpServers?: { name: string; status: string }[];
   error?: string; truncated?: boolean;
-  /** The CLI transcript was imported only in part; the local journal cannot supply that missing prefix. */
+  /** CLI 对话记录仅部分导入；本地日志无法补全缺失的前缀。 */
   sourceIncomplete?: boolean;
-  /** Durable main-process submissions, independent of the current CLI turn. */
+  /** 持久化的主进程提交记录，与当前 CLI 交互轮次无关。 */
   queue?: ChatQueueSnapshot;
 }
 export interface QueuedChatMessage {
   id: string; text: string; attachments: string[]; createdAt: string;
   attachmentNames?: string[];
-  /** Bytes selected at explicit submission; binds later Native dispatch to the same image version. */
+  /** 显式提交时选定的字节数据，将后续 Native 派发绑定到同一图像版本。 */
   nativeImageAttachments?: NativeImageAttachment[];
   status: 'queued' | 'sending';
   nativeTaskId?: string;
 }
-/** Only explicit user selection continues an existing native task. */
+/** 只有用户显式选择时才延续已有的原生任务。 */
 export interface ChatSendOptions { nativeTaskId?: string }
 export interface ChatQueueSnapshot { items: QueuedChatMessage[]; paused: boolean; error?: string }
 export interface ChatSubmission { messageId: string }
@@ -168,7 +168,7 @@ export interface ChatTurnResult { success: boolean; summary: string; error?: str
 export interface ChatPageOptions { before?: string; after?: string; around?: string; query?: string }
 export interface ChatPage {
   messages: ChatMessage[]; before: string | null; after: string | null;
-  /** Some source content is unavailable or exceeded a safe reading limit. */
+  /** 部分来源内容不可用，或超出了安全读取上限。 */
   incomplete: boolean;
 }
 export interface ChatSearchHit { id: string; role: ChatMessage['role']; toolName?: string; excerpt: string; createdAt: string }

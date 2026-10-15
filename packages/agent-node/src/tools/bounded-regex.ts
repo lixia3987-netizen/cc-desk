@@ -4,7 +4,7 @@ export interface RegexLineMatch { line: number; column: number; text: string; te
 export class BoundedRegexError extends Error {
   constructor(readonly code: 'invalid_regex' | 'regex_timeout' | 'regex_worker_failed' | 'search_cancelled', message: string) { super(message); this.name = 'BoundedRegexError'; }
 }
-// Fixed source survives CJS/ASAR bundling. User input is data, never executable worker source.
+// 固定源码可兼容 CJS/ASAR 打包。用户输入仅作为数据，绝不作为可执行的工作线程源码。
 const WORKER_SOURCE = String.raw`
 const { parentPort, workerData } = require('node:worker_threads');
 let expression;
@@ -29,7 +29,7 @@ if (expression) {
 }
 `;
 
-/** One bounded worker per search, reused across files and always joined on termination. */
+/** 每次搜索使用一个受限工作线程，在多个文件间复用，并始终等待其终止完成。 */
 export class BoundedRegex {
   private readonly worker: Worker;
   private sequence = 0;

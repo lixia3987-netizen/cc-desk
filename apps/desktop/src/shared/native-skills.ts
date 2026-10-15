@@ -1,4 +1,4 @@
-/** Discovery returns metadata; explicit inspection separately returns bounded literal content. */
+/** 发现操作返回元数据，明确检查时才另行返回受限的字面内容。 */
 export interface NativeSkillsListResult {
   entries: Array<{ path: string; name: string; hash: string; bytes: number }>;
   issues: Array<{ path: string; message: string }>;

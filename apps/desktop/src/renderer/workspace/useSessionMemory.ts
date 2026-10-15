@@ -5,7 +5,7 @@ import { ApprovalDrafts } from '../approval-drafts';
 import type { ChatReadingPosition } from '../chat-scroll';
 import type { ReportError } from './types';
 
-/** Per-session UI memory survives tab switches without being attached to an execution process. */
+/** 每个会话的界面记忆在切换标签页后仍保留，无需绑定执行进程。 */
 export function useSessionMemory(latestState: RefObject<AppState | undefined>, report: ReportError) {
   const approvalDrafts = useRef(new ApprovalDrafts());
   const panelDrafts = useRef(new Map<string, PanelDrafts>());
@@ -27,7 +27,7 @@ export function useSessionMemory(latestState: RefObject<AppState | undefined>, r
     if (value === initial) return;
     panelDrafts.current.set(id, { ...current, [key]: value });
     setRevision(revision => revision + 1);
-    // Send edits immediately; the main store batches disk writes and flushes on exit.
+    // 立即发送编辑结果，主存储批量写入磁盘，并在退出时完成写入。
     void window.desktop.savePanelDrafts(id, { [key]: value }).catch(report);
   };
   return { approvalDrafts, panelDrafts, readingPositions, retainSessions, updatePanel };

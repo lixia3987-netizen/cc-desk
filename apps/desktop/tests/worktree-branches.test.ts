@@ -58,7 +58,7 @@ test('refresh discovers remote-only branches and selected remote refs fetch thei
     await git(f.repo, 'push', 'origin', 'feature/example'); await git(f.repo, 'branch', '-D', 'feature/example');
     await git(f.repo, 'update-ref', '-d', 'refs/remotes/origin/feature/example');
     assert.equal((await listWorktreeBranches(f.repo)).some(branch => branch.ref === 'refs/remotes/origin/feature/example'), false);
-    // A configured fetch refspec aimed at a local branch must never be used.
+    // 绝不能使用指向本地分支的已配置拉取 refspec。
     await git(f.repo, 'config', '--replace-all', 'remote.origin.fetch', '+refs/heads/feature/example:refs/heads/main');
     const branches = await listWorktreeBranches(f.repo, true);
     assert.ok(branches.some(branch => branch.ref === 'refs/remotes/origin/feature/example' && branch.remote === 'origin'));
@@ -83,7 +83,7 @@ test('refresh discovers remote-only branches and selected remote refs fetch thei
 test('deleted remote branches and unsafe revision expressions fail without a stale checkout', async () => {
   const f = await fixture(); try {
     await feature(f.repo); await git(f.repo, 'push', 'origin', 'feature/example');
-    // Delete directly in the bare remote to leave the local tracking ref stale.
+    // 直接在远端裸仓库中删除，使本地跟踪引用保留过期状态。
     await git(f.remote, 'update-ref', '-d', 'refs/heads/feature/example');
     const before = await git(f.repo, 'worktree', 'list', '--porcelain');
     await assert.rejects(createWorktree(f.repo, f.dir, randomUUID(), undefined, 'refs/remotes/origin/feature/example'));
