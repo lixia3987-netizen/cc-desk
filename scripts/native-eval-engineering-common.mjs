@@ -100,6 +100,14 @@ export function commandEnvironment() {
   };
 }
 
+/** 固定材料按路径及原始字节摘要绑定；派生的历史验收记录不参与材料身份。 */
+export function assertEngineeringSuiteDigest(files) {
+  const material = files.filter(([name]) => name !== 'validation.json');
+  const digest = sha(JSON.stringify(material));
+  if (digest !== ENGINEERING_SUITE.digest) throw new Error('Engineering suite digest mismatch; use the exact supported version.');
+  return digest;
+}
+
 /** 仅解析受支持且不可变的测试集；修改 v1 时必须创建新版本。 */
 export async function loadEngineeringSuite() {
   await ordinaryDirectory(suiteRoot);
@@ -120,7 +128,7 @@ export async function loadEngineeringSuite() {
     }
   }
   await visit();
-  if (sha(JSON.stringify(files)) !== ENGINEERING_SUITE.digest) throw new Error('Engineering suite digest mismatch; use the exact supported version.');
+  assertEngineeringSuiteDigest(files);
   const manifest = await readJson(path.join(suiteRoot, 'manifest.json'));
   const template = await readJson(path.join(suiteRoot, 'record-template.json'));
   if (manifest.schemaVersion !== 1 || manifest.suiteId !== ENGINEERING_SUITE.id || manifest.taskBaseline !== ENGINEERING_SUITE.taskBaseline || JSON.stringify(manifest.tasks?.map(task => task.id)) !== JSON.stringify(ENGINEERING_TASK_IDS)) throw new Error('Engineering suite manifest mismatch.');

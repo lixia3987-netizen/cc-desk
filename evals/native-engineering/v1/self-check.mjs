@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import { verify } from './acceptance/verify.mjs';
 import { baseline, git, suiteRoot, trustedRoot, sha, requireTrusted } from './acceptance/common.mjs';
 
-/** 仅供操作者执行测试夹具质量检查；不接入模型或服务凭据，也不集成评估 CLI。 */
+/** Operator-only fixture QA. No model/service credentials or evaluation CLI integration. */
 async function linkInstalledDependencies(root) {
   const destination = path.join(root, 'node_modules'); await fs.mkdir(destination);
   for (const item of await fs.readdir(path.join(trustedRoot, 'node_modules'))) {

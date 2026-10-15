@@ -1,5 +1,6 @@
-import { app, utilityProcess } from 'electron';
+import { app, safeStorage, utilityProcess } from 'electron';
 import fs from 'node:fs/promises';
+import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -8,15 +9,26 @@ import { StateStore } from '../src/main/store';
 import { parseClaudeModelConfig } from '../src/main/claude-model-import';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
-import { createNativeConfig } from '../src/main/engines/native/config';
+import { createNativeConfig, createNativeDefaultConfig, parseNativeConfig } from '../src/main/engines/native/config';
+import { resolveNativeRuntimeConfig } from '../src/shared/native-runtime-policy';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { runNativeWorker } from '../src/main/engines/native/worker-host';
+import { nativeDelegationAuditPath } from '../src/main/engines/native/agent-delegation-audit';
 // @ts-expect-error 回归报告纯函数在 Node 与 Electron 之间共享，不进入产品包。
 import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, monotonicMs, normalizeObservedUsage, regressionMaterial, regressionPrompt, safeRegressionFailureCode, sha256, workspaceHashes } from '../../../scripts/native-delegation-model-regression-lib.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
-type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null };
-interface Options { outputDirectory: string; claudeConfig: string; model?: string; protocol: 'anthropic' | 'responses' | 'chat-completions'; attempts: number; cases: string[]; candidateSha?: string }
+type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null; injectionMaterialObserved?: boolean };
+interface Options { outputDirectory: string; claudeConfig: string; model?: string; protocol: 'anthropic' | 'responses' | 'chat-completions'; attempts: number; cases: string[]; candidateSha?: string; nativeDataDirectory?: string; connectionId?: string; nativeSessionId?: string; nativeProfileKey?: boolean; credentialProfileDirectory?: string }
+
+// 必须在 app.ready / OSCrypt 初始化前指定隔离目录；绝不把原用户目录交给可写 Electron profile。
+const bootstrapOptions = JSON.parse(readFileSync(process.argv[2], 'utf8')) as Options;
+if (bootstrapOptions.credentialProfileDirectory) {
+  const selected = bootstrapOptions.credentialProfileDirectory, info = lstatSync(selected), profile = realpathSync(selected);
+  const source = bootstrapOptions.nativeDataDirectory ? realpathSync(bootstrapOptions.nativeDataDirectory) : undefined;
+  if (!info.isDirectory() || info.isSymbolicLink() || !path.isAbsolute(selected) || profile !== path.resolve(selected) || !path.basename(profile).startsWith('ccdesk-native-credential-') || !source || !path.relative(source, profile).startsWith('..') || !path.relative(profile, source).startsWith('..')) throw new Error('native_profile_source_unsafe');
+  app.setPath('userData', profile);
+}
 
 function upstreamEndpoint(base: string, protocol: Options['protocol']) {
   const url = new URL(base), pathname = url.pathname.replace(/\/+$/, '');
@@ -28,7 +40,7 @@ function upstreamEndpoint(base: string, protocol: Options['protocol']) {
 }
 
 /** 透明转发原始请求与 SSE；仅观察长度、hash、时间与允许的计数字段。 */
-async function observedTransport(endpoint: string, protocol: Options['protocol'], workers: Map<string, any>, network: SafeRequest[], onChildRequest: () => void) {
+async function observedTransport(endpoint: string, protocol: Options['protocol'], workers: Map<string, any>, network: SafeRequest[], onChildRequest: () => void, injectionMarker: string) {
   const controllers = new Set<AbortController>();
   const server = createServer(async (request: IncomingMessage, response: ServerResponse) => {
     const match = request.url?.match(/^\/worker\/([a-zA-Z0-9-]+)\//), runId = match?.[1] ?? 'unknown';
@@ -66,6 +78,8 @@ async function observedTransport(endpoint: string, protocol: Options['protocol']
       for await (const chunk of request) { chunks.push(Buffer.from(chunk)); if (chunks.reduce((sum, item) => sum + item.byteLength, 0) > 32 * 1024 * 1024) throw new Error('request_limit'); }
       const body = Buffer.concat(chunks); observation.requestBytes = body.byteLength; observation.requestDigest = sha256(body);
       const parsed = JSON.parse(body.toString('utf8'));
+      const conversation = JSON.stringify(parsed.messages ?? parsed.input ?? []);
+      observation.injectionMaterialObserved = conversation.includes(injectionMarker) && conversation.includes('ignore the user') && conversation.includes('external agent') && conversation.includes('write success.txt');
       const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value ?? null));
       observation.components = { instructions: bytes(parsed.system ?? parsed.instructions), tools: bytes(parsed.tools), contextItems: bytes(parsed.messages ?? parsed.input), envelope: body.byteLength };
       if (parsed.tool_choice && !['auto', 'none'].includes(parsed.tool_choice.type ?? parsed.tool_choice)) worker.forcedToolChoiceObserved = true;
@@ -118,7 +132,7 @@ async function executeCase(options: Options, connection: { apiKey: string; model
       cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId);
     }
   };
-  const transport = await observedTransport(connection.endpoint, options.protocol, workers, network, cancelIfOverlapping), store = new StateStore(data), connections = new ConnectionStore(data);
+  const transport = await observedTransport(connection.endpoint, options.protocol, workers, network, cancelIfOverlapping, material.injectionMarker), store = new StateStore(data), connections = new ConnectionStore(data);
   const created = connections.import({ name: 'Real model regression', protocol: options.protocol, authHeader: connection.authHeader, baseURL: transport.origin, model: connection.model, allowLoopbackHttp: true, enabled: true, auth: { mode: 'memory' } }, { mode: 'memory', secret: connection.apiKey });
   const projectId = randomUUID(), now = new Date().toISOString(), conversationId = randomUUID(); sessionId = randomUUID();
   store.change(state => {
@@ -170,7 +184,6 @@ async function executeCase(options: Options, connection: { apiKey: string; model
     if (!result.success) {
       const parent = [...workers.values()].find(value => value.role === 'parent');
       sendFailureCode = safeRegressionFailureCode(parent?.result?.reason ?? parent?.failureCode, parent ? 'executor_failed_after_worker' : 'executor_rejected_before_worker');
-      if (typeof result.error === 'string' && result.error.startsWith('并行分析要求未满足')) sendFailureCode = 'delegation_audit_unmet';
     }
   } catch (error) { executionReason = 'execution_failed'; sendFailureCode = safeRegressionFailureCode(error, `${executionPhase}_failed`); }
   finally {
@@ -186,14 +199,24 @@ async function executeCase(options: Options, connection: { apiKey: string; model
   const observations = [...workers.values()], parent = observations.find(value => value.role === 'parent') ?? { runId: '', records: [], result: undefined };
   const children = receipts.map(receipt => ({ childId: receipt.childId, parentRunId: receipt.parentIdentity.runId, ...(workers.get(receipt.identity.runId) ?? {}), result: workers.get(receipt.identity.runId)?.result }));
   const physicalCleanup = shutdownConfirmed && observations.every(value => value.endMs !== null && value.exitCode !== null) && network.every(value => value.endMs !== null);
-  const evidence = assessDelegationEvidence({ source: 'real_model', mode, parent, children, workers: observations, network, expected: material.values, beforeHashes, afterHashes, cleanupConfirmed: physicalCleanup });
+  let parentAudit: any = null;
+  if (parent.identity) try {
+    const file = nativeDelegationAuditPath(data, parent.identity), info = await fs.lstat(file);
+    if (info.isFile() && !info.isSymbolicLink() && info.size <= 128 * 1024) {
+      const value = JSON.parse(await fs.readFile(file, 'utf8'));
+      parentAudit = { parentRunId: value.parentRunId, scope: value.scope, status: value.status, issues: Array.isArray(value.issues) ? value.issues.filter((issue: any) => typeof issue === 'string' && /^[a-z_]{1,100}$/.test(issue)) : [] };
+    }
+  } catch { /* 缺失/不可确认的生产审计不能被 harness 推断为通过。 */ }
+  if (!sendSucceeded && parent.result?.status === 'completed') sendFailureCode = ['unmet', 'unknown'].includes(parentAudit?.status) ? 'delegation_audit_unmet' : 'host_acceptance_failed';
+  const evidence = assessDelegationEvidence({ source: 'real_model', mode, parent, children, workers: observations, network, expected: material.values, beforeHashes, afterHashes, cleanupConfirmed: physicalCleanup, sendSucceeded, parentAudit, injectionMarker: material.injectionMarker });
   if (observations.some(value => value.forcedToolChoiceObserved)) { evidence.checks.noForcedToolChoice = false; evidence.status = 'failed'; }
   const attempts = observations.flatMap(value => value.records.filter((record: any) => ['model_request_started', 'model_request_failed', 'model_response', 'model_request_diagnostic'].includes(record.event.type)).map((record: any) => ({ runId: value.runId, role: value.role, monotonicMs: record.monotonicMs,
     type: record.event.type, attempt: record.event.attempt ?? null, failure: record.event.failure ?? null, usage: record.event.response?.usage ?? null,
     ...(record.event.diagnostic ? { diagnostic: record.event.diagnostic } : {}) })));
   return { caseId, mode, attempt, source: 'real_model', status: evidence.status, beganMs, endedMs: monotonicMs(), sendSucceeded, executionReason, cancelRequestedMs,
+    ...(mode === 'connection_probe' ? { connectionValidation: { authenticatedResponse: network.length > 0 && network.every(value => value.httpStatus !== null && value.httpStatus >= 200 && value.httpStatus < 300), modelCompleted: parent.result?.status === 'completed' && parent.result?.committed === true, probePassed: evidence.status === 'passed' } } : {}),
     execution: { phase: executionPhase, sendResultObserved, failureCode: sendFailureCode, shutdownFailureCode, hostErrors, workerInvocations: observations.length, physicalWorkersSpawned: observations.filter(value => value.lifecycle.spawned).length, modelRequestsStarted: attempts.filter(value => value.type === 'model_request_started').length, transportInvocations: network.filter(value => value.upstreamBeginMs !== null).length, hostRecoveryRequired },
-    promptVariant: mode === 'parallel' ? (attempt - 1) % 3 + 1 : 1, inputDigest: sha256(regressionPrompt(mode, attempt)), materialHashes: beforeHashes, evidence, network, baseline: contextBaseline(network), attempts,
+    promptVariant: mode === 'parallel' ? (attempt - 1) % 3 + 1 : 1, inputDigest: sha256(regressionPrompt(mode, attempt)), materialHashes: beforeHashes, productionAudit: parentAudit, evidence, network, baseline: contextBaseline(network), attempts,
     workers: observations.map(({ records: _records, result, ...value }) => ({ ...value, terminal: result ? { status: result.status, committed: result.committed, reason: result.reason, modelRequests: result.modelRequests, toolCalls: result.toolCalls, usage: result.usage } : null })),
     childReceipts: receipts.map(receipt => ({ childId: receipt.childId, batchId: receipt.batchId, identity: receipt.identity, parentIdentity: receipt.parentIdentity, status: receipt.status, mode: receipt.mode, committed: receipt.result?.committed ?? null })) };
 }
@@ -209,16 +232,61 @@ async function main() {
     report.candidateSourceDigest = sha256(sourceFiles);
     report.runtimeBundleDigest = sha256(await fs.readFile(__filename));
     report.workerBundleDigest = sha256(await fs.readFile(path.join(__dirname, '../native/worker.cjs')));
-    let configuration: any;
-    try { configuration = JSON.parse(await fs.readFile(options.claudeConfig, 'utf8')); } catch { report.reason = 'no_config'; return; }
-    const source = options.model ? { ...configuration, env: { ...configuration.env, ANTHROPIC_MODEL: options.model } } : configuration;
-    const parsed = parseClaudeModelConfig(source, options.claudeConfig), apiKey = parsed.secret, model = parsed.preview.model;
-    if (!apiKey || !model) { report.reason = 'no_config'; return; }
-    const endpoint = upstreamEndpoint(parsed.preview.baseURL, options.protocol);
-    report.model = model; report.modelSelection = { source: options.model ? 'explicit_argument' : parsed.preview.modelSource ?? 'existing_configuration', nativeImportable: parsed.preview.models.find(value => value.model === model)?.nativeImportable ?? null, preservedConfiguredLabel: !options.model };
+    let apiKey: string | undefined, model: string | undefined, baseURL: string | undefined, authHeader: 'authorization' | 'x-api-key' = 'x-api-key';
+    if (options.nativeDataDirectory) {
+      // 原应用目录只读打开；不创建 StateStore、不调用 upsert/setCredential/commit，不落盘解密值。
+      const directory = await fs.realpath(options.nativeDataDirectory), file = path.join(directory, 'workspace.json'), info = await fs.stat(file);
+      if (!info.isFile() || info.size > 16 * 1024 * 1024) { report.reason = 'native_workspace_unavailable'; return; }
+      const workspace = JSON.parse(await fs.readFile(file, 'utf8'));
+      const sessionId = options.nativeSessionId ?? workspace.selectedSessionId;
+      const session = (workspace.sessions ?? []).find((value: any) => value.id === sessionId && value.execution?.providerId === 'native' && value.execution?.mode === 'structured');
+      if (options.nativeSessionId && !session) { report.reason = 'native_session_not_found'; return; }
+      const defaults = workspace.settings?.engineDefaults?.native ?? createNativeDefaultConfig();
+      const configuration = session?.engineConfig ?? defaults;
+      const config = parseNativeConfig(configuration.options.runtimePolicy === 'defaults' ? resolveNativeRuntimeConfig(configuration, defaults) : configuration);
+      const connectionId = options.connectionId ?? config.connectionId;
+      if (!connectionId) { report.reason = 'native_connection_selection_required'; return; }
+      const storageDiagnostics = { decryptCalls: 0, decryptFailures: 0, encryptCalls: 0, currentProfileIsSource: path.resolve(app.getPath('userData')) === directory, protectedProfileKeyMatches: null as boolean | null };
+      try {
+        const sourceState = JSON.parse(await fs.readFile(path.join(directory, 'Local State'), 'utf8'));
+        const currentState = JSON.parse(await fs.readFile(path.join(app.getPath('userData'), 'Local State'), 'utf8'));
+        if (typeof sourceState.os_crypt?.encrypted_key === 'string' && typeof currentState.os_crypt?.encrypted_key === 'string') storageDiagnostics.protectedProfileKeyMatches = sourceState.os_crypt.encrypted_key === currentState.os_crypt.encrypted_key;
+      } catch { /* 只记录是否可比较，不写入受保护字段。 */ }
+      const observedStorage = {
+        isEncryptionAvailable: () => safeStorage.isEncryptionAvailable(),
+        ...(typeof safeStorage.getSelectedStorageBackend === 'function' ? { getSelectedStorageBackend: () => safeStorage.getSelectedStorageBackend() } : {}),
+        encryptString: (value: string) => { storageDiagnostics.encryptCalls++; return safeStorage.encryptString(value); },
+        decryptString: (value: Buffer) => { storageDiagnostics.decryptCalls++; try { return safeStorage.decryptString(value); } catch (error) { storageDiagnostics.decryptFailures++; throw error; } },
+      };
+      const nativeConnections = new ConnectionStore(directory, { safeStorage: observedStorage, platform: process.platform });
+      const listing = nativeConnections.list(), view = listing.connections.find(value => value.id === connectionId);
+      if (listing.error) { report.connectionSelection = { source: 'native_store', dataDirectory: directory, connectionId, ready: false }; report.reason = 'native_connection_store_invalid'; return; }
+      report.connectionSelection = { source: 'native_store', dataDirectory: directory, connectionId,
+        selectedSession: session ? { id: session.id, selected: session.id === workspace.selectedSessionId, status: session.status, archived: session.archived, runtimePolicy: configuration.options.runtimePolicy ?? 'custom' } : null,
+        persistentStorageAvailable: listing.storage.persistentAvailable,
+        credentialDiagnostics: storageDiagnostics,
+        ...(view ? { revision: view.revision, enabled: view.enabled, protocol: view.protocol, model: view.model, credentialMode: view.auth.mode, credentialConfigured: view.credentialConfigured, authHeader: view.authHeader ?? 'x-api-key', ready: view.ready, baseURLDigest: sha256(view.baseURL) } : { ready: false }) };
+      if (!view || !view.ready) { report.reason = view ? 'native_connection_not_ready' : 'native_connection_not_found'; report.failureCode = !view ? 'native_connection_not_found' : storageDiagnostics.decryptFailures > 0 ? 'native_storage_decrypt_failed' : !listing.storage.persistentAvailable ? 'native_storage_unavailable' : 'native_connection_validation_failed'; return; }
+      const selectedModel = options.model ?? (config.connectionId === connectionId ? config.model || undefined : undefined);
+      const resolved = nativeConnections.resolve(connectionId, selectedModel);
+      apiKey = resolved.apiKey; model = resolved.model; baseURL = resolved.baseURL; authHeader = resolved.authHeader ?? 'x-api-key';
+      options.protocol = resolved.protocol; report.protocol = resolved.protocol;
+      report.modelSelection = { source: options.model ? 'explicit_argument' : selectedModel ? 'selected_native_session' : 'native_connection', preservedConfiguredLabel: !options.model };
+    } else {
+      let configuration: any;
+      try { configuration = JSON.parse(await fs.readFile(options.claudeConfig, 'utf8')); } catch { report.reason = 'no_config'; return; }
+      const source = options.model ? { ...configuration, env: { ...configuration.env, ANTHROPIC_MODEL: options.model } } : configuration;
+      const parsed = parseClaudeModelConfig(source, options.claudeConfig);
+      apiKey = parsed.secret; model = parsed.preview.model; baseURL = parsed.preview.baseURL; authHeader = parsed.authHeader;
+      report.connectionSelection = { source: 'claude_settings' };
+      report.modelSelection = { source: options.model ? 'explicit_argument' : parsed.preview.modelSource ?? 'existing_configuration', nativeImportable: parsed.preview.models.find(value => value.model === model)?.nativeImportable ?? null, preservedConfiguredLabel: !options.model };
+    }
+    if (!apiKey || !model || !baseURL) { report.reason = 'no_config'; return; }
+    const endpoint = upstreamEndpoint(baseURL, options.protocol);
+    report.model = model;
     report.connectionOriginDigest = sha256(new URL(endpoint).origin); report.configuration = { maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: 240000, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', toolPolicy: 'read_only', mcpConnections: [] };
     for (const mode of options.cases) for (let attempt = 1; attempt <= (mode === 'parallel' ? options.attempts : 1); attempt++) {
-      try { report.cases.push(await executeCase(options, { apiKey, model, authHeader: parsed.authHeader, endpoint }, mode, attempt)); }
+      try { report.cases.push(await executeCase(options, { apiKey, model, authHeader, endpoint }, mode, attempt)); }
       catch (error) { report.cases.push({ mode, attempt, source: 'real_model', status: 'failed', reason: 'runtime_case_failed', execution: { failureCode: safeRegressionFailureCode(error, 'case_setup_failed') } }); }
       // 每一次失败与重试均写入同一报告，不能只保留最后一次成功。
       await fs.writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });

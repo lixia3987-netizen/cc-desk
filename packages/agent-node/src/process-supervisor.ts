@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdir, readFile, readlink } from 'node:fs/promises';
 import path from 'node:path';
+import { userInfo } from 'node:os';
 import { runWindowsTreeCleanup, type WindowsProcessAnchor } from './windows-process-tree.js';
 import { createWindowsCommandJob, WindowsCommandJobError, type WindowsCommandJob, type WindowsCommandJobDiagnostic } from './windows-command-job.js';
 
@@ -150,6 +151,16 @@ export function commandEnvironment(source: NodeJS.ProcessEnv, forbiddenValues: r
     else result[destination] = value;
   }
   for (const key of blocked) delete result[key];
+  if (windows && !result.USERPROFILE) {
+    // Windows PowerShell 在显式空 USERPROFILE 下会在首条脚本前终止。
+    // 仅从 OS 用户记录取必要目录，不能让 libuv 或 homedir() 恢复宿主环境值；
+    // 派生值仍经过凭据检查，获取失败时保留空 guard 并让隔离初始化失败关闭。
+    try {
+      const profile = userInfo().homedir;
+      if (path.win32.isAbsolute(profile) && /^[a-z]:[\\/]/i.test(profile) && !/[\0\r\n]/.test(profile) &&
+        !forbiddenValues.some(secret => secret.length > 0 && profile.includes(secret))) result.USERPROFILE = profile;
+    } catch { /* 不能用环境变量或猜测路径补救 OS 查询失败。 */ }
+  }
   if (windows) for (const key of WINDOWS_BACKFILLED_KEYS) result[key] ??= '';
   return result;
 }

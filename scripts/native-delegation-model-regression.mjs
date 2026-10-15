@@ -3,23 +3,29 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { REGRESSION_CASES } from './native-delegation-model-regression-lib.mjs';
+import { DEFAULT_REGRESSION_CASES, REGRESSION_CASES } from './native-delegation-model-regression-lib.mjs';
+import { cleanupNativeCredentialProfile, prepareNativeCredentialProfile, verifyNativeProfileSourceUnchanged } from './native-credential-profile.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 export function parseRegressionArguments(argv) {
   const args = {};
   for (let i = 0; i < argv.length; i += 2) {
-    if (!['--claude-config', '--model', '--protocol', '--out', '--attempts', '--cases', '--candidate-sha'].includes(argv[i]) || !argv[i + 1]) throw new Error('invalid_arguments');
+    if (!['--claude-config', '--model', '--protocol', '--out', '--attempts', '--cases', '--candidate-sha', '--native-data-dir', '--connection-id', '--native-session-id', '--native-profile-key'].includes(argv[i]) || !argv[i + 1]) throw new Error('invalid_arguments');
     if (Object.hasOwn(args, argv[i].slice(2))) throw new Error('duplicate_argument');
     args[argv[i].slice(2)] = argv[i + 1];
   }
   if (!args.out) throw new Error('output_directory_required');
-  const attempts = Number(args.attempts ?? 3), cases = (args.cases ?? REGRESSION_CASES.join(',')).split(',');
+  const attempts = Number(args.attempts ?? 3), cases = (args.cases ?? DEFAULT_REGRESSION_CASES.join(',')).split(',');
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 10 || !cases.length || cases.some(mode => !REGRESSION_CASES.includes(mode)) || new Set(cases).size !== cases.length) throw new Error('invalid_cases_or_attempts');
   const protocol = args.protocol ?? 'anthropic';
   if (!['anthropic', 'responses', 'chat-completions'].includes(protocol)) throw new Error('invalid_protocol');
+  if ((args['connection-id'] || args['native-session-id']) && !args['native-data-dir']) throw new Error('native_data_directory_required');
+  if (args['native-profile-key'] !== undefined && args['native-profile-key'] !== 'true') throw new Error('invalid_native_profile_key_option');
+  if (args['native-profile-key'] && !args['native-data-dir']) throw new Error('native_data_directory_required');
+  for (const key of ['connection-id', 'native-session-id']) if (args[key] && !/^[a-zA-Z0-9_-]{1,100}$/.test(args[key])) throw new Error('invalid_native_selection');
   return { claudeConfig: path.resolve(args['claude-config'] ?? path.join(homedir(), '.claude', 'settings.json')), model: args.model,
-    outputDirectory: path.resolve(args.out), attempts, cases, protocol, candidateSha: args['candidate-sha'] };
+    outputDirectory: path.resolve(args.out), attempts, cases, protocol, candidateSha: args['candidate-sha'],
+    ...(args['native-data-dir'] ? { nativeDataDirectory: path.resolve(args['native-data-dir']) } : {}), ...(args['connection-id'] ? { connectionId: args['connection-id'] } : {}), ...(args['native-session-id'] ? { nativeSessionId: args['native-session-id'] } : {}), ...(args['native-profile-key'] ? { nativeProfileKey: true } : {}) };
 }
 
 /** 构建独立 Electron 主入口，运行器复用生产 StructuredExecutor 和真实 utilityProcess。 */
@@ -27,18 +33,22 @@ export async function runDelegationModelRegression(options) {
   await mkdir(options.outputDirectory, { recursive: false });
   // 启动前只在内存检查连接是否存在，缺配置不依赖构建环境，也不泄露字段值。
   let configuration;
-  try { configuration = JSON.parse(await readFile(options.claudeConfig, 'utf8')); } catch { /* 统一记录 no_config。 */ }
+  if (!options.nativeDataDirectory) try { configuration = JSON.parse(await readFile(options.claudeConfig, 'utf8')); } catch { /* 统一记录 no_config。 */ }
   const environment = configuration?.env ?? {};
-  if (!(environment.ANTHROPIC_AUTH_TOKEN ?? environment.ANTHROPIC_API_KEY)) {
+  if (!options.nativeDataDirectory && !(environment.ANTHROPIC_AUTH_TOKEN ?? environment.ANTHROPIC_API_KEY)) {
     const reportFile = path.join(options.outputDirectory, 'report.json'), report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'no_config', cases: [] };
     await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return { reportFile, report, exitCode: 1 };
   }
-  const safeOptions = { ...options };
   const optionsPath = path.join(options.outputDirectory, 'runtime-options.json');
-  await writeFile(optionsPath, JSON.stringify(safeOptions), { flag: 'wx', mode: 0o600 });
-  let exitCode = 1;
+  let exitCode = 1, credentialProfile, profileEvidence = options.nativeProfileKey ? { requested: true, created: false, cleanupConfirmed: false, sourceFilesUnchanged: null, checkedFiles: 0 } : undefined;
   try {
+    if (options.nativeProfileKey) {
+      credentialProfile = await prepareNativeCredentialProfile({ nativeDataDirectory: options.nativeDataDirectory });
+      profileEvidence.created = true;
+    }
+    const safeOptions = { ...options, ...(credentialProfile ? { credentialProfileDirectory: credentialProfile.directory } : {}) };
+    await writeFile(optionsPath, JSON.stringify(safeOptions), { flag: 'wx', mode: 0o600 });
     const { build } = await import('esbuild');
     const runtime = path.join(options.outputDirectory, 'runtime');
     await build({ absWorkingDir: root, entryPoints: ['apps/desktop/scripts/native-delegation-runtime.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: path.join(runtime, 'main/regression.cjs'), external: ['electron', 'node-pty'], logLevel: 'silent' });
@@ -49,9 +59,15 @@ export async function runDelegationModelRegression(options) {
       const child = spawn(electron, [path.join(runtime, 'main/regression.cjs'), optionsPath, ...(process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu'] : [])], { cwd: root, env: environment, windowsHide: true, stdio: 'ignore' });
       child.once('error', reject); child.once('exit', code => resolve(code ?? 1));
     });
-  } catch {
+  } catch (error) {
     const reportPath = path.join(options.outputDirectory, 'report.json');
-    await writeFile(reportPath, JSON.stringify({ version: 1, source: 'real_model', status: 'not_run', reason: 'runtime_build_or_launch_unavailable', cases: [] }, null, 2) + '\n', { flag: 'wx' }).catch(() => {});
+    const reason = typeof error?.code === 'string' && /^native_profile_(?:key_missing|key_invalid|key_unsupported|source_unsafe|source_changed|cleanup_refused)$/.test(error.code) ? error.code : 'runtime_build_or_launch_unavailable';
+    await writeFile(reportPath, JSON.stringify({ version: 1, source: 'real_model', status: 'not_run', reason, cases: [] }, null, 2) + '\n', { flag: 'wx' }).catch(() => {});
+  } finally {
+    if (credentialProfile) {
+      try { Object.assign(profileEvidence, await verifyNativeProfileSourceUnchanged(credentialProfile)); } catch { profileEvidence.sourceFilesUnchanged = false; }
+      try { profileEvidence.cleanupConfirmed = await cleanupNativeCredentialProfile(credentialProfile); } catch { profileEvidence.cleanupConfirmed = false; }
+    }
   }
   const reportFile = path.join(options.outputDirectory, 'report.json');
   let report;
@@ -59,6 +75,11 @@ export async function runDelegationModelRegression(options) {
   catch {
     report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'runtime_report_unavailable', runtimeExitCode: exitCode, cases: [] };
     await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+  }
+  if (profileEvidence) {
+    report.credentialProfile = profileEvidence;
+    if (profileEvidence.created && (!profileEvidence.cleanupConfirmed || !profileEvidence.sourceFilesUnchanged)) { report.status = 'failed'; report.releaseGate = 'failed'; report.reason = !profileEvidence.cleanupConfirmed ? 'credential_profile_cleanup_unconfirmed' : 'native_profile_source_changed'; }
+    await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   }
   return { reportFile, report, exitCode };
 }
