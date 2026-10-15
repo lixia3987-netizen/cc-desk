@@ -1,5 +1,7 @@
 # E0-01：固定真实工程任务准备
 
+2026-10-16 更新：下文保留 E0-01 的 v1 历史材料及现场记录。当前新批次默认使用 [工程任务 v2](../evals/native-engineering/v2/README.md)，执行新现场时将下列准备与验收命令中的 `v1` 替换为 `v2`；任务文本、基线、补丁和 oracle 不变，仅修正 Windows 的 Node `--import` 文件 URL。已有 v1 批次仍读取原 v1；不得改写旧批次版本或据此追认旧结果。完整版本边界见[材料说明](../evals/native-engineering/README.md)。
+
 日期：2026-09-28（北京时间）。状态：**评估输入、独立检查及参考材料已准备并完成本地回放；尚未执行真实模型对照。** 本页保留 E0-01 的原始材料与验证记录。后续 [E0-02 版本化报告](NATIVE-AGENT-E0-REPORTS.md)已扩展独立工程命令，E0-03 的实际服务调用仍待执行。
 
 入口：[工程任务 v1](../evals/native-engineering/v1/README.md)、[任务清单](../evals/native-engineering/v1/manifest.json)、[每轮记录模板](../evals/native-engineering/v1/record-template.json)。原有三个小任务及 `scripts/native-eval.mjs` 用法保持不变。

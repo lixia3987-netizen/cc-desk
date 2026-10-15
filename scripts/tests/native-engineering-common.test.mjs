@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createJson, readJson, ordinaryDirectory, assertSeparate, hashJson, loadEngineeringSuite, ENGINEERING_SUITE } from '../native-eval-engineering-common.mjs';
+import { createJson, readJson, ordinaryDirectory, assertSeparate, hashJson, loadEngineeringSuite, ENGINEERING_SUITE, LEGACY_ENGINEERING_SUITE } from '../native-eval-engineering-common.mjs';
 
 async function fixture(t) {
   const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'engineering-common-')));
@@ -54,4 +54,17 @@ test('the evaluator resolves the pinned suite and distinguishes directory siblin
   assert.equal(hashJson({ a: null, b: 0 }), hashJson({ b: 0, a: null }));
   assert.notEqual(hashJson({ a: null }), hashJson({ a: 0 }));
   assert.throws(() => hashJson({ value: NaN }), /finite JSON/);
+});
+
+test('suite selection authenticates each supported version and never falls back from a forged identity', async () => {
+  const current = await loadEngineeringSuite(), legacy = await loadEngineeringSuite(LEGACY_ENGINEERING_SUITE);
+  assert.equal(current.suite.id, 'cc-desk-engineering-v2');
+  assert.equal(legacy.suite.id, 'cc-desk-engineering-v1');
+  assert.notEqual(current.suiteRoot, legacy.suiteRoot);
+  for (const identity of [
+    { ...LEGACY_ENGINEERING_SUITE, digest: ENGINEERING_SUITE.digest },
+    { ...ENGINEERING_SUITE, taskBaseline: '0'.repeat(40) },
+    { ...ENGINEERING_SUITE, id: '../v1' },
+    { ...ENGINEERING_SUITE, path: legacy.suiteRoot },
+  ]) await assert.rejects(loadEngineeringSuite(identity), /suite|Unsupported engineering/);
 });

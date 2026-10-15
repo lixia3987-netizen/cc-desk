@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { initializeEngineeringBatch, generateEngineeringReport } from '../native-eval-engineering-reports.mjs';
 import { verifyEngineeringRun } from '../native-eval-engineering-runner.mjs';
 import { prepareEngineeringDependencies } from './helpers/engineering-dependencies.mjs';
+import { suiteRoot as suite } from '../native-eval-engineering-common.mjs';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const suite = path.join(repository, 'evals/native-engineering/v1');
 const baseline = 'b45bd0623d2a44a2878c46d4701fa4b388c7d9be';
 const runId = 'native-01-snapshot-refresh-r1';
 const sourcePath = 'apps/desktop/src/renderer/chat-snapshot-sync.ts';

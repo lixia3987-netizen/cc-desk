@@ -3,16 +3,20 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { suiteRoot, ENGINEERING_SUITE, assertEngineeringSuiteDigest } from '../native-eval-engineering-common.mjs';
+import { ENGINEERING_SUITE as CURRENT_SUITE, LEGACY_ENGINEERING_SUITE as ENGINEERING_SUITE,
+  engineeringSuiteRoot, loadEngineeringSuite, assertEngineeringSuiteDigest as assertSuiteDigest } from '../native-eval-engineering-common.mjs';
+
+const suiteRoot = engineeringSuiteRoot(ENGINEERING_SUITE);
+const assertEngineeringSuiteDigest = files => assertSuiteDigest(files, ENGINEERING_SUITE);
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
-async function materialEntries() {
+async function materialEntries(root = suiteRoot) {
   const files = [];
   const visit = async (relative = '') => {
-    for (const name of (await fs.readdir(path.join(suiteRoot, relative))).sort()) {
+    for (const name of (await fs.readdir(path.join(root, relative))).sort()) {
       const next = path.posix.join(relative, name);
       if (next === 'validation.json') continue;
-      const absolute = path.join(suiteRoot, next), stat = await fs.lstat(absolute);
+      const absolute = path.join(root, next), stat = await fs.lstat(absolute);
       assert.equal(stat.isSymbolicLink(), false);
       if (stat.isDirectory()) await visit(next);
       else files.push([next, sha(await fs.readFile(absolute))]);
@@ -66,4 +70,33 @@ test('derived validation content is excluded from material identity without dele
   }
   assert.throws(() => assertEngineeringSuiteDigest([...files, ['acceptance/validation.json', sha('{}')]]), /digest mismatch/);
   assert.deepEqual(await fs.readFile(file), original);
+});
+
+test('v2 has a separate identity and changes only the loader URL, version labels and commentary', async () => {
+  const current = await loadEngineeringSuite(CURRENT_SUITE), legacy = await loadEngineeringSuite(ENGINEERING_SUITE);
+  assert.notEqual(current.suite.id, legacy.suite.id);
+  assert.notEqual(current.suite.digest, legacy.suite.digest);
+  assert.equal(current.suite.taskBaseline, legacy.suite.taskBaseline);
+  assert.deepEqual(current.manifest.tasks, legacy.manifest.tasks);
+  assert.deepEqual(current.template, { ...legacy.template, suiteId: current.suite.id });
+  const previous = await materialEntries(), next = await materialEntries(current.suiteRoot);
+  assert.equal(next.length, previous.length);
+  const allowed = new Set(['README.md', 'manifest.json', 'record-template.json', 'self-check.mjs', 'acceptance/common.mjs']);
+  for (const [name, digest] of previous) {
+    if (!allowed.has(name)) assert.equal(next.find(([file]) => file === name)?.[1], digest, `Frozen task or oracle changed: ${name}`);
+  }
+  const common = await fs.readFile(path.join(current.suiteRoot, 'acceptance/common.mjs'), 'utf8');
+  const restoredCommon = common
+    .replace("import { fileURLToPath, pathToFileURL } from 'node:url';", "import { fileURLToPath } from 'node:url';")
+    .replace("['--import', pathToFileURL(requireTrusted.resolve('tsx')).href,", "['--import', requireTrusted.resolve('tsx'),")
+    .replace('使用评估器持有的工具打包候选 TypeScript，从不运行 npm 钩子。', 'Bundles candidate TypeScript using evaluator-owned tooling; never runs npm hooks.')
+    .replace('执行选定的原有回归及要求新增的测试，不代表完整仓库验证。', 'Selected original regressions plus required new tests; not a full repository gate.');
+  assert.equal(restoredCommon, await fs.readFile(path.join(legacy.suiteRoot, 'acceptance/common.mjs'), 'utf8'));
+  const selfCheck = (await fs.readFile(path.join(current.suiteRoot, 'self-check.mjs'), 'utf8'))
+    .replaceAll(current.suite.id, legacy.suite.id)
+    .replace('仅供操作者执行测试夹具质量检查；不使用模型或服务凭据，也不接入评估 CLI。', 'Operator-only fixture QA. No model/service credentials or evaluation CLI integration.');
+  assert.equal(selfCheck, await fs.readFile(path.join(legacy.suiteRoot, 'self-check.mjs'), 'utf8'));
+  await assert.rejects(fs.stat(path.join(current.suiteRoot, 'validation.json')), { code: 'ENOENT' });
+  assert.equal(assertSuiteDigest(next, CURRENT_SUITE), CURRENT_SUITE.digest);
+  assert.throws(() => assertSuiteDigest(next, ENGINEERING_SUITE), /digest mismatch/);
 });

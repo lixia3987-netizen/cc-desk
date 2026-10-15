@@ -258,6 +258,9 @@ $all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${older.pid}) {
   [pscustomobject]@{ ProcessId=$_.ProcessId; ParentProcessId=${parentPid}; CreationDate=$_.CreationDate }
 } else { $_ } })`;
         let script = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)
+          // 显式查询真实哨兵后再注入旧父 PID，确保限范围查询不会让该负例失效。
+          .replace('# windows-tree:before-query', `# windows-tree:before-query
+$query+=' OR ProcessId=${older.pid}'`)
           .replace('# windows-tree:after-snapshot', mutation);
         if (missingBirth) {
           // 缺少时间不能证明身份过期，此时仍必须默认拒绝。

@@ -72,6 +72,46 @@ function Report-Anchor([int]$number,[string]$identity) {
   if($minimum.ContainsKey([string]$number)) { $lower=$minimum[[string]$number].ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture) }
   [Console]::Out.WriteLine((@{type='anchor';pid=$number;created=$identity;exited=($identity -eq 'tombstone');minimumCreated=$lower} | ConvertTo-Json -Compress))
 }
+function Read-OwnedSnapshot([ref]$failureCode,[string]$boundCode,[string]$timeoutCode) {
+  # 按已观察锚点逐层补齐后代；不把整台宿主机的进程对象反复传回。
+  $rowsByPid=@{}
+  $queried=New-Object 'System.Collections.Generic.HashSet[int]'
+  $pending=New-Object 'System.Collections.Generic.Queue[int]'
+  foreach($anchor in $anchors) { $pending.Enqueue([int]$anchor) }
+  while($pending.Count -gt 0) {
+    if([DateTime]::UtcNow -ge $deadline) { $failureCode.Value=$timeoutCode; throw 'Owned snapshot deadline expired.' }
+    $batch=@()
+    while($pending.Count -gt 0 -and $batch.Count -lt 64) {
+      $number=$pending.Dequeue()
+      if($queried.Add($number)) { $batch+=@($number) }
+    }
+    if($batch.Count -eq 0) { continue }
+    if($queried.Count -gt 4096) { $failureCode.Value=$boundCode; throw 'Owned snapshot exceeds its process bound.' }
+    $conditions=@(foreach($number in $batch) { 'ProcessId='+$number; 'ParentProcessId='+$number })
+    $query='SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process WHERE '+($conditions -join ' OR ')
+    if($query.Length -gt 8192) { $failureCode.Value=$boundCode; throw 'Owned snapshot query is too long.' }
+    # windows-tree:before-query
+    foreach($row in @(Get-CimInstance -Query $query)) {
+      $number=[int]$row.ProcessId
+      $key=[string]$number
+      if($number -le 1) { $failureCode.Value=$boundCode; throw 'Owned snapshot contains an invalid process.' }
+      if($rowsByPid.ContainsKey($key)) {
+        $previous=$rowsByPid[$key]
+        # 同一轮分批查询也不能把 PID 复用或父关系变化拼成一个合法身份。
+        if(!$previous.CreationDate -or !$row.CreationDate -or
+          $previous.CreationDate.ToUniversalTime() -ne $row.CreationDate.ToUniversalTime() -or
+          [int]$previous.ParentProcessId -ne [int]$row.ParentProcessId) {
+          $failureCode.Value=$boundCode; throw 'Process identity changed during the owned snapshot.'
+        }
+      } else {
+        if($rowsByPid.Count -ge 4096) { $failureCode.Value=$boundCode; throw 'Owned snapshot contains too many processes.' }
+        $rowsByPid[$key]=$row
+      }
+      if(!$queried.Contains($number)) { $pending.Enqueue($number) }
+    }
+  }
+  return @($rowsByPid.Values)
+}
 function Parse-Identity([string]$identity) {
   return [DateTime]::SpecifyKind([DateTime]::ParseExact($identity,'yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture),[DateTimeKind]::Utc)
 }
@@ -110,7 +150,7 @@ public static class NativeOwnedProcess {
       } elseif(!$nativeExited.ContainsKey($key)) { $closedBeforeSnapshot=$false }
     }
     $phase='windows_snapshot'; $helperStage='snapshot'; $operation='query_snapshot'; Report-Progress
-    $all=@(Get-CimInstance -Query 'SELECT ProcessId,ParentProcessId,CreationDate FROM Win32_Process')
+    $all=@(Read-OwnedSnapshot ([ref]$failure) 'invalid_snapshot' 'timeout')
     # windows-tree:after-snapshot
     $snapshots++
     $helperStage='capture'

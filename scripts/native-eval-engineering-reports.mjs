@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { loadEngineeringSuite, ordinaryDirectory, readJson, createJson, hashJson, assertSeparate, evaluatorRoot } from './native-eval-engineering-common.mjs';
+import { loadEngineeringSuite, ordinaryDirectory, readJson, createJson, hashJson, assertSeparate, evaluatorRoot, ENGINEERING_SUITE } from './native-eval-engineering-common.mjs';
 import { MAX_ATTEMPTS, MAX_REPORT_BYTES, MAX_RECEIPT_BYTES, RECORD_STATUSES, METRIC_NUMBERS, BUDGET_NUMBERS, UNLIMITED_BUDGET, VERIFICATION_STATUSES, ENGINES, UUID, REVISION, engineeringSlots, assertSuiteIdentity, assertBatchManifest, assertEngineeringRecord, assertAttemptIntent, assertAttemptResult, assertJsonBudget, object } from './native-eval-engineering-schema.mjs';
 
 const LIMITATIONS = [
@@ -13,10 +13,10 @@ const LIMITATIONS = [
   'Metric totals describe the current twelve declared model-run records, not the number or total cost of repeated verifier attempts. Prior record snapshots remain attached to each attempt.',
 ];
 
-export async function initializeEngineeringBatch(directory, appRevision, { unlimitedBudget = false } = {}) {
+export async function initializeEngineeringBatch(directory, appRevision, { unlimitedBudget = false, suite: suiteIdentity = ENGINEERING_SUITE } = {}) {
   if (typeof appRevision !== 'string' || !REVISION.test(appRevision)) throw new Error('Application revision must be a full lowercase 40-character commit hash.');
   if (typeof unlimitedBudget !== 'boolean') throw new Error('Unlimited budget must be an explicit boolean option.');
-  const { suite, manifest: sourceManifest, template } = await loadEngineeringSuite();
+  const { suite, manifest: sourceManifest, template } = await loadEngineeringSuite(suiteIdentity);
   assertSeparate(path.resolve(directory), evaluatorRoot);
   await fs.mkdir(path.resolve(directory), { recursive: true });
   const root = await ordinaryDirectory(directory);
@@ -47,9 +47,11 @@ function validateLock(lock, manifest) {
   return lock;
 }
 export async function loadEngineeringBatch(directory) {
-  const root = await ordinaryDirectory(directory), { suite, manifest: sourceManifest } = await loadEngineeringSuite();
+  const root = await ordinaryDirectory(directory);
   assertSeparate(root, evaluatorRoot);
-  const manifest = assertBatchManifest(await readJson(path.join(root, 'manifest.json')), suite, sourceManifest.tasks);
+  const storedManifest = await readJson(path.join(root, 'manifest.json'));
+  const { suite, manifest: sourceManifest } = await loadEngineeringSuite(storedManifest.suite);
+  const manifest = assertBatchManifest(storedManifest, suite, sourceManifest.tasks);
   const recordEntries = await entries(path.join(root, 'records'));
   if (recordEntries.length !== manifest.slots.length || recordEntries.some(entry => !entry.isFile() || entry.isSymbolicLink() || !manifest.slots.some(slot => slot.recordFile === `records/${entry.name}`))) throw new Error('Engineering records must match every fixed batch slot exactly.');
   await ordinaryDirectory(path.join(root, 'attempts'));
@@ -157,7 +159,7 @@ export async function generateEngineeringReport(batchDirectory, outputFile) {
 async function validateReport(report) {
   object(report, ['kind', 'schemaVersion', 'suite', 'generatedAt', 'batch', 'slots', 'summary', 'realQualityStatus', 'graphicalAcceptance', 'platformAcceptance', 'verdict', 'limitations'], 'report');
   if (report.kind !== 'native-engineering-report' || report.schemaVersion !== 1 || !Number.isFinite(Date.parse(report.generatedAt))) throw new Error('Invalid engineering report version/date.');
-  const { suite, manifest: sourceManifest } = await loadEngineeringSuite();
+  const { suite, manifest: sourceManifest } = await loadEngineeringSuite(report.suite);
   assertSuiteIdentity(report.suite, suite);
   object(report.batch, ['manifest', 'manifestDigest', 'verificationLock'], 'report batch');
   const manifest = assertBatchManifest(report.batch.manifest, report.suite, sourceManifest.tasks);

@@ -5,7 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { initializeEngineeringBatch, loadEngineeringBatch, generateEngineeringReport, compareEngineeringReports } from '../native-eval-engineering-reports.mjs';
-import { createJson, hashJson, evaluatorRoot } from '../native-eval-engineering-common.mjs';
+import { createJson, hashJson, evaluatorRoot, ENGINEERING_SUITE, LEGACY_ENGINEERING_SUITE } from '../native-eval-engineering-common.mjs';
 import { assertAttemptResult, assertVerifierOutput, assertEngineeringRecord, assertAttemptIntent, MAX_RECORD_BYTES, MAX_REPORT_BYTES } from '../native-eval-engineering-schema.mjs';
 
 const revision = 'a'.repeat(40);
@@ -107,6 +107,33 @@ test('comparison rejects cross-suite data and recalculates summary instead of tr
   const compared = await compareEngineeringReports(left, updated);
   assert.deepEqual(compared.slots[0].metadataDifferences, ['model', 'budget']); assert.equal(compared.verdict, 'manual-review-required'); assert.equal(compared.comparability.warnings.length, 2);
   assert.equal(compared.comparability.missingMetadata.length, 12); assert.ok(compared.comparability.withinReportEngineDifferences.right.length > 0);
+});
+
+test('legacy batches and failed reports retain v1 identity while new batches default to v2', async t => {
+  const { root, batch, manifest } = await fixture(t);
+  assert.deepEqual(manifest.suite, ENGINEERING_SUITE);
+  const oldBatch = path.join(root, 'legacy-batch');
+  const oldManifest = await initializeEngineeringBatch(oldBatch, revision, { suite: LEGACY_ENGINEERING_SUITE });
+  const failed = await attempt(oldBatch, oldManifest.slots[0].runId);
+  const intentBefore = await fs.readFile(path.join(failed.directory, 'intent.json'));
+  const resultBefore = await fs.readFile(path.join(failed.directory, 'result.json'));
+  const oldReportFile = path.join(root, 'legacy-report.json');
+  const oldReport = await generateEngineeringReport(oldBatch, oldReportFile);
+  const oldReportBefore = await fs.readFile(oldReportFile);
+  assert.deepEqual((await loadEngineeringBatch(oldBatch)).manifest.suite, LEGACY_ENGINEERING_SUITE);
+  assert.deepEqual(oldReport.suite, LEGACY_ENGINEERING_SUITE);
+  assert.equal(oldReport.summary.verificationStatuses.fail, 1);
+  const repeated = await compareEngineeringReports(oldReportFile, oldReportFile);
+  assert.equal(repeated.left.summary.verificationStatuses.fail, 1);
+  const newReportFile = path.join(root, 'new-report.json');
+  await generateEngineeringReport(batch, newReportFile);
+  await assert.rejects(compareEngineeringReports(oldReportFile, newReportFile), /suite identity mismatch/);
+  await assert.rejects(compareEngineeringReports(newReportFile, oldReportFile), /suite identity mismatch/);
+  assert.deepEqual(await fs.readFile(oldReportFile), oldReportBefore);
+  assert.deepEqual(await fs.readFile(path.join(failed.directory, 'intent.json')), intentBefore);
+  assert.deepEqual(await fs.readFile(path.join(failed.directory, 'result.json')), resultBefore);
+  await editRecord(oldBatch, oldManifest.slots[0].runId, record => { record.suiteId = ENGINEERING_SUITE.id; });
+  await assert.rejects(loadEngineeringBatch(oldBatch), /record identity/);
 });
 
 test('missing receipts, unknown attempt directories and retained locks are visible or rejected', async t => {

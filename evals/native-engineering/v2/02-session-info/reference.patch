@@ -1,0 +1,102 @@
+--- a/apps/desktop/src/main/ipc/session-handlers.ts
++++ b/apps/desktop/src/main/ipc/session-handlers.ts
+@@ -39,6 +39,11 @@
+ ]);
+
+ export function registerSessionHandlers(handle: Register, ports: SessionPorts): void {
++  handle('session:info', idSchema, id => {
++    const session = ports.session(id);
++    return { sessionId: session.id, title: session.title, providerId: session.execution.providerId,
++      mode: session.execution.mode, archived: session.archived, workspaceKind: session.worktree ? 'worktree' : 'project' };
++  });
+   const removeRecord = async (id: string) => {
+     if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
+     await ports.chat.stopIdle(id);
+--- a/apps/desktop/src/shared/types.ts
++++ b/apps/desktop/src/shared/types.ts
+@@ -44,7 +44,11 @@
+ export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
+ export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
+ export interface GitInfo { branch: string; status: string; diff: string; error?: string }
++export interface SessionInfo {
++  sessionId: string; title: string; providerId: string; mode: 'structured' | 'terminal'; archived: boolean; workspaceKind: 'project' | 'worktree';
++}
+ export interface DesktopAPI {
++  getSessionInfo(id: string): Promise<SessionInfo>;
+   nativeConnections: NativeConnectionsAPI;
+   nativeSkills: NativeSkillsAPI;
+   nativeMcp: NativeMcpConnectionsAPI;
+--- a/apps/desktop/src/preload/index.ts
++++ b/apps/desktop/src/preload/index.ts
+@@ -2,6 +2,7 @@
+ import type { DesktopAPI } from '../shared/types';
+ import type { ChatSnapshotVersion, TaskState } from '../shared/chat';
+ const api: DesktopAPI = {
++  getSessionInfo: id => ipcRenderer.invoke('session:info', id),
+   nativeMcp: {
+     list: () => ipcRenderer.invoke('native:mcp-connections-list'),
+     upsert: input => ipcRenderer.invoke('native:mcp-connections-upsert', input),
+--- /dev/null
++++ b/apps/desktop/src/renderer/SessionInfoCard.tsx
+@@ -0,0 +1,7 @@
++import type { SessionInfo } from '../shared/types';
++export function SessionInfoCard({info,loading,error,onRefresh}:{info?:SessionInfo;loading:boolean;error?:string;onRefresh:()=>void}) {
++  return <section aria-label="会话摘要"><header><strong>会话摘要</strong><button type="button" disabled={loading} onClick={onRefresh}>刷新</button></header>
++    {loading&&<p role="status">正在读取…</p>}{error&&<p role="alert">{error}</p>}
++    {info&&<dl><dt>标题</dt><dd>{info.title}</dd><dt>引擎</dt><dd>{info.providerId}</dd><dt>模式</dt><dd>{info.mode}</dd><dt>工作区</dt><dd>{info.workspaceKind}</dd><dt>已归档</dt><dd>{String(info.archived)}</dd><dt>会话 ID</dt><dd>{info.sessionId}</dd></dl>}
++  </section>;
++}
+--- a/apps/desktop/src/renderer/ChatPane.tsx
++++ b/apps/desktop/src/renderer/ChatPane.tsx
+@@ -1,7 +1,8 @@
++import { SessionInfoCard } from './SessionInfoCard';
+ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+ import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
+ import type { ExecutionDescriptor } from '../shared/execution';
+-import type { Attachment, Session } from '../shared/types';
++import type { Attachment, Session, SessionInfo } from '../shared/types';
+ import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot } from '../shared/chat';
+ import { MessageText } from './MessageText';
+ import { ChatSearch } from './ChatSearch';
+@@ -77,6 +78,15 @@
+   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
+   // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
+   const initialReading=useRef(readingPositions.get(session.id));
++  const [showSessionInfo,setShowSessionInfo]=useState(false),[sessionInfo,setSessionInfo]=useState<SessionInfo>(),[sessionInfoLoading,setSessionInfoLoading]=useState(false),[sessionInfoError,setSessionInfoError]=useState<string>();
++  const sessionInfoRequest=useRef(0);
++  const refreshSessionInfo=useCallback(async()=>{
++    const request=++sessionInfoRequest.current;setSessionInfoLoading(true);setSessionInfoError(undefined);
++    try { const info=await window.desktop.getSessionInfo(session.id);if(request===sessionInfoRequest.current&&info.sessionId===session.id)setSessionInfo(info); }
++    catch(error){if(request===sessionInfoRequest.current)setSessionInfoError(error instanceof Error?error.message:String(error));}
++    finally {if(request===sessionInfoRequest.current)setSessionInfoLoading(false);}
++  },[session.id]);
++  useEffect(()=>{setSessionInfo(undefined);setSessionInfoError(undefined);setSessionInfoLoading(false);if(showSessionInfo)void refreshSessionInfo();return()=>{sessionInfoRequest.current++;};},[showSessionInfo,refreshSessionInfo]);
+   const [archive,setArchive]=useState<ChatPage>(),[paging,setPaging]=useState(false),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
+   const [historyNotice,setHistoryNotice]=useState(''),[exhaustedBefore,setExhaustedBefore]=useState('');
+   const visible=useMemo(()=>snapshot&&archive?{...snapshot,messages:archive.messages,pending:[]}:snapshot,[snapshot,archive]);
+@@ -213,6 +223,8 @@
+   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
+   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
+     {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给当前引擎。</span></div>}
++    <button className="text-button" type="button" aria-expanded={showSessionInfo} onClick={()=>setShowSessionInfo(value=>!value)}>会话摘要</button>
++    {showSessionInfo&&<SessionInfoCard info={sessionInfo} loading={sessionInfoLoading} error={sessionInfoError} onRefresh={()=>void refreshSessionInfo()}/>}
+     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
+     {syncState.error&&<div className="chat-error" role="alert"><strong>状态未知，显示的是上次读取的记录。</strong><p>{syncState.error}</p><button className="secondary compact" disabled={syncState.loading} onClick={()=>void load()}>{syncState.loading?'正在重试…':'重新同步状态'}</button></div>}
+       {(snapshot?.truncated||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={paging||!!archive&&!archive.before||!visible?.messages.length||exhaustedBefore===visible?.messages[0]?.id} onClick={()=>void openPage({before:archive?.before??visible?.messages[0]?.id}).catch(onError)}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>本页 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
+--- /dev/null
++++ b/apps/desktop/tests/e0-session-info.test.ts
+@@ -0,0 +1,14 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { registerSessionHandlers } from '../src/main/ipc/session-handlers';
++import type { Register } from '../src/main/ipc/registration';
++test('session info is read-only, validates its id and omits private fields',()=>{
++  const handlers=new Map<string,{schema:{parse(value:unknown):unknown};action:(value:any)=>unknown}>();
++  const session={id:'11111111-1111-4111-8111-111111111111',title:'Fixture',archived:false,cwd:'/private',engineConfig:{token:'private'},execution:{providerId:'native',mode:'structured'}};
++  const saved=JSON.stringify(session);
++  registerSessionHandlers(((name,schema,action)=>handlers.set(name,{schema,action})) as Register,{session:(id:string)=>{assert.equal(id,session.id);return session;}} as unknown as Parameters<typeof registerSessionHandlers>[1]);
++  const handler=handlers.get('session:info')!;
++  assert.throws(()=>handler.schema.parse('bad'));
++  assert.deepEqual(handler.action(handler.schema.parse(session.id)),{sessionId:session.id,title:'Fixture',archived:false,providerId:'native',mode:'structured',workspaceKind:'project'});
++  assert.equal(JSON.stringify(session),saved);
++});

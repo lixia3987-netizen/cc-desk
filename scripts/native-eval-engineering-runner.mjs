@@ -5,10 +5,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
 import { loadEngineeringBatch } from './native-eval-engineering-reports.mjs';
 import { assertAttemptIntent, assertAttemptResult, assertVerifierOutput, MAX_ATTEMPTS } from './native-eval-engineering-schema.mjs';
-import { ordinaryDirectory, createJson, hashJson, commandEnvironment, assertSeparate } from './native-eval-engineering-common.mjs';
+import { ordinaryDirectory, createJson, hashJson, commandEnvironment, assertSeparate, engineeringSuiteRoot } from './native-eval-engineering-common.mjs';
 
 const evaluatorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const suiteRoot = path.join(evaluatorRoot, 'evals/native-engineering/v1');
 const OUTPUT_LIMIT = 256 * 1024;
 const RETAINED_OUTPUT = OUTPUT_LIMIT;
 const DEFAULT_TIMEOUT = 120_000;
@@ -16,7 +15,7 @@ const MAX_TIMEOUT = 300_000;
 const sha = value => createHash('sha256').update(value).digest('hex');
 
 /** 源码、导入项及入口均由评估器提供，不接受候选任务提供的内容。 */
-const VERIFICATION_PROGRAM = `
+const verificationProgram = suiteRoot => `
 import { verify } from ${JSON.stringify(pathToFileURL(path.join(suiteRoot, 'acceptance/verify.mjs')).href)};
 import { assertIntegrity } from ${JSON.stringify(pathToFileURL(path.join(suiteRoot, 'acceptance/common.mjs')).href)};
 process.env.GIT_CONFIG_NOSYSTEM = '1';
@@ -54,7 +53,7 @@ export function parseEngineeringVerificationReceipt(stdout, exitCode, taskId) {
 }
 
 /** 复用生产环境的进程监管器及其针对各平台的释放检查。 */
-async function runVerifier(taskId, candidate, timeoutMs, signal) {
+async function runVerifier(taskId, candidate, timeoutMs, signal, suiteIdentity) {
   let ProcessSupervisor;
   try { ({ ProcessSupervisor } = await import('@cc-desk/agent-node/process-supervisor')); }
   catch { throw new Error('Evaluator packages are not built. Run npm run build:packages in the evaluator before verification.'); }
@@ -64,7 +63,7 @@ async function runVerifier(taskId, candidate, timeoutMs, signal) {
   let result;
   try {
     result = await supervisor.run(owner, { executable: process.execPath,
-      argv: ['--input-type=module', '-e', VERIFICATION_PROGRAM, taskId, candidate], cwd: evaluatorRoot, timeoutMs, maxOutputBytes: OUTPUT_LIMIT }, signal);
+      argv: ['--input-type=module', '-e', verificationProgram(engineeringSuiteRoot(suiteIdentity)), taskId, candidate], cwd: evaluatorRoot, timeoutMs, maxOutputBytes: OUTPUT_LIMIT }, signal);
   } catch (error) {
     if (supervisor.has(owner)) Object.assign(error, { cleanupUnconfirmed: true });
     throw error;
@@ -163,7 +162,7 @@ export async function verifyEngineeringRun({ batchDirectory, runId, candidateDir
         before = await snapshotCandidate(candidate, record.taskBaseline);
         if (signal?.aborted) verification.status = 'cancelled';
         else {
-          const child = await runVerifier(record.taskId, candidate, timeoutMs, signal);
+          const child = await runVerifier(record.taskId, candidate, timeoutMs, signal, manifest.suite);
           const stdout = clipped(child.stdout), stderr = clipped(child.stderr);
           Object.assign(verification, { exitCode: child.exitCode, signal: child.signal, stdout: stdout.text, stderr: stderr.text, stdoutTruncated: stdout.truncated || child.stdoutOverflow, stderrTruncated: stderr.truncated || child.stderrOverflow, cleanupConfirmed: child.cleanupConfirmed });
           if (!child.cleanupConfirmed) verification.status = 'unknown';
