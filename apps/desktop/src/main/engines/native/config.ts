@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { NATIVE_PERMISSION_MODES, NATIVE_PERMISSION_LABELS } from '../../../shared/native-permissions';
 import { normalizeProjectSkillPaths } from '@cc-desk/agent-node/project-skills';
 import type { EngineConfig, EngineConfigField } from '../../../shared/execution';
 
@@ -8,7 +9,14 @@ export const NATIVE_MODEL_RETRY_FIELD: EngineConfigField = {
   description: '默认关闭。开启后，仅在完整模型响应与工具结果的边界，对尚未收到部分输出的 HTTP 429、502、503、504 错误有限重试；整个回合最多额外请求 2 次，依次等待 500 毫秒、1500 毫秒，等待期间可取消。重试计入本回合模型请求次数与执行时长，每次请求可能计费。摘要和本地工具不自动重试，结果未知的操作不重放。',
 };
 
+export const NATIVE_PERMISSION_FIELD: EngineConfigField = {
+  key: 'permissionMode', label: '权限模式', type: 'select', apply: 'stopped',
+  options: NATIVE_PERMISSION_MODES.map(value => ({ value, label: NATIVE_PERMISSION_LABELS[value] })),
+  description: '逐次审批：写入、命令与需授权的读取分别确认。自动允许文件编辑：仅自动批准本地文件编辑，命令与 MCP 调用仍需审批。自动允许工具执行：文件、命令与 MCP 操作均自动批准，提问仍需回答。路径、参数、文件版本和工作流限制继续生效；保存后下一回合使用。',
+};
+
 const optionsSchema = z.object({
+  permissionMode: z.enum(NATIVE_PERMISSION_MODES).default('default'),
   connectionId: z.string().trim().max(100).default(''),
   model: z.string().trim().max(200).default(''),
   runtimePolicy: z.enum(['custom', 'defaults']).default('custom'),

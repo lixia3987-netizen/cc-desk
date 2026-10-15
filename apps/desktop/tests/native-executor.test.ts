@@ -398,3 +398,49 @@ test('native failed hydration close remains owned and an explicit shutdown retry
     await reopened.close();
   } finally { failClose = false; await f.executor.shutdown().catch(() => {}); t.mock.restoreAll(); await f.dispose(); }
 });
+
+test('automatic tool mode runs file and command tools without approval cards and retains exact approval records', async () => {
+  const f = await fixture();
+  try {
+    const config = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig);
+    config.options.permissionMode = 'bypassPermissions';
+    await f.executor.updateConfig(f.id, config);
+    const result = await f.executor.send(f.id, '修改并验证');
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'edited\n');
+    assert.equal(f.executor.attention().length, 0);
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try {
+      const run = ledger.listRuns()[0];
+      assert.equal((run.configuration.sessionOptions as { permissionMode: string }).permissionMode, 'bypassPermissions');
+      const prepared = run.tools.flatMap(tool => tool.prepared ? [tool.prepared] : []);
+      assert.ok(prepared.length > 0);
+      assert.match(JSON.stringify(prepared), /approved/);
+    } finally { await ledger.close(); }
+  } finally { await f.dispose(); }
+});
+
+test('automatic edit mode writes files but still exposes command approval', async () => {
+  const f = await fixture();
+  const pendingTools: string[] = [];
+  const watch = f.events.subscribe(event => {
+    if (event.type === 'conversation.changed') pendingTools.push(...f.executor.snapshot(f.id).pending.map(item => item.toolName));
+  });
+  const unsubscribe = f.approve('deny');
+  try {
+    const config = structuredClone(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig);
+    config.options.permissionMode = 'acceptEdits';
+    await f.executor.updateConfig(f.id, config);
+    await f.executor.send(f.id, '修改并验证');
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'edited\n');
+    assert.ok(pendingTools.includes('run_command'));
+    assert.ok(!pendingTools.some(name => ['apply_patch', 'edit_file', 'apply_change_set'].includes(name)));
+  } finally { watch(); unsubscribe(); await f.dispose(); }
+});
+
+test('legacy Native configs keep individual approval and invalid modes are rejected', () => {
+  assert.equal(createNativeConfig().options.permissionMode, 'default');
+  for (const permissionMode of ['automatic', '', true]) {
+    assert.throws(() => createNativeConfig({ schemaVersion: 1, options: { permissionMode } }));
+  }
+});

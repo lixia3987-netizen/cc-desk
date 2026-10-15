@@ -15,7 +15,7 @@ import { NativeStructuredExecutor, type NativeExecutorOptions } from '../engines
 import { ConnectionStore } from '../engines/native/connections';
 import type { NativeMcpConnectionStore } from '../engines/native/mcp-connections';
 import type { NativeModelCapabilityService } from '../engines/native/model-capabilities';
-import { createNativeConfig, createNativeDefaultConfig, NATIVE_MODEL_RETRY_FIELD, parseNativeConfig } from '../engines/native/config';
+import { createNativeConfig, createNativeDefaultConfig, NATIVE_PERMISSION_FIELD, NATIVE_MODEL_RETRY_FIELD, parseNativeConfig } from '../engines/native/config';
 import type { StateStore } from '../store';
 import { ExecutionStatePublisher } from './events';
 import { ExecutionRegistry } from './registry';
@@ -92,8 +92,9 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
     providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,
     capabilities: () => ({ available: true, structured: true, terminal: false, approvals: true, resume: false, fork: false, commands: false, contextUsage: true, compactContext: true, liveConfig: false, attachments: true, export: true }),
     configuration: () => ({ schemaVersion: 1, defaults: createNativeDefaultConfig(), fields: [
+      NATIVE_PERMISSION_FIELD,
       { key: 'connectionId', label: '模型连接', type: 'select', apply: 'stopped', options: [{ value: '', label: '请先在设置中配置连接' }, ...connections.list().connections.map(item => ({ value: item.id, label: item.name + (item.ready ? '' : '（未就绪）') }))] },
-      { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。每次写入和命令均需单独审批。' },
+      { key: 'model', label: '模型覆盖', type: 'text', apply: 'stopped', placeholder: '留空使用连接默认模型', description: '已有上下文切换服务或模型需要新建会话。工具审批由会话权限模式控制。' },
       { key: 'inputBudgetMode', label: '输入预算方式', type: 'select', apply: 'stopped', options: [{ value: 'model', label: '跟随模型窗口' }, { value: 'custom', label: '使用自定义预算' }], description: '跟随模型时使用已知输入限制并预留输出窗口；窗口信息未知时使用下方预算。自定义模式始终取用户预算与模型限制的较小值。' },
       { key: 'maxInputTokens', label: '输入预算（估算 tokens）', type: 'number', min: 1024, max: 2_000_000, apply: 'stopped', description: '自定义模式的输入上限，也是模型窗口未知时的备用预算。包含历史、项目指令和工具定义；停止后修改，下一回合生效。' },
       { key: 'autoCompact', label: '自动压缩', type: 'select', apply: 'stopped', options: [{ value: 'off', label: '关闭' }, { value: 'before_send', label: '发送前自动压缩（可能计费）' }, { value: 'before_send_and_during_run', label: '发送前与回合内自动压缩（可能计费）' }], description: '默认关闭。达到本地预算 90% 时尝试压缩：发送前每次提交最多一次；开启回合内压缩后，在完整模型响应与工具结果之间，本回合还可尝试一次。摘要与继续执行共用模型请求和运行时长预算；长命令运行中或结果未知时暂缓，超出预算仍停止。摘要可能计费并省略细节，原始记录保留。' },
