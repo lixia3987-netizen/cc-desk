@@ -25,6 +25,17 @@ export function hasThreeParallelVariants(cases) {
   return new Set(cases.filter(value => value.mode === 'parallel' && /^[a-f0-9]{64}$/.test(value.inputDigest ?? '')).map(value => value.inputDigest)).size >= 3;
 }
 
+/** 失败诊断仅输出宿主已有的固定机器码，不复制异常文本、URL 或 provider 消息。 */
+export function safeRegressionFailureCode(value, fallback = 'execution_failed') {
+  const candidate = typeof value === 'string' ? value : value?.code;
+  const fixed = new Set(['cancelled', 'configuration', 'credential', 'spawn', 'startup', 'transport', 'crash', 'stdio', 'cleanup_unconfirmed', 'terminal_commit_failed',
+    'model_completed', 'model_protocol', 'model_network', 'model_timeout', 'model_authentication', 'model_configuration', 'model_rate_limit', 'model_service_unavailable', 'model_service_error', 'model_security', 'model_unknown',
+    'model_refused', 'model_incomplete', 'model_budget', 'tool_budget', 'active_time_budget', 'context_budget', 'input_budget', 'output_budget', 'tool_failed', 'projection_failed', 'corrupt_store', 'limit_exceeded', 'unsafe_path', 'locked_store']);
+  if (fixed.has(candidate)) return candidate;
+  if (typeof candidate === 'string' && /^store_(?:begin|append|checkpoint|capacity|model_request_diagnostic|model_request_started|model_request_failed|model_response|tool_prepared|tool_completed|run_finished)_failed$/.test(candidate)) return candidate;
+  return fallback;
+}
+
 /** 缺失字段始终保留未知；Anthropic 普通输入不含缓存输入，不能直接跨协议相加。 */
 export function normalizeObservedUsage(protocol, source = {}) {
   const input = number(source.input_tokens ?? source.prompt_tokens), output = number(source.output_tokens ?? source.completion_tokens);
@@ -98,17 +109,17 @@ export function assessDelegationEvidence({ source, mode, parent, children, worke
   const childWorkers = workers.filter(worker => childIds.has(worker.childId)), intervals = childWorkers.map(worker => ({ id: worker.workerId, runId: worker.runId, beginMs: worker.beginMs, endMs: worker.endMs }));
   const childNetwork = network.filter(request => childWorkers.some(worker => worker.runId === request.runId));
   const checks = {
-    realTransport: source === 'real_model', parentCompleted: parent.result?.status === 'completed' && parent.result.committed === true,
+    realTransport: source === 'real_model' && network.length > 0 && network.some(request => Number.isFinite(request.upstreamBeginMs)), parentCompleted: parent.result?.status === 'completed' && parent.result.committed === true,
     materialUnchanged: JSON.stringify(beforeHashes) === JSON.stringify(afterHashes), cleanupConfirmed: cleanupConfirmed === true,
     readOnlyCatalog: workers.length > 0 && workers.every(worker => worker.readOnly && worker.toolNames.every(name => !['run_command', 'start_command', 'apply_patch', 'apply_change_set', 'delegate_implement'].includes(name)) && !worker.toolNames.some(name => name.startsWith('mcp_'))),
   };
   if (['parallel', 'injection'].includes(mode)) Object.assign(checks, {
     autonomousBatch: batches.some(tasks => tasks.length >= 2 && tasks.length <= 4), childTerminal: selected.length >= 2 && selected.every(child => child.result?.status === 'completed' && child.result.committed),
     distinctWorkers: childWorkers.length >= 2 && new Set(childWorkers.map(worker => worker.workerId)).size === childWorkers.length && new Set(childWorkers.map(worker => worker.runId)).size === childWorkers.length && new Set(childWorkers.map(worker => worker.pid)).size === childWorkers.length,
-    physicalWorkers: childWorkers.every(worker => Number.isSafeInteger(worker.pid) && worker.pid > 0 && worker.exitCode === 0),
-    childNetworkObserved: childWorkers.every(worker => childNetwork.some(request => request.runId === worker.runId && request.endMs !== null && request.outcome === 'completed' && request.httpStatus >= 200 && request.httpStatus < 300)),
-    concurrentWorkers: overlapPairs(intervals).length > 0, parentReadResults: selected.every(child => reads.some(read => read.parentRunId === parent.runId && read.childId === child.childId)),
-    independentEvidence: facts.every(fact => fact.childRead && fact.childReported && fact.parentReconciled && fact.nonceAbsentFromGoals),
+    physicalWorkers: childWorkers.length >= 2 && childWorkers.every(worker => Number.isSafeInteger(worker.pid) && worker.pid > 0 && worker.exitCode === 0),
+    childNetworkObserved: childWorkers.length >= 2 && childNetwork.length > 0 && childWorkers.every(worker => childNetwork.some(request => request.runId === worker.runId && request.endMs !== null && request.outcome === 'completed' && request.httpStatus >= 200 && request.httpStatus < 300)),
+    concurrentWorkers: overlapPairs(intervals).length > 0, parentReadResults: selected.length >= 2 && selected.every(child => reads.some(read => read.parentRunId === parent.runId && read.childId === child.childId)),
+    independentEvidence: facts.length >= 2 && facts.every(fact => fact.childRead && fact.childReported && fact.parentReconciled && fact.nonceAbsentFromGoals),
   });
   else if (['question', 'single'].includes(mode)) {
     checks.noDelegation = !ptools.some(e => e.call.name.startsWith('delegate_')) && selected.length === 0;
@@ -129,9 +140,9 @@ export function assessDelegationEvidence({ source, mode, parent, children, worke
 
 /** 每次尝试保留峰值与累计量，并显式标注未知请求；缓存缺失不能变成零。 */
 export function contextBaseline(requests) {
-  const sumKnown = key => { const known = requests.map(request => request.usage?.[key]).filter(Number.isFinite); return { knownSubtotal: known.reduce((a, b) => a + b, 0), unknownRequests: requests.length - known.length, total: known.length === requests.length ? known.reduce((a, b) => a + b, 0) : null }; };
+  const sumKnown = key => { const known = requests.map(request => request.usage?.[key]).filter(Number.isFinite); return { knownSubtotal: known.reduce((a, b) => a + b, 0), unknownRequests: requests.length - known.length, total: requests.length > 0 && known.length === requests.length ? known.reduce((a, b) => a + b, 0) : null }; };
   const input = requests.map(request => request.usage?.inputTokens).filter(Number.isFinite);
-  return { requestCount: requests.length, peakInputTokens: input.length ? Math.max(...input) : null, peakInputTokensComplete: input.length === requests.length,
+  return { status: requests.length ? 'observed' : 'not_run', requestCount: requests.length, peakInputTokens: input.length ? Math.max(...input) : null, peakInputTokensComplete: requests.length > 0 && input.length === requests.length,
     cumulativeInputTokens: sumKnown('inputTokens'), nonCachedInputTokens: sumKnown('nonCachedInputTokens'), cacheReadInputTokens: sumKnown('cacheReadInputTokens'), cacheCreationInputTokens: sumKnown('cacheCreationInputTokens'),
     cumulativeOutputTokens: sumKnown('outputTokens'), costUSD: null, measurement: 'wire_utf8_bytes_and_provider_usage',
     requestBytes: requests.map(request => ({ id: request.id, runId: request.runId, role: request.role, requestBytes: request.requestBytes, components: request.components, usage: request.usage, outcome: request.outcome })) };

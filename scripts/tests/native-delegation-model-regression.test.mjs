@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, normalizeObservedUsage, overlapPairs, regressionMaterial, regressionPrompt, sha256, workspaceHashes } from '../native-delegation-model-regression-lib.mjs';
+import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, normalizeObservedUsage, overlapPairs, regressionMaterial, regressionPrompt, safeRegressionFailureCode, sha256, workspaceHashes } from '../native-delegation-model-regression-lib.mjs';
 import { parseRegressionArguments, runDelegationModelRegression } from '../native-delegation-model-regression.mjs';
 import { projectDiagnostic, summarizeDiagnostics } from '../native-context-baseline.mjs';
 
@@ -41,6 +41,21 @@ test('请求重叠是独立的强证据，worker重叠不能冒充网络重叠',
   const assessed = assessDelegationEvidence(value);
   assert.equal(assessed.status, 'passed'); assert.equal(assessed.networkOverlap.length, 0); assert.equal(assessed.workerOverlap.length, 1);
   assert.deepEqual(overlapPairs([{ runId: 'a', beginMs: 1, endMs: null }, { runId: 'b', beginMs: 2, endMs: 4 }]), []);
+});
+
+test('未启动实际传输/子worker不能用空数组every获得真实通过项或零token基线', () => {
+  const value = evidence(); value.network = []; value.workers = []; value.children = []; value.parent.records = [];
+  const assessed = assessDelegationEvidence(value);
+  for (const key of ['realTransport', 'physicalWorkers', 'childNetworkObserved', 'parentReadResults', 'readOnlyCatalog']) assert.equal(assessed.checks[key], false, key);
+  const baseline = contextBaseline([]);
+  assert.equal(baseline.status, 'not_run'); assert.equal(baseline.peakInputTokensComplete, false); assert.equal(baseline.cumulativeInputTokens.total, null);
+});
+
+test('固定失败码保留诊断存储失败原因但不复制异常消息/凭据/provider正文', () => {
+  assert.equal(safeRegressionFailureCode('store_model_request_diagnostic_failed'), 'store_model_request_diagnostic_failed');
+  assert.equal(safeRegressionFailureCode({ code: 'spawn', message: 'private secret' }), 'spawn');
+  assert.equal(safeRegressionFailureCode({ code: 'sk-secret', message: 'private provider message' }), 'execution_failed');
+  assert.equal(safeRegressionFailureCode('https://private.invalid/error'), 'execution_failed');
 });
 
 test('普通问答/单Agent请求中失败的委派也不能算遵循用户禁止', () => {
@@ -125,4 +140,12 @@ test('诊断关联冲突使报告失效，报告严格过滤原文/URL/凭据/pr
   const projected = JSON.stringify(projectDiagnostic(value)); assert.ok(!projected.includes('secret')); assert.ok(!projected.includes('private')); assert.ok(!projected.includes('baseURL'));
   const report = summarizeDiagnostics([diagnostic(), diagnostic('finished', { contextDigest: 'e'.repeat(64) })]);
   assert.equal(report.status, 'invalid'); assert.equal(report.conflicts.length, 1);
+});
+
+test('模型context标签按独立安全规则保留，不能顺带放宽run身份或URL', () => {
+  assert.equal(projectDiagnostic(diagnostic('finished', { model: 'k3[1M]' })).model, 'k3[1M]');
+  assert.equal(projectDiagnostic(diagnostic('finished', { model: 'https://private.invalid' })).model, null);
+  assert.equal(projectDiagnostic(diagnostic('finished', { model: 'data:private' })).model, null);
+  assert.equal(projectDiagnostic(diagnostic('finished', { model: 'provider:model[1M]' })).model, 'provider:model[1M]');
+  assert.equal(projectDiagnostic(diagnostic('finished', { identity: { runId: 'run[1M]' } })).runId, null);
 });

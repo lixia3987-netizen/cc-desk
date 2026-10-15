@@ -96,6 +96,16 @@ test('Anthropic missing cache remains unknown and cannot masquerade as complete 
 });
 
 for (const scenario of cases) {
+  test(`${scenario.name} actual HTTP fixture keeps context alias k3[1M] in wire and diagnostic metadata`, async t => {
+    const { model, fixture } = await fixtureTest(t, scenario, { output: [] }, { model: 'k3[1M]' });
+    const diagnostics = [];
+    await model.generate(request(model, { onRequestDiagnostic: value => { diagnostics.push(value); } }));
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].model, 'k3[1M]');
+    assert.deepEqual(diagnostics.map(value => value.phase), ['request', 'dispatched', 'result']);
+    assert.ok(diagnostics.every(value => value.model === 'k3[1M]'));
+  });
+
   test(`${scenario.name} diagnostics match sent UTF-8 payload and wait for persistence without exposing content`, async t => {
     let persisted = false;
     const { model, fixture } = await fixtureTest(t, scenario, () => {

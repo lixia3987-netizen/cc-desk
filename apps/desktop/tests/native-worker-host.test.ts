@@ -141,6 +141,38 @@ test('worker transports strict request diagnostics and cache counters without pe
   assert.equal((start.request as AgentRunRequest).diagnosticInstructionSections?.systemPrompt, 'private-system-prompt');
 });
 
+for (const [transport, protocolId] of [['responses', 'openai-responses'], ['chat-completions', 'openai-chat-completions'], ['anthropic', 'anthropic-messages']] as const) {
+  test(`${transport}: worker accepts configured context alias k3[1M] in all diagnostic phases`, async () => {
+    const request = { ...clone(run), configuration: { model: 'k3[1M]' } };
+    const protocol = { id: protocolId, version: 1 };
+    const cached = { inputTokens: 20, outputTokens: 3, totalTokens: 23, cacheReadInputTokens: 5, cacheCreationInputTokens: 2, nonCachedInputTokens: 13 };
+    const h = harness(async worker => {
+      const initial = { input: request.input, userItems: [{ role: 'user', content: transport === 'anthropic' ? [{ type: 'text', text: request.input }] : request.input }],
+        protocol, configuration: request.configuration, policyRevision: request.policyRevision };
+      const admission = await worker.rpc<{ context: ModelContext }>('store.beginRun', { ...initial, identity: request.identity, inputDigest: digest(initial) });
+      const context = admission.context;
+      await worker.rpc('store.checkpoint', { identity: request.identity, context });
+      await startAttempt(worker);
+      const diagnostic = await createModelRequestDiagnostic({ identity: request.identity, attempt: 1, requestKey: `${request.identity.runId}:${request.identity.requestId}:1`, purpose: 'normal', context,
+        model: 'k3[1M]', tools: [definition], estimatedInputTokens: 100, host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+      const phases = [diagnostic, { ...diagnostic, phase: 'request', requestSent: false }, { ...diagnostic, phase: 'dispatched', requestSent: true },
+        { ...diagnostic, phase: 'finished', requestSent: true, finishedAt: 101, outcome: 'completed', usage: cached }];
+      for (const diagnostic of phases) await worker.rpc('store.append', { identity: request.identity, event: { type: 'model_request_diagnostic', diagnostic } });
+      const outputItems = transport === 'responses' ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }]
+        : transport === 'anthropic' ? [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }] : [{ role: 'assistant', content: 'done' }];
+      await worker.rpc('store.append', { identity: request.identity, event: { type: 'model_response', response: { outputItems, toolCalls: [], finishReason: 'completed', usage: cached } } });
+      context.items.push(...outputItems);
+      await worker.rpc('store.checkpoint', { identity: request.identity, context });
+      await finish(worker, context, { usage: cached });
+    }, { request, model: { protocol: transport, model: 'k3[1M]', baseURL: 'http://127.0.0.1:1/v1', allowLoopbackHttp: true } });
+    assert.equal((await h.promise).status, 'completed');
+    const start = h.worker.sent.find(message => message.type === 'start')!;
+    assert.equal((start.model as { model: string }).model, 'k3[1M]');
+    const diagnostics = h.journal.filter(event => (event as { type: string }).type === 'model_request_diagnostic');
+    assert.equal(diagnostics.length, 4);
+  });
+}
+
 test('worker rejects diagnostic text and mismatched request identities before any journal mutation', async () => {
   const h = harness(async worker => {
     const context = await begin(worker);

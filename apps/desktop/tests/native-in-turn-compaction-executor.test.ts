@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { runAgent } from '@cc-desk/agent-core';
-import { createNativeModel } from '@cc-desk/agent-node/native-model';
+import { runAgent, type ModelContext } from '@cc-desk/agent-core';
+import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { StateStore } from '../src/main/store';
@@ -44,6 +44,7 @@ const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent
 });
 
 async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number; toolOnlyBoundary?: boolean; retryBeforeOrdinary?: boolean } = {}) {
+  const inputBudget = options.toolOnlyBoundary ? 50000 : 90000;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
   await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
@@ -93,10 +94,17 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       execution: { providerId: 'native', mode: 'structured', conversationId },
       engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: options.autoCompact ?? 'before_send_and_during_run',
         ...(options.retryBeforeOrdinary ? { modelRetry: 'safe_transient' } : {}),
-        maxInputTokens: options.toolOnlyBoundary ? 40000 : 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
+        // 完整 wire payload 的固定提示/目录约 24 KiB；40k 会在首个文件批次
+        // 就触发，而此时仅旧计划可被移除，连续性索引反而更大。50k 让第二个
+        // 完整文件批次进入维护：旧文件正文足以被摘要，最新无文本工具对仍保留。
+        maxInputTokens: inputBudget, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
+  let lastOrdinaryModel: NativeModelOptions | undefined, lastOrdinaryOutputLimit: number | undefined;
   const worker: NonNullable<NativeExecutorOptions['worker']> = async request => {
+    if (request.request.configuration.purpose !== 'context_summary') {
+      lastOrdinaryModel = request.model; lastOrdinaryOutputLimit = request.request.budget?.maxOutputTokens;
+    }
     const result = await inline(request);
     if (options.mode === 'instructions-changed' && request.request.configuration.purpose === 'context_summary') {
       await fs.appendFile(path.join(project, 'CLAUDE.md'), '\nNew rule added while the summary was in flight.');
@@ -104,7 +112,13 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
     return result;
   };
   let executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize();
-  return { id, project, server, summaryStarted, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
+  return { id, project, server, summaryStarted, inputBudget, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
+    contextPayloadBytes(context: ModelContext) {
+      assert.ok(lastOrdinaryModel && lastOrdinaryOutputLimit);
+      const estimate = createNativeModel(lastOrdinaryModel).estimateInputUsage?.(context, lastOrdinaryOutputLimit);
+      assert.ok(estimate, 'the production adapter must provide its actual wire payload estimate');
+      return estimate.serializedBytes;
+    },
     send: () => executor.send(id, input, [], undefined, { requestId: 'in-turn-submission' }),
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
@@ -264,6 +278,9 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(f.summaries, 1);
     assert.equal(result.success, false); assert.equal(result.interrupted, true); assert.equal(result.summary, '');
     const ledger = await f.ledger(); assert.ok(JSON.stringify(ledger.context).includes(summary));
+    requireCompleteContext(ledger.context!);
+    const afterPayloadBytes = f.contextPayloadBytes(ledger.context!);
+    assert.ok(afterPayloadBytes < f.inputBudget * 0.9, `compacted wire payload ${afterPayloadBytes} must leave the maintenance threshold ${f.inputBudget * 0.9}`);
     const last = ledger.records.findLast(record => record.event.type === 'model_response')!;
     assert.equal(last.event.type, 'model_response');
     if (last.event.type === 'model_response') assert.ok(last.event.response.toolCalls.length > 0, 'latest raw response is the textless tool batch');

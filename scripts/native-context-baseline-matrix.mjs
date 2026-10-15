@@ -18,7 +18,7 @@ const protocols = { responses: 'openai-responses', 'chat-completions': 'openai-c
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const hash = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 const revision = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
-const model = value => typeof value === 'string' && /^[a-zA-Z0-9_.:/-]{1,200}$/.test(value);
+const model = value => typeof value === 'string' && /^[a-zA-Z0-9_.:\[\]\/-]{1,256}$/.test(value) && !value.includes('//');
 const protocol = value => {
   const key = typeof value === 'string' ? value : value?.id;
   return Object.hasOwn(protocols, key) ? protocols[key] : null;

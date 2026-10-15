@@ -8,6 +8,8 @@ const componentKeys = ['systemPrompt', 'permissions', 'projectRules', 'skills', 
 const counter = value => Number.isSafeInteger(value) && value >= 0 ? value : null;
 const digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : null;
 const safeId = value => typeof value === 'string' && /^[a-zA-Z0-9_.:/-]{1,1024}$/.test(value) ? value : null;
+// 模型标签按生产诊断的独立规则处理；[1M] 等标签不属于运行身份格式。
+const safeModel = value => typeof value === 'string' && /^[a-zA-Z0-9_.:[\]/-]{1,256}$/.test(value) && !value.includes('//') && !/^(?:https?|file|ftp|data|mailto|javascript):/i.test(value) ? value : null;
 
 /** 仅投影协议允许的计数/hash，不复制原始请求、文档、URL 或任意 provider 字段。 */
 export function projectDiagnostic(value) {
@@ -16,7 +18,7 @@ export function projectDiagnostic(value) {
   for (const key of componentKeys) if (value.components?.[key]) components[key] = { bytes: counter(value.components[key].bytes), digest: digest(value.components[key].digest), accounting: ['logical', 'serialized'].includes(value.components[key].accounting) ? value.components[key].accounting : null, count: counter(value.components[key].count) };
   return { requestKey: value.requestKey, runId: safeId(value.identity?.runId), requestId: safeId(value.identity?.requestId), parentRunId: safeId(value.parentRunId), childId: safeId(value.childId),
     attempt: counter(value.attempt), purpose: ['normal', 'child', 'retry', 'summary_in_run', 'summary_before_send', 'summary_manual'].includes(value.purpose) ? value.purpose : null,
-    protocol: safeId(value.protocol?.id), model: safeId(value.model), phase: value.phase, requestSent: [true, false, null].includes(value.requestSent) ? value.requestSent : null,
+    protocol: safeId(value.protocol?.id), model: safeModel(value.model), phase: value.phase, requestSent: [true, false, null].includes(value.requestSent) ? value.requestSent : null,
     startedAt: counter(value.startedAt), finishedAt: counter(value.finishedAt), elapsedMs: Number.isFinite(value.elapsedMs) && value.elapsedMs >= 0 ? value.elapsedMs : null,
     estimatedInputTokens: counter(value.estimatedInputTokens), estimateMethod: ['utf8_bytes', 'tokenizer', 'calibrated', 'unknown'].includes(value.estimateMethod) ? value.estimateMethod : 'unknown',
     contextBytes: counter(value.contextBytes), contextDigest: digest(value.contextDigest), payloadBytes: counter(value.payloadBytes), payloadDigest: digest(value.payloadDigest), toolsetDigest: digest(value.toolsetDigest), components,

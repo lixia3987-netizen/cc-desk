@@ -94,7 +94,9 @@ export function nativeParallelReviewIntent(input: string): NativeParallelReviewI
   const requested = clauses.some(clause => {
     if (/^\s*(?:请\s*)?(?:什么是|解释|如何|怎样)|(?:如果|假设)|^\s*(?:what|why|how|explain|if|whether)\b/iu.test(clause)) return false;
     if (/^\s*(?:并行|并发)\s*(?:分析|审阅|审查|检查|审核|评估)/u.test(clause)) return true;
-    if (/\b(?:i\s+(?:would like|want)|please\s+(?:use|assign))\s+(?:multiple|two|three|four|[2-4])\s+(?:independent\s+)?agents?\b[^.\n]{0,80}\b(?:review|analy[sz]e|audit|inspect|examine)\b/iu.test(clause)) return true;
+    if (/^\s*(?:i\s+(?:would like|want)|please\s+(?:use|assign))\s+(?:multiple|two|three|four|[2-4])\s+(?:independent\s+)?agents?\b[^.\n]{0,80}\b(?:review|analy[sz]e|audit|inspect|examine)\b/iu.test(clause)) return true;
+    // 明确请求才参与门控；无引号的说明、示例和转述仍交由模型解释，不能因内部动词强制启动团队。
+    if (!/^\s*(?:(?:(?:能否|可否|能不能|可以)(?:请)?(?:你)?[\t ]*)?(?:请|帮我|给我|用|使用|委派|让|安排|分配)|(?:(?:please|(?:can|could|would)\s+you)\s+)?(?:review|analy[sz]e|audit|inspect|use|spawn|delegate|assign)\b)/iu.test(clause)) return false;
     return /(?:请|帮我|给我|用|使用|委派|让|安排|分配)[^。\n]{0,100}(?:并行|并发)[^。\n]{0,80}(?:分析|审阅|审查|检查|审核|评估|review|analy[sz])|(?:请|帮我|用|使用|委派|让|安排|分配)[^。\n]{0,80}(?:多个|两(?:个|名)|三(?:个|名)|四(?:个|名)|[2-4])\s*(?:agents?|代理|子任务|独立)[^。\n]{0,80}(?:分析|审阅|审查|检查|审核|评估|review|analy[sz])|\b(?:please\s+)?(?:review|analy[sz]e|audit|inspect)\b[^.\n]{0,100}\b(?:in\s+parallel|concurrently|with\s+(?:multiple|two|three|four|[2-4])\s+(?:independent\s+)?agents?)\b|\b(?:use|spawn|delegate|assign)\b[^.\n]{0,80}\b(?:multiple|two|three|four|[2-4])\s+(?:independent\s+)?agents?\b[^.\n]{0,80}\b(?:review|analy[sz]e|audit|inspect)\b/iu.test(clause);
   });
   return { mode: requested ? 'explicit_parallel_review' : 'not_explicit', detectorVersion: 1 };

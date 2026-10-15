@@ -48,6 +48,23 @@ test('同一候选协议模型配置素材才能比较，九场景元数据逐�
   assert.equal(buildBaselineMatrix(manifest, mismatched).cases[0].status, 'invalid');
 });
 
+test('合法模型括号原样保留，与配置一致可比较，模型不符和凭据URL仍拒绝', () => {
+  const { manifest, loaded } = fixture(), bracketManifest = structuredClone(manifest);
+  bracketManifest.binding.model = 'k3[1M]';
+  const bracketLoaded = BASELINE_CASES.map(({ id }) => ({ report: report(id, [diagnostic(id, { model: 'k3[1M]' })]), digest: '1'.repeat(64) }));
+  const matrix = buildBaselineMatrix(bracketManifest, bracketLoaded);
+  assert.equal(matrix.status, 'measured'); assert.equal(matrix.binding.model, 'k3[1M]');
+  assert.ok(matrix.cases.every(row => row.actualBinding.model === 'k3[1M]' && row.diagnostics[0].model === 'k3[1M]'));
+  assert.equal(compareBaselineMatrices(matrix, buildBaselineMatrix(bracketManifest, bracketLoaded)).status, 'comparable');
+  const different = structuredClone(bracketLoaded); different[0].report = report('short_zh', [diagnostic('short_zh', { model: 'k3[2M]' })]);
+  assert.equal(buildBaselineMatrix(bracketManifest, different).cases[0].status, 'invalid');
+  assert.equal(buildBaselineMatrix(bracketManifest, loaded).status, 'invalid', '不能删除模型括号以匹配旧报告');
+  for (const invalidModel of ['https://user:credential@example.test/model', 'model://credential', 'model//credential', 'k3\n[1M]', 'm'.repeat(257)]) {
+    assert.throws(() => validateMatrixManifest({ ...manifest, binding: { ...binding, model: invalidModel } }));
+  }
+  assert.equal(validateMatrixManifest({ ...manifest, binding: { ...binding, model: 'm'.repeat(256) } }).binding.model.length, 256);
+});
+
 test('生产标记不替代真实来源，mock 或 fixture 不能冒称真实基线', () => {
   const { manifest, loaded } = fixture();
   for (const badSource of ['fixture', 'mock', 'synthetic']) {

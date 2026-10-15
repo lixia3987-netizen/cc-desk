@@ -19,7 +19,7 @@ async function fixture(t) {
   return { request, get store() { return store; }, reopen: async () => { await store.close(); store = await NativeRunStore.open({ rootDirectory, conversationId }); } };
 }
 const response = () => ({ type: 'model_response', response: { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }], toolCalls: [], finishReason: 'completed', usage, providerUsage } });
-const makeDiagnostic = (identity, context, purpose = 'normal') => createModelRequestDiagnostic({ identity, requestKey: `${identity.runId}:${identity.requestId}:1`, attempt: 1, purpose, context, tools: [], estimatedInputTokens: 99, estimateMethod: 'utf8_bytes', estimateSource: 'fallback', host: { now: () => 100, digest } });
+const makeDiagnostic = (identity, context, purpose = 'normal') => createModelRequestDiagnostic({ identity, requestKey: `${identity.runId}:${identity.requestId}:1`, attempt: 1, purpose, context, tools: [], model: 'k3[1M]', estimatedInputTokens: 99, estimateMethod: 'utf8_bytes', estimateSource: 'fallback', host: { now: () => 100, digest } });
 
 test('request diagnostics deduplicate by request and phase and raw/cache fields survive journal replay', async t => {
   const f = await fixture(t), identity = f.request.identity;
@@ -39,6 +39,7 @@ test('request diagnostics deduplicate by request and phase and raw/cache fields 
   const diagnostics = f.store.replay().filter(record => record.event.type === 'model_request_diagnostic');
   assert.equal(diagnostics.length, 2);
   assert.deepEqual(diagnostics[1].event.diagnostic.providerUsage, providerUsage);
+  assert.equal(diagnostics[1].event.diagnostic.model, 'k3[1M]');
   assert.equal(JSON.stringify(diagnostics).includes('private-user-text'), false);
   assert.equal(f.store.recoveryRequired, false);
 });

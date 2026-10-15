@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { validateProviderUsage } from '@cc-desk/agent-core';
+import { runAgent, validateModelRequestDiagnostic, validateProviderUsage } from '@cc-desk/agent-core';
 import { normalizeOpenAIUsage, anthropicRawUsage, normalizeAnthropicUsage } from '../dist/model-usage.js';
 import { ResponsesModel } from '../dist/responses-model.js';
 import { ChatCompletionsModel } from '../dist/chat-completions-model.js';
@@ -79,6 +79,43 @@ const scenarios = [
   { name: 'anthropic', Model: AnthropicModel, events: () => anthropicEvents().map(anthropicSse).join('') },
 ];
 for (const scenario of scenarios) {
+  test(`${scenario.name} full run persists context model alias k3[1M] through actual adapter dispatch`, async t => {
+    const previousFetch = globalThis.fetch;
+    t.after(() => { globalThis.fetch = previousFetch; });
+    const sent = [], records = [];
+    globalThis.fetch = async (_url, init) => {
+      sent.push(JSON.parse(init.body));
+      return new Response(scenario.events(), { headers: { 'Content-Type': 'text/event-stream' } });
+    };
+    const model = new scenario.Model({ model: 'k3[1M]', baseURL: 'http://127.0.0.1:12345/v1', allowLoopbackHttp: true, toolDefinitions: [] });
+    let context;
+    const result = await runAgent({ identity, input: 'Preserve the configured model alias.', configuration: { model: 'k3[1M]' }, policyRevision: 'fixture', signal: new AbortController().signal }, {
+      model, tools: { definitions: [], prepare: async () => assert.fail('no tool calls'), validate: async () => assert.fail('no tool calls'), execute: async () => assert.fail('no tool calls') },
+      approvals: { request: async () => assert.fail('no approvals') },
+      host: { now: () => Date.now(), activeNow: () => performance.now(), digest: value => createHash('sha256').update(value).digest('hex'),
+        emit: () => {}, deadline: (_milliseconds, signal) => ({ signal, dispose: () => {} }) },
+      store: {
+        beginRun: async request => { context = { protocol: request.protocol, items: structuredClone(request.userItems) }; return { kind: 'accepted', context: structuredClone(context) }; },
+        ensureCapacity: async () => {}, checkpoint: async (_identity, next) => assert.deepEqual(next, context),
+        append: async (_identity, event) => {
+          if (event.type === 'model_request_diagnostic') assert.equal(validateModelRequestDiagnostic(event.diagnostic), true);
+          if (event.type === 'model_response') {
+            context.items.push(...structuredClone(event.response.outputItems));
+            if (event.response.continuation === undefined) delete context.continuation; else context.continuation = structuredClone(event.response.continuation);
+          }
+          records.push(structuredClone(event)); return { seq: records.length };
+        },
+      },
+    });
+    assert.equal(result.status, 'completed');
+    assert.equal(sent.length, 1);
+    assert.equal(sent[0].model, 'k3[1M]');
+    const diagnostics = records.filter(event => event.type === 'model_request_diagnostic').map(event => event.diagnostic);
+    assert.deepEqual(diagnostics.map(diagnostic => diagnostic.phase), ['started', 'request', 'dispatched', 'finished']);
+    assert.ok(diagnostics.every(diagnostic => diagnostic.model === 'k3[1M]'));
+    assert.equal(diagnostics[2].requestSent, true);
+  });
+
   test(`${scenario.name} deterministic SSE diagnostic payload accounting and persistence barriers`, async t => {
     const previousFetch = globalThis.fetch;
     t.after(() => { globalThis.fetch = previousFetch; });

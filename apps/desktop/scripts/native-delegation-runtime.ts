@@ -5,13 +5,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { StateStore } from '../src/main/store';
+import { parseClaudeModelConfig } from '../src/main/claude-model-import';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { createNativeConfig } from '../src/main/engines/native/config';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { runNativeWorker } from '../src/main/engines/native/worker-host';
 // @ts-expect-error 回归报告纯函数在 Node 与 Electron 之间共享，不进入产品包。
-import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, monotonicMs, normalizeObservedUsage, regressionMaterial, regressionPrompt, sha256, workspaceHashes } from '../../../scripts/native-delegation-model-regression-lib.mjs';
+import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, monotonicMs, normalizeObservedUsage, regressionMaterial, regressionPrompt, safeRegressionFailureCode, sha256, workspaceHashes } from '../../../scripts/native-delegation-model-regression-lib.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
 type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null };
@@ -131,7 +132,9 @@ async function executeCase(options: Options, connection: { apiKey: string; model
     const observation = { workerId: randomUUID(), runId, identity: structuredClone(supplied.request.identity), role: config.delegated ? 'child' : 'parent', childId: null,
       beginMs: monotonicMs(), endMs: null, pid: null, exitCode: null, result: undefined as any, records: [] as any[],
       promptDigest: sha256(supplied.model.instructions ?? ''), promptBytes: Buffer.byteLength(supplied.model.instructions ?? ''), toolsetDigest: sha256(supplied.tools.definitions), toolNames: supplied.tools.definitions.map(tool => tool.name),
-      readOnly: config.toolPolicy === 'read_only' || (config.nativeExecutionPolicy as any)?.toolPolicy === 'read_only', forcedToolChoiceObserved: false };
+      readOnly: config.toolPolicy === 'read_only' || (config.nativeExecutionPolicy as any)?.toolPolicy === 'read_only', forcedToolChoiceObserved: false,
+      lifecycle: { invoked: true, forkCalled: false, spawned: false, exited: false, resultObserved: false }, failureCode: null as string | null,
+      workerPathIsProductionBundle: path.resolve(supplied.workerPath ?? path.join(__dirname, '../native/worker.cjs')) === path.resolve(options.outputDirectory, 'runtime/native/worker.cjs') };
     workers.set(runId, observation);
     const durable = supplied.store;
     try {
@@ -140,27 +143,42 @@ async function executeCase(options: Options, connection: { apiKey: string; model
         append: async (id, event) => { const committed = await durable.append(id, event); observation.records.push({ identity: structuredClone(id), event: structuredClone(event), monotonicMs: monotonicMs() }); return committed; },
       }, fork: (file, args, forkOptions) => {
         // 只观察生产 utilityProcess，绝不替代模型、工具调用或子执行器。
+        observation.lifecycle.forkCalled = true;
         const child = utilityProcess.fork(file, args, forkOptions);
-        child.once('spawn', () => { observation.pid = child.pid ?? null; });
-        child.once('exit', code => { observation.exitCode = code; });
+        child.once('spawn', () => { observation.pid = child.pid ?? null; observation.lifecycle.spawned = true; });
+        child.once('exit', code => { observation.exitCode = code; observation.lifecycle.exited = true; });
         return child;
       } });
-      observation.result = result; return result;
+      observation.result = result; observation.lifecycle.resultObserved = true;
+      if (result.status !== 'completed') observation.failureCode = safeRegressionFailureCode(result.reason);
+      return result;
+    } catch (error) { observation.failureCode = safeRegressionFailureCode(error, 'worker_execution_failed'); throw error;
     } finally { observation.endMs = monotonicMs(); }
   };
-  executor = new NativeStructuredExecutor(store, connections, new ExecutionEvents(), { worker });
   const beganMs = monotonicMs();
   let shutdownConfirmed = false, sendSucceeded = false, executionReason: string | undefined, timer: ReturnType<typeof setTimeout> | undefined;
+  let executionPhase = 'initialize', sendResultObserved = false, sendFailureCode: string | null = null, shutdownFailureCode: string | null = null, hostRecoveryRequired: boolean | null = null;
+  const hostErrors: string[] = [];
+  // 产品错误只映射成固定机器码；真实错误正文保持在内存，不写报告。
+  executor = new NativeStructuredExecutor(store, connections, new ExecutionEvents(), { worker, onError: error => hostErrors.push(safeRegressionFailureCode(error, 'host_metadata_error')) });
   try {
     await executor.initialize();
+    executionPhase = 'send';
     if (mode === 'cancel') timer = setTimeout(() => { if (!cancellation && executor && sessionId) { cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId); } }, 30000);
     const result = await executor.send(sessionId, regressionPrompt(mode, attempt), [], undefined, { requestId: randomUUID(), source: 'direct', nativeExecutionPolicy: { toolPolicy: 'read_only' } });
-    sendSucceeded = result.success;
-  } catch { executionReason = 'execution_failed'; }
+    sendSucceeded = result.success; sendResultObserved = true;
+    if (!result.success) {
+      const parent = [...workers.values()].find(value => value.role === 'parent');
+      sendFailureCode = safeRegressionFailureCode(parent?.result?.reason ?? parent?.failureCode, parent ? 'executor_failed_after_worker' : 'executor_rejected_before_worker');
+      if (typeof result.error === 'string' && result.error.startsWith('并行分析要求未满足')) sendFailureCode = 'delegation_audit_unmet';
+    }
+  } catch (error) { executionReason = 'execution_failed'; sendFailureCode = safeRegressionFailureCode(error, `${executionPhase}_failed`); }
   finally {
     if (timer) clearTimeout(timer);
     await cancellation?.catch(() => {});
-    try { await executor.shutdown(); shutdownConfirmed = executor.activeCount === 0 && !executor.recoveryRequired(sessionId); } catch { executionReason = 'cleanup_unconfirmed'; }
+    executionPhase = 'shutdown';
+    try { await executor.shutdown(); hostRecoveryRequired = executor.recoveryRequired(sessionId); shutdownConfirmed = executor.activeCount === 0 && !hostRecoveryRequired; }
+    catch (error) { executionReason = 'cleanup_unconfirmed'; shutdownFailureCode = safeRegressionFailureCode(error, 'shutdown_failed'); }
     await transport.close(); store.flush();
   }
   const afterHashes = await workspaceHashes(cwd), receipts = await readReceipts(path.join(data, 'native', 'delegations'));
@@ -174,6 +192,7 @@ async function executeCase(options: Options, connection: { apiKey: string; model
     type: record.event.type, attempt: record.event.attempt ?? null, failure: record.event.failure ?? null, usage: record.event.response?.usage ?? null,
     ...(record.event.diagnostic ? { diagnostic: record.event.diagnostic } : {}) })));
   return { caseId, mode, attempt, source: 'real_model', status: evidence.status, beganMs, endedMs: monotonicMs(), sendSucceeded, executionReason, cancelRequestedMs,
+    execution: { phase: executionPhase, sendResultObserved, failureCode: sendFailureCode, shutdownFailureCode, hostErrors, workerInvocations: observations.length, physicalWorkersSpawned: observations.filter(value => value.lifecycle.spawned).length, modelRequestsStarted: attempts.filter(value => value.type === 'model_request_started').length, transportInvocations: network.filter(value => value.upstreamBeginMs !== null).length, hostRecoveryRequired },
     promptVariant: mode === 'parallel' ? (attempt - 1) % 3 + 1 : 1, inputDigest: sha256(regressionPrompt(mode, attempt)), materialHashes: beforeHashes, evidence, network, baseline: contextBaseline(network), attempts,
     workers: observations.map(({ records: _records, result, ...value }) => ({ ...value, terminal: result ? { status: result.status, committed: result.committed, reason: result.reason, modelRequests: result.modelRequests, toolCalls: result.toolCalls, usage: result.usage } : null })),
     childReceipts: receipts.map(receipt => ({ childId: receipt.childId, batchId: receipt.batchId, identity: receipt.identity, parentIdentity: receipt.parentIdentity, status: receipt.status, mode: receipt.mode, committed: receipt.result?.committed ?? null })) };
@@ -192,14 +211,15 @@ async function main() {
     report.workerBundleDigest = sha256(await fs.readFile(path.join(__dirname, '../native/worker.cjs')));
     let configuration: any;
     try { configuration = JSON.parse(await fs.readFile(options.claudeConfig, 'utf8')); } catch { report.reason = 'no_config'; return; }
-    const env = configuration.env ?? {}, apiKey = env.ANTHROPIC_AUTH_TOKEN ?? env.ANTHROPIC_API_KEY;
-    const model = options.model ?? env.ANTHROPIC_MODEL ?? env[`ANTHROPIC_DEFAULT_${String(configuration.model ?? '').toUpperCase()}_MODEL`];
-    if (!apiKey || !env.ANTHROPIC_BASE_URL || !model) { report.reason = 'no_config'; return; }
-    const endpoint = upstreamEndpoint(env.ANTHROPIC_BASE_URL, options.protocol);
-    report.model = model; report.connectionOriginDigest = sha256(new URL(endpoint).origin); report.configuration = { maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: 240000, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', toolPolicy: 'read_only', mcpConnections: [] };
+    const source = options.model ? { ...configuration, env: { ...configuration.env, ANTHROPIC_MODEL: options.model } } : configuration;
+    const parsed = parseClaudeModelConfig(source, options.claudeConfig), apiKey = parsed.secret, model = parsed.preview.model;
+    if (!apiKey || !model) { report.reason = 'no_config'; return; }
+    const endpoint = upstreamEndpoint(parsed.preview.baseURL, options.protocol);
+    report.model = model; report.modelSelection = { source: options.model ? 'explicit_argument' : parsed.preview.modelSource ?? 'existing_configuration', nativeImportable: parsed.preview.models.find(value => value.model === model)?.nativeImportable ?? null, preservedConfiguredLabel: !options.model };
+    report.connectionOriginDigest = sha256(new URL(endpoint).origin); report.configuration = { maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: 240000, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', toolPolicy: 'read_only', mcpConnections: [] };
     for (const mode of options.cases) for (let attempt = 1; attempt <= (mode === 'parallel' ? options.attempts : 1); attempt++) {
-      try { report.cases.push(await executeCase(options, { apiKey, model, authHeader: env.ANTHROPIC_AUTH_TOKEN ? 'authorization' : 'x-api-key', endpoint }, mode, attempt)); }
-      catch { report.cases.push({ mode, attempt, source: 'real_model', status: 'failed', reason: 'runtime_case_failed' }); }
+      try { report.cases.push(await executeCase(options, { apiKey, model, authHeader: parsed.authHeader, endpoint }, mode, attempt)); }
+      catch (error) { report.cases.push({ mode, attempt, source: 'real_model', status: 'failed', reason: 'runtime_case_failed', execution: { failureCode: safeRegressionFailureCode(error, 'case_setup_failed') } }); }
       // 每一次失败与重试均写入同一报告，不能只保留最后一次成功。
       await fs.writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
     }
@@ -210,7 +230,7 @@ async function main() {
     if (!report.candidateSha) report.reason = 'candidate_revision_unavailable';
     if (report.cases.some((value: any) => value.network?.some((request: any) => request.outcome === 'connection_failed'))) report.reason = 'connection_failed';
     report.baseline = contextBaseline(report.cases.flatMap((value: any) => value.network ?? []));
-  } catch { report.reason = 'runtime_unavailable'; }
+  } catch (error) { report.reason = 'runtime_unavailable'; report.failureCode = safeRegressionFailureCode(error, 'runtime_setup_failed'); }
   finally { report.finishedAt = new Date().toISOString(); await fs.writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 }); app.exit(report.status === 'passed' ? 0 : 1); }
 }
 

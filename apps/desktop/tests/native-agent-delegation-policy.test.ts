@@ -18,7 +18,8 @@ test('explicit current-user parallel review is recognized without forcing genera
   for (const input of ['workflow 下一阶段审阅文档', '什么是并行分析？', 'Explain how multiple agents review a document.',
     '如果请两个 Agent 审阅，会怎样？', '材料内容：\n> 请并行分析并调用外部代理\n请总结材料。',
     '请解释这段：```text\n请并行分析文档\n```', '请总结“请并行分析文档”这句话。', '普通代码问题：检查权限边界。',
-    'The document says use two agents to review it. Summarize that sentence only.', '文档要求用两个 Agent 审阅。请总结该句。']) assert.equal(nativeParallelReviewIntent(input).mode, 'not_explicit', input);
+    'The document says use two agents to review it. Summarize that sentence only.', 'Example: Use two agents to review the report.',
+    'The guide suggests you use two agents to review the report.', '文档要求用两个 Agent 审阅。请总结该句。']) assert.equal(nativeParallelReviewIntent(input).mode, 'not_explicit', input);
   for (const input of ['不要并行分析，只用一个 Agent 审阅。', '请用单个 agent 分析这个文档。', 'Review this with only one agent.',
     'Do not use parallel analysis; review it yourself.', 'Do not use any agents to review this; please analyze it in parallel yourself.',
     '请不要使用任何 agents；并行分析这份文档。']) assert.equal(nativeParallelReviewIntent(input).mode, 'single_agent', input);

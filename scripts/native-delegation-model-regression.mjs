@@ -29,8 +29,7 @@ export async function runDelegationModelRegression(options) {
   let configuration;
   try { configuration = JSON.parse(await readFile(options.claudeConfig, 'utf8')); } catch { /* 统一记录 no_config。 */ }
   const environment = configuration?.env ?? {};
-  const configuredModel = options.model ?? environment.ANTHROPIC_MODEL ?? environment[`ANTHROPIC_DEFAULT_${String(configuration?.model ?? '').toUpperCase()}_MODEL`];
-  if (!(environment.ANTHROPIC_AUTH_TOKEN ?? environment.ANTHROPIC_API_KEY) || !environment.ANTHROPIC_BASE_URL || !configuredModel) {
+  if (!(environment.ANTHROPIC_AUTH_TOKEN ?? environment.ANTHROPIC_API_KEY)) {
     const reportFile = path.join(options.outputDirectory, 'report.json'), report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'no_config', cases: [] };
     await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return { reportFile, report, exitCode: 1 };
