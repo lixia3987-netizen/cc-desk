@@ -14,6 +14,7 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
+import { changeNativePermissionForNextTurn } from '../src/main/native-session-permission';
 // The package fixture is shared with real utilityProcess and packaged acceptance tests.
 // @ts-expect-error Local test-only ESM fixture has no declarations.
 import { startResponsesFixture, responseEvents, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
@@ -443,4 +444,42 @@ test('legacy Native configs keep individual approval and invalid modes are rejec
   for (const permissionMode of ['automatic', '', true]) {
     assert.throws(() => createNativeConfig({ schemaVersion: 1, options: { permissionMode } }));
   }
+});
+
+test('changing saved next-turn permissions leaves this run and its pending approvals under the original mode', async () => {
+  const f = await fixture(), seen = new Set<string>(), promptedTools: string[] = [];
+  let selected = false;
+  const off = f.events.subscribe(event => {
+    if (event.type !== 'conversation.changed') return;
+    for (const pending of f.executor.snapshot(f.id).pending) {
+      if (seen.has(pending.requestId)) continue;
+      seen.add(pending.requestId); promptedTools.push(pending.toolName);
+      if (!selected) {
+        selected = true;
+        changeNativePermissionForNextTurn(f.id, 'bypassPermissions', {
+          session: id => f.store.state.sessions.find(item => item.id === id)!,
+          assertAllowed: () => {},
+          validateConfig: (_id, config) => createNativeConfig(config),
+          commit: (id, config) => { f.store.change(state => { state.sessions.find(item => item.id === id)!.engineConfig = config; }); },
+          changed: () => {},
+        });
+        assert.ok(f.executor.snapshot(f.id).pending.some(item => item.requestId === pending.requestId));
+      }
+      queueMicrotask(() => f.executor.respond(f.id, pending.requestId, { behavior: 'allow' }));
+    }
+  });
+  try {
+    assert.equal((await f.executor.send(f.id, '修改并验证')).success, true);
+    assert.equal(selected, true);
+    assert.ok(promptedTools.includes('apply_patch'));
+    assert.ok(promptedTools.includes('run_command'), 'later tools in this run retain the original individual approvals');
+    assert.equal(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig.options.permissionMode, 'bypassPermissions');
+    assert.equal((await f.executor.send(f.id, '继续')).success, true);
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try {
+      const runs = ledger.listRuns();
+      assert.equal((runs[0].configuration.sessionOptions as { permissionMode: string }).permissionMode, 'default');
+      assert.equal((runs[1].configuration.sessionOptions as { permissionMode: string }).permissionMode, 'bypassPermissions');
+    } finally { await ledger.close(); }
+  } finally { off(); await f.dispose(); }
 });

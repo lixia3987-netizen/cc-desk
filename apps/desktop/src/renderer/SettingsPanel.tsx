@@ -74,10 +74,15 @@ export function EngineDefaultsGroup({ value, onChange, executors, group, disable
 }
 
 function EnginePolicySection({ scope, onScope, group, props, draftStore }: { scope: SettingsScope; onScope(scope: SettingsScope): void; group: EngineSettingsGroup; props: SettingsPanelProps; draftStore: SessionConfigDraftStore }) {
+  if (group === 'permissions') return <section className="settings-section settings-policy-section" aria-label="权限与审批设置">
+    <h4>新会话默认权限</h4>
+    <p className="settings-scope-description">保存后仅用于新会话。当前会话请在消息发送框旁切换权限，选择后自动保存。</p>
+    <EngineDefaultsGroup value={props.value} onChange={props.onChange} executors={props.executors} group="permissions" disabled={props.busy}/>
+  </section>;
   const active = props.activeSession;
   const descriptor = active && props.executors.find(item => item.providerId === active.execution.providerId && item.mode === active.execution.mode);
   const currentAllowed = !!active && active.kind === 'agent';
-  const nativeOnly = group !== 'permissions' && group !== 'limits';
+  const nativeOnly = group !== 'limits';
   const current = scope === 'session'
     ? !currentAllowed ? <p className="hint">请选择一个 Agent 会话后编辑当前会话配置。</p>
       : nativeOnly && active.execution.providerId !== 'native' ? <p className="hint">此设置仅用于自研 Agent。Claude Code 的模型与工具配置由 CLI 管理。</p>
@@ -88,9 +93,8 @@ function EnginePolicySection({ scope, onScope, group, props, draftStore }: { sco
       <button type="button" role="radio" aria-checked={scope === 'defaults'} disabled={props.busy} onClick={() => onScope('defaults')}>新会话默认</button>
       <button type="button" role="radio" aria-checked={scope === 'session'} disabled={props.busy || !currentAllowed} onClick={() => onScope('session')}>当前会话</button>
     </div></div>
-    <p className="settings-scope-description">{scope === 'session' ? currentAllowed ? `当前会话：${active.title || active.id}。通过本区域“保存配置”保存，切换分类或作用范围会保留普通字段草稿。` : '尚未选择 Agent 会话。' : group === 'model' || group === 'permissions' ? '保存设置后用于新会话，已有会话的配置保持不变。' : '保存设置后用于新会话。已有会话的自定义配置保持不变；跟随默认的自研 Agent 会话在下一回合使用已保存策略。'}</p>
+    <p className="settings-scope-description">{scope === 'session' ? currentAllowed ? `当前会话：${active.title || active.id}。通过本区域“保存配置”保存，切换分类或作用范围会保留普通字段草稿。` : '尚未选择 Agent 会话。' : group === 'model' ? '保存设置后用于新会话，已有会话的配置保持不变。' : '保存设置后用于新会话。已有会话的自定义配置保持不变；跟随默认的自研 Agent 会话在下一回合使用已保存策略。'}</p>
     {group === 'model' && scope === 'defaults' ? <details className="native-model-defaults"><summary>新会话默认模型</summary>{current}</details> : current}
-    {group === 'permissions' && <p className="hint">自研 Agent 与 Claude Code 的权限模式分别保存。当前会话的修改在下一回合生效；新会话默认值不会改变已有会话。</p>}
   </section>;
 }
 
@@ -186,7 +190,7 @@ export function SettingsPanel(props: SettingsPanelProps) {
   }, [props.onCloseRequestChange, requestClose]);
   useEffect(() => { if (closing) continueEditing.current?.focus(); }, [closing]);
   const pendingAreas = [dirty && '全局设置', connectionDirty && '模型连接', mcpDirty && 'MCP 连接', sessionDirty && '当前会话'].filter(Boolean);
-  const globalSaveVisible = dirty || !(page === 'models' && ['connections', 'import'].includes(selectedSubpage.id) || mcpActive || scope === 'session' && !!selectedSubpage.group);
+  const globalSaveVisible = dirty || !(page === 'models' && ['connections', 'import'].includes(selectedSubpage.id) || mcpActive || scope === 'session' && !!selectedSubpage.group && selectedSubpage.group !== 'permissions');
   const changePage = (next: SettingsPage) => { onPage(next); content.current?.scrollTo(0, 0); };
   const changeSubpage = (next: string) => { setSubpageByPage(current => ({ ...current, [page]: next })); content.current?.scrollTo(0, 0); };
   const save = (detect: boolean) => {

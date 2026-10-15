@@ -39,5 +39,5 @@ export function useChatSubmission({ sessionId, draft, attachments, nativeTaskId,
       if (mounted.current) { setSubmitting(false); void refresh().catch(onError); }
     }
   };
-  return { submitting, submit };
+  return { submitting, submit, isSubmitting: () => inFlight.current };
 }

@@ -13,6 +13,7 @@ import { ApprovalSubmission, paintApprovalFeedback, type ApprovalSubmissionState
 import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
 import { SubtaskPanel } from './SubtaskPanel';
 import { PromptEditor } from './PromptEditor';
+import { ComposerPermissionMode } from './ComposerPermissionMode';
 import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 import { ContextMeter } from './ContextMeter';
 import { NativeRecoveryPanel } from './NativeRecoveryPanel';
@@ -96,6 +97,9 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
 }) {
   const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
   const reviewDraft=useRef(draft);reviewDraft.current=draft;
+  const permissionPending=useRef(false);
+  const [permissionSaving,setPermissionSaving]=useState(false);
+  const permissionBusy=useCallback((value:boolean)=>{permissionPending.current=value;setPermissionSaving(value);},[]);
   const [snapshot,setSnapshot]=useState<ChatSnapshot>();
   const [imagePreview,setImagePreview]=useState<NativeImagePreviewSelection>();
   const previewHistoryImage=useCallback((runId:string,index:number,image:NativeImageAttachment)=>{
@@ -214,7 +218,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const nativeOwned=session.execution.providerId==='native'&&sessionStatus==='running';
   const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||nativeOwned||sessionStatus==='stopping'||compacting;
   const taskLabel=syncState.error?'状态未知':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
-  const composerDisabled=disabled||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error;
+  const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error;
   useEffect(()=>{
     // A final notification can be lost without a later sequence gap. Only an
     // active/uncertain pane checks occasionally; two failures pause auto retries.
@@ -251,7 +255,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const visibleAttachments=descriptor?.capabilities.attachments?attachments:[];
   const currentImagePreview=imagePreview&&session.execution.providerId==='native'&&isNativeImagePreviewCurrent(imagePreview,session.id,session.execution.conversationId,visibleAttachments)?imagePreview:undefined;
   useEffect(()=>{if(imagePreview&&!currentImagePreview)setImagePreview(undefined);},[imagePreview,currentImagePreview]);
-  const {submitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:isAttachmentImporting,
+  const {submitting,isSubmitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:()=>isAttachmentImporting()||permissionPending.current,
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const pasteAvailable=useRef(false);
@@ -325,6 +329,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
         onPasteFiles={pasteAvailable.current&&!attachmentsBlocked&&onPasteImages?files=>onPasteImages(files,()=>mounted.current&&!nativeOperation.current&&pasteAvailable.current):undefined}
         commands={descriptor?.capabilities.commands?snapshot?.commands:undefined} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
+      {descriptor?.configuration?.fields.some(field=>field.key==='permissionMode'&&field.type==='select')&&<div className="chat-composer-permissions"><ComposerPermissionMode session={session} descriptor={descriptor} running={running} disabled={readOnly||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error||!!descriptor?.maintenance||reviewingTask||submitting} onError={onError} onBusyChange={permissionBusy} isBlocked={isSubmitting}/></div>}
       <div className="chat-composer-actions">{descriptor?.capabilities.attachments&&<button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button>}<button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title={'Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；'+(descriptor?.capabilities.attachments?'文件可拖入聊天区成为待发送附件；':'')+'草稿自动保存'}>Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{visibleAttachments.length>0&&' · '+visibleAttachments.length+' 个附件 · '+(visibleAttachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" title="停止当前回合，保留已有消息与操作记录" disabled={readOnly||session.archived||sessionStatus==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{sessionStatus==='stopping'?'正在停止':'停止本轮'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!visibleAttachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
     </div>
   </div>;
