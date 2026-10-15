@@ -1,7 +1,9 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
-import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
+import type { ContextInputEstimate, JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ModelStreamEvent, ProviderUsage, ToolCall, ToolDefinition, ToolResult, UserImage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInput, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
 import { validateResponsesImageInputs } from './context-maintenance.js'
+import { normalizeOpenAIUsage, type NormalizedModelUsage } from './model-usage.js'
+import { dispatchedModelResponse, ModelRequestDiagnosticError, modelRequestDiagnostic } from './model-request-diagnostics.js'
 
 export interface ResponsesModelOptions {
   /** API 基础地址通常为 https://api.openai.com/v1。随后追加 /responses。 */
@@ -96,17 +98,9 @@ function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
   return url.href
 }
 
-function usageFrom(value: JsonValue | undefined): Usage | null {
-  if (value === null || value === undefined) return null
-  if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
-  const result: Usage = {}
-  for (const [provider, local] of [['input_tokens', 'inputTokens'], ['output_tokens', 'outputTokens'], ['total_tokens', 'totalTokens']] as const) {
-    const count = value[provider]
-    if (count === undefined || count === null) continue
-    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
-    result[local] = count
-  }
-  return Object.keys(result).length ? result : null
+function usageFrom(value: JsonValue | undefined): NormalizedModelUsage {
+  try { return normalizeOpenAIUsage(value, 'responses') }
+  catch { return failure('schema', 'Invalid model usage count.', 'invalid_usage') }
 }
 
 type ProtectedValues = string | readonly (string | undefined)[] | undefined
@@ -251,12 +245,13 @@ function completeResponse(response: JsonObject): ModelResponse {
     toolCalls,
     continuation: { responseId: response.id },
     finishReason: refused ? 'refused' : toolCalls.length ? 'tool_calls' : 'completed',
-    usage: usageFrom(response.usage),
+    ...usageFrom(response.usage),
   }
 }
 
 export class ResponsesModel implements ModelPort {
   readonly protocol = Object.freeze({ id: 'openai-responses', version: 1 })
+  readonly requestDiagnostics = true as const
   readonly #url: string
   readonly #apiKey: string | undefined
   readonly #model: string
@@ -300,6 +295,18 @@ export class ResponsesModel implements ModelPort {
     return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson)
   }
 
+  estimateInputUsage(context: ModelContext, maxOutputTokens = 4096): ContextInputEstimate {
+    return estimateContextInput(context, { instructions: this.#instructions, toolDefinitions: this.#tools, model: this.#model,
+      serializedInput: this.requestBody(context, maxOutputTokens) })
+  }
+
+  private requestBody(context: ModelContext, maxOutputTokens: number): string {
+    return JSON.stringify({ model: this.#model, input: context.items,
+      ...(this.#instructions === undefined ? {} : { instructions: this.#instructions }), tools: this.#tools,
+      // 执行器逐一处理调用；保留完整协议选项用于字节安全边界。
+      parallel_tool_calls: false, store: false, stream: true, include: ['reasoning.encrypted_content'], max_output_tokens: maxOutputTokens })
+  }
+
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof ResponsesModelError)) return { category: 'unknown', retryable: false }
     const status = rejectedHttpRequests.get(error)
@@ -309,14 +316,23 @@ export class ResponsesModel implements ModelPort {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     let stage: ModelFailureStage = 'request'
-    try { return await this.generateResponse(request, value => { stage = value }) }
+    const startedAt = Date.now(), started = performance.now()
+    const modelIdentity = this.#apiKey && this.#model.includes(this.#apiKey) ? {} : { model: this.#model }
+    let response: ModelResponse
+    let providerUsage: ProviderUsage | null = null
+    try { response = await this.generateResponse(request, value => { stage = value }, value => { providerUsage = value }) }
     catch (error) {
-      if (error instanceof ResponsesModelError) throw describeNativeModelFailure(error, { protocol: 'openai-responses', stage })
-      throw error
+      const described = error instanceof ResponsesModelError ? describeNativeModelFailure(error, { protocol: 'openai-responses', stage }) : error
+      await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'openai-responses', ...modelIdentity, result: 'failed', startedAt, finishedAt: Date.now(),
+        elapsedMs: performance.now() - started, providerUsage, failure: this.classifyError(described) })
+      throw described
     }
+    await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'openai-responses', ...modelIdentity, result: 'completed', startedAt, finishedAt: Date.now(),
+      elapsedMs: performance.now() - started, providerUsage: response.providerUsage ?? null })
+    return response
   }
 
-  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void, recordUsage: (usage: ProviderUsage | null) => void): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
     }
@@ -325,21 +341,11 @@ export class ResponsesModel implements ModelPort {
     }
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(responsesTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
-    const body = JSON.stringify({
-      model: this.#model,
-      input: request.context.items,
-      ...(this.#instructions === undefined ? {} : { instructions: this.#instructions }),
-      tools: this.#tools,
-      // ToolPort 按顺序执行完整批次。该标记也要求提供方
-      // 最多生成一次调用，但仍支持接收批量调用。
-      parallel_tool_calls: false,
-      store: false,
-      stream: true,
-      include: ['reasoning.encrypted_content'],
-      max_output_tokens: request.maxOutputTokens,
-    })
+    const body = this.requestBody(request.context, request.maxOutputTokens)
     assertNoModelCredential(JSON.parse(body), this.#apiKey)
     if (Buffer.byteLength(body, 'utf8') > this.#maxRequestBytes) return failure('request_limit', 'The complete model context exceeds the transport limit.')
+    if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
+    await request.onRequestDiagnostic?.(modelRequestDiagnostic(request, body, 'openai-responses', false, this.#model))
     if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
     const controller = new AbortController()
     let timedOut = false
@@ -350,7 +356,8 @@ export class ResponsesModel implements ModelPort {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
       if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`
-      const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      const pendingResponse = fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      const response = await dispatchedModelResponse(request, 'openai-responses', this.#model, controller, pendingResponse)
       setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
@@ -384,6 +391,10 @@ export class ResponsesModel implements ModelPort {
         assertNoModelCredential(event, this.#apiKey)
         if (!object(event) || !nonempty(event.type) || (eventName && eventName !== 'message' && eventName !== event.type)) return failure('schema', 'Invalid model stream event.')
         if (result) return failure('schema', 'Model sent data after the completed response.', 'invalid_sequence')
+        if (['response.completed', 'response.failed', 'response.incomplete'].includes(event.type) && object(event.response)) {
+          setStage('completion')
+          recordUsage(usageFrom(event.response.usage).providerUsage)
+        }
         if (event.type === 'error' || event.type === 'response.failed') return failure('provider', 'Model service reported a failed response.')
         if (event.type === 'response.incomplete') { setStage('completion'); return failure('incomplete', 'Model response was incomplete.') }
         if (event.type === 'response.refusal.delta' || event.type === 'response.refusal.done') {
@@ -457,6 +468,7 @@ export class ResponsesModel implements ModelPort {
       deltas.finish()
       return result
     } catch (error) {
+      if (error instanceof ModelRequestDiagnosticError) throw error.original
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       if (timedOut) return failure('timeout', 'Model request timed out.')
       if (error instanceof ResponsesModelError) throw error

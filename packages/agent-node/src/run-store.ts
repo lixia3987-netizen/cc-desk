@@ -4,9 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
-  JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage,
+  JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage, ModelRequestDiagnostic,
 } from '@cc-desk/agent-core';
-import { contextHasUserImages, validateModelFailureDiagnostic } from '@cc-desk/agent-core';
+import { contextHasUserImages, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
@@ -222,6 +222,7 @@ const TOOL_STATUSES = new Set(['completed', 'failed', 'denied', 'cancelled', 'no
 // JSON 可能将保留的一个 UTF-8 字节扩展为六个 ASCII 字节。封装预留覆盖
 // 所有限制大小的标识及调用字段，以及较小的运行中回执。
 const COMMAND_ENVELOPE_BYTES = 32 * 1024;
+const MODEL_DIAGNOSTIC_BYTES = 32 * 1024;
 const commandTerminalBytes = (maxOutputBytes: number): number => maxOutputBytes * 6 + 2048 * 6 + COMMAND_ENVELOPE_BYTES;
 const uncertainCommand = (tool: StoredToolState): boolean => !!tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished';
 const SECRET_FIELD = /^(?:api[_-]?key|authorization|password|secret|client[_-]?secret|access[_-]?token|refresh[_-]?token|credentials?|token|bearer[_-]?token)$/i;
@@ -247,7 +248,7 @@ function validateRunCompactionRequest(request: RunCompactionRequest): void {
   hash(request.contextHash, 'in-turn context digest');
 }
 function validateSummaryUsage(usage: Usage | null): void {
-  if (usage !== null && (!object(usage) || Object.entries(usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || (value as number) < 0))) fail('invalid_usage', 'Summary usage must contain only nonnegative integer token counts');
+  if (!validateUsage(usage)) fail('invalid_usage', 'Summary usage must contain only nonnegative integer token counts or unknown cache counts');
 }
 function validateStartupRequest(request: NativeStartupRequest, conversationId: string): void {
   if (!object(request)) fail('invalid_record', 'Invalid startup reservation');
@@ -563,6 +564,24 @@ export class NativeRunStore implements RunStore {
       if (this.autoCompactionAttempts.has(event.requestId) || this.autoCompactionContexts.has(event.contextHash)) fail('payload_mismatch', 'Automatic compaction has already been attempted for this request or context');
       return;
     }
+    if (event.type === 'model_request_diagnostic') {
+      if (Object.keys(event).some(key => !['type', 'diagnostic'].includes(key)) || !validateModelRequestDiagnostic(event.diagnostic) || Buffer.byteLength(JSON.stringify(event)) > MODEL_DIAGNOSTIC_BYTES) fail('invalid_record', 'Invalid model request diagnostic');
+      const diagnostic = event.diagnostic;
+      validateIdentity(diagnostic.identity, this.conversationId);
+      if (identity) {
+        this.activeOwner(identity);
+        const pending = this.modelRequests.get(identity.runId)?.at(-1);
+        if (!equal(identity, diagnostic.identity) || !pending || pending.attempt !== diagnostic.attempt || pending.outcome) fail('invalid_identity', 'Diagnostic must match an unresolved model attempt');
+      } else if (!diagnostic.purpose.startsWith('summary_')) fail('invalid_identity', 'Only host summary diagnostics can omit a run owner');
+      const previous = this.records.filter(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.requestKey === diagnostic.requestKey).at(-1);
+      const prior = previous?.event.type === 'model_request_diagnostic' ? previous.event.diagnostic : undefined;
+      if (!prior ? diagnostic.phase !== 'started' : prior.phase === 'finished' || diagnostic.phase === 'started' ||
+        diagnostic.phase === 'request' && prior.phase !== 'started' || diagnostic.phase === 'dispatched' && (prior.phase !== 'request' || diagnostic.requestSent !== true) ||
+        !equal(prior.identity, diagnostic.identity) ||
+        prior.attempt !== diagnostic.attempt || prior.purpose !== diagnostic.purpose || prior.contextDigest !== diagnostic.contextDigest || prior.toolsetDigest !== diagnostic.toolsetDigest ||
+        prior.parentRunId !== diagnostic.parentRunId || prior.childId !== diagnostic.childId) fail('invalid_record', 'Diagnostic phases must follow one stable request identity');
+      return;
+    }
     if (!identity) fail('invalid_identity', 'Run event is missing identity');
     const run = this.activeOwner(identity);
     if (event.type === 'run_context_compaction_attempted') {
@@ -640,6 +659,8 @@ export class NativeRunStore implements RunStore {
     if (event.type === 'model_request_failed') {
       const pending = this.modelRequests.get(identity.runId)?.at(-1);
       if (!pending || pending.outcome || pending.attempt !== event.attempt) fail('pending_model_request', 'Model failure does not match an unresolved request');
+      const diagnostic = this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'model_request_diagnostic' && record.event.diagnostic.attempt === event.attempt).at(-1);
+      if (diagnostic?.event.type === 'model_request_diagnostic' && (diagnostic.event.diagnostic.phase !== 'finished' || diagnostic.event.diagnostic.outcome === 'completed' || diagnostic.event.diagnostic.usage !== null)) fail('invalid_record', 'Model failure contradicts its diagnostic receipt');
       if (!validateModelFailureDiagnostic(event.failure) || typeof event.partial !== 'boolean' || Object.keys(event).some(key => !['type', 'attempt', 'failure', 'partial', 'retryDelayMs'].includes(key))) fail('invalid_record', 'Invalid model failure diagnostic');
       if (event.retryDelayMs !== undefined) {
         const retries = this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'model_request_failed' && record.event.retryDelayMs !== undefined).length;
@@ -653,6 +674,10 @@ export class NativeRunStore implements RunStore {
       if ([...run.tools.values()].some(tool => !tool.completed)) fail('pending_tools', 'Previous model tool calls have no durable result');
       const response = event.response;
       if (!object(response) || !Array.isArray(response.outputItems) || !Array.isArray(response.toolCalls) || !['completed', 'tool_calls', 'refused', 'incomplete'].includes(response.finishReason)) fail('invalid_record', 'Invalid model response');
+      if (!validateUsage(response.usage) || response.providerUsage !== undefined && !validateProviderUsage(response.providerUsage)) fail('invalid_usage', 'Invalid normalized or raw provider usage');
+      const diagnostic = this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'model_request_diagnostic' && record.event.diagnostic.attempt === attempts?.at(-1)?.attempt).at(-1);
+      if (diagnostic?.event.type === 'model_request_diagnostic' && (diagnostic.event.diagnostic.phase !== 'finished' || diagnostic.event.diagnostic.outcome !== 'completed' ||
+        !equal(diagnostic.event.diagnostic.usage, response.usage) || !equal(diagnostic.event.diagnostic.providerUsage ?? null, response.providerUsage ?? null))) fail('invalid_record', 'Model response contradicts its diagnostic counters');
       const ids = new Set<string>();
       for (const call of response.toolCalls) {
         validateCall(call);
@@ -714,6 +739,7 @@ export class NativeRunStore implements RunStore {
     if (event.type === 'run_finished') {
       const result = event.result;
       if (!object(result) || !VALID_STATUSES.has(result.status) || result.committed !== true || !equal(result.identity, identity)) fail('invalid_record', 'Invalid terminal run result');
+      if (!validateUsage(result.usage)) fail('invalid_usage', 'Invalid terminal usage');
       validateContext(result.context);
       if (!equal(result.context, this.context)) fail('context_mismatch', 'Terminal context differs from durable model/tool items');
       const attempts = this.modelRequests.get(identity.runId);
@@ -724,6 +750,16 @@ export class NativeRunStore implements RunStore {
         if (result.modelRequests !== expectedRequests) fail('invalid_record', 'Terminal model request count differs from durable attempts');
         if ((modelPending || attempts.some(attempt => attempt.outcome === 'failed')) && result.usage !== null) fail('invalid_usage', 'Unreported failed model requests cannot have complete run usage');
       }
+      const instrumented = this.records.some(record => record.identity?.runId === identity.runId && record.event.type === 'model_request_diagnostic');
+      if (instrumented) {
+        if (!validateUsage(result.usage, true)) fail('invalid_usage', 'Terminal usage has inconsistent token totals');
+        const responses = this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'model_response')
+          .map(record => record.event.type === 'model_response' ? record.event.response.usage : null);
+        const maintenance = this.runCompactionAttempts.get(identity.runId);
+        const unknown = modelPending || attempts?.some(attempt => attempt.outcome !== 'response');
+        const expectedUsage = sumUsage([...responses, ...(maintenance ? [maintenance.usage ?? null] : []), ...(unknown ? [null] : [])]);
+        if (!equal(result.usage, expectedUsage)) fail('invalid_usage', 'Terminal usage differs from durable response and summary receipts');
+      }
       const unresolved = modelPending || [...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown' || uncertainCommand(tool)) || this.runCompactionAttempts.get(run.identity.runId)?.status === 'attempted';
       if (unresolved && result.status !== 'recovery_required') fail('recovery_required', 'Unresolved model requests or tool effects require recovery');
       return;
@@ -733,6 +769,7 @@ export class NativeRunStore implements RunStore {
 
   private apply(record: RunStoreRecord): void {
     const event = record.event;
+    if (event.type === 'model_request_diagnostic') return;
     if (event.type === 'conversation_created') return;
     if (event.type === 'startup_prepared') {
       const request = event.request;
@@ -878,7 +915,22 @@ export class NativeRunStore implements RunStore {
       if (modelPending || summaryPending) records += 2;
       else if (model || summary) records++;
     }
-    return { bytes: records * this.limits.maxRecordBytes, records };
+    // 发网之前预留其余诊断阶段；元数据按独立上限预留，不按整块模型响应预算膨胀。
+    const diagnostics = new Map<string, ModelRequestDiagnostic>();
+    for (const record of this.records) if (record.event.type === 'model_request_diagnostic') diagnostics.set(record.event.diagnostic.requestKey, record.event.diagnostic);
+    if (event.type === 'model_request_diagnostic') diagnostics.set(event.diagnostic.requestKey, event.diagnostic);
+    let diagnosticRecords = 0;
+    for (const diagnostic of diagnostics.values()) {
+      const ownerId = diagnostic.purpose === 'summary_in_run' ? diagnostic.parentRunId : diagnostic.purpose.startsWith('summary_') ? undefined : diagnostic.identity.runId;
+      if (ownerId !== undefined) {
+        const owner = this.runs.get(ownerId);
+        if (owner?.status !== 'active' || event.type === 'run_finished' && identity?.runId === ownerId ||
+          (event.type === 'run_recovered' || event.type === 'recovery_resolved') && event.runId === ownerId) continue;
+      }
+      // 未完成请求的诊断只允许继续向终态收敛；旧记录不引入新的正文或付费请求。
+      diagnosticRecords += diagnostic.phase === 'started' ? 3 : diagnostic.phase === 'request' ? 2 : diagnostic.phase === 'dispatched' ? 1 : 0;
+    }
+    return { bytes: records * this.limits.maxRecordBytes + diagnosticRecords * MODEL_DIAGNOSTIC_BYTES, records: records + diagnosticRecords };
   }
 
   private async commit(identity: RunIdentity | undefined, value: StoreEvent): Promise<{ seq: number }> {
@@ -984,8 +1036,15 @@ export class NativeRunStore implements RunStore {
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
-      if (!['model_request_started', 'model_request_failed', 'model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
+      if (!['model_request_diagnostic', 'model_request_started', 'model_request_failed', 'model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
       const run = this.owner(identity);
+      if (event.type === 'model_request_diagnostic') {
+        const prior = this.records.find(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.requestKey === event.diagnostic.requestKey && record.event.diagnostic.phase === event.diagnostic.phase);
+        if (prior) {
+          if (!equal(prior.event, event) || !equal(prior.identity, identity)) fail('payload_mismatch', 'Request diagnostic identity was reused with different counters');
+          return { seq: prior.seq };
+        }
+      }
       if (event.type === 'tool_completed') {
         const tool = run.tools.get(event.call.id);
         if (tool?.completed) {
@@ -998,6 +1057,21 @@ export class NativeRunStore implements RunStore {
         return { seq: run.finishedSeq! };
       }
       return this.commit(identity, event);
+    });
+  }
+
+  /** 摘要 worker 的身份只在诊断中保存，回合内摘要用量仍由原始压缩回执计入一次。 */
+  recordModelDiagnostic(diagnostic: ModelRequestDiagnostic): Promise<{ seq: number }> {
+    return this.exclusive(async () => {
+      this.writable();
+      if (!validateModelRequestDiagnostic(diagnostic) || !diagnostic.purpose.startsWith('summary_')) fail('invalid_record', 'Invalid host summary diagnostic');
+      const event: RunJournalEvent = { type: 'model_request_diagnostic', diagnostic };
+      const prior = this.records.find(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.requestKey === diagnostic.requestKey && record.event.diagnostic.phase === diagnostic.phase);
+      if (prior) {
+        if (!equal(prior.event, event) || prior.identity !== undefined) fail('payload_mismatch', 'Summary diagnostic identity was reused');
+        return { seq: prior.seq };
+      }
+      return this.commit(undefined, event);
     });
   }
 
@@ -1114,16 +1188,7 @@ export class NativeRunStore implements RunStore {
     const usages = [...responses.map(response => response.usage), ...(unreported ? [null] : []), ...(maintenance ? [maintenance.usage ?? null] : [])];
     let usage: RunResult['usage'] = null;
     if (run.result) usage = clone(run.result.usage);
-    else if (usages.length && usages.every(value => value !== null)) {
-      usage = {};
-      for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
-        const values = usages.map(value => value?.[key]);
-        if (values.every((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0)) {
-          const total = values.reduce((sum, value) => sum + value, 0);
-          if (Number.isFinite(total)) usage[key] = total;
-        }
-      }
-    }
+    else usage = sumUsage(usages);
     return { completions, result: { identity: clone(run.identity), status: 'cancelled', reason: 'recovery_resolved',
       modelRequests: run.result?.modelRequests ?? attempts.length + (this.legacyModelResponses.get(runId) ?? 0) + (maintenance ? 1 : 0),
       toolCalls: run.result?.toolCalls ?? [...run.tools.values()].filter(tool => tool.prepared || tool.completed).length,
@@ -1306,7 +1371,7 @@ export class NativeRunStore implements RunStore {
 
   planContextCompaction(options: { summary: string; keepRecentTurns?: number; expectedHash?: string; usage?: Usage | null; automaticRequestId?: string }): ContextCompactionPlan {
     if (options.usage !== undefined && options.usage !== null) {
-      if (!object(options.usage) || Object.entries(options.usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || (value as number) < 0)) fail('invalid_usage', 'Summary usage must contain only nonnegative integer token counts');
+      validateSummaryUsage(options.usage);
     }
     const keepRecentTurns = options.keepRecentTurns ?? 1;
     const source = this.getCompactionSource({ keepRecentTurns });
@@ -1315,7 +1380,10 @@ export class NativeRunStore implements RunStore {
       text(options.automaticRequestId, 'automatic request id', 256);
       const attempt = this.autoCompactionAttempts.get(options.automaticRequestId);
       if (!attempt || attempt.status !== 'attempted') fail('auto_compaction_unavailable', 'Automatic compaction requires an unused durable reservation');
-      if (options.expectedHash !== source.expectedHash || attempt.contextHash !== digest(this.context) || this.records[attempt.seq - 1]?.hash !== source.expectedHash) fail('stale_context', 'Automatic compaction reservation no longer owns the current conversation head');
+      const afterReservation = this.records.slice(attempt.seq, source.sourceSeq);
+      const diagnosticOnly = afterReservation.every(record => record.identity === undefined && record.event.type === 'model_request_diagnostic' &&
+        record.event.diagnostic.purpose === 'summary_before_send' && record.event.diagnostic.identity.requestId === `auto-compact:${attempt.requestId}`);
+      if (options.expectedHash !== source.expectedHash || attempt.contextHash !== digest(this.context) || !diagnosticOnly) fail('stale_context', 'Automatic compaction reservation no longer owns the current conversation head');
     }
     const summary = contextSummaryItem(options.summary, this.context!.protocol);
     const boundary = this.compactionBoundary(keepRecentTurns);

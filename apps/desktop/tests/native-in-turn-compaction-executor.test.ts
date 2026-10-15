@@ -25,6 +25,7 @@ const secret = 'sk-in-turn-executor-local-fixture';
 const input = 'Keep the original engineering goal intact; inspect the file and retain human verification.';
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
 const padding = 'ordinary historical observation '.repeat(730);
+const unknownCache = { cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null };
 const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
   contextMaintenance: options.contextMaintenance,
@@ -121,7 +122,7 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(f.summaries, 1); assert.equal(f.ordinary, 6);
     const ledger = await f.ledger(); assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
     const run = ledger.runs[0]; assert.equal(run.result!.modelRequests, 7);
-    assert.deepEqual(run.result!.usage, { inputTokens: 77, outputTokens: 49, totalTokens: 126 });
+    assert.deepEqual(run.result!.usage, { inputTokens: 77, outputTokens: 49, totalTokens: 126, ...unknownCache }, 'the summary counters join the six ordinary responses exactly once; unreported cache partitions stay unknown');
     assert.equal(ledger.records.filter(record => record.event.type === 'model_response').length, 6, 'the raw ordinary responses remain intact');
     const after = f.server.requests.filter((body: Body) => body.tools?.length).at(-1) as Body;
     const encoded = JSON.stringify(after);
@@ -133,9 +134,11 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     const maintenance = f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!;
     assert.equal(maintenance.status, 'committed');
     assert.deepEqual(maintenance.summaryUsage, { inputTokens: 11, outputTokens: 7 });
-    assert.ok(Math.abs(maintenance.summaryCostUSD! - 0.000078) < 1e-12);
-    const totalCost = f.executor.snapshot(f.id).usage?.costUSD; assert.ok(typeof totalCost === 'number');
-    assert.ok(Math.abs(totalCost - 0.000546) < 1e-12, 'total cost includes the summary exactly once');
+    assert.equal(maintenance.summaryCostUSD, undefined, 'unreported cache counters cannot be priced as zero');
+    const totalUsage = f.executor.snapshot(f.id).usage!;
+    assert.equal(totalUsage.costUSD, undefined);
+    assert.equal(totalUsage.nativeCost?.status, 'unknown');
+    assert.equal(totalUsage.nativeCost?.reason, 'missing_cache_usage');
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original content remains unchanged\n');
     const requests = f.server.requests.length, task = f.executor.snapshot(f.id).nativeTask;
     await f.restart(); assert.equal((await f.send()).success, true);
@@ -173,7 +176,7 @@ test('invalid summary stops the current run without a second summary or a follow
     assert.equal(f.ordinary, 4); assert.equal(JSON.stringify((await f.ledger()).context).includes(summary), false);
     const resultReceipt = (await f.ledger()).runs[0].result!;
     assert.equal(resultReceipt.modelRequests, 5);
-    assert.deepEqual(resultReceipt.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 }, 'a complete rejected summary still contributes its known service usage');
+    assert.deepEqual(resultReceipt.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90, ...unknownCache }, 'a complete rejected summary still contributes known totals while unreported cache partitions remain unknown');
     assert.notEqual(f.executor.snapshot(f.id).nativeTask!.verification, 'passed');
   } finally { await f.dispose(); }
 });
@@ -202,7 +205,7 @@ test('CLAUDE instruction changes during summary prevent committing or resuming t
     assert.equal(f.summaries, 1); assert.equal(f.ordinary, 4);
     const ledger = await f.ledger(); assert.equal(JSON.stringify(ledger.context).includes(summary), false);
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'failed');
-    assert.deepEqual(ledger.runs[0].result!.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 });
+    assert.deepEqual(ledger.runs[0].result!.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90, ...unknownCache });
   } finally { await f.dispose(); }
 });
 
@@ -252,7 +255,13 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     return receipt;
   };
   try {
-    const result = await f.send(); assert.equal(injected, true); assert.equal(f.summaries, 1);
+    const result = await f.send();
+    const beforeCancellation = await f.ledger();
+    const payloads = beforeCancellation.records.filter(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.phase === 'request')
+      .map(record => record.event.type === 'model_request_diagnostic' ? { purpose: record.event.diagnostic.purpose, bytes: record.event.diagnostic.payloadBytes } : {});
+    assert.equal(injected, true, JSON.stringify({ result, ordinary: f.ordinary, summaries: f.summaries,
+      reason: beforeCancellation.runs[0]?.result?.reason, maintenance: f.executor.snapshot(f.id).nativeContextMaintenance?.inTurn, payloads }));
+    assert.equal(f.summaries, 1);
     assert.equal(result.success, false); assert.equal(result.interrupted, true); assert.equal(result.summary, '');
     const ledger = await f.ledger(); assert.ok(JSON.stringify(ledger.context).includes(summary));
     const last = ledger.records.findLast(record => record.event.type === 'model_response')!;

@@ -12,7 +12,9 @@ const text = z.string().trim().min(1).max(200).refine(value => !/[\x00-\x1f\x7f]
 const model = text;
 // 目录发现前可以保存不完整连接；执行仍必须指定模型。
 const savedModel = z.string().trim().max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
-const pricing = z.object({ model, inputUSDPerMillion: z.number().finite().min(0).max(1_000_000), outputUSDPerMillion: z.number().finite().min(0).max(1_000_000) }).strict();
+const priceRate = z.number().finite().min(0).max(1_000_000);
+const pricing = z.object({ model, inputUSDPerMillion: priceRate, outputUSDPerMillion: priceRate,
+  cacheReadUSDPerMillion: priceRate.optional(), cacheCreationUSDPerMillion: priceRate.optional() }).strict();
 const auth = z.discriminatedUnion('mode', [
   z.object({ mode: z.literal('env'), variable: z.string().min(1).max(128).regex(/^[a-zA-Z_][a-zA-Z0-9_]*$/) }).strict(),
   z.object({ mode: z.literal('memory') }).strict(),

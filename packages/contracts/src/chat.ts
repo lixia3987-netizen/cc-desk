@@ -65,6 +65,16 @@ export interface ChatDecision {
 export interface ChatUsage {
   inputTokens?: number; outputTokens?: number;
   cacheReadTokens?: number; cacheCreationTokens?: number;
+  /** Native 的互斥输入分项；旧记录缺失或 null 均表示未知。 */
+  nonCachedInputTokens?: number | null;
+  cacheReadInputTokens?: number | null;
+  cacheCreationInputTokens?: number | null;
+  nativeCost?: {
+    source: 'user_rates'; status: 'ready' | 'unknown'; model?: string; costUSD?: number;
+    reason?: 'missing_usage' | 'missing_pricing' | 'model_mismatch' | 'missing_cache_usage' | 'inconsistent_usage' | 'missing_cache_pricing' | 'incomplete_requests';
+  };
+  /** 本地汇总只统计当前父回合与其回合内摘要，子代理账本另计。 */
+  nativeRequests?: { scope: 'parent_run_with_in_turn_summaries'; recorded: number; expected: number; complete: boolean };
   /** CLI 报告的估算值，并非用户的订阅额度。 */
   costUSD?: number; durationMs?: number; turns?: number;
 }

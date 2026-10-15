@@ -1,4 +1,6 @@
 export * from './types.js'
+export * from './usage.js'
+export * from './diagnostics.js'
 export * from './run.js'
 export * from './context.js'
 export * from './images.js'

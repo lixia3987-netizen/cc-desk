@@ -46,7 +46,9 @@ export interface NativeConnectionTestResult {
   code: NativeConnectionTestCode;
   durationMs: number;
   httpStatus?: number;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; nonCachedInputTokens?: number | null; cacheReadInputTokens?: number | null; cacheCreationInputTokens?: number | null };
+  providerUsage?: { raw: Record<string, number | null>; normalization: string };
+  costEstimate?: import('./native-cost').NativeCostEstimate;
   estimatedCostUSD?: number;
 }
 export interface NativeConnectionModelListInput { id: string; revision: number; requestId: string }

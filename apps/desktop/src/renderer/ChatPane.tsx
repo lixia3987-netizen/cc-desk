@@ -3,6 +3,7 @@ import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search,
 import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
 import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot, NativeImageAttachment } from '../shared/chat';
+import { chatUsageLabel } from '../shared/chat';
 import { MessageText } from './MessageText';
 import { ChatAttachmentChips, NativeImageAttachments } from './NativeImageAttachments';
 import { NativeImagePreview } from './NativeImagePreview';
@@ -35,7 +36,6 @@ import './native-change-set.css';
 export { MessageText } from './MessageText';
 
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
-const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
 function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage,isNative}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean;isNative:boolean}) {
   const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId));
@@ -303,7 +303,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       onReview={async input=>{setReviewingTask(true);try{await window.desktop.nativeTaskReview(session.id,input);await load();}finally{if(mounted.current)setReviewingTask(false);}}}/></div>
     </div>}
     {continuationTaskId&&<div className="panel-note" role="status">下一条消息将继续任务 {continuationTaskId}。<button className="text-button" disabled={submitting} onClick={()=>setContinuationTaskId(undefined)}>取消关联</button></div>}
-    <div className="chat-meta"><span className={'dot '+(syncState.error||task==='error'?'error':running?'running':'idle')}/>{!syncState.error&&sessionStatus==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'服务已报告的本回合用量，包含回合内摘要，失败请求可能未报告；仅全部请求都有完整用量时按本回合价格估算费用，发送前及手动压缩另计，未含缓存折扣和附加费用':'引擎实际返回的用量与费用估算'}>{session.execution.providerId==='native'&&Object.values(snapshot.usage).some(value=>typeof value==='number')&&'本回合累计 · '}{Object.entries(snapshot.usage).filter(([,value])=>typeof value==='number').map(([key,value])=>(usageLabels[key]??key)+': '+Number(value).toLocaleString(undefined,{maximumFractionDigits:key==='costUSD'?6:0})).join(' · ')}</span>}</div>
+    <div className="chat-meta"><span className={'dot '+(syncState.error||task==='error'?'error':running?'running':'idle')}/>{!syncState.error&&sessionStatus==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'当前父回合的累计用量，包含回合内摘要；子代理、发送前及手动摘要另计。输入总量已含缓存分项，不能重复相加。估价按本回合保存的用户费率，未知计数或费率不作为零，实际账单为准。':'引擎实际返回的用量与费用估算'}>{chatUsageLabel(snapshot.usage, session.execution.providerId==='native')}</span>}</div>
     {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}
       currentRunId={snapshot?.nativeRun?.runId}
       maintenance={nativeMaintenance?{...nativeMaintenance,compacting}:undefined}

@@ -12,6 +12,8 @@ import { closeNativeApp } from './helpers/native-app-cleanup';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import type { NativeAgentResult } from '../src/shared/chat';
+import { buildNativeReviewGoal } from '../src/main/engines/native/agent-prompts';
+import { nativeDelegationAuditPath, nativeDelegationExecutionPath, nativeDelegationIntervalsOverlap } from '../src/main/engines/native/agent-delegation-audit';
 // @ts-expect-error 与 agent-node 回归测试共享这个可执行 HTTP 测试装置。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
@@ -92,12 +94,47 @@ function parentResponse(body: Body, mode: 'review' | 'implement'): Response {
     plan: { goal: '委派两个独立子任务并审阅其证据', steps: [{ id: 'delegate', title: '委派与审阅', dependsOn: [], status: 'in_progress' }],
       criteria: [{ id: 'review', description: '审阅子 Agent 结果和验证证据后确认验收', stepIds: ['delegate'], kind: 'manual' }] } });
   if (!done.has('parent-delegate')) return responseCall('parent-delegate', mode === 'review' ? 'delegate_review' : 'delegate_implement', {
-    tasks: mode === 'review' ? [{ title: '独立审阅 A', goal: 'READ_A: 独立读取 fixture.txt 并报告观察' }, { title: '独立审阅 B', goal: 'READ_B: 独立读取 fixture.txt 并报告观察' }] :
+    tasks: mode === 'review' ? ['A', 'B'].map(name => ({ title: `独立审阅 ${name}`, goal: `READ_${name}:\n` + buildNativeReviewGoal({
+      materials: 'fixture.txt in the selected project', version: 'Not yet read by parent; obtain actual file content and hash using read_file.',
+      question: name === 'A' ? 'What exact line does fixture.txt contain?' : 'Does fixture.txt end with a newline?',
+      scope: 'Only fixture.txt', evidence: 'No parent file evidence yet; child must obtain and cite its actual read receipt.',
+      exclusions: name === 'A' ? 'Do not evaluate newline formatting.' : 'Do not repeat a full text summary.',
+    }) })) :
       [{ title: '隔离实现 A', goal: 'IMPLEMENT_A: 独立修改 fixture.txt 并执行检查' }, { title: '隔离实现 B', goal: 'IMPLEMENT_B: 独立修改 fixture.txt 并执行检查' }],
     ...(mode === 'implement' ? { baseline: 'snapshot' } : {}),
   });
+  if (mode === 'review') {
+    const delegated = done.get('parent-delegate')!;
+    for (let index = 0; index < (delegated.output.children?.length ?? 0); index++) {
+      if (!done.has(`parent-result-${index}`)) return responseCall(`parent-result-${index}`, 'read_agent_result', {
+        parentRunId: delegated.output.parentRunId, childId: delegated.output.children![index].childId });
+    }
+  }
   return final('parent-final', '子任务已结束，成果和证据已保留，等待审阅验收。');
 }
+
+test('a model role plan or claimed parallel success without actual delegation cannot pass host completion', async () => {
+  const f = await workspace();
+  const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: ({ body }: { body: Body }) => {
+    const latest = body.input.filter(item => item.role === 'user').at(-1)?.content;
+    const input = typeof latest === 'string' ? latest : latest?.map(item => item.text ?? '').join('') ?? '';
+    if (input.includes('只用一个 Agent')) {
+      expect(body.tools.some(tool => tool.name.startsWith('delegate_'))).toBe(false);
+      return final('single-agent-final', '按单 Agent 约束直接处理本次审阅。');
+    }
+    return final('unexecuted-plan', 'Agent A 检查内容，Agent B 检查边界。并行分析已完成。');
+  } });
+  const app = await f.launch();
+  try {
+    const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
+    const result = await page.evaluate(id => window.desktop.sendChat(id, '请并行分析 fixture.txt 的内容和换行格式。', [], 'unexecuted-parallel-request'), session.id);
+    expect(result.success).toBe(false); expect(result.error).toContain('没有实际批量只读委派');
+    expect(result.summary).toContain('未通过宿主并行核验'); expect(await childrenMetrics(app)).toBe(0);
+    expect(await receipts(f.data)).toHaveLength(0); expect(fixture.requests).toHaveLength(1);
+    const single = await page.evaluate(id => window.desktop.sendChat(id, '只用一个 Agent 审阅 fixture.txt。', [], 'explicit-single-request'), session.id);
+    expect(single.success).toBe(true); expect(await childrenMetrics(app)).toBe(0); expect(fixture.requests).toHaveLength(2);
+  } finally { await closeNativeApp(app); await fixture.close(); await f.dispose(); }
+});
 
 test('production Native utilityProcesses review concurrently with independent contexts and visible retained child state', async () => {
   const f = await workspace(), barrier = gate(), started = new Set<string>();
@@ -121,9 +158,14 @@ test('production Native utilityProcesses review concurrently with independent co
     await expect(page.getByRole('region', { name: 'Native Agent 协作', exact: true })).toBeVisible();
     await page.screenshot({ path: test.info().outputPath('native-agent-review.png'), fullPage: true });
     barrier.release(); const result = await pending;
-    expect(result.success).toBe(true); expect(fixture.requests).toHaveLength(7); expect(fixture.errors).toEqual([]);
-    expect(result.nativeReceipt?.usage.modelRequests).toBe(7); expect(result.nativeReceipt?.usage.toolCalls).toBe(4);
+    expect(result.success).toBe(true); expect(fixture.requests).toHaveLength(9); expect(fixture.errors).toEqual([]);
+    expect(result.nativeReceipt?.usage.modelRequests).toBe(9); expect(result.nativeReceipt?.usage.toolCalls).toBe(6);
     const saved = await receipts(f.data); expect(saved).toHaveLength(2);
+    const execution = JSON.parse(await fs.readFile(nativeDelegationExecutionPath(path.join(f.data, 'native'), saved[0].parentIdentity, saved[0].batchId), 'utf8'));
+    expect(nativeDelegationIntervalsOverlap(execution)).toBe(true);
+    expect(execution.children.every((child: { started?: unknown; settled?: unknown }) => child.started && child.settled)).toBe(true);
+    const audit = JSON.parse(await fs.readFile(nativeDelegationAuditPath(f.data, saved[0].parentIdentity), 'utf8'));
+    expect(audit.status).toBe('satisfied'); expect(audit.batches[0].inspectedChildren).toBe(2); expect(audit.batches[0].childrenWithMaterialReads).toBe(2);
     const parentTask = await NativeTaskStore.readSnapshot({ rootDirectory: path.join(f.data, 'native'), conversationId: saved[0].parentIdentity.conversationId, sessionId: session.id });
     expect(parentTask?.taskId).toBe(saved[0].parentTaskId); expect(parentTask?.verification).toBe('unverified');
     expect(new Set(saved.map(child => child.identity.conversationId)).size).toBe(2);

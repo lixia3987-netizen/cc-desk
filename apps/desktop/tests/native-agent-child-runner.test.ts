@@ -56,11 +56,21 @@ test('child runner persists a separate bound conversation/task and cannot access
   const f = await fixture(t); let count = 0;
   const result = await runNativeAgentChild(f.input, { ...f.options, worker: inProcessWorker(async (request, options) => {
     assert.deepEqual(request.identity, f.input.identity);
+    assert.match(options.model.instructions ?? '', /Children cannot spawn further agents/);
+    assert.match(options.model.instructions ?? '', /MCP and external tools/);
+    assert.match(options.model.instructions ?? '', /actual read_file\/search/);
+    assert.equal(options.request.diagnosticPurpose, 'child');
+    assert.equal(options.request.diagnosticIdentity?.parentRunId, f.input.parentIdentity.runId);
+    assert.equal(options.request.diagnosticIdentity?.childId, undefined, 'a host child ID is never invented');
     assert.ok(request.context.items.every(item => !(item && typeof item === 'object' && !Array.isArray(item) && item.parentContext)));
     assert.ok(request.tools.every(tool => tool.risk === 'read'));
-    for (const name of ['apply_patch', 'run_command', 'start_command', 'delegate_review', 'delegate_implement', 'ask_user']) assert.ok(!request.tools.some(tool => tool.name === name));
+    for (const name of ['apply_patch', 'run_command', 'start_command', 'delegate_review', 'delegate_implement', 'ask_user', 'read_agent_result']) assert.ok(!request.tools.some(tool => tool.name === name));
     await assert.rejects(async () => options.tools.prepare(call('apply_patch', { path: 'file.txt', content: 'wrong', expectedHash: null }),
       { identity: f.input.identity, policyRevision: options.request.policyRevision, signal: options.signal, maxOutputBytes: 65536 }), /只读/);
+    for (const name of ['run_command', 'delegate_review', 'delegate_implement', 'mcp_external_agent', 'read_agent_result']) {
+      await assert.rejects(async () => options.tools.prepare(call(name, {}),
+        { identity: f.input.identity, policyRevision: options.request.policyRevision, signal: options.signal, maxOutputBytes: 65536 }));
+    }
     return ++count === 1 ? tools(call('read_file', { path: 'file.txt' })) : completed();
   }) });
   assert.equal(result.status, 'completed'); assert.equal(result.committed, true); assert.equal(result.modelRequests, 2); assert.equal(result.toolCalls, 1);

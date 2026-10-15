@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision } from '@cc-desk/agent-core';
+import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision, ModelRequestDiagnostic } from '@cc-desk/agent-core';
 import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from '../src/main/engines/native/projection';
 import { ExecutionEvents } from '../src/main/execution/events';
@@ -28,6 +28,48 @@ async function fixture() {
   }, dispose: async () => { projection.flush(); await store.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+
+test('single request, peak and cumulative usage survive replay without counting diagnostic phases twice', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration.pricing = { model: 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8, cacheReadUSDPerMillion: 0.2 };
+    await f.store.beginRun(f.req);
+    for (const [index, inputTokens] of [100, 40].entries()) {
+      const attempt = index + 1;
+      const usage = { inputTokens, outputTokens: index + 2, nonCachedInputTokens: index === 0 ? 20 : 10, cacheReadInputTokens: index === 0 ? 80 : 30, cacheCreationInputTokens: 0 };
+      const providerUsage = { raw: { input_tokens: inputTokens, output_tokens: index + 2, cached_tokens: usage.cacheReadInputTokens, cache_write_tokens: 0 }, normalization: 'openai-inclusive-input' as const };
+      await f.store.append(f.req.identity, { type: 'model_request_started', attempt });
+      const diagnostic: ModelRequestDiagnostic = { schemaVersion: 1, requestKey: `${f.req.identity.runId}:${attempt}`, identity: f.req.identity,
+        attempt, purpose: 'normal', protocol: f.req.protocol, model: 'fixture-model', phase: 'started', requestSent: false, startedAt: 1000,
+        estimatedInputTokens: 500, estimateMethod: 'utf8_bytes', estimateSource: 'fallback', contextBytes: 100, contextDigest: 'a'.repeat(64), toolsetDigest: 'b'.repeat(64),
+        components: { tools: { bytes: 50, digest: 'c'.repeat(64), accounting: 'serialized' } }, usage: null };
+      await f.store.append(f.req.identity, { type: 'model_request_diagnostic', diagnostic });
+      await f.store.append(f.req.identity, { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, phase: 'request', requestSent: true, payloadBytes: 200 } });
+      await f.store.append(f.req.identity, { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, phase: 'finished', requestSent: true, payloadBytes: 200, finishedAt: 1010, elapsedMs: 10, usage, providerUsage, outcome: 'completed' } });
+      await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Measured response')], toolCalls: [], finishReason: 'completed', usage, providerUsage } });
+    }
+    const usage = { inputTokens: 140, outputTokens: 5, nonCachedInputTokens: 30, cacheReadInputTokens: 110, cacheCreationInputTokens: 0 };
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'completed', reason: 'model_completed', modelRequests: 2, toolCalls: 0, usage, context: f.store.loadContext()!, committed: true } });
+    await f.projection.hydrate(f.id, f.store);
+    const snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.context?.inputTokens, 40);
+    assert.equal(snapshot.context?.peakInputTokens, 100);
+    assert.equal(snapshot.context?.peakInputComplete, true);
+    assert.equal(snapshot.usage?.inputTokens, 140);
+    assert.equal(snapshot.usage?.costUSD, 0.000122);
+    assert.deepEqual(snapshot.usage?.nativeRequests, { scope: 'parent_run_with_in_turn_summaries', recorded: 2, expected: 2, complete: true });
+    assert.equal(snapshot.context?.requestUsage?.provider?.raw.cached_tokens, 30);
+    assert.equal(snapshot.context?.requestDiagnostic?.payloadBytes, 200);
+    assert.deepEqual(snapshot.context?.requestDiagnostic?.components.tools, { bytes: 50, accounting: 'serialized' });
+    assert.doesNotMatch(JSON.stringify(snapshot.context), /cccccccccccccccc|payloadDigest|contextDigest/);
+    const before = await fs.readFile(f.projection.exportPath(f.id), 'utf8');
+    await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).context, snapshot.context);
+    assert.deepEqual(restored.snapshot(f.id).usage, snapshot.usage);
+    assert.equal(await fs.readFile(restored.exportPath(f.id), 'utf8'), before);
+    restored.flush();
+  } finally { await f.dispose(); }
+});
 
 for (const protocol of ['openai-responses', 'openai-chat-completions']) test(`Native image-only history keeps submitted metadata through pagination, export and restart: ${protocol}`, async () => {
   const f = await fixture();
@@ -263,7 +305,8 @@ test('budget exhaustion projects an actionable explanation without changing dura
     const snapshot = f.projection.snapshot(f.id);
     assert.equal(snapshot.context?.budget?.status, 'exceeded');
     assert.equal(snapshot.context?.inputTokens, undefined);
-    assert.deepEqual(snapshot.usage, {});
+    assert.equal(snapshot.usage?.inputTokens, undefined);
+    assert.equal(snapshot.usage?.nativeCost?.reason, 'missing_usage');
     assert.match(snapshot.error!, /上下文超过运行预算/);
     assert.equal(f.store.getRun(f.req.identity.runId)?.result?.reason, 'context_budget');
   } finally { await f.dispose(); }
@@ -275,9 +318,11 @@ test('native cost projection uses the durable model price snapshot across restar
   try {
     const pricing = { model: 'fixture-model', inputUSDPerMillion: 2, outputUSDPerMillion: 8 };
     f.req.configuration.pricing = pricing;
+    const usage = { inputTokens: 10, outputTokens: 5, nonCachedInputTokens: 10, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 };
     await f.store.beginRun(f.req);
-    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Known complete response')], toolCalls: [], finishReason: 'completed', usage: { inputTokens: 10, outputTokens: 5 } } });
-    await f.finish(); await f.projection.hydrate(f.id, f.store);
+    await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Known complete response')], toolCalls: [], finishReason: 'completed', usage } });
+    await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'completed', reason: 'model_completed', modelRequests: 1, toolCalls: 0, usage, context: f.store.loadContext()!, committed: true } });
+    await f.projection.hydrate(f.id, f.store);
     const expected = (10 * 2 + 5 * 8) / 1_000_000;
     assert.ok(Math.abs(f.projection.snapshot(f.id).usage!.costUSD! - expected) < 1e-12);
     pricing.inputUSDPerMillion = 999; pricing.outputUSDPerMillion = 999;
@@ -336,9 +381,12 @@ test('a failed later request cannot price partial reported usage as the complete
     await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('First response was measured')], toolCalls: [], finishReason: 'completed', usage } });
     await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'failed', reason: 'model_error', modelRequests: 2, toolCalls: 0, usage, context: f.store.loadContext()!, committed: true } });
     await f.projection.hydrate(f.id, f.store);
-    assert.deepEqual(f.projection.snapshot(f.id).usage, usage, 'known token counts stay visible without an invented whole-run cost');
+    const projectedUsage = f.projection.snapshot(f.id).usage;
+    assert.equal(projectedUsage?.inputTokens, usage.inputTokens, 'known token counts stay visible without an invented whole-run cost');
+    assert.equal(projectedUsage?.costUSD, undefined);
+    assert.equal(projectedUsage?.nativeCost?.reason, 'incomplete_requests');
     await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
-    assert.deepEqual(restored.snapshot(f.id).usage, usage); restored.flush();
+    assert.deepEqual(restored.snapshot(f.id).usage, projectedUsage); restored.flush();
   } finally { await f.dispose(); }
 });
 
@@ -439,10 +487,11 @@ test('successful bounded retry keeps one assistant answer and unknown whole-run 
     await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [assistant('Only final answer')], toolCalls: [], finishReason: 'completed', usage: { inputTokens: 10, outputTokens: 5 } } });
     await f.store.append(f.req.identity, { type: 'run_finished', result: { identity: f.req.identity, status: 'completed', reason: 'model_completed', modelRequests: 2, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } }); await f.projection.hydrate(f.id, f.store);
     const snapshot = f.projection.snapshot(f.id);
-    assert.equal(snapshot.taskState, 'completed'); assert.deepEqual(snapshot.usage, {});
+    assert.equal(snapshot.taskState, 'completed'); assert.equal(snapshot.usage?.inputTokens, undefined);
+    assert.equal(snapshot.usage?.nativeCost?.reason, 'incomplete_requests');
     assert.deepEqual(snapshot.messages.filter(message => message.role === 'assistant').map(message => message.text), ['Only final answer']);
     await f.reopen(); const restored = f.create(); await restored.hydrate(f.id, f.store);
-    assert.deepEqual(restored.snapshot(f.id).usage, {}); assert.deepEqual(restored.snapshot(f.id).messages, snapshot.messages); restored.flush();
+    assert.deepEqual(restored.snapshot(f.id).usage, snapshot.usage); assert.deepEqual(restored.snapshot(f.id).messages, snapshot.messages); restored.flush();
   } finally { await f.dispose(); }
 });
 

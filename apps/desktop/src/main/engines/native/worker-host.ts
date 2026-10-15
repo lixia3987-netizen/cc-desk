@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, validateModelFailureDiagnostic, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult, type Usage } from '@cc-desk/agent-core';
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
@@ -84,9 +84,7 @@ function call(value: unknown): asserts value is ToolCall {
   if (!string(item.id) || !string(item.name) || typeof item.arguments !== 'string') invalid();
 }
 function usage(value: unknown): void {
-  if (value === null) return;
-  const item = fields(value, [], ['inputTokens', 'outputTokens', 'totalTokens']);
-  if (!Object.values(item).every(integer)) invalid();
+  if (!validateUsage(value)) invalid();
 }
 function toolResult(value: unknown): asserts value is ToolResult {
   const item = fields(value, ['status', 'output'], ['effects', 'truncated']);
@@ -185,6 +183,9 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let maintenanceInFlight = false, maintenanceUncertain = false, summaryRequests = 0;
     let modelBudgetReserved = false, toolBudgetReserved = false;
     let modelAttempts = 0, activeAttempt: number | undefined, modelStreamObserved = false, modelJournalUncertain = false, modelJournalInFlight = false;
+    let modelDiagnostic: Extract<RunJournalEvent, { type: 'model_request_diagnostic' }>['diagnostic'] | undefined;
+    let usageInstrumented = false, usageUnknown = false;
+    const responseUsages: Array<Usage | null> = [], summaryUsages: Array<Usage | null> = [];
     let retries = 0, retryNotBefore: number | undefined, modelFailureClosed = false;
     let maintenanceSource: ModelContext | undefined;
     let lastMaintenanceBoundary: ModelContext | undefined, completedToolBoundary = false, maintenanceFailed = false;
@@ -314,9 +315,10 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       } else if (value !== undefined && (!state.approval || !equal(value, state.approval))) invalid();
     }
     function validResponse(value: unknown): ModelResponse {
-      const item = fields(value, ['outputItems', 'toolCalls', 'finishReason', 'usage'], ['continuation']);
+      const item = fields(value, ['outputItems', 'toolCalls', 'finishReason', 'usage'], ['continuation', 'providerUsage']);
       if (!Array.isArray(item.outputItems) || !Array.isArray(item.toolCalls) || !['completed', 'tool_calls', 'refused', 'incomplete'].includes(item.finishReason as string)) invalid();
       usage(item.usage);
+      if (item.providerUsage !== undefined && !validateProviderUsage(item.providerUsage)) invalid();
       const response = value as ModelResponse;
       for (const requested of response.toolCalls) {
         call(requested);
@@ -378,7 +380,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const source = requireContext(item.context);
         if (lastMaintenanceBoundary && equal(source, lastMaintenanceBoundary)) invalid();
         requireCompleteContext(source);
-        if (contextBudgetUsage(source, adapter.estimateInputTokens(source), budget).status === 'within_budget') invalid();
+        if (contextBudgetUsage(source, adapter.estimateInputUsage?.(source, budget.maxOutputTokens) ?? adapter.estimateInputTokens(source), budget).status === 'within_budget') invalid();
         maintenanceInFlight = true; maintenanceSource = clone(source); lastMaintenanceBoundary = clone(source);
         try {
           const request: ContextMaintenanceRequest = { identity: runIdentity, context: source, budget: clone(budget),
@@ -397,6 +399,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             savedContext = clone(result.context);
           }
           summaryRequests += result.modelRequests;
+          if (result.modelRequests === 1) summaryUsages.push(clone(result.usage));
           maintenanceFailed = result.kind === 'failed';
           maintenanceSource = undefined;
           return clone(result);
@@ -431,7 +434,20 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         if (modelJournal) modelJournalInFlight = true;
         try {
           let response: ModelResponse | undefined, state: ToolState | undefined;
-          if (event.type === 'model_request_started') {
+          if (event.type === 'model_request_diagnostic') {
+            fields(event, ['type', 'diagnostic']);
+            if (!validateModelRequestDiagnostic(event.diagnostic) || !activeAttempt || event.diagnostic.attempt !== activeAttempt ||
+                event.diagnostic.requestKey !== `${runIdentity.runId}:${runIdentity.requestId}:${activeAttempt}` ||
+                !sameRun(event.diagnostic.identity, runIdentity) || !equal(event.diagnostic.protocol, adapter.protocol) ||
+                ![run.diagnosticPurpose ?? 'normal', 'retry'].includes(event.diagnostic.purpose) ||
+                event.diagnostic.parentRunId !== run.diagnosticIdentity?.parentRunId || event.diagnostic.childId !== run.diagnosticIdentity?.childId ||
+                event.diagnostic.contextDigest !== createHash('sha256').update(JSON.stringify(savedContext)).digest('hex') ||
+                event.diagnostic.toolsetDigest !== createHash('sha256').update(JSON.stringify(definitions)).digest('hex')) invalid();
+            if (!modelDiagnostic ? event.diagnostic.phase !== 'started' : modelDiagnostic.phase === 'finished' ||
+                event.diagnostic.phase === 'started' || event.diagnostic.phase === 'request' && modelDiagnostic.phase !== 'started' ||
+                event.diagnostic.phase === 'dispatched' && (modelDiagnostic.phase !== 'request' || event.diagnostic.requestSent !== true) ||
+                modelDiagnostic.contextDigest !== event.diagnostic.contextDigest || modelDiagnostic.toolsetDigest !== event.diagnostic.toolsetDigest) invalid();
+          } else if (event.type === 'model_request_started') {
             fields(event, ['type', 'attempt']);
             if (options.consumeBudget && !modelBudgetReserved || !integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
                 modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
@@ -440,6 +456,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             fields(event, ['type', 'attempt', 'failure', 'partial'], ['retryDelayMs']);
             if (!activeAttempt || !integer(event.attempt) || event.attempt !== activeAttempt || typeof event.partial !== 'boolean' || !validateModelFailureDiagnostic(event.failure) ||
                 modelStreamObserved && !event.partial || inFlight.size !== 1) invalid();
+            if (modelDiagnostic && (modelDiagnostic.phase !== 'finished' || modelDiagnostic.outcome === 'completed' || modelDiagnostic.usage !== null)) invalid();
             if (event.retryDelayMs !== undefined && (modelRetry !== 'safe_transient' || !event.failure.retryable || event.partial ||
                 retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || modelAttempts + summaryRequests >= budget.maxModelRequests ||
                 event.retryDelayMs >= budget.maxActiveMs)) invalid();
@@ -447,6 +464,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             fields(event, ['type', 'response']);
             if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
             response = validResponse(event.response);
+            if (modelDiagnostic && (modelDiagnostic.phase !== 'finished' || modelDiagnostic.outcome !== 'completed' ||
+                !equal(modelDiagnostic.usage, response.usage) || !equal(modelDiagnostic.providerUsage ?? null, response.providerUsage ?? null))) invalid();
             // 完整响应替换投影中的流式文本。
             // 进行该持久化替换前，释放凭据守卫暂扣的末尾内容，
             // 防止随后被显示为新的部分响应。
@@ -479,6 +498,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
                 modelFailureClosed && event.result.status === 'completed' ||
                 event.result.modelRequests !== modelAttempts + summaryRequests || event.result.toolCalls > budget.maxToolCalls ||
                 (pendingCalls.length && event.result.status !== 'recovery_required')) invalid();
+            if (usageInstrumented && !equal(event.result.usage, sumUsage([...responseUsages, ...summaryUsages, ...(usageUnknown ? [null] : [])]))) invalid();
           } else invalid();
           let receipt: { seq: number };
           try { receipt = await options.store.append(runIdentity, clone(event)); }
@@ -488,13 +508,19 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           }
           if (event.type === 'model_request_started') {
             modelBudgetReserved = false;
+            modelDiagnostic = undefined;
             modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
+          } else if (event.type === 'model_request_diagnostic') {
+            modelDiagnostic = clone(event.diagnostic);
+            usageInstrumented = true;
           } else if (event.type === 'model_request_failed') {
+            usageUnknown = true;
             activeAttempt = undefined; modelFailureClosed = true;
             // 失败的部分输出绝不重放到后续终态投影中。
             safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
             if (event.retryDelayMs !== undefined) { retries++; retryNotBefore = Date.now() + event.retryDelayMs; }
           } else if (event.type === 'model_response' && response) {
+            responseUsages.push(clone(response.usage));
             activeAttempt = undefined; modelFailureClosed = false;
             completedToolBoundary = response.toolCalls.length > 0;
             savedContext!.items.push(...clone(response.outputItems));

@@ -22,7 +22,7 @@ test('fragmented UTF-8 streams retain native messages, assembled calls, usage an
   assert.deepEqual(result.outputItems, [message]);
   assert.deepEqual(result.toolCalls, message.tool_calls.map(call => ({ id: call.id, name: call.function.name, arguments: call.function.arguments })));
   assert.equal(result.finishReason, 'tool_calls');
-  assert.deepEqual(result.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  assert.deepEqual(result.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18, cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null });
   assert.equal(events.filter(event => event.type === 'text_delta').map(event => event.text).join(''), '中文🙂');
   assert.equal(events.filter(event => event.callId === 'call_read').map(event => event.delta).join(''), '{"path":"测试.txt"}');
   assert.deepEqual(fixture.requests[0].messages[0], { role: 'system', content: 'Project rules.' });
@@ -79,7 +79,7 @@ test('missing or partial usage is preserved as unknown rather than estimated', a
   const first = await fixtureTest(t, { usage: null });
   assert.equal((await first.model.generate(request(first.model))).usage, null);
   const second = await fixtureTest(t, { usage: { prompt_tokens: 7 } });
-  assert.deepEqual((await second.model.generate(request(second.model))).usage, { inputTokens: 7 });
+  assert.deepEqual((await second.model.generate(request(second.model))).usage, { inputTokens: 7, cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null });
 });
 
 test('refusal and output limits preserve native output without enabling tool execution', async t => {

@@ -1,12 +1,50 @@
 import type { JsonObject, JsonValue, ModelContext, ProtocolVersion, ToolCall, ToolResult } from '@cc-desk/agent-core';
 import { validateUserImages } from '@cc-desk/agent-core';
 import { RunStoreError } from './store-files.js';
+import { createHash } from 'node:crypto';
 
 export const MAX_CONTEXT_SUMMARY_BYTES = 32 * 1024;
 export const MAX_RUN_CONTINUITY_BYTES = 32 * 1024;
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const invalid = (): never => { throw new RunStoreError('unsupported_protocol', 'Context maintenance requires complete supported native protocol items'); };
+
+/**
+ * 摘要请求使用的只读数据投影，绝不替换原始账本或下一次原生协议输入。
+ * 加密/签名思考不是可供摘要解释的普通文本，保留位置、类型、字节和摘要引用。
+ * 工具调用与结果原样保留；此投影不能直接作为 native context 回放。
+ */
+export function projectContextForSummary(context: ModelContext): {
+  history: ModelContext; sourceBytes: number; projectedBytes: number; opaqueReferences: number
+} {
+  requireCompleteContext(context);
+  const history = structuredClone(context);
+  let opaqueReferences = 0;
+  const reference = (value: JsonValue, location: string, sourceType: string): JsonObject => {
+    const serialized = JSON.stringify(value);
+    opaqueReferences++;
+    return { type: 'protocol_state_reference', sourceType, location,
+      bytes: Buffer.byteLength(serialized, 'utf8'), sha256: createHash('sha256').update(serialized).digest('hex'),
+      retainedIn: 'original_native_ledger' };
+  };
+  history.items = history.items.map((item, index) => {
+    if (!object(item)) return item;
+    if (context.protocol.id === 'openai-responses' && item.type === 'reasoning') {
+      return { ...reference(item, `items[${index}]`, 'reasoning'), ...(Array.isArray(item.summary) ? { summary: item.summary } : {}) };
+    }
+    if (context.protocol.id === 'anthropic-messages' && item.role === 'assistant' && Array.isArray(item.content)) {
+      return { ...item, content: item.content.map((part, block) => object(part) && ['thinking', 'redacted_thinking'].includes(String(part.type))
+        ? reference(part, `items[${index}].content[${block}]`, String(part.type)) : part) };
+    }
+    return item;
+  });
+  if (history.continuation !== undefined) {
+    // 续接状态只属于原始协议回放，不发往隔离的摘要模型。
+    history.continuation = reference(history.continuation, 'continuation', 'continuation');
+  }
+  return { history, sourceBytes: Buffer.byteLength(JSON.stringify(context), 'utf8'),
+    projectedBytes: Buffer.byteLength(JSON.stringify(history), 'utf8'), opaqueReferences };
+}
 
 /** 用户消息仅接受宿主限制大小的内联图像表示。 */
 function validateUserContent(content: JsonValue, chat: boolean): void {

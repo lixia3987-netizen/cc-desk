@@ -10,6 +10,7 @@ import type { ApprovalDecision, ToolExecutionContext } from '@cc-desk/agent-core
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeDelegationBudget, type NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline } from '../src/main/engines/native/agent-worktrees';
 import { ensureWorktreeParent } from '../src/main/worktree-paths';
+import { nativeDelegationExecutionPath, nativeDelegationIntervalsOverlap } from '../src/main/engines/native/agent-delegation-audit';
 
 const execute = promisify(execFile);
 async function git(cwd: string, ...args: string[]) { return (await execute('git', ['-C', cwd, ...args], { encoding: 'utf8', windowsHide: true })).stdout; }
@@ -57,7 +58,7 @@ test('one review batch starts separate child contexts concurrently and retains b
   let starts = 0, release!: () => void;
   const barrier = new Promise<void>(resolve => { release = resolve; });
   const inputs: NativeAgentChildInput[] = [];
-  const f = fixture(repo.cwd, async input => { inputs.push(input); if (++starts === 3) release(); await barrier; return resultFor(input); });
+  const f = fixture(repo.cwd, async input => { inputs.push(input); if (++starts === 3) release(); await barrier; assert.equal(starts, 3); return resultFor(input); });
   t.after(() => f.tool.closeAll());
   const tasks = Array.from({ length: 3 }, (_, i) => ({ title: `审阅${i}`, goal: '独立检查相关代码' }));
   const prepared = await f.prepare(tasks); await f.tool.validate(prepared, f.context);
@@ -69,6 +70,11 @@ test('one review batch starts separate child contexts concurrently and retains b
   const receipts = await readReceipts(repo.storeDirectory);
   assert.equal(receipts.length, 3); assert.ok(receipts.every(r => r.status === 'completed' && r.result?.committed));
   assert.ok(receipts.every(r => r.parentTaskId === inputs[0].parentTaskId));
+  assert.ok(inputs.every(input => receipts.some(receipt => receipt.childId === input.childId && receipt.identity.runId === input.identity.runId)));
+  const execution = JSON.parse(await fs.readFile(nativeDelegationExecutionPath(repo.storeDirectory, f.identity, receipts[0].batchId), 'utf8'));
+  assert.equal(nativeDelegationIntervalsOverlap(execution), true);
+  assert.equal(execution.children.length, 3);
+  assert.ok(execution.children.every((child: { started?: unknown; settled?: unknown }) => child.started && child.settled));
   assert.deepEqual(await f.tool.execute(prepared, f.context), result); assert.equal(starts, 3, 'exact retries never start another child');
 });
 
@@ -338,4 +344,16 @@ test('durable intent failure never calls the child host and leaves an unknown re
   t.after(() => f.tool.closeAll());
   const result = await f.tool.execute(await f.prepare(), f.context);
   assert.equal(result.status, 'unknown'); assert.equal(starts, 0);
+});
+
+test('parallel execution evidence must be durable before any child launches', async t => {
+  const repo = await repository(t); let starts = 0;
+  await fs.mkdir(repo.storeDirectory, { recursive: true });
+  await fs.writeFile(path.join(repo.storeDirectory, 'delegation-executions'), 'blocked metadata path');
+  const f = fixture(repo.cwd, async input => { starts++; return resultFor(input); });
+  t.after(() => f.tool.closeAll());
+  const result = await f.tool.execute(await f.prepare(), f.context);
+  assert.equal(result.status, 'unknown'); assert.equal(starts, 0);
+  const saved = await readReceipts(repo.storeDirectory);
+  assert.equal(saved.length, 1); assert.equal(saved[0].status, 'prepared');
 });

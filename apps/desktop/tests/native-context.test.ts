@@ -11,6 +11,26 @@ import type { ContextUsage, EngineConfigField } from '../src/shared/execution';
 const budget: NonNullable<ContextUsage['budget']> = { estimatedInputTokens: 950, maxInputTokens: 1000, contextBytes: 300, maxContextBytes: 10000, estimator: 'utf8_bytes', status: 'near_limit' };
 const render = (context?: ContextUsage) => renderToStaticMarkup(createElement(ContextMeter, { context, native: true }));
 
+test('request peak and cache counts are distinct from local UTF-8 estimates and cumulative usage', () => {
+  const html = render({ status: 'ready', inputTokens: 40, peakInputTokens: 100, peakInputComplete: false, budget,
+    requestUsage: { inputTokens: 40, nonCachedInputTokens: 10, cacheReadInputTokens: 30, cacheCreationInputTokens: null,
+      provider: { raw: { input_tokens: 40, cached_tokens: 30 }, normalization: 'openai-inclusive-input' } } });
+  assert.match(html, /950.*1,000 UTF-8 估算单位/);
+  assert.match(html, /不是模型真实 token/);
+  assert.match(html, /已报告输入峰值：100 tokens.*仍有请求用量未知/);
+  assert.match(html, /非缓存 10 tokens.*缓存读取 30 tokens.*缓存创建 未知/);
+  assert.match(html, /缓存折扣不减小上下文占用/);
+  assert.match(html, /input_tokens=40 tokens.*归一化来源：openai-inclusive-input/);
+  assert.doesNotMatch(html, /950.*估算 tokens|缓存创建 0/);
+  const diagnostics = render({ status: 'unknown', requestDiagnostic: { attempt: 2, purpose: 'retry', phase: 'finished', requestSent: null,
+    contextBytes: 300, estimatedInputTokens: null, estimateMethod: 'unknown', estimateSource: 'unknown',
+    components: { history: { bytes: 100, accounting: 'serialized' }, images: { bytes: 120, accounting: 'logical' } } } });
+  assert.match(diagnostics, /第 2 次尝试.*重试.*是否已发送未知/);
+  assert.match(diagnostics, /输入估算未知.*请求序列化大小 未知/);
+  assert.match(diagnostics, /历史.*100.*序列化分项.*图像.*120.*逻辑分类/);
+  assert.match(diagnostics, /不能直接相加.*诊断不包含正文/);
+});
+
 test('native context UI separates local budgets, actual request input and unknown usage', () => {
   const pending = render();
   assert.match(pending, /运行预算/); assert.match(pending, /等待本回合预算数据/);

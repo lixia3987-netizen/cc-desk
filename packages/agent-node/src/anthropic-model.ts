@@ -1,8 +1,10 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
-import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
+import type { ContextInputEstimate, JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ProviderUsage, ToolCall, ToolDefinition, ToolResult, UserImage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInput, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { anthropicPendingCalls, nativeToolResultItems } from './context-maintenance.js'
 import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
+import { anthropicRawUsage, normalizeAnthropicUsage, type NormalizedModelUsage } from './model-usage.js'
+import { dispatchedModelResponse, ModelRequestDiagnosticError, modelRequestDiagnostic } from './model-request-diagnostics.js'
 
 export type AnthropicAuthHeader = 'x-api-key' | 'authorization'
 /** 服务根地址、网关前缀、/v1 基础地址，或完整的 /v1/messages 端点。 */
@@ -99,6 +101,7 @@ type StopReason = 'end_turn' | 'tool_use' | 'max_tokens' | 'stop_sequence' | 're
 
 export class AnthropicModel implements ModelPort {
   readonly protocol = Object.freeze({ id: 'anthropic-messages', version: 1 })
+  readonly requestDiagnostics = true as const
   readonly #url: string
   readonly #apiKey: string | undefined
   readonly #authHeader: AnthropicAuthHeader
@@ -135,6 +138,15 @@ export class AnthropicModel implements ModelPort {
   }
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[] { return nativeToolResultItems(this.protocol, call, result) }
   estimateInputTokens(context: ModelContext): number { return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson) }
+  estimateInputUsage(context: ModelContext, maxOutputTokens = 4096): ContextInputEstimate {
+    return estimateContextInput(context, { instructions: this.#instructions, toolDefinitions: this.#tools, model: this.#model,
+      serializedInput: this.requestBody(context, maxOutputTokens) })
+  }
+  private requestBody(context: ModelContext, maxOutputTokens: number): string {
+    return JSON.stringify({ model: this.#model, messages: context.items, max_tokens: maxOutputTokens, stream: true,
+      ...(this.#instructions === undefined ? {} : { system: this.#instructions }),
+      ...(this.#tools.length ? { tools: this.#tools, tool_choice: { type: 'auto', disable_parallel_tool_use: true } } : {}) })
+  }
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof AnthropicModelError)) return { category: 'unknown', retryable: false }
     const status = rejectedHttpRequests.get(error)
@@ -143,14 +155,23 @@ export class AnthropicModel implements ModelPort {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     let stage: ModelFailureStage = 'request'
-    try { return await this.generateResponse(request, value => { stage = value }) }
+    const startedAt = Date.now(), started = performance.now()
+    const modelIdentity = this.#apiKey && this.#model.includes(this.#apiKey) ? {} : { model: this.#model }
+    let response: ModelResponse
+    let providerUsage: ProviderUsage | null = null
+    try { response = await this.generateResponse(request, value => { stage = value }, value => { providerUsage = value }) }
     catch (error) {
-      if (error instanceof AnthropicModelError) throw describeNativeModelFailure(error, { protocol: 'anthropic-messages', stage })
-      throw error
+      const described = error instanceof AnthropicModelError ? describeNativeModelFailure(error, { protocol: 'anthropic-messages', stage }) : error
+      await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'anthropic-messages', ...modelIdentity, result: 'failed', startedAt, finishedAt: Date.now(),
+        elapsedMs: performance.now() - started, providerUsage, failure: this.classifyError(described) })
+      throw described
     }
+    await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'anthropic-messages', ...modelIdentity, result: 'completed', startedAt, finishedAt: Date.now(),
+      elapsedMs: performance.now() - started, providerUsage: response.providerUsage ?? null })
+    return response
   }
 
-  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void, recordUsage: (usage: ProviderUsage | null) => void): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
     let pendingCalls: ToolCall[]
     try { pendingCalls = anthropicPendingCalls(request.context) }
@@ -158,13 +179,11 @@ export class AnthropicModel implements ModelPort {
     if (pendingCalls.length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.', 'pending_tool_calls')
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(anthropicTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
-    const body = JSON.stringify({
-      model: this.#model, messages: request.context.items, max_tokens: request.maxOutputTokens, stream: true,
-      ...(this.#instructions === undefined ? {} : { system: this.#instructions }),
-      ...(this.#tools.length ? { tools: this.#tools, tool_choice: { type: 'auto', disable_parallel_tool_use: true } } : {}),
-    })
+    const body = this.requestBody(request.context, request.maxOutputTokens)
     guard(JSON.parse(body), this.#apiKey)
     if (Buffer.byteLength(body, 'utf8') > this.#maxRequestBytes) return failure('request_limit', 'The complete model context exceeds the transport limit.')
+    if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
+    await request.onRequestDiagnostic?.(modelRequestDiagnostic(request, body, 'anthropic-messages', false, this.#model))
     if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
     const controller = new AbortController()
     let timedOut = false
@@ -175,7 +194,8 @@ export class AnthropicModel implements ModelPort {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'anthropic-version': '2023-06-01' }
       if (this.#apiKey) headers[this.#authHeader] = this.#authHeader === 'authorization' ? `Bearer ${this.#apiKey}` : this.#apiKey
-      const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'error' })
+      const pendingResponse = fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'error' })
+      const response = await dispatchedModelResponse(request, 'anthropic-messages', this.#model, controller, pendingResponse)
       setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
@@ -197,22 +217,27 @@ export class AnthropicModel implements ModelPort {
       const blocks: StreamingBlock[] = []
       const callIds = new Set<string>()
       let tokenCounts = new Map<string, number>()
+      let rawCounts: ProviderUsage['raw'] = {}
       const updateUsage = (value: JsonValue | undefined): void => {
         if (value === undefined || value === null) return
-        if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
+        let raw: ProviderUsage['raw']
+        try { raw = anthropicRawUsage(value) } catch { return failure('schema', 'Invalid model usage count.', 'invalid_usage') }
         const nextCounts = new Map(tokenCounts)
-        for (const name of ['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']) {
-          const count = value[name]
-          if (count === undefined || count === null) continue
-          if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
-          nextCounts.set(name, count)
+        for (const [name, count] of Object.entries(raw)) {
+          if (count === null) nextCounts.delete(name)
+          else nextCounts.set(name, count)
         }
         // 完成时，输入计数可能被重新归为缓存命中。比较累计输入总量之前，
         // 先合并完整的用量更新。
-        const inputTotal = (counts: Map<string, number>): number => ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'].reduce((total, name) => total + (counts.get(name) ?? 0), 0)
+        const inputNames = ['input_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens']
+        const inputTotal = (counts: Map<string, number>): number => inputNames.reduce((total, name) => total + (counts.get(name) ?? 0), 0)
         const nextInput = inputTotal(nextCounts)
-        if (!Number.isSafeInteger(nextInput) || nextInput < inputTotal(tokenCounts) || (nextCounts.get('output_tokens') ?? 0) < (tokenCounts.get('output_tokens') ?? 0)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
+        // 显式 null 会撤销旧计数；只有前后分项都已知才能比较累计值。
+        if (!Number.isSafeInteger(nextInput) || inputNames.every(name => nextCounts.has(name) && tokenCounts.has(name)) && nextInput < inputTotal(tokenCounts)
+          || nextCounts.has('output_tokens') && tokenCounts.has('output_tokens') && nextCounts.get('output_tokens')! < tokenCounts.get('output_tokens')!) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
         tokenCounts = nextCounts
+        rawCounts = { ...rawCounts, ...raw, ...Object.fromEntries(tokenCounts) }
+        recordUsage(Object.keys(rawCounts).length ? { raw: { ...rawCounts }, normalization: 'anthropic-input-plus-cache' } : null)
       }
       const deltas = new SafeModelDeltas(this.#apiKey, event => {
         try { request.onEvent(event) } catch { failure('transport', 'Model transport failed or returned invalid UTF-8.') }
@@ -350,21 +375,15 @@ export class AnthropicModel implements ModelPort {
       const message: JsonObject = { role: 'assistant', content }
       guard([message, content.filter(block => block.type === 'text').map(block => block.text).join('')], this.#apiKey)
       const toolCalls: ToolCall[] = content.filter(block => block.type === 'tool_use').map(block => ({ id: block.id as string, name: block.name as string, arguments: JSON.stringify(block.input) }))
-      const usage: Usage = {}
-      if (tokenCounts.has('input_tokens')) {
-        usage.inputTokens = (tokenCounts.get('input_tokens') ?? 0) + (tokenCounts.get('cache_creation_input_tokens') ?? 0) + (tokenCounts.get('cache_read_input_tokens') ?? 0)
-        if (!Number.isSafeInteger(usage.inputTokens)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
-      }
-      if (tokenCounts.has('output_tokens')) usage.outputTokens = tokenCounts.get('output_tokens')!
-      if (usage.inputTokens !== undefined && usage.outputTokens !== undefined) {
-        if (!Number.isSafeInteger(usage.inputTokens + usage.outputTokens)) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
-        usage.totalTokens = usage.inputTokens + usage.outputTokens
-      }
+      let normalizedUsage: NormalizedModelUsage
+      try { normalizedUsage = normalizeAnthropicUsage(rawCounts) }
+      catch { return failure('schema', 'Invalid model usage count.', 'invalid_usage') }
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       deltas.finish()
-      return { outputItems: [message], toolCalls, usage: Object.keys(usage).length ? usage : null,
+      return { outputItems: [message], toolCalls, ...normalizedUsage,
         finishReason: stopReason === 'tool_use' ? 'tool_calls' : stopReason === 'refusal' ? 'refused' : ['max_tokens', 'model_context_window_exceeded'].includes(stopReason) ? 'incomplete' : 'completed' }
     } catch (error) {
+      if (error instanceof ModelRequestDiagnosticError) throw error.original
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       if (timedOut) return failure('timeout', 'Model request timed out.')
       if (error instanceof AnthropicModelError) throw error

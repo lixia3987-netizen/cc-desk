@@ -17,7 +17,7 @@ import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtur
 const sentinel = 'sk-diagnostic-SECRET-DO-NOT-RETURN';
 const responseText = 'provider-response-DO-NOT-RETURN';
 function complete(output: unknown[] = [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: responseText }] }]) {
-  return `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_diagnostic', status: 'completed', output, usage: { input_tokens: 12, output_tokens: 1, total_tokens: 13 } } })}\n\n`;
+  return `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_diagnostic', status: 'completed', output, usage: { input_tokens: 12, output_tokens: 1, total_tokens: 13, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } } } })}\n\n`;
 }
 function metadata(item: NativeConnectionView) {
   const { credentialConfigured: _credential, ready: _ready, error: _error, ...value } = item;
@@ -63,7 +63,9 @@ test('connection diagnostics: local readiness never requests a model; explicit t
     assert.equal(f.requests.length, 0);
     const input = f.input(), result = await f.diagnostics.test(input);
     assert.equal(result.code, 'ok');
-    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 1, totalTokens: 13 });
+    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 1, totalTokens: 13, nonCachedInputTokens: 12, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 });
+    assert.equal(result.providerUsage?.normalization, 'openai-inclusive-input');
+    assert.equal(result.costEstimate?.reason, 'missing_pricing');
     assert.ok(result.durationMs >= 0);
     assert.equal(f.requests.length, 1);
     const request = f.requests[0];
@@ -89,7 +91,7 @@ test('connection diagnostics: selected Chat Completions protocol and model price
     const chunk = (choices: unknown[], usage: unknown = null) => `data: ${JSON.stringify({ id: 'chat_probe', object: 'chat.completion.chunk', choices, usage })}\n\n`;
     f.handler((_request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      response.end(chunk([{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }]) + chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]) + chunk([], { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13 }) + 'data: [DONE]\n\n');
+      response.end(chunk([{ index: 0, delta: { role: 'assistant', content: 'OK' }, finish_reason: null }]) + chunk([{ index: 0, delta: {}, finish_reason: 'stop' }]) + chunk([], { prompt_tokens: 12, completion_tokens: 1, total_tokens: 13, prompt_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 } }) + 'data: [DONE]\n\n');
     });
     const result = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
     assert.equal(result.code, 'ok');
@@ -113,7 +115,7 @@ test('connection diagnostics: imported Anthropic token uses Messages without exp
       assert.equal(request.headers['anthropic-version'], '2023-06-01');
       assert.equal(request.headers['x-api-key'], undefined);
       response.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      response.end(sse('message_start', { message: { id: 'msg_probe', type: 'message', role: 'assistant', model: 'fixture-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 0 } } })
+      response.end(sse('message_start', { message: { id: 'msg_probe', type: 'message', role: 'assistant', model: 'fixture-model', content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 12, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } })
         + sse('content_block_start', { index: 0, content_block: { type: 'text', text: '' } })
         + sse('content_block_delta', { index: 0, delta: { type: 'text_delta', text: responseText } })
         + sse('content_block_stop', { index: 0 })
@@ -122,7 +124,8 @@ test('connection diagnostics: imported Anthropic token uses Messages without exp
     });
     const result = await f.diagnostics.test({ id: connection.id, revision: connection.revision, requestId: randomUUID() });
     assert.equal(result.code, 'ok');
-    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 1, totalTokens: 13 });
+    assert.deepEqual(result.usage, { inputTokens: 12, outputTokens: 1, totalTokens: 13, nonCachedInputTokens: 12, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 });
+    assert.equal(result.providerUsage?.normalization, 'anthropic-input-plus-cache');
     assert.equal(f.requests[0].url, '/v1/messages');
     assert.equal(f.requests[0].authorization, `Bearer ${sentinel}`);
     assert.equal(f.requests[0].body.max_tokens, 256);

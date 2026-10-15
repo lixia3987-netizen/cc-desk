@@ -31,7 +31,7 @@ for (const [label, Model, chat] of [['Responses', ResponsesModel, false], ['Chat
     requireCompleteContext({ protocol: model.protocol, items })
     const response = await model.generate(request(model, items))
     assert.deepEqual(chat ? server.requests[0].messages : server.requests[0].input, items)
-    assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 })
+    assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18, cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null })
     const history = JSON.parse(JSON.stringify([...items, ...response.outputItems, ...model.userItems('Continue')]))
     const restarted = new Model(modelOptions)
     await restarted.generate(request(restarted, history))

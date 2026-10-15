@@ -235,7 +235,8 @@ test('input digest and durable admission consume the same active budget as model
   await t.test('remaining budget reaches model deadline', async () => {
     const f = fixture()
     f.request.budget = { maxActiveMs: 10 }
-    f.ports.host.digest = async value => { f.setNow(3); return digest(value) }
+    let firstDigest = true
+    f.ports.host.digest = async value => { if (firstDigest) { firstDigest = false; f.setNow(3) }; return digest(value) }
     f.hooks.begin = async () => { f.setNow(7) }
     const deadline = f.ports.host.deadline
     const deadlines = []
@@ -455,7 +456,7 @@ test('context maintenance runs only after all tool results commit and adopts its
   assert.deepEqual(f.modelInputs[1].context.items, [{ role: 'assistant', content: 'historical summary' }])
   const commit = f.order.indexOf('maintenance_commit')
   assert.equal(f.order[commit + 1], 'checkpoint')
-  assert.deepEqual(f.order.slice(commit + 2, commit + 5), ['capacity', 'model_request_started', 'model'])
+  assert.deepEqual(f.order.slice(commit + 2, commit + 6), ['capacity', 'model_request_started', 'model_request_diagnostic', 'model'])
 })
 
 test('unchanged context checks refund the reserved request and can defer until a later complete boundary', async () => {
@@ -632,6 +633,81 @@ test('compaction preserves duplicate tool identity and denied-input guards', asy
 const transient = { category: 'rate_limit', httpStatus: 429, retryable: true }
 const attempts = f => f.events.filter(event => event.type === 'model_request_started')
 const failures = f => f.events.filter(event => event.type === 'model_request_failed')
+
+test('diagnostics identify real retries separately, preserve child linkage, cache fields, and omit private text', async () => {
+  const cached = { inputTokens: 20, outputTokens: 2, totalTokens: 22, cacheReadInputTokens: 8, cacheCreationInputTokens: 4, nonCachedInputTokens: 8 }
+  const f = retryFixture([response([call('after-retry')], { usage: cached }), response([], { usage: cached })])
+  f.request.diagnosticPurpose = 'child'
+  f.request.diagnosticIdentity = { parentRunId: 'parent', childId: 'child' }
+  f.ports.model.requestDiagnostics = true
+  let generated = 0
+  f.hooks.generate = async input => {
+    await input.onRequestDiagnostic({ phase: 'request', protocol: 'fixture', payloadBytes: 100, payloadDigest: digest('private-wire-payload'), startedAt: generated === 0 ? 0 : 500 })
+    await input.onRequestDiagnostic({ phase: 'dispatched', protocol: 'fixture', startedAt: generated === 0 ? 0 : 500 })
+    if (++generated === 1) throw new Error('transient')
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.usage, null, 'failed paid retry keeps aggregate usage incomplete')
+  const finished = f.events.filter(event => event.type === 'model_request_diagnostic' && event.diagnostic.phase === 'finished').map(event => event.diagnostic)
+  assert.deepEqual(finished.map(diagnostic => diagnostic.purpose), ['child', 'retry', 'child'])
+  assert.equal(new Set(finished.map(diagnostic => diagnostic.requestKey)).size, 3)
+  assert.ok(finished.every(diagnostic => diagnostic.parentRunId === 'parent' && diagnostic.childId === 'child' && diagnostic.requestSent === true))
+  assert.deepEqual(finished[1].usage, cached)
+  assert.equal(JSON.stringify(finished).includes('do the task'), false)
+  assert.equal(JSON.stringify(finished).includes('private-wire-payload'), false)
+})
+
+test('failed diagnostic persistence prevents network and leaves recovery barrier without retry', async () => {
+  const f = retryFixture()
+  f.hooks.append = event => { if (event.type === 'model_request_diagnostic') throw new Error('disk unavailable') }
+  const result = await f.run()
+  assert.equal(result.status, 'recovery_required')
+  assert.equal(result.reason, 'store_model_request_diagnostic_failed')
+  assert.equal(result.committed, false)
+  assert.equal(f.modelInputs.length, 0)
+  assert.equal(failures(f).length, 0)
+})
+
+test('detailed input estimate and exact outgoing payload cannot bypass the independent byte budget', async t => {
+  await t.test('detailed preflight', async () => {
+    const f = fixture()
+    f.request.budget = { maxContextBytes: 200, maxInputTokens: 10_000 }
+    f.ports.model.estimateInputUsage = () => ({ estimatedInputTokens: 100, serializedBytes: 201, contextBytes: 20, method: 'tokenizer', source: 'tokenizer' })
+    const result = await f.run()
+    assert.equal(result.reason, 'context_budget')
+    assert.equal(result.modelRequests, 0)
+    assert.equal(f.modelInputs.length, 0)
+  })
+  await t.test('actual serialization verification', async () => {
+    const f = fixture()
+    f.request.budget = { maxContextBytes: 200, maxInputTokens: 10_000 }
+    f.ports.model.requestDiagnostics = true
+    let sent = false
+    f.hooks.generate = async input => {
+      await input.onRequestDiagnostic({ phase: 'request', protocol: 'fixture', payloadBytes: 201, payloadDigest: digest('oversized') })
+      sent = true
+    }
+    const result = await f.run()
+    assert.equal(result.status, 'budget_exhausted')
+    assert.equal(result.reason, 'context_budget')
+    assert.equal(sent, false)
+    const last = f.events.filter(event => event.type === 'model_request_diagnostic').at(-1).diagnostic
+    assert.equal(last.requestSent, false)
+    assert.equal(last.outcome, 'failed')
+  })
+})
+
+test('cache fields in normal responses and in-run summaries accumulate once with unknowns retained', async () => {
+  const f = maintenanceFixture()
+  const cached = { inputTokens: 10, outputTokens: 2, totalTokens: 12, cacheReadInputTokens: 3, cacheCreationInputTokens: 1, nonCachedInputTokens: 6 }
+  f.hooks.generate = () => response(f.modelInputs.length === 1 ? [call('cache-read')] : [], { usage: cached })
+  f.hooks.maintain = () => ({ ...f.compact(), usage: cached })
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 6, totalTokens: 36, cacheReadInputTokens: 9, cacheCreationInputTokens: 3, nonCachedInputTokens: 18 })
+})
 function retryFixture(responses) {
   const f = fixture(responses)
   f.request.modelRetry = 'safe_transient'
@@ -669,7 +745,8 @@ test('model attempt is durable before network and failed attempts have unknown a
   const f = retryFixture()
   let count = 0
   f.hooks.generate = () => {
-    assert.equal(f.events.at(-1).type, 'model_request_started')
+    assert.equal(f.events.at(-1).type, 'model_request_diagnostic')
+    assert.equal(f.events.at(-1).diagnostic.phase, 'started')
     if (++count === 1) throw new Error('transient')
   }
   const result = await f.run()

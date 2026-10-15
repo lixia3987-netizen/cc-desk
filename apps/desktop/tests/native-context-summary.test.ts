@@ -1,20 +1,22 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { runAgent, type ModelContext } from '@cc-desk/agent-core';
+import { runAgent, type ModelContext, type ModelPort, type ModelRequestDiagnostic } from '@cc-desk/agent-core';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
+import { projectContextForSummary } from '@cc-desk/agent-node/context-maintenance';
 import { summarizeNativeContext, type SummarizeNativeContextOptions } from '../src/main/engines/native/context-summary';
 import { NativeWorkerCleanupError, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 // @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall, reasoningItem } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const sentinel = 'sk-context-summary-secret-sentinel';
-const inlineWorker: NonNullable<SummarizeNativeContextOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
-  model: new ResponsesModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
+const runSummaryWithModel = (options: NativeWorkerOptions, model: ModelPort) => runAgent({ ...options.request, signal: options.signal }, {
+  model, tools: options.tools, store: options.store, approvals: options.approvals,
   host: { now: Date.now, digest: value => createHash('sha256').update(value).digest('hex'), emit: options.onEvent,
     deadline: (timeout, parent) => { const controller = new AbortController(); const abort = () => controller.abort(); const timer = setTimeout(abort, timeout); parent.addEventListener('abort', abort, { once: true }); if (parent.aborted) abort(); return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent.removeEventListener('abort', abort); } }; },
   },
 });
+const inlineWorker: NonNullable<SummarizeNativeContextOptions['worker']> = options => runSummaryWithModel(options, new ResponsesModel(options.model));
 const source = (): ModelContext => ({ protocol: { id: 'openai-responses', version: 1 }, items: [
   { role: 'user', content: '修复 src/main.ts；不修改 main 分支。' },
   functionCall('read-one', 'read_file', { path: 'src/main.ts' }),
@@ -27,7 +29,7 @@ const options = (baseURL: string, overrides: Partial<SummarizeNativeContextOptio
   maxInputTokens: 64_000, maxOutputTokens: 16_384, maxActiveMs: 600_000, signal: new AbortController().signal, worker: inlineWorker, ...overrides,
 });
 
-test('summary uses one tool-free isolated request and treats complete source history as lower-priority data', async () => {
+test('summary uses one tool-free isolated request with visible history and opaque ledger references as lower-priority data', async () => {
   let authorized = false;
   const server = await startResponsesFixture({ handler: ({ request }: { request: { headers: { authorization?: string } } }) => {
     authorized = request.headers.authorization === `Bearer ${sentinel}`;
@@ -39,14 +41,17 @@ test('summary uses one tool-free isolated request and treats complete source his
     let workerOptions: NativeWorkerOptions | undefined;
     request.worker = async captured => { workerOptions = captured; return inlineWorker(captured); };
     const result = await summarizeNativeContext(request);
-    assert.match(result.summary, /尚未执行/); assert.deepEqual(result.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+    assert.match(result.summary, /尚未执行/); assert.deepEqual(result.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18,
+      cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null });
     assert.equal(authorized, true); assert.equal(server.requests.length, 1); assert.deepEqual(server.errors, []);
     assert.deepEqual(request.context, original, 'caller ledger context is never mutated');
     const body = server.requests[0];
     assert.deepEqual(body.tools, []); assert.equal(body.max_output_tokens, 4096); assert.equal(body.previous_response_id, undefined);
     assert.match(body.instructions, /untrusted data/); assert.doesNotMatch(body.instructions, /IGNORE SYSTEM|PROJECT INSTRUCTION/);
     assert.equal(body.input.length, 1); assert.equal(body.input[0].role, 'user');
-    assert.deepEqual(JSON.parse(body.input[0].content).history, original);
+    assert.deepEqual(JSON.parse(body.input[0].content).history, projectContextForSummary(original).history);
+    assert.doesNotMatch(body.input[0].content, /fixture-encrypted-old/);
+    assert.match(body.input[0].content, /protocol_state_reference/);
     assert.doesNotMatch(JSON.stringify(result), new RegExp(sentinel));
     assert.equal(workerOptions!.request.budget!.maxModelRequests, 1); assert.equal(workerOptions!.request.budget!.maxActiveMs, 60_000);
     assert.equal(workerOptions!.model.timeoutMs, 60_000);
@@ -59,13 +64,62 @@ test('actual wrapped UTF-8 input budget is checked before spawning; exact bounda
   try {
     let captured: NativeWorkerOptions | undefined;
     await summarizeNativeContext(options(server.baseURL, { worker: async worker => { captured = worker; return inlineWorker(worker); } }));
-    const limit = new ResponsesModel(captured!.model).estimateInputTokens({ protocol: { id: 'openai-responses', version: 1 }, items: [{ role: 'user', content: captured!.request.input }] });
+    const limit = new ResponsesModel(captured!.model).estimateInputUsage({ protocol: { id: 'openai-responses', version: 1 },
+      items: [{ role: 'user', content: captured!.request.input }] }, captured!.request.budget!.maxOutputTokens!).estimatedInputTokens;
     let starts = 0;
     await assert.rejects(summarizeNativeContext(options(server.baseURL, { maxInputTokens: limit - 1, worker: async worker => { starts++; return inlineWorker(worker); } })), { code: 'context_budget' });
     assert.equal(starts, 0); assert.equal(server.requests.length, 1);
     assert.equal((await summarizeNativeContext(options(server.baseURL, { maxInputTokens: limit }))).summary, '摘要');
     assert.equal(server.requests.length, 2);
   } finally { await server.close(); }
+});
+
+test('summary byte cap independently blocks a large payload before any worker or diagnostic request', async () => {
+  let starts = 0;
+  const context = source(); context.items[0] = { role: 'user', content: '中文🙂 source evidence '.repeat(1000) };
+  await assert.rejects(summarizeNativeContext(options('http://127.0.0.1:1/v1', {
+    context, maxInputTokens: 2_000_000, maxContextBytes: 1024,
+    worker: async () => { starts++; throw new Error('unexpected worker'); },
+  })), { code: 'context_budget' });
+  assert.equal(starts, 0);
+});
+
+test('summary projection cannot hide a protected credential inside opaque protocol state', async () => {
+  let starts = 0;
+  const context = source(); context.items[3] = { type: 'reasoning', summary: [], encrypted_content: `opaque ${sentinel}` };
+  await assert.rejects(summarizeNativeContext(options('http://127.0.0.1:1/v1', { context,
+    worker: async () => { starts++; throw new Error('unexpected worker'); },
+  })), { code: 'invalid_summary' });
+  assert.equal(starts, 0);
+});
+
+test('offline summary runs the real lifecycle with linked diagnostics and cache usage without a network fixture', async () => {
+  const diagnostics: ModelRequestDiagnostic[] = [];
+  const usage = { inputTokens: 100, outputTokens: 12, totalTokens: 112, cacheReadInputTokens: 60, cacheCreationInputTokens: 0, nonCachedInputTokens: 40 };
+  const request = options('http://127.0.0.1:1/v1', { diagnosticPurpose: 'summary_in_run', diagnosticIdentity: { parentRunId: 'original-parent-run' },
+    onDiagnostic: async diagnostic => { diagnostics.push(structuredClone(diagnostic)); },
+    worker: async captured => {
+      const model = new ResponsesModel(captured.model);
+      model.generate = async modelRequest => {
+        assert.equal(modelRequest.tools.length, 0);
+        const payload = JSON.stringify(modelRequest.context.items);
+        await modelRequest.onRequestDiagnostic?.({ phase: 'request', protocol: 'openai-responses',
+          payloadBytes: Buffer.byteLength(payload), payloadDigest: createHash('sha256').update(payload).digest('hex') });
+        // 离线替身显式模拟派发边界，不能将仅完成预检视为已经发送。
+        await modelRequest.onRequestDiagnostic?.({ phase: 'dispatched', protocol: 'openai-responses' });
+        return { outputItems: [assistantMessage('offline-summary', '保留任务约束，读取已完成，验证未执行。')], toolCalls: [], finishReason: 'completed', usage };
+      };
+      return runSummaryWithModel(captured, model);
+    },
+  });
+  const original = structuredClone(request.context), result = await summarizeNativeContext(request);
+  assert.deepEqual(result.usage, usage); assert.deepEqual(request.context, original);
+  assert.deepEqual(diagnostics.map(item => item.phase), ['started', 'request', 'dispatched', 'finished']);
+  assert.ok(diagnostics.every(item => item.purpose === 'summary_in_run' && item.parentRunId === 'original-parent-run' && item.model === 'fixture-model'));
+  assert.equal(diagnostics[1].requestSent, false); assert.equal(diagnostics[2].requestSent, true); assert.deepEqual(diagnostics[3].usage, usage);
+  assert.ok(diagnostics[1].payloadBytes! > 0);
+  assert.equal(JSON.stringify(diagnostics).includes(sentinel), false);
+  assert.equal(JSON.stringify(diagnostics).includes('IGNORE SYSTEM'), false, 'diagnostics keep measurements and hashes only');
 });
 
 for (const [name, output] of [
@@ -204,6 +258,6 @@ test('summary audits its single failed model attempt and never enables transient
       return inlineWorker(worker);
     } })), error => { assert.equal((error as { usage: unknown }).usage, null); return true; });
     assert.equal(server.requests.length, 1);
-    assert.deepEqual(types, ['model_request_started', 'model_request_failed', 'run_finished']);
+    assert.deepEqual(types.filter(type => type !== 'model_request_diagnostic'), ['model_request_started', 'model_request_failed', 'run_finished']);
   } finally { await server.close(); }
 });

@@ -65,7 +65,7 @@ async function start(message: WorkerStart) {
       beginRun: request => rpc('store.beginRun', request),
       append: async (run, event) => {
         // 对界面进行权威替换前，等待此次响应的流式 RPC 全部完成。
-        if (event.type === 'model_response' || event.type === 'model_request_failed') await eventChain;
+        if (event.type === 'model_response' || event.type === 'model_request_failed' || event.type === 'model_request_diagnostic' && event.diagnostic.phase === 'finished') await eventChain;
         return rpc('store.append', { identity: run, event });
       },
       ensureCapacity: (run, bytes) => rpc('store.ensureCapacity', { identity: run, bytes }),

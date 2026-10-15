@@ -28,7 +28,7 @@ test('streaming handles fragmented multibyte SSE and retains all opaque items, o
   assert.deepEqual(response.outputItems, output);
   assert.deepEqual(response.toolCalls.map(call => call.id), ['first', 'second']);
   assert.equal(response.finishReason, 'tool_calls');
-  assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18, cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null });
   assert.equal(events.filter(event => event.type === 'text_delta').map(event => event.text).join(''), '中文🙂');
   assert.equal(events.filter(event => event.callId === 'first').map(event => event.delta).join(''), '{"path":"一.txt"}');
   assert.equal(fixture.requests[0].instructions, 'Respect project rules.');

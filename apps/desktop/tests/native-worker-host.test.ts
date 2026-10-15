@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, createModelRequestDiagnostic, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 import { MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
 
@@ -118,6 +118,41 @@ async function prepare(worker: FakeWorker, context: ModelContext): Promise<Prepa
   return await worker.rpc('tools.prepare', { call: requestCall, context: executionContext() });
 }
 function executionContext() { return { identity: run.identity, policyRevision: run.policyRevision, maxOutputBytes: DEFAULT_RUN_BUDGET.maxToolOutputBytes }; }
+
+test('worker transports strict request diagnostics and cache counters without persisting instruction bodies', async () => {
+  const cached = { inputTokens: 20, outputTokens: 3, totalTokens: 23, cacheReadInputTokens: 5, cacheCreationInputTokens: 2, nonCachedInputTokens: 13 };
+  const providerUsage = { raw: { input_tokens: 20, cached_tokens: 5, cache_write_tokens: 2 }, normalization: 'openai-inclusive-input' as const };
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await startAttempt(worker);
+    const diagnostic = await createModelRequestDiagnostic({ identity: run.identity, attempt: 1, requestKey: `${run.identity.runId}:${run.identity.requestId}:1`, purpose: 'normal', context, tools: [definition], estimatedInputTokens: 100,
+      host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, phase: 'finished', finishedAt: 101, outcome: 'completed', requestSent: true, usage: cached, providerUsage } } });
+    const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }], toolCalls: [], finishReason: 'completed', usage: cached, providerUsage };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { usage: cached });
+  }, { request: { ...run, diagnosticInstructionSections: { systemPrompt: 'private-system-prompt' } } });
+  assert.deepEqual((await h.promise).usage, cached);
+  assert.equal(JSON.stringify(h.journal).includes('private-system-prompt'), false);
+  const start = h.worker.sent.find(message => message.type === 'start')!;
+  assert.equal((start.request as AgentRunRequest).diagnosticInstructionSections?.systemPrompt, 'private-system-prompt');
+});
+
+test('worker rejects diagnostic text and mismatched request identities before any journal mutation', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await startAttempt(worker);
+    const diagnostic = await createModelRequestDiagnostic({ identity: run.identity, attempt: 1, requestKey: 'wrong-request', purpose: 'normal', context, tools: [definition], estimatedInputTokens: 100,
+      host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, body: 'private-body' } } });
+  });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.length, 1);
+  assert.equal(JSON.stringify(h.journal).includes('private-body'), false);
+});
 function approvalRequest(prepared: PreparedTool) {
   return { binding: { ...run.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: prepared.policyRevision }, tool: prepared.definition, input: prepared.input, preconditions: prepared.preconditions, expiresAt: Date.now() + 30_000 };
 }
