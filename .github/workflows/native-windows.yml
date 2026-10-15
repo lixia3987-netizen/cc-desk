@@ -51,7 +51,7 @@ concurrency:
 jobs:
   native-windows:
     runs-on: windows-2025
-    timeout-minutes: 40
+    timeout-minutes: 50
     defaults:
       run:
         shell: pwsh
@@ -133,6 +133,17 @@ jobs:
         run: |
           npm run build:packages 2>&1 | Tee-Object -FilePath test-results/windows-native/packages.log
           exit $LASTEXITCODE
+      - name: 验证桌面类型
+        timeout-minutes: 5
+        run: |
+          npm run typecheck --workspace claude-workbench 2>&1 | Tee-Object -FilePath test-results/windows-native/typecheck.log
+          exit $LASTEXITCODE
+      - name: 验证完成校验和持久化回放
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap packages/agent-core/tests/*.test.mjs packages/agent-node/tests/run-store-completion-validation.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/completion-validation.tap
+          exit $LASTEXITCODE
       - name: 验证真实 Windows Job、监督器与 CIM 清理
         timeout-minutes: 10
         run: |
@@ -147,9 +158,10 @@ jobs:
           exit $LASTEXITCODE
       - name: 验证全部桌面单元测试与真实 PTY 运行时
         if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
-        timeout-minutes: 20
+        working-directory: apps/desktop
+        timeout-minutes: 30
         run: |
-          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/desktop/tests/*.test.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/desktop-runtime.tap
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap tests/*.test.ts 2>&1 | Tee-Object -FilePath ../../test-results/windows-native/desktop-runtime.tap
           exit $LASTEXITCODE
       - name: 构建生产桌面入口
         id: production
@@ -183,3 +195,53 @@ jobs:
           if-no-files-found: error
           retention-days: 7
           path: test-results/windows-native-binaries/**
+
+  windows-cim-fixture:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - name: 准备真实 Windows CIM 夹具
+        id: prepare
+        timeout-minutes: 10
+        run: |
+          New-Item -ItemType Directory -Force test-results/windows-cim | Out-Null
+          node -e "if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('Expected a real Windows x64 runner')"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm ci 2>&1 | Tee-Object -FilePath test-results/windows-cim/install.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:packages 2>&1 | Tee-Object -FilePath test-results/windows-cim/packages.log
+          exit $LASTEXITCODE
+      - name: 验证完整 CIM 夹具与有界失败诊断
+        timeout-minutes: 3
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap packages/agent-node/tests/process-windows-tree.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-cim/fixture.tap
+          exit $LASTEXITCODE
+      - name: 串行复验退出父代的晚生后代
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        timeout-minutes: 3
+        run: |
+          foreach ($iteration in 1..10) {
+            Write-Output "CIM iteration $iteration"
+            node --test --test-concurrency=1 --test-reporter=tap --test-name-pattern="retains an exited parent anchor" packages/agent-node/tests/process-windows-tree.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-cim/repeated.tap -Append
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          exit 0
+      - name: 保留独立 CIM 失败轨迹
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-cim-fixture-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: test-results/windows-cim/**

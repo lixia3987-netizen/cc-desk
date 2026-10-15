@@ -83,7 +83,7 @@ async function fixture(protocol: Protocol) {
     const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
     try { return { records: ledger.replay(), runs: ledger.listRuns(), recovery: ledger.getRecoveryReport() }; } finally { await ledger.close(); }
   };
-  return { id, project, data, conversationId, server, pending, readLedger, get executor() { return executor; },
+  return { id, project, data, conversationId, server, events, pending, readLedger, get executor() { return executor; },
     async restart() { await executor.shutdown(); executor = new NativeStructuredExecutor(store, connections, events, { worker: inline }); await executor.initialize(); },
     async dispose() { await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); },
   };
@@ -262,8 +262,9 @@ test('a per-file applied journal failure is an unknown side effect, never a swal
   } finally { NativeRunStore.prototype.recordChangeSetEvent = original; await f.dispose(); }
 });
 
-test('a projection refresh failure after a committed receipt cannot invent unknown file effects', { timeout: 20000 }, async () => {
+test('a projection refresh failure after a committed receipt cannot invent unknown file effects', { timeout: 20000 }, async t => {
   const f = await fixture('responses'), hydrate = NativeProjection.prototype.hydrate; let injected = false;
+  let unsubscribe = () => {}, abortApproval = () => {};
   try {
     NativeProjection.prototype.hydrate = function (id, ledger) {
       const latest = ledger.replay().at(-1)?.event;
@@ -272,17 +273,38 @@ test('a projection refresh failure after a committed receipt cannot invent unkno
       }
       return hydrate.call(this, id, ledger);
     };
+    // 先监听真实审批事件，避免繁忙的 Windows 主机上固定轮询过早结束。
+    type Approval = ReturnType<typeof f.executor.snapshot>['pending'][number];
+    let acceptApproval!: (approval: Approval) => void;
+    const approvalReady = new Promise<Approval>((resolve, reject) => {
+      acceptApproval = approval => { unsubscribe(); t.signal.removeEventListener('abort', abortApproval); resolve(approval); };
+      abortApproval = () => { unsubscribe(); reject(t.signal.reason); };
+      unsubscribe = f.events.subscribe(event => {
+        if (event.type === 'journal' && event.identity.sessionId === f.id && event.event.type === 'approval_requested'
+          && event.event.approval.toolName === 'apply_change_set') acceptApproval(event.event.approval);
+      });
+      t.signal.addEventListener('abort', abortApproval, { once: true });
+      if (t.signal.aborted) abortApproval();
+    });
     const running = f.executor.send(f.id, 'Keep durable receipts authoritative when display refresh fails');
-    const approval = await f.pending(); f.executor.respond(f.id, approval.requestId, { behavior: 'allow' });
+    const pending = f.executor.snapshot(f.id).pending.find(item => item.toolName === 'apply_change_set');
+    if (pending) acceptApproval(pending);
+    // 真实发送提前结束或拒绝时立即失败；测试原有信号负责总时限。
+    const approval = await Promise.race([approvalReady, running.then(() => { throw new Error('执行已结束，但没有变更集审批。'); })]);
+    unsubscribe(); t.signal.removeEventListener('abort', abortApproval);
+    f.executor.respond(f.id, approval.requestId, { behavior: 'allow' });
     assert.equal((await running).success, true); assert.equal(injected, true);
     assert.equal(f.executor.recoveryRequired(f.id), false);
     assert.deepEqual(await Promise.all(['alpha.txt', 'beta.txt', 'created.txt'].map(relative => fs.readFile(path.join(f.project, relative), 'utf8'))), [afterAlpha, afterBeta, newContent]);
-    const ledger = await f.readLedger();
+    const ledger = await f.readLedger(); assert.equal(ledger.recovery, null);
     const progress = ledger.records.flatMap(record => record.event.type === 'change_set_file' ? [record.event.progress] : []);
+    const firstApplied = progress.find(item => item.index === 0 && item.status === 'applied');
+    assert.equal(firstApplied?.changeSetDigest, approval.nativeChangeSet!.digest);
+    assert.equal(firstApplied?.afterHash, digest(afterAlpha));
     assert.deepEqual(progress.map(item => item.status), ['prepared', 'applied', 'prepared', 'applied', 'prepared', 'applied']);
     assert.equal(f.executor.snapshot(f.id).messages.find(message => message.nativeChangeSetResult)?.nativeChangeSetResult?.status, 'completed');
     NativeProjection.prototype.hydrate = hydrate; await f.restart();
     assert.equal(f.executor.recoveryRequired(f.id), false);
     assert.equal(f.executor.snapshot(f.id).messages.find(message => message.nativeChangeSetResult)?.nativeChangeSetResult?.status, 'completed');
-  } finally { NativeProjection.prototype.hydrate = hydrate; await f.dispose(); }
+  } finally { unsubscribe(); t.signal.removeEventListener('abort', abortApproval); NativeProjection.prototype.hydrate = hydrate; await f.dispose(); }
 });

@@ -25,6 +25,9 @@ const secret = 'sk-in-turn-executor-local-fixture';
 const input = 'Keep the original engineering goal intact; inspect the file and retain human verification.';
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
 const padding = 'ordinary historical observation '.repeat(730);
+// 指令变更只需一个真实文件批次：旧历史可摘要，最新读取仍须完整保留。
+const instructionChangeHistory = 'ordinary historical observation '.repeat(1250);
+const instructionChangeContent = 'instruction-change file observation\n'.repeat(600);
 const unknownCache = { cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null };
 const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
@@ -47,10 +50,11 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
   const inputBudget = options.toolOnlyBoundary ? 50000 : 90000;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
-  await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
+  await fs.writeFile(path.join(project, 'fixture.txt'), options.mode === 'instructions-changed' ? instructionChangeContent
+    : options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
   // 不同文件代表实际检查进展；反复读取同一个未变化的文件，
   // 会在三个批次后被 N3-03 有意阻止。
-  for (const index of [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
+  for (const index of options.mode === 'instructions-changed' ? [1] : [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');
   let ordinary = 0, summaries = 0, retryFired = false, summaryEntered!: () => void;
@@ -75,8 +79,8 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       if (index === 0) return call('plan', 'update_plan', { expectedRevision: 0, plan: {
         goal: input, steps: [{ id: 'inspect', title: 'Inspect original file', dependsOn: [], status: 'in_progress' }],
         criteria: [{ id: 'verify-humans', description: 'Human confirms scope and relevance', stepIds: ['inspect'], kind: 'manual' }],
-      } });
-      if (index <= 3) return call(`read-${index}`, 'read_file', { path: `fixture-${index}.txt` }, options.toolOnlyBoundary ? '' : `${index}: ${padding}`);
+      } }, options.mode === 'instructions-changed' ? instructionChangeHistory : '');
+      if (index <= 3) return call(`read-${index}`, 'read_file', { path: `fixture-${index}.txt` }, options.toolOnlyBoundary || options.mode === 'instructions-changed' ? '' : `${index}: ${padding}`);
       if (index === 4) return call('task-after-history', 'read_task', {});
       if (options.mode === 'empty-final') return protocol === 'responses' ? { output: [] } : { message: { role: 'assistant', content: '' } };
       return protocol === 'responses' ? { output: [assistantMessage('final', '模型声称整项任务已经验收通过。')] }
@@ -215,11 +219,48 @@ test('the last model slot cannot be consumed by an in-turn summary', { timeout: 
 test('CLAUDE instruction changes during summary prevent committing or resuming the old policy', { timeout: 20000 }, async () => {
   const f = await fixture('responses', { mode: 'instructions-changed' });
   try {
-    const result = await f.send(); assert.equal(result.success, false);
-    assert.equal(f.summaries, 1); assert.equal(f.ordinary, 4);
-    const ledger = await f.ledger(); assert.equal(JSON.stringify(ledger.context).includes(summary), false);
+    const originalInstructions = await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8');
+    const originalInstructionHash = createHash('sha256').update(originalInstructions).digest('hex');
+    const result = await f.send(); assert.equal(result.success, false); assert.deepEqual(f.server.errors, []);
+    assert.equal(f.inputBudget, 90000); assert.equal(f.summaries, 1); assert.equal(f.ordinary, 2); assert.equal(f.server.requests.length, 3);
+    const ledger = await f.ledger(); assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
+    const run = ledger.runs[0].result!;
+    assert.equal(run.status, 'failed'); assert.equal(run.reason, 'context_maintenance_failed');
+    assert.equal(run.modelRequests, 3); assert.equal(run.toolCalls, 2);
+    assert.deepEqual(run.usage, { inputTokens: 33, outputTokens: 21, totalTokens: 54, ...unknownCache });
+
+    // 核验真实工具回执，避免用失败或截断的读取意外触发摘要。
+    const completed = ledger.records.flatMap(record => record.event.type === 'tool_completed' ? [record.event] : []);
+    assert.deepEqual(completed.map(event => ({ name: event.call.name, status: event.result.status })), [
+      { name: 'update_plan', status: 'completed' }, { name: 'read_file', status: 'completed' },
+    ]);
+    const planOutput = completed[0].result.output;
+    assert.ok(planOutput && typeof planOutput === 'object' && !Array.isArray(planOutput));
+    assert.equal(planOutput.revision, 1); assert.equal(planOutput.planRevision, 1);
+    const readOutput = completed[1].result.output;
+    assert.ok(readOutput && typeof readOutput === 'object' && !Array.isArray(readOutput));
+    assert.equal(readOutput.path, 'fixture-1.txt'); assert.equal(readOutput.content, instructionChangeContent);
+    assert.equal(readOutput.bytes, Buffer.byteLength(instructionChangeContent));
+    assert.equal(readOutput.hash, createHash('sha256').update(instructionChangeContent).digest('hex'));
+    assert.equal(readOutput.truncated, false); assert.equal(completed[1].result.truncated, false);
+
+    const changedInstructions = await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8');
+    assert.equal(changedInstructions, originalInstructions + '\nNew rule added while the summary was in flight.');
+    assert.notEqual(createHash('sha256').update(changedInstructions).digest('hex'), originalInstructionHash);
+    assert.equal(ledger.records.filter(record => record.event.type === 'model_response').length, 2);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_attempted').length, 1);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_failed').length, 1);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compacted').length, 0);
+    assert.equal(JSON.stringify(ledger.context).includes(summary), false);
+    assert.ok(JSON.stringify(ledger.context).includes(instructionChangeHistory), '失败摘要必须保留原始历史上下文');
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'failed');
-    assert.deepEqual(ledger.runs[0].result!.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90, ...unknownCache });
+
+    // 同一提交重启后只重放失败回执，不发网，也不替换原上下文或运行结果。
+    const requests = f.server.requests.length;
+    await f.restart(); assert.equal((await f.send()).success, false);
+    assert.equal(f.server.requests.length, requests);
+    const replay = await f.ledger();
+    assert.deepEqual(replay.context, ledger.context); assert.deepEqual(replay.runs[0].result, run);
   } finally { await f.dispose(); }
 });
 

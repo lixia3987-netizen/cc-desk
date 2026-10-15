@@ -14,7 +14,42 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 10));
 const exists = file => fs.stat(file).then(() => true, () => false);
 const live = pid => { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; throw error; } };
 const powershell = path.join(process.env.SystemRoot ?? process.env.SYSTEMROOT ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-const run = script => execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 65536 });
+function helperFailure(error) {
+  const stdout = typeof error.stdout === 'string' ? error.stdout : '';
+  const stderr = typeof error.stderr === 'string' ? error.stderr : '';
+  const reports = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    let item;
+    try { item = JSON.parse(line); } catch { continue; }
+    if (!item || !['progress', 'result'].includes(item.type)) continue;
+    const report = { type: item.type };
+    for (const field of ['phase', 'code', 'helperStage', 'operation', 'identityFailure']) {
+      if (typeof item[field] === 'string' && /^[a-z_]{1,64}$/.test(item[field])) report[field] = item[field];
+    }
+    for (const field of ['snapshots', 'terminationAttempts', 'liveProcesses', 'nativeCode']) {
+      if (Number.isSafeInteger(item[field]) && item[field] >= 0) report[field] = item[field];
+    }
+    if (typeof item.released === 'boolean') report.released = item.released;
+    reports.push(report);
+  }
+  const diagnostic = {
+    code: Number.isSafeInteger(error.code) || typeof error.code === 'string' && /^[A-Z_0-9]{1,64}$/.test(error.code) ? error.code : null,
+    signal: typeof error.signal === 'string' && /^SIG[A-Z]{1,12}$/.test(error.signal) ? error.signal : null,
+    killed: error.killed === true,
+    stdoutBytes: Buffer.byteLength(stdout), stderrBytes: Buffer.byteLength(stderr),
+    reports: reports.slice(-4),
+  };
+  // 异常消息仅保留固定字段，不让整份内联 PowerShell 命令淹没真实失败进度。
+  const failure = new Error('WINDOWS_TREE_HELPER_FAILED:' + JSON.stringify(diagnostic));
+  failure.diagnostic = diagnostic;
+  // 现有负例仍须核对实际 stdout，不能把诊断摘要当作通过证据。
+  Object.defineProperties(failure, { stdout: { value: stdout }, stderr: { value: stderr } });
+  return failure;
+}
+const run = async script => {
+  try { return await execFileAsync(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 10_000, maxBuffer: 65536 }); }
+  catch (error) { throw helperFailure(error); }
+};
 async function until(condition, phase, timeout = 3000) {
   const deadline = Date.now() + timeout;
   while (!await condition()) { assert.ok(Date.now() < deadline, phase); await pause(); }
@@ -88,12 +123,24 @@ ${buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)}`;
 test('Windows cleanup proves closure with one post-exit snapshot even when CIM retains exited rows', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-closed-snapshot-'));
   const ready = path.join(directory, 'ready');
+  const exitConfirmed = path.join(directory, 'exit-confirmed');
   const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
+  const rootClosed = new Promise(resolve => root.once('close', resolve));
   const spawnCompletedAt = Date.now();
   try {
     await until(() => exists(ready), 'fixture process must start');
-    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000).replace(
+    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000)
+      // 恰好两轮的前提是第二轮之前已确认真实 HANDLE 退出，等待仍受原八秒期限约束。
+      .replace('$closedBeforeSnapshot=$true', `if($snapshots -eq 1) {
+  if($handles.Count -eq 0) { throw 'Fixture requires an owned native HANDLE.' }
+  foreach($fixtureHandle in @($handles.Values)) {
+    $fixtureRemaining=[uint32][Math]::Max(0,[Math]::Floor(($deadline-[DateTime]::UtcNow).TotalMilliseconds))
+    if([NativeOwnedProcess]::WaitForSingleObject($fixtureHandle,$fixtureRemaining) -ne 0) { throw 'Fixture exit was not confirmed within its original deadline.' }
+  }
+  [IO.File]::WriteAllText(${quote(exitConfirmed)},'confirmed')
+}
+$closedBeforeSnapshot=$true`).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot
 if($snapshots -ge 2) { throw 'Closure must not require another full CIM snapshot.' }
@@ -104,11 +151,13 @@ foreach($row in $retainedRows) {
     const result = await run(script);
     const events = result.stdout.trim().split('\n').map(line => JSON.parse(line));
     const outcome = events.findLast(item => item.type === 'result');
+    assert.equal(await exists(exitConfirmed), true, 'the native HANDLE exit barrier must actually run');
     assert.equal(outcome?.released, true, JSON.stringify(outcome));
     assert.equal(outcome?.snapshots, 2, 'the second snapshot must follow native HANDLE exit confirmation');
     assert.equal(live(root.pid), false);
   } finally {
     root.kill('SIGKILL');
+    await rootClosed;
     await fs.rm(directory, { recursive: true, force: true });
   }
 });
@@ -171,7 +220,7 @@ test('Windows handle cleanup retains an exited parent anchor and finds the later
   const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', rootScript], { cwd: directory, stdio: 'ignore', windowsHide: true });
   const spawnCompletedAt = Date.now();
-  let cleaning;
+  let cleaning, failure;
   try {
     await until(() => exists(childReady), 'fixture child must start');
     const childPid = Number(await fs.readFile(childReady, 'utf8'));
@@ -200,10 +249,19 @@ if(!([IO.File]::Exists(${quote(captured)}))) {
     assert.equal(live(root.pid), false);
     assert.equal(live(childPid), false);
     assert.equal(live(grandchildPid), false, 'fresh enumeration must discover the new descendant through the retained anchor');
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
-    await fs.writeFile(resume, 'continue');
-    await cleaning?.catch(() => {});
-    await cleanupFixture(root, directory);
+    try {
+      await fs.writeFile(resume, 'continue');
+      await cleaning?.catch(() => {});
+      await cleanupFixture(root, directory);
+    } catch (cleanup) {
+      // 原始回归失败与收尾失败都必须保留，不能让后一个异常覆盖前一个。
+      if (failure) throw new AggregateError([failure, cleanup], 'Windows tree fixture failed and cleanup also failed.');
+      throw cleanup;
+    }
   }
 });
 
