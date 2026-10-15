@@ -11,7 +11,7 @@ export interface McpStdioClientOptions {
   executable: string
   argv: string[]
   cwd: string
-  /** Explicitly resolved connection values; never the host's complete environment. */
+  /** 显式解析的连接配置值；绝不传入宿主完整的环境变量。 */
   environment?: Record<string, string>
   forbiddenValues?: readonly (string | undefined)[]
   timeoutMs?: number
@@ -23,7 +23,7 @@ interface Request {
   reject(error: McpClientError): void
 }
 
-/** A single owned 2025-11-25 process session. It never restarts or replays requests. */
+/** 单个由宿主管理的 2025-11-25 协议进程会话。绝不重启或重放请求。 */
 export class McpStdioClient {
   readonly #options: McpStdioClientOptions
   readonly #forbidden: string[]
@@ -105,13 +105,13 @@ export class McpStdioClient {
     })
   }
 
-  /** Join requests and process-tree cleanup before releasing host ownership. */
+  /** 释放宿主所有权之前，等待请求结束及进程树清理完成。 */
   close(): Promise<void> {
     if (this.#closing) return this.#closing
     this.#closed = true
     for (const controller of this.#controllers) controller.abort()
     this.#closing = (async () => {
-      // Request cancellation notices are bounded and settle before process disposal.
+      // 请求取消通知受限制，并在释放进程之前结束。
       await Promise.all([...this.#pendingOperations])
       await this.terminate()
       if (this.#cleanupFailure) throw this.#cleanupFailure
@@ -242,7 +242,7 @@ export class McpStdioClient {
     try {
       await Promise.race([this.write({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: id } }),
         new Promise<void>(resolve => { timer = setTimeout(resolve, LIMIT.cleanupMs) })])
-    } catch { /* A notification cannot establish whether a tool executed. */ }
+    } catch { /* 通知不能证明工具是否执行过。 */ }
     finally { clearTimeout(timer) }
   }
 
@@ -250,7 +250,7 @@ export class McpStdioClient {
     this.available(operation.signal)
     if (this.#requests.size >= LIMIT.tools) fail('request_limit')
     const id = randomUUID()
-    // Validate the complete outbound frame before classifying a tool call as issued.
+    // 将工具调用归为已发出之前，先校验完整的出站帧。
     const message = { jsonrpc: '2.0', id, method, params }
     const serialized = JSON.stringify(message)
     assertNoSecrets(serialized, this.#forbidden)
@@ -258,7 +258,7 @@ export class McpStdioClient {
     let resolve!: (result: JsonObject) => void
     let reject!: (error: McpClientError) => void
     const response = new Promise<JsonObject>((done, failed) => { resolve = done; reject = failed })
-    // Attach before write: local fixtures and fast children may answer synchronously.
+    // 写入前先订阅：本地测试替身和快速子进程可能同步响应。
     this.#requests.set(id, { resolve, reject })
     response.catch(() => undefined)
     let complete = false
@@ -279,12 +279,12 @@ export class McpStdioClient {
     }
   }
 
-  /** stdout is protocol data only. No stderr or child diagnostic reaches this parser. */
+  /** stdout 仅承载协议数据。stderr 或子进程诊断绝不进入此解析器。 */
   private receive(chunk: Buffer): void {
     if (this.#failure || this.#closed) return
     try {
       this.#receivedBytes += chunk.length
-      // Bound lifetime notifications and idle output as well as individual operations.
+      // 除单次操作外，还限制会话生命周期内的通知及空闲输出。
       if (this.#receivedBytes > 16 * LIMIT.discoveryBytes) fail('response_limit')
       for (const operation of this.#operations) {
         operation.bytes += chunk.length
@@ -324,7 +324,7 @@ export class McpStdioClient {
       const response: JsonObject = message.method === 'ping'
         ? { jsonrpc: '2.0', id: message.id, result: {} }
         : { jsonrpc: '2.0', id: message.id, error: { code: -32601, message: 'Method not supported.' } }
-      // Early unsolicited requests cannot enqueue output before process ownership exists.
+      // 取得进程所有权之前，提前到达的主动请求不能将输出加入队列。
       if (!this.#handle) fail('response_schema')
       void this.write(response).catch(error => { this.invalidate(error); void this.terminate() })
       return

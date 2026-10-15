@@ -31,7 +31,7 @@ export interface NativeQuestionTool extends ToolPort {
   answer(request: ApprovalRequest, answers: unknown): void;
 }
 
-/** Answers remain in the trusted host until the core has durably prepared this exact call. */
+/** 核心已为此次精确调用持久化准备记录前，答案始终留在可信宿主中。 */
 export function createQuestionTool(options: {
   identity: RunIdentity; forbiddenValues: string[]; assertOwnership(): Promise<void>;
 }): NativeQuestionTool {
@@ -57,7 +57,7 @@ export function createQuestionTool(options: {
       if (context.signal.aborted || encode(context.identity) !== identity) throw new Error('提问归属已失效。');
       await options.assertOwnership();
       const raw = JSON.parse(call.arguments), input = inputSchema.parse(raw);
-      // Do not silently rewrite the model's exact input before core digest validation.
+      // 核心校验摘要前，不要静默改写模型的精确输入。
       if (encode(raw) !== encode(input) || new Set(input.questions.map(item => item.question)).size !== input.questions.length || input.questions.some(item =>
         Object.hasOwn(Object.prototype, item.question) || new Set(item.options.map(option => option.label)).size !== item.options.length ||
         item.multiSelect && item.options.some(option => option.label.includes(', ')))) throw new Error('提问或选项重复、为空或包含不支持的名称与分隔符。');

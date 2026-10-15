@@ -13,7 +13,7 @@ export const assistantMessage = (id, text, phase = 'final_answer') => ({
 export const reasoningItem = id => ({ type: 'reasoning', id: `rs_${id}`, summary: [], encrypted_content: `fixture-encrypted-${id}` });
 export const sse = event => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`;
 
-/** Real Responses HTTP/SSE envelope. The fixture only substitutes the model. */
+/** 真实的 Responses HTTP/SSE 封装。测试替身仅替换模型。 */
 export function responseEvents(output, { id = 'resp_fixture', usage = { input_tokens: 11, output_tokens: 7, total_tokens: 18 }, status = 'completed' } = {}) {
   const events = [{ type: 'response.created', response: { id, object: 'response', status: 'in_progress', output: [] } }];
   for (const [output_index, item] of output.entries()) {
@@ -53,8 +53,8 @@ function taskResponse(body, task) {
   const commanded = results.get(`${prefix}_command`);
   let item;
   if (turn > 1) {
-    // A fresh worker must send all prior opaque protocol items, not a summary or
-    // previous_response_id. The first request of this turn is enough to prove it.
+    // 新建执行进程必须发送所有此前不透明的协议项，而非摘要或
+    // previous_response_id。本轮的首次请求即可证明这一点。
     assert.ok(input.some(value => value.type === 'reasoning' && value.encrypted_content === 'fixture-encrypted-turn1_read'));
     assert.ok(input.some(value => value.type === 'message' && value.phase === 'final_answer'));
     assert.ok(results.has('turn1_command'));
@@ -78,9 +78,9 @@ function taskResponse(body, task) {
 
 /**
  * startResponsesFixture({ task?: {path, content, command}, handler?, assertReplay? })
- * returns {baseURL, requests, errors, close}. requests contains bodies only.
+ * 返回 {baseURL, requests, errors, close}。requests 仅包含请求体。
  * handler({body,index,request}) -> {output,events?,raw?,usage?,status?,httpStatus?,
- * headers?,splitBytes?,disconnect?,beforeDisconnect?,hang?}; never makes a remote request.
+ * headers?,splitBytes?,disconnect?,beforeDisconnect?,hang?}；绝不发起远程请求。
  */
 export async function startResponsesFixture(options = {}) {
   const requests = [];
@@ -94,8 +94,8 @@ export async function startResponsesFixture(options = {}) {
   };
   const server = http.createServer(async (request, response) => {
     try {
-      // Desktop context summaries may read optional model metadata independently
-      // of a generation. Keep those bounded GETs out of the POST replay ledger.
+      // 桌面上下文摘要可能在生成请求之外独立读取可选的模型元数据。
+      // 这些有限的 GET 请求不应计入 POST 重放账本。
       if (request.method === 'GET' && (request.url === '/v1/models' || request.url?.startsWith('/v1/models?') || request.url?.startsWith('/v1/models/'))) {
         const url = new URL(request.url, 'http://localhost');
         response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -135,7 +135,7 @@ export async function startResponsesFixture(options = {}) {
           await new Promise(resolve => setImmediate(resolve));
         }
       } else {
-        // Split through the first non-ASCII code point, then coalesce the rest.
+        // 在首个非 ASCII 码点内部拆分，然后合并其余内容。
         const unicode = encoded.findIndex(byte => byte > 127);
         const split = unicode < 0 ? Math.min(47, encoded.length) : unicode + 1;
         response.write(encoded.subarray(0, split));

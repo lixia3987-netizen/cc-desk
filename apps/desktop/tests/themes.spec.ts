@@ -18,7 +18,7 @@ const choices = [
   { id: 'amber', name: '墨黑琥珀' },
 ] as const;
 
-/** Measure rendered text against its actual opaque ancestor, not just palette tokens. */
+/** 将渲染文本与实际不透明祖先元素比较，不仅检查调色板令牌。 */
 async function textContrast(page: Page, selector: string) {
   return page.locator(selector).first().evaluate(element => {
     const rgb = (color: string) => color.match(/[\d.]+/g)!.map(Number);
@@ -64,7 +64,7 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
     projectId, cwd: canonicalPath, started: false, model: '', effort: 'default', permissionMode: 'default',
     status: 'idle', archived: false, createdAt: now, updatedAt: now,
   };
-  // A genuine pre-theme workspace verifies migration without touching the user's profile.
+  // 使用真实的主题功能引入前工作区验证迁移，不触碰用户配置目录。
   const state: AppState = {
     version: 2,
     settings: { claudePath: path.join(directory, 'uninstalled-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000 },
@@ -143,7 +143,7 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
       await page.keyboard.press('Tab');
       await page.keyboard.press('Shift+Tab');
       await expect(radio).toBeFocused();
-      // Keyboard users retain a visible focus ring in every palette.
+      // 所有调色板下都须为键盘用户保留可见焦点环。
       const focusStyle = await radio.evaluate(element => {
         const style = getComputedStyle(element);
         const parentStyle = getComputedStyle(element.parentElement!);
@@ -224,7 +224,7 @@ test('themes: five readable themes preserve a live terminal, cancel previews and
       await page.evaluate(async id => { await window.desktop.stopSession(id); }, shellId).catch(() => {});
       await expect.poll(() => page.evaluate(async () => (await window.desktop.snapshot()).state.sessions.every(session => !['running', 'stopping'].includes(session.status))), { timeout: 5000 }).toBe(true).catch(() => {});
     }
-    // A failing assertion must not leave an interactive quit dialog in CI.
+    // 断言失败不能在 CI 中留下交互式退出对话框。
     await app.evaluate(({ dialog }) => { dialog.showMessageBox = async () => ({ response: 1, checkboxChecked: false }); }).catch(() => {});
     await app.close();
     await fs.rm(directory, { recursive: true, force: true });

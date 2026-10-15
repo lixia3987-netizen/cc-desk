@@ -88,7 +88,7 @@ test('recovery refuses existing transcripts, unrelated failures and fresh sessio
     f.store.change(state => { state.sessions[0].started = false; });
     await assert.rejects(f.runtime.recoverContext(f.session.id), /只有缺失原始记录/);
     f.store.change(state => { state.sessions[0].started = true; state.sessions[0].error = '网络错误'; });
-    // Both independently retained error surfaces must lack the missing-transcript condition.
+    // 两处独立保留的错误信息都必须排除对话记录缺失的情况。
     const file = path.join(f.directory, 'chat', f.session.id + '.json');
     const saved = JSON.parse(fs.readFileSync(file, 'utf8')); saved.error = '网络错误'; fs.writeFileSync(file, JSON.stringify(saved));
     const other = new ChatRuntime(f.store, () => {}, () => {}, { transcriptExists: async () => false });

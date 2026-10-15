@@ -2,7 +2,7 @@ import type { ChatSnapshot, ChatSnapshotVersion } from '../shared/chat';
 
 export interface ChatSyncState { loading: boolean; failures: number; error?: string }
 
-/** Full snapshots are authoritative; notifications only invalidate them. */
+/** 完整快照是权威状态，通知仅标记其需要更新。 */
 export class ChatSnapshotSync {
   private current?: ChatSnapshot;
   private expected?: ChatSnapshotVersion;
@@ -22,7 +22,7 @@ export class ChatSnapshotSync {
   get snapshot(): ChatSnapshot | undefined { return this.current; }
   get error(): string | undefined { return this.lastError; }
   get canAutoRefresh(): boolean { return !this.disposed && this.failures < 2; }
-  /** Duplicate/late events do not fetch; gaps require a full snapshot as usual. */
+  /** 重复或迟到的事件不触发读取；序号缺口仍需读取完整快照。 */
   notify(version?: ChatSnapshotVersion): boolean {
     if (this.disposed) return false;
     if (version) {
@@ -42,8 +42,8 @@ export class ChatSnapshotSync {
     if (version) {
       if (this.retiredEpochs.has(version.hostEpoch)) return false;
       if (expected?.hostEpoch === version.hostEpoch && (version.revision < expected.revision || version.eventSequence < expected.eventSequence)) return false;
-      // A reply begun before a host-change notice cannot supersede that notice.
-      // A fresh read may discover another restart even if all its events were lost.
+      // 在主进程变更通知前发起的响应不能覆盖该通知。
+      // 即使所有相关事件都已丢失，新读取也可能发现再次重启。
       if (expected && expected.hostEpoch !== version.hostEpoch && requestGeneration !== this.notificationGeneration) return false;
       if (old?.hostEpoch === version.hostEpoch && (version.revision < old.revision || version.eventSequence < old.eventSequence)) return false;
       if (old?.hostEpoch === version.hostEpoch && old.conversationId === version.conversationId
@@ -51,7 +51,7 @@ export class ChatSnapshotSync {
       if (old && old.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(old.hostEpoch);
       if (expected && expected.hostEpoch !== version.hostEpoch) this.retiredEpochs.add(expected.hostEpoch);
       this.expected = version;
-    } else if (old || expected) return false; // Once versioned, never regress to unversioned state.
+    } else if (old || expected) return false; // 状态一旦带有版本，就不能退回无版本状态。
     this.current = snapshot;
     this.ports.apply(snapshot);
     return true;
@@ -65,7 +65,7 @@ export class ChatSnapshotSync {
     void operation.finally(() => {
       if (this.inFlight !== operation) return;
       this.inFlight = undefined;
-      // Yield between batches so a streaming producer cannot monopolize IPC.
+      // 批次之间让出执行权，避免流式数据生产方独占 IPC。
       if (this.requested && !this.disposed && this.failures < 2) this.deferred = setTimeout(() => { void this.refresh(); }, 80);
     });
     return operation;
@@ -78,8 +78,8 @@ export class ChatSnapshotSync {
         const requestGeneration = this.notificationGeneration;
         const value = await this.ports.read();
         if (this.disposed) return;
-        // A deleting/removed session deliberately suppresses passive reads.
-        // Do not count that invalidation as a failed snapshot or retry it.
+        // 正在删除或已移除的会话会主动禁止被动读取。
+        // 不要将这种失效记为快照读取失败，也不要重试。
         if (!value) {
           this.ports.state({ loading: false, failures: this.failures, ...(this.lastError ? { error: this.lastError } : {}) });
           return;

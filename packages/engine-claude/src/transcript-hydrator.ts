@@ -4,7 +4,7 @@ import type { ClaudeSessions, ClaudeHistory as ChatHistory } from './host.js';
 import { findClaudeTranscript } from './history.js';
 import { readTranscriptPreview } from './chat-import.js';
 
-/** Imports only a stable transcript suffix while the local projection remains idle and unchanged. */
+/** 仅在本地投影保持空闲且未变更时，导入稳定的对话记录后缀。 */
 export class TranscriptHydrator {
   private hydrating = new Map<string, Promise<void>>();
   private transcriptVersions = new Map<string, string>();
@@ -33,8 +33,8 @@ export class TranscriptHydrator {
       if (this.transcriptVersions.get(id) === version) return;
       const preview = await readTranscriptPreview(source);
       const after = await fs.promises.stat(source);
-      // Only merge a stable transcript into an idle, unchanged projection.
-      // The journal is authoritative while this runtime owns a live CLI process.
+      // 仅将稳定的对话记录合并到空闲且未变更的投影。
+      // 本运行时持有活跃 CLI 进程期间，以日志为准。
       if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return;
       if (!this.sessions.get(id) || this.isActive(id)) return;
       const snapshot = this.history.get(id);
@@ -42,8 +42,8 @@ export class TranscriptHydrator {
       this.transcriptVersions.set(id, version);
       let additions = preview.messages;
       if (length) {
-        // Older snapshots lack source identities. Do not guess from repeated text
-        // or replace valid local history with an unrelated/truncated source tail.
+        // 旧快照缺少来源身份。不要根据重复文本猜测身份，
+        // 也不要用无关或截断的来源尾部替换有效的本地历史。
         const identity = (message: ChatMessage) => JSON.stringify([message.parentToolUseId ?? null, message.sourceId ?? message.id.replace(/^import:/, '')]);
         const known = new Set(original.map(identity));
         const tail = [...original].reverse().find(message => message.role !== 'system');

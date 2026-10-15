@@ -48,7 +48,7 @@ function SubtaskRow({ task, now, earlier }: { task: Subtask; now: number; earlie
   </details>;
 }
 
-/** A session-local activity view shared by structured chat and the native CLI terminal. */
+/** 会话内的活动视图，由结构化聊天与原生 CLI 终端共享。 */
 export function SubtaskPanel({ session }: { session: Session }) {
   const [expanded, setExpanded] = useState(false), [all, setAll] = useState(false), [now, setNow] = useState(Date.now);
   const listId = useId(), activity = session.subtasks;

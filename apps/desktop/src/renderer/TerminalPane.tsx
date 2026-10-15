@@ -21,7 +21,7 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     submit:async text => {
       if(blocked.current||status.current!=='running'||!terminal.current)throw new Error('终端尚未就绪，请先启动会话。');
       if(!terminal.current.modes.bracketedPasteMode)throw new Error('CLI 尚未准备好接收提示词，请在终端完成登录或目录信任后重试。');
-      // A single IPC write prevents Enter from overtaking a pending asynchronous paste.
+      // 一次 IPC 写入可防止回车先于尚未完成的异步粘贴执行。
       await window.desktop.writeTerminal(session.id,terminalPromptPacket(text));
     },
     focus:() => terminal.current?.focus()
@@ -34,7 +34,7 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     terminal.current=term;fit.current=addon;
     let disposed=false;let hydrating=true;let lastSeq=0;const waiting:TerminalChunk[]=[];
     const consume=(chunk:TerminalChunk) => {if(chunk.seq>lastSeq){term.write(chunk.data);lastSeq=chunk.seq;}};
-    // Subscribe before the snapshot, deduplicate by sequence: no lost or repeated output.
+    // 读取快照前先订阅，并按序号去重，避免输出丢失或重复。
     const off=window.desktop.onTerminal(chunk => {
       if(chunk.sessionId !== session.id || disposed)return;
       if(hydrating)waiting.push(chunk);else consume(chunk);
@@ -64,12 +64,12 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
     };
     const observer=new ResizeObserver(resize);observer.observe(host.current!);resize();
     return () => {disposed=true;off();observer.disconnect();input.dispose();term.dispose();terminal.current=null;};
-    // A live terminal is owned by the session, not by a render or settings update.
+    // 活动终端由会话持有，其生命周期不随渲染或设置更新而变化。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   },[session.id]);
   useEffect(() => {
-    // xterm repaints its existing buffer when its palette changes. Keep the live
-    // instance (and therefore scroll position, selection and PTY subscription).
+    // xterm 在配色变化时会重绘现有缓冲区，应保留活动
+    // 实例，以及滚动位置、选区与 PTY 订阅。
     if(terminal.current)terminal.current.options.theme=getTerminalTheme(themeId);
   },[themeId]);
   useEffect(() => {
@@ -78,8 +78,8 @@ export const TerminalPane = forwardRef<TerminalHandle,{session:Session;settings:
   },[active,settings.fontSize,settings.scrollback,session.status,session.id,onError]);
   useEffect(()=>{
     if(!active)return;
-    // Activation is deferred until xterm is laid out. A user may already have
-    // moved to the composer (or another control) before that frame runs.
+    // 激活操作延迟到 xterm 布局完成后；在该帧执行前，用户可能已
+    // 将焦点移到发送框或其他控件。
     const focused=document.activeElement;
     let keepFocus=focused instanceof HTMLElement && (focused.matches('input, textarea, select') || focused.isContentEditable);
     const moved=()=>{keepFocus=true;};

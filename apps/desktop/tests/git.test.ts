@@ -12,15 +12,15 @@ async function fixture() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'workbench-git-'));
   const repo = path.join(dir, 'repo'); await fs.mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Workbench Tests'); await git(repo, 'config', 'user.email', 'tests@example.invalid');
-  // Worktree checkout must preserve this fixture's exact LF bytes regardless
-  // of the runner's Git defaults. Never change the user's global Git config.
+  // 无论测试运行环境使用何种 Git 默认配置，工作树检出都必须精确保留
+  // 本测试装置的 LF 字节。不得修改用户的全局 Git 配置。
   await git(repo, 'config', '--local', 'core.autocrlf', 'false');
   await fs.writeFile(path.join(repo, 'file.txt'), 'initial\n');
   await fs.writeFile(path.join(repo, '.gitignore'), 'ignored.txt\n');
   await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'Initial');
-  // Windows may retain a just-exited Git process's cwd handle briefly, especially
-  // after execFile terminates a diff at maxBuffer. Retry only filesystem cleanup;
-  // a persistent lock still fails the test and every product assertion stays intact.
+  // Windows 可能短暂保留刚退出的 Git 进程的工作目录句柄，尤其是
+  // execFile 因达到 maxBuffer 而终止差异输出之后。仅重试文件系统清理；
+  // 持续存在的锁仍须使测试失败，所有产品行为断言都保持不变。
   return { dir, repo, dispose: () => fs.rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
@@ -203,8 +203,8 @@ test('force cleanup protects registered nested worktrees and nested independent 
     const repository = await forceCleanupWorktree(f.repo, tree, id);
     assert.equal(repository.ok, false); assert.match(repository.message, /独立 Git 仓库/);
     assert.equal(await fs.readFile(path.join(independent, 'keep.txt'), 'utf8'), 'nested repository data');
-    // Move the preserved repo outside, then inspect a bare repo whose metadata
-    // lacks a .git name (common for local mirrors and backups).
+    // 将保留的仓库移到外部，再检查元数据目录不以 .git 命名的裸仓库
+    // （本地镜像与备份通常采用这种形式）。
     await fs.rename(independent, path.join(f.dir, 'preserved-independent'));
     const bare = path.join(tree, 'backup.git'); await fs.mkdir(bare);
     await git(bare, 'init', '--bare');
@@ -245,8 +245,8 @@ test('force cleanup recovers only the selected registered missing gitfile and pr
     assert.equal(await git(f.repo, 'rev-parse', branch), head);
     assert.equal(await git(f.repo, 'show', `${branch}:file.txt`), 'unmerged commit');
     assert.equal(await fs.readFile(path.join(f.repo, 'file.txt'), 'utf8'), 'initial\n');
-    // A project-local damaged tree misleadingly resolves to the source root.
-    // Cleanup must still target only the registered child, never that parent.
+    // 项目内的损坏工作树会误解析到源仓库根目录。
+    // 清理仍须仅针对已注册的子目录，绝不能针对该父目录。
     const localId = randomUUID(), local = await createWorktree(f.repo, f.dir, localId,
       { location: 'project', projectPath: f.repo, projectName: 'Test', name: 'missing-git' });
     await fs.unlink(path.join(local, '.git'));
@@ -301,7 +301,7 @@ test('absent target cleanup removes only its verified registration, honoring loc
     assert.ok(registrations.includes(`worktree ${other.replaceAll('\\', '/')}\n`));
     assert.equal(await fs.readFile(path.join(tree + '-moved', 'file.txt'), 'utf8'), 'initial\n');
     assert.equal(await git(f.repo, 'rev-parse', branch), head);
-    // No registration or directory remains: retrying does not require a Git deletion.
+    // 注册信息和目录都已移除：重试时无须执行 Git 删除。
     assert.equal((await forceCleanupWorktree(f.repo, tree, id)).ok, true);
     assert.equal((await forceCleanupWorktree(path.join(f.dir, 'missing-source'), tree, id)).ok, true);
   } finally { await f.dispose(); }
@@ -311,8 +311,8 @@ test('malformed existing gitfiles and missing source repositories are preserved 
   const f = await fixture(); try {
     const id = randomUUID(), tree = await createWorktree(f.repo, f.dir, id);
     const broken = 'gitdir: /missing/other/repository\n';
-    // Git hides this existing file on Windows, where opening it with 'w' can
-    // fail. Corrupt its bytes through r+ without replacing it or its attributes.
+    // Git 在 Windows 上会隐藏这个已有文件，因此使用 'w' 打开可能
+    // 失败。通过 r+ 损坏其字节内容，不替换文件或更改属性。
     const gitfile = await fs.open(path.join(tree, '.git'), 'r+');
     try { await gitfile.truncate(0); await gitfile.writeFile(broken); }
     finally { await gitfile.close(); }

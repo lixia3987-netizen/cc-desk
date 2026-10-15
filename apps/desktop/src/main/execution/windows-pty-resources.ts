@@ -12,7 +12,7 @@ interface WindowsTerminalResources {
   };
 }
 
-/** Birth identity captured from CreateProcessW's original, still-owned HANDLE. */
+/** 从 CreateProcessW 原始且仍持有的 HANDLE 捕获进程创建身份。 */
 export function windowsPtyCreationIdentity(terminal: IPty): string {
   const created = (terminal as unknown as WindowsTerminalResources)._agent?._created;
   if (typeof created !== 'string' || !/^\d{20}$/.test(created)) throw new Error('无法确认 Windows PTY 原始进程身份。');
@@ -21,9 +21,9 @@ export function windowsPtyCreationIdentity(terminal: IPty): string {
 
 async function nativeClosed(agent: WindowsTerminalResources['_agent'], timeoutMs: number) {
   const deadline = Date.now() + timeoutMs;
-  // The fixed native watcher publishes this callback only after HPCON, its
-  // process HANDLE and close-event HANDLE are closed. Socket close alone is not
-  // that evidence and must not stop the independent output-draining worker.
+  // 修复后的原生监视器仅在 HPCON、进程 HANDLE
+  // 及关闭事件 HANDLE 都关闭后才发布此回调。仅套接字关闭
+  // 不足以证明释放，不能据此停止独立的输出排空工作线程。
   while (agent._exitCode === undefined) {
     if (Date.now() >= deadline) throw new Error('等待 Windows PTY 原生资源释放超时。');
     await new Promise(resolve => setTimeout(resolve, 10));
@@ -39,8 +39,8 @@ function socketClosed(socket: Socket, timeoutMs: number): Promise<void> {
       if (error) reject(error); else resolve();
     };
     const closed = () => finish();
-    // A pipe can report EPIPE while its already-terminated peer is being released.
-    // Confirming close, rather than the final I/O result, proves ownership ended.
+    // 在释放已结束的对端时，管道仍可能报告 EPIPE。
+    // 关闭确认才能证明所有权已结束，最终 I/O 结果不能证明。
     const failed = (error: Error) => { ioError = error; };
     const timer = setTimeout(() => finish(new Error('等待 Windows PTY 管道关闭超时。', { cause: ioError })), timeoutMs);
     socket.once('close', closed); socket.on('error', failed);
@@ -48,10 +48,10 @@ function socketClosed(socket: Socket, timeoutMs: number): Promise<void> {
 }
 
 /**
- * node-pty 1.1.0 defers Windows kill() until the first output, even after process
- * exit. A silent process therefore leaves its ConPTY forwarding worker alive.
- * The fixed native watcher closes HPCON before its exit callback. Keep draining
- * until that callback, then prove the forwarding worker and both sockets closed.
+ * node-pty 1.1.0 会把 Windows kill() 延迟到首次输出时执行，即使进程
+ * 已经退出。因此，无输出的进程会遗留活跃的 ConPTY 转发工作线程。
+ * 修复后的原生监视器在退出回调前关闭 HPCON。持续排空到
+ * 该回调，再确认转发工作线程和两个套接字均已关闭。
  */
 export async function releaseWindowsPty(terminal: IPty, timeoutMs = 3000): Promise<void> {
   const internal = terminal as unknown as WindowsTerminalResources;
@@ -69,9 +69,9 @@ export async function releaseWindowsPty(terminal: IPty, timeoutMs = 3000): Promi
     throw new Error('无法确认 Windows PTY 资源结构，请检查 node-pty 兼容性。');
   }
 
-  // Public kill() also starts a bare-PID console-list helper and disposes the
-  // worker before native close is complete. Process-tree release is already
-  // owned by Runtime; request only this native instance's close, exactly once.
+  // 公开的 kill() 还会启动仅按 PID 查询控制台列表的辅助进程，并在
+  // 原生关闭完成前释放工作线程。进程树释放已由
+  // Runtime 负责；只请求此原生实例关闭，且仅请求一次。
   internal._deferreds.length = 0;
   internal._isReady = true;
   agent._ptyNative.kill(agent._pty, agent._useConptyDll);
@@ -86,7 +86,7 @@ export async function releaseWindowsPty(terminal: IPty, timeoutMs = 3000): Promi
     const exited = () => finish();
     const failed = (error: Error) => finish(error);
     const timer = setTimeout(() => {
-      // Native close has returned; the forwarding worker is now safe to stop.
+      // 原生关闭已返回；现在可安全停止转发工作线程。
       void worker.terminate().catch(() => {});
       finish(new Error('等待 Windows PTY 转发资源释放超时。'));
     }, timeoutMs);
@@ -95,13 +95,13 @@ export async function releaseWindowsPty(terminal: IPty, timeoutMs = 3000): Promi
   const inputClosed = socketClosed(input, timeoutMs), outputClosed = socketClosed(output, timeoutMs);
 
   let failure: unknown;
-  // The default node-pty path never destroys this write-only pipe itself.
+  // node-pty 默认路径从不主动销毁这个只写管道。
   try { input.destroy(); } catch (error) { failure ??= error; }
-  // dispose() is idempotent for the default ConPTY path and drains before exit.
-  // Native close is confirmed above; failure there must retain this drainer.
+  // dispose() 在默认 ConPTY 路径中具有幂等性，并在退出前排空。
+  // 上方已确认原生关闭；若关闭失败，必须保留此排空器。
   try { connection.dispose(); } catch (error) { failure ??= error; }
-  // Let the worker drain before closing our output endpoint. Still close it when
-  // the worker failed, so one cleanup failure cannot strand independent handles.
+  // 先让工作线程排空，再关闭本方输出端点。即使工作线程
+  // 失败也应关闭端点，避免一次清理失败遗留独立句柄。
   const drained = stopped.finally(() => { output.destroy(); });
   const results = await Promise.allSettled([drained, inputClosed, outputClosed]);
   for (const result of results) if (result.status === 'rejected') failure ??= result.reason;

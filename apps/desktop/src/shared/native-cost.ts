@@ -1,4 +1,4 @@
-/** User-entered rates for one exact model, in USD per million reported tokens. */
+/** 用户为某个确定模型输入的费率，单位为每百万个上报 token 的美元价格。 */
 export interface NativeModelPricing {
   model: string;
   inputUSDPerMillion: number;
@@ -9,7 +9,7 @@ const object = (value: unknown): value is Record<string, unknown> => value !== n
 const count = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const rate = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000;
 
-/** Never estimate from budgets, total-only usage, or another model's price. */
+/** 不能依据预算、仅含总量的用量数据或其他模型的价格进行估算。 */
 export function estimateNativeCost(usage: unknown, pricing: unknown, model: unknown): number | undefined {
   if (!object(usage) || !object(pricing) || typeof model !== 'string' || !model || pricing.model !== model ||
       !count(usage.inputTokens) || !count(usage.outputTokens) || !rate(pricing.inputUSDPerMillion) || !rate(pricing.outputUSDPerMillion)) return undefined;

@@ -50,12 +50,12 @@ async function workspace() {
   await expect(page.getByRole('heading', { name: sessions[0].title, exact: true })).toBeVisible();
   await expect(page.locator('.chat-message.user')).toContainText(sessions[0].title + '已有记录');
 
-  // The test wraps the handlers Electron registered, preserving real validation,
-  // deletion, persistence and state events. Only response timing is controlled.
+  // 本测试包装 Electron 注册的处理函数，保留实际的校验、
+  // 删除、持久化和状态事件，只控制响应时机。
   await app.evaluate(({ ipcMain }) => {
     type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
-    // Electron 44 stores invoke handlers here; fail clearly if its test-only
-    // interception surface changes when the pinned Electron version is upgraded.
+    // Electron 44 在此保存调用处理函数；升级固定的 Electron 版本时，
+    // 若这个仅供测试的拦截接口发生变化，应明确报错。
     const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
     if (!(handlers instanceof Map)) throw new Error('Electron IPC invoke handler interception is unavailable');
     const snapshot = handlers.get('chat:snapshot'), remove = handlers.get('session:delete');
@@ -113,7 +113,7 @@ async function holdSnapshot(app: ElectronApplication, id: string) {
   await expect.poll(() => app.evaluate(() => (globalThis as FixtureGlobal).sessionReadFixture.readEntered())).toBe(true);
 }
 
-/** A later IPC response plus rendering turns drains the released snapshot callback. */
+/** 后续 IPC 响应与渲染轮次会执行完已放行的快照回调。 */
 async function settle(page: Page) {
   await page.evaluate(async () => {
     await window.desktop.snapshot();

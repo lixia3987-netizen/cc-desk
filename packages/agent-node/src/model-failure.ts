@@ -7,7 +7,7 @@ const defaultReasons: Readonly<Record<string, ModelFailureReason>> = Object.free
   interrupted: 'missing_terminal', response_limit: 'response_limit', transport: 'stream_disconnected',
 })
 
-/** Only constant adapter call sites supply detail; error messages and provider fields are never inspected. */
+/** 仅适配器中的固定调用点提供详情；绝不检查错误消息或提供方字段。 */
 export function describeNativeModelFailure<T extends Error>(error: T, details: FailureDetails): T {
   const candidate = { ...adapterDetails.get(error), ...details }
   if (validateModelFailureDiagnostic({ category: 'unknown', retryable: false, ...candidate })) {
@@ -22,7 +22,7 @@ export function describeNativeModelFailure<T extends Error>(error: T, details: F
 export function nativeModelFailureDetails(error: Error): FailureDetails | undefined { return adapterDetails.get(error) }
 export function defaultModelFailureReason(code: string): ModelFailureReason | undefined { return Object.hasOwn(defaultReasons, code) ? defaultReasons[code] : undefined }
 
-/** Only adapter-owned codes and numeric HTTP status enter a persisted diagnostic. */
+/** 仅适配器定义的错误码及数值型 HTTP 状态可进入持久化诊断。 */
 export function classifyNativeModelFailure(code: string, httpStatus?: number, rejectedBeforeStream = false, details?: FailureDetails): ModelFailureDiagnostic {
   if ((code === 'http' || code === 'redirect') && typeof httpStatus === 'number' && Number.isInteger(httpStatus) && httpStatus >= 300 && httpStatus <= 599) {
     const status = httpStatus

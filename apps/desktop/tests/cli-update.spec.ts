@@ -19,8 +19,8 @@ async function workspace() {
     cwd: project.path,  started: false, engineConfig: { schemaVersion: 1, options: kind === 'shell' ? {} : { model: '', effort: 'default', permissionMode: 'default' } }, status: 'idle', archived: false,
     createdAt: now, updatedAt: now, draft: '草稿需要保留',
   });
-  // Maintenance must preserve an independently running Shell. A Shell in the
-  // workflow's directory would correctly be refused by directory ownership.
+  // 维护操作必须保留独立运行的 Shell。若 Shell 位于工作流目录中，
+  // 则应由目录所有权机制正确拒绝该操作。
   const sessions = [makeSession(projects[0], 'agent'), makeSession(projects[1], 'agent'), makeSession(projects[2], 'shell')];
   const state: AppState = { version: 3, projects, sessions, selectedSessionId: sessions[0].id, settings: {
     claudePath: fixture.cli, shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, chatFontFamily: 'system', uiFontFamily: 'system', engineDefaults: {},

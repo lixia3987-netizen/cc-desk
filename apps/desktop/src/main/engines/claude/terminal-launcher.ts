@@ -6,7 +6,7 @@ import type { TerminalLaunchCallbacks, TerminalLauncher, TerminalLaunchSpec, Ter
 import type { StateStore } from '../../store';
 import { claudeSessionPatch, projectClaudeSession } from './session';
 
-/** Maps confirmed provider configuration into the single desktop engineConfig source. */
+/** 将已确认的提供方配置映射到桌面端唯一的 engineConfig 来源。 */
 export class ClaudeTerminalLauncher implements TerminalLauncher {
   private builder: ClaudeTerminalLaunchBuilder;
   constructor(private store: StateStore, capabilities: () => Capabilities) {

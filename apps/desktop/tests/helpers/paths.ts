@@ -1,7 +1,7 @@
 import path from 'node:path';
 
-// Desktop tests are transformed as CommonJS by both tsx and Playwright.
-// Resolve from the file rather than the caller's working directory.
+// tsx 和 Playwright 都会将桌面测试转换为 CommonJS。
+// 根据文件位置解析路径，不依赖调用者的工作目录。
 export const desktopRoot = path.resolve(__dirname, '../..');
 export const repositoryRoot = path.resolve(desktopRoot, '../..');
 export const documentationPath = (...parts: string[]) => path.join(repositoryRoot, 'docs', ...parts);

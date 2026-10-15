@@ -31,7 +31,7 @@ interface TextFingerprint { length: number; digest: string }
 const fingerprint = (text: string): TextFingerprint => ({ length: text.length, digest: createHash('sha256').update(text, 'utf16le').digest('hex') });
 const syntheticId = (id: string) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id);
 
-/** Recognizes only IDs produced by our root assistant block adapters. */
+/** 仅识别由本应用的根级助手块适配器生成的 ID。 */
 function rootBlock(message: ChatMessage): { group: string; index: number } | undefined {
   if (message.role !== 'assistant' || message.parentToolUseId || !message.turnId || message.truncated) return;
   const separator = message.id.lastIndexOf(':');
@@ -44,10 +44,10 @@ function rootBlock(message: ChatMessage): { group: string; index: number } | und
   try {
     const tuple: unknown = JSON.parse(group);
     if (Array.isArray(tuple) && tuple.length === 3 && tuple[0] === message.turnId && tuple[1] === null && typeof tuple[2] === 'string' && tuple[2]) return { group, index };
-  } catch { /* An unrelated ID provides no migration evidence. */ }
+  } catch { /* 无关 ID 不能提供迁移依据。 */ }
 }
 
-/** Repairs only result echoes with explicit journal provenance, never repeated text. */
+/** 仅修复明确来源于事件日志的结果回显，不根据重复文本修复。 */
 export class ResultEchoRecovery {
   private latest?: { id: string; turnId: string; blocks: Map<number, TextFingerprint>; exhausted: boolean };
   private previousComplete = false;
@@ -78,7 +78,7 @@ export class ResultEchoRecovery {
     if (event.type === 'message' && isMessage(event.message)) {
       const message = event.message;
       if (candidate && message.role === 'assistant' && !message.parentToolUseId && !message.sourceId && !message.isError && !message.truncated && syntheticId(message.id) && message.turnId === candidate.turnId && message.text.length === candidate.length && fingerprint(message.text).digest === candidate.digest) {
-        // Only retain removal IDs that could be in the old bounded snapshot.
+        // 仅保留可能存在于旧版有界快照中的待移除 ID。
         if (this.snapshotIds.has(message.id)) this.removed.add(message.id);
         this.invalidate(); return true;
       }
@@ -90,7 +90,7 @@ export class ResultEchoRecovery {
         if (!this.latest!.exhausted) this.latest!.blocks.set(block.index, fingerprint(message.text));
       } else if (!message.parentToolUseId && (message.role === 'assistant' || message.role === 'user')) this.latest = undefined;
     } else if (event.type === 'result') {
-      // Error summaries have separate meaning, even when their text is equal.
+      // 错误摘要具有独立含义，即使文本相同也是如此。
       if (event.success === true && this.previousComplete && this.latest && typeof event.summary === 'string' && event.summary && this.matches(event.summary)) this.pending = { ...fingerprint(event.summary), turnId: this.latest.turnId };
       this.latest = undefined; this.previousComplete = false;
     } else this.previousComplete = false;
@@ -98,7 +98,7 @@ export class ResultEchoRecovery {
   }
 }
 
-/** A bounded UI projection plus a complete append-only event journal. */
+/** 有界界面投影与完整的仅追加事件日志。 */
 export class ChatHistory {
   private cache = new Map<string, CachedHistory>();
   private dirty = new Set<string>();
@@ -143,13 +143,13 @@ export class ChatHistory {
         const boundary = Buffer.alloc(1);
         const validCursor = typeof cursor === 'number' && Number.isSafeInteger(cursor) && cursor >= 0 && cursor <= size && (cursor === 0 || fs.readSync(fd, boundary, 0, 1, cursor - 1) === 1 && boundary[0] === 10);
         if (hadSnapshot && (!validCursor || projectionVersion !== PROJECTION_VERSION)) {
-          // Old snapshots have no event boundary. Rebuild journal text separately:
-          // applying its deltas directly to saved text would duplicate that text.
+          // 旧版快照没有事件边界。应单独重建日志文本：
+          // 直接将日志增量应用到已保存文本会造成文本重复。
           const recovered = this.entry({ ...snapshot, messages: [], pending: [] });
           const removed = this.replay(recovered, fd, 0, size, new Set(entry.messages.keys()));
-          // Removing echoes can make older journal messages fit again. Keep the
-          // authoritative replay order instead of updating shared IDs in their
-          // old snapshot positions and appending those older messages afterward.
+          // 移除回显后，较早的日志消息可能再次容得下。应保留
+          // 权威重放顺序，避免在旧快照位置更新共享 ID，
+          // 再将那些较早的消息追加到后面。
           const recoveredIds = new Set(recovered.snapshot.messages.map(message => message.id));
           snapshot.messages = snapshot.messages.filter(message => !removed.has(message.id) && !recoveredIds.has(message.id));
           this.reconcile(entry);
@@ -162,7 +162,7 @@ export class ChatHistory {
       } finally { fs.closeSync(fd); }
     } else if (cursor !== undefined) this.dirty.add(id);
     if (hadSnapshot && projectionVersion !== PROJECTION_VERSION) this.dirty.add(id);
-    // Approval requests belong to the old process, never to a restored UI.
+    // 审批请求属于旧进程，不能带入恢复后的界面。
     if (snapshot.pending?.length || LIVE_STATES.has(snapshot.taskState)) this.dirty.add(id);
     snapshot.pending = [];
     delete snapshot.commands;
@@ -183,7 +183,7 @@ export class ChatHistory {
     this.reconcileIfNeeded(entry);
     return entry.messages.get(messageId)?.message;
   }
-  /** Stores a replacement without serializing unrelated messages on each delta. */
+  /** 保存替换内容，避免在每次增量更新时序列化无关消息。 */
   upsertMessage(id: string, message: ChatMessage): ChatMessage {
     this.get(id);
     const entry = this.cache.get(id)!;
@@ -199,7 +199,7 @@ export class ChatHistory {
       entry.journalEnd = fs.existsSync(file) ? fs.statSync(file).size : 0;
       entry.checkJournal = false;
     }
-    // Keep an incomplete tail as evidence, but put the next event on a new line.
+    // 保留不完整尾部作为依据，但将下一个事件写到新的一行。
     const data = (entry.journalEnd > entry.journalCursor ? '\n' : '') + JSON.stringify({ at: new Date().toISOString(), ...event }) + '\n';
     try { fs.appendFileSync(file, data, { mode: 0o600 }); }
     catch (error) { entry.checkJournal = true; throw error; }
@@ -228,8 +228,8 @@ export class ChatHistory {
     for (const message of messages) this.put(entry, message);
   }
   private put(entry: CachedHistory, original: ChatMessage): ChatMessage {
-    // Bound individual messages as well as the aggregate projection. The journal
-    // retains the full event, including any text/input omitted from this preview.
+    // 同时限制单条消息和整体投影。事件日志
+    // 保留完整事件，包括本预览省略的文本或输入。
     const message = { ...original };
     if (message.text.length > MESSAGE_TEXT) { message.text = message.text.slice(-MESSAGE_TEXT); message.truncated = true; }
     if (message.input) {
@@ -318,8 +318,8 @@ export class ChatHistory {
       snapshot.usage = undefined;
     } else if (event.type === 'result') {
       if (object(event.usage)) snapshot.usage = event.usage as ChatSnapshot['usage'];
-      // A result may precede background task completion. Only a state event can
-      // confirm that the owning turn finished.
+      // 结果可能早于后台任务完成。只有状态事件才能
+      // 确认所属轮次已结束。
       snapshot.error = typeof event.error === 'string' ? event.error : undefined;
     }
   }
@@ -327,7 +327,7 @@ export class ChatHistory {
     const entry = this.cache.get(id);
     if (!entry) return;
     const file = this.file(id, '.json');
-    // Cursor and projection must commit together; pending approvals are transient.
+    // 游标与投影必须一并提交；待审批请求为临时状态。
     const data = JSON.stringify({ ...entry.snapshot, pending: [], journalCursor: entry.journalCursor, projectionVersion: PROJECTION_VERSION });
     const fd = fs.openSync(file + '.tmp', 'w', 0o600);
     try { fs.writeFileSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }

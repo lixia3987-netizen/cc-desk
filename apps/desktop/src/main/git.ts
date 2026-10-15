@@ -32,8 +32,8 @@ function errorMessage(error: unknown): string { return String((error as Error).m
 
 const mutations = new Set<string>();
 async function withGitMutation<T>(cwd: string, action: () => Promise<T>): Promise<T> {
-  // Serialize shared refs/registration across all linked worktrees, while allowing
-  // ordinary sessions in independent worktrees to continue using their files.
+  // 跨所有关联工作树串行处理共享引用和注册，同时允许
+  // 独立工作树中的普通会话继续使用各自的文件。
   const common = await fs.realpath((await git(cwd, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
   const key = process.platform === 'win32' ? common.toLowerCase() : common;
   if (mutations.has(key)) throw new Error('此项目正在执行另一个 Git 操作。');
@@ -53,10 +53,10 @@ function remoteBranch(ref: string, names: string[]): { remote: string; name: str
   return remote ? { remote, name: relative.slice(remote.length + 1) } : undefined;
 }
 
-/** Explicit refspecs never update local branches, regardless of remote.*.fetch configuration. */
+/** 显式 refspec 不更新本地分支，不受 remote.*.fetch 配置影响。 */
 async function fetchBranches(cwd: string, remote: string, name = '*'): Promise<void> {
-  // Git fetch dereferences existing symbolic refs. Refuse unusual aliases so a
-  // remote-tracking destination cannot redirect a fetch into a local branch.
+  // Git fetch 会解引用已有符号引用。拒绝异常别名，避免
+  // 远程跟踪目标将 fetch 重定向到本地分支。
   const prefix = `refs/remotes/${remote}/`;
   const refs = await git(cwd, ['for-each-ref', '--format=%(refname)%00%(symref)', prefix]);
   for (const line of refs.split(/\r?\n/).filter(Boolean)) {
@@ -70,7 +70,7 @@ async function fetchBranches(cwd: string, remote: string, name = '*'): Promise<v
     '--', remote, `+refs/heads/${name}:refs/remotes/${remote}/${name}`]);
 }
 
-/** Read cached refs by default. Refresh discovers remote-only branches without switching the checkout. */
+/** 默认读取缓存引用。刷新可发现仅存在于远程的分支，无须切换检出状态。 */
 export async function listWorktreeBranches(cwd: string, refresh = false): Promise<WorktreeBranch[]> {
   const names = await remotes(cwd);
   if (refresh) await withGitMutation(cwd, async () => {
@@ -79,7 +79,7 @@ export async function listWorktreeBranches(cwd: string, refresh = false): Promis
   const raw = await git(cwd, ['for-each-ref', '--sort=refname', '--format=%(refname)%00%(symref)%00%(HEAD)', 'refs/heads/', 'refs/remotes/']);
   return raw.split(/\r?\n/).filter(Boolean).flatMap(line => {
     const [ref, symbolic, head] = line.split('\0');
-    if (symbolic) return []; // origin/HEAD is an alias, not a selectable branch.
+    if (symbolic) return []; // origin/HEAD 是别名，不是可选分支。
     if (ref.startsWith('refs/heads/')) return [{ ref, name: ref.slice('refs/heads/'.length), current: head === '*' }];
     const remote = remoteBranch(ref, names);
     return remote ? [{ ref, name: `${remote.remote}/${remote.name}`, remote: remote.remote, current: false }] : [];
@@ -96,7 +96,7 @@ async function worktreeSource(cwd: string, requested: string | undefined, baseBr
     if (requested.startsWith('refs/remotes/')) {
       const source = remoteBranch(requested, await remotes(cwd));
       if (!source) throw new Error('工作区起点的远程仓库不存在。');
-      // Never fall back to a stale tracking ref after a fetch/authentication failure.
+      // fetch 或认证失败后，不能回退到过期的跟踪引用。
       await fetchBranches(cwd, source.remote, source.name);
     }
   }
@@ -107,7 +107,7 @@ async function worktreeSource(cwd: string, requested: string | undefined, baseBr
 
 async function excludeWorktree(projectRoot: string, common: string, destination: string): Promise<() => Promise<void>> {
   const directory = path.join(common, 'info');
-  // Never follow an info/exclude symlink when appending a local Git rule.
+  // 追加本地 Git 规则时，不能跟随 info/exclude 符号链接。
   await ensureWorktreeParent(directory, []);
   const file = path.join(directory, 'exclude');
   const entry = await fs.lstat(file).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; });
@@ -121,7 +121,7 @@ async function excludeWorktree(projectRoot: string, common: string, destination:
   await fs.writeFile(file, addition, { flag: 'a', mode: 0o600 });
   const expected = Buffer.concat([original ?? Buffer.alloc(0), addition]);
   return async () => {
-    // An external editor may have changed exclude while Git was running. Preserve its edits.
+    // Git 运行期间，外部编辑器可能改动 exclude。应保留其修改。
     const current = await fs.readFile(file).catch(() => undefined);
     if (!current?.equals(expected)) return;
     const currentEntry = await fs.lstat(file).catch(() => undefined);
@@ -157,7 +157,7 @@ export async function createWorktree(cwd: string, root: string, id: string, plac
   let reserved = false;
   try {
     await ensureWorktreeParent(path.dirname(destination), created);
-    // Reserve exclusively: Git itself permits an existing empty folder, but our UI must never take it over.
+    // 独占预留：Git 允许使用已有空目录，但本应用界面不能接管它。
     try { await fs.mkdir(destination); reserved = true; }
     catch (error) { if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('工作区目标目录已经存在，请更换名称后重试。'); throw error; }
     if (placement?.location === 'project') undoExclude = await excludeWorktree(projectRoot, common, destination);
@@ -168,12 +168,12 @@ export async function createWorktree(cwd: string, root: string, id: string, plac
     return destination;
   } catch (error) {
     if (added) {
-      // Git remove can delete ignored data even without --force. Checkout hooks may
-      // have created it before the owner marker failed, so apply the normal cleanup guard.
+      // 即使没有 --force，Git remove 也可能删除已忽略的数据。检出钩子可能
+      // 在所有者标记失败前创建了数据，因此仍须应用常规清理保护。
       const noIgnoredFiles = await git(destination, ['ls-files', '--others', '--ignored', '--exclude-standard', '-z']).then(value => !value, () => false);
       if (noIgnoredFiles) await git(cwd, ['worktree', 'remove', '--', destination]).catch(() => undefined);
     }
-    // Only remove directories we reserved and only if empty. Never force-delete checkout/hook/user data.
+    // 仅移除本应用预留且为空的目录。不能强制删除检出、钩子或用户数据。
     if (reserved) await fs.rmdir(destination).catch(() => undefined);
     const remains = !reserved || await fs.lstat(destination).then(() => true, (cause: NodeJS.ErrnoException) => cause.code !== 'ENOENT');
     if (!remains) await undoExclude?.().catch(() => undefined);
@@ -231,8 +231,8 @@ export async function gitDiff(cwd: string, relative: string, staged = false): Pr
     return { path: relative, staged, text: text.slice(0, MAX_DIFF), binary: file.binary, truncated: file.truncated || text.length > MAX_DIFF };
   }
   const paths = [relative];
-  // Both sides are required for rename detection. Never trust an old path merely
-  // because it came from Git: a session can be scoped to a repository subdirectory.
+  // 重命名检测需要两侧路径。不能仅因旧路径来自 Git
+  // 就信任它：会话可能仅限于仓库的某个子目录。
   if (staged && change?.originalPath && /[RC]/.test(change.indexStatus)) {
     await resolveProjectFile(cwd, change.originalPath, true);
     paths.push(change.originalPath);
@@ -333,7 +333,7 @@ function containsDirectory(root: string, target: string): boolean {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
 }
 
-/** Check ignored and untracked directories too: a nested repository is separate user data. */
+/** 同时检查已忽略和未跟踪目录：嵌套仓库属于独立用户数据。 */
 async function assertNoNestedRepositories(root: string): Promise<void> {
   const pending = [root], deadline = Date.now() + 30000;
   let inspected = 0;
@@ -348,8 +348,8 @@ async function assertNoNestedRepositories(root: string): Promise<void> {
         (names.get('refs')?.isDirectory() || names.get('reftable')?.isDirectory());
       if (names.has('.git') || bare) throw new Error(`隔离目录内包含独立 Git 仓库或子模块，请先移走后再删除：${directory}`);
     }
-    // Never descend through symlinks (including Windows junctions), or into the
-    // current worktree's .git metadata. git worktree remove owns the actual removal.
+    // 不能进入符号链接（包括 Windows 目录联接），也不能进入
+    // 当前工作树的 .git 元数据。实际移除操作由 git worktree remove 负责。
     for (const entry of entries) {
       if (entry.isDirectory() && entry.name.toLowerCase() !== '.git') pending.push(path.join(directory, entry.name));
     }
@@ -377,14 +377,14 @@ async function forceRemoveVerifiedWorktree(basePath: string, worktreePath: strin
         }
       }
       await assertNoNestedRepositories(target);
-      // External tools can move a worktree while inspection is in progress.
+      // 检查过程中，外部工具可能移动工作树。
       const current = await fs.lstat(target);
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== entry.dev || current.ino !== entry.ino ||
           await gitWorktreeRoot(target) !== target || !await ownership(base, target, sessionId)) {
         throw new Error('工作区在检查过程中发生变化，请刷新后重试。');
       }
-      // Exactly one --force: Git still refuses locked worktrees. Never unlock,
-      // double-force, prune registrations or fall back to recursive fs removal.
+      // 仅使用一次 --force：Git 仍会拒绝已锁定的工作树。不能解锁、
+      // 重复强制执行、清除注册或回退到递归文件系统删除。
       await git(base, ['worktree', 'remove', '--force', '--', target]);
       return { ok: true, status: 'removed', message: '已强制移除隔离目录及其中的未提交文件；Git 分支和已提交记录保留。' };
     } catch (error) {
@@ -416,7 +416,7 @@ async function metadataText(file: string): Promise<string> {
   return fs.readFile(file, 'utf8');
 }
 
-/** Prove identity from the source repository without relying on the target's .git file. */
+/** 依据源仓库证明身份，不依赖目标的 .git 文件。 */
 async function registeredWorktreeOwner(base: string, target: string, sessionId: string): Promise<{ directory: string; common: string } | undefined> {
   const common = await fs.realpath((await git(base, ['rev-parse', '--path-format=absolute', '--git-common-dir'])).trim());
   if (containsDirectory(target, base) || containsDirectory(target, common)) throw new Error('隔离目录包含来源目录或 Git 元数据，不能强制删除。');
@@ -442,7 +442,7 @@ async function registeredWorktreeOwner(base: string, target: string, sessionId: 
   for (const entry of await fs.readdir(metadataRoot, { withFileTypes: true })) {
     if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
     const directory = path.join(metadataRoot, entry.name);
-    // Other registrations may be damaged too; never repair or modify them.
+    // 其他注册也可能损坏；不能修复或修改它们。
     const pointer = await metadataText(path.join(directory, 'gitdir')).catch(() => undefined);
     if (!pointer || await canonicalExistingParent(pointer.trim()) !== path.join(target, '.git')) continue;
     if (found) throw new Error('隔离目录存在重复所有权记录，不能自动恢复。');
@@ -460,7 +460,7 @@ async function registeredWorktreeOwner(base: string, target: string, sessionId: 
   return { directory: found, common };
 }
 
-/** Explicit destructive choice: discard worktree files, but never delete its branch. */
+/** 显式破坏性选择：丢弃工作树文件，但不删除其分支。 */
 export async function forceCleanupWorktree(basePath: string, worktreePath: string, sessionId: string, running = false): Promise<WorktreeActionResult> {
   const blocked = (message: string): WorktreeActionResult => ({ ok: false, status: 'blocked', message });
   const absent = (): WorktreeActionResult => ({ ok: true, status: 'removed', message: '隔离目录已经不存在，未删除任何文件；Git 分支和已提交记录保留。' });
@@ -494,9 +494,9 @@ export async function forceCleanupWorktree(basePath: string, worktreePath: strin
       if (!current.isDirectory() || current.isSymbolicLink() || current.dev !== entry.dev || current.ino !== entry.ino || await fs.realpath(worktreePath) !== target) {
         return blocked('隔离目录在检查过程中发生变化，请刷新后重试。');
       }
-      // Git cannot remove a registered directory whose backlink disappeared.
-      // Restore only this proven owner's missing file; git worktree repair would
-      // also mutate unrelated registrations, so it is deliberately not used here.
+      // 反向链接消失后，Git 无法移除已注册目录。
+      // 仅恢复已证实属于本所有者的缺失文件；git worktree repair 还会
+      // 改动无关注册，因此此处有意不使用该命令。
       const pointer = `gitdir: ${owner.directory}\n`;
       const handle = await fs.open(marker, 'wx', 0o600);
       let created: import('node:fs').Stats | undefined, written = false, result: WorktreeActionResult | undefined;
@@ -509,8 +509,8 @@ export async function forceCleanupWorktree(basePath: string, worktreePath: strin
       } finally {
         await handle.close().catch(() => undefined);
         if (!result?.ok && created) {
-          // Roll back only our unchanged inode and bytes, including a partial
-          // write. A concurrently replaced or edited .git file must survive.
+          // 仅回滚本应用尚未变化的 inode 与字节，包括部分
+          // 写入内容。并发替换或编辑的 .git 文件必须保留。
           const remaining = await optionalEntry(marker);
           if (remaining?.isFile() && !remaining.isSymbolicLink() && remaining.dev === created.dev && remaining.ino === created.ino) {
             const contents = await fs.readFile(marker, 'utf8');

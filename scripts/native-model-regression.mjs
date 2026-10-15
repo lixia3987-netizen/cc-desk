@@ -27,7 +27,7 @@ function argumentsFor(argv) {
   }
   return result;
 }
-/** Uses the existing Claude connection in memory; neither tokens nor config contents enter reports. */
+/** 在内存中使用现有 Claude 连接；令牌与配置内容均不会写入报告。 */
 export async function runNativeModelRegression(options) {
   const configuration = JSON.parse(await readFile(options.claudeConfig, 'utf8'));
   const environment = configuration.env ?? {};
@@ -67,7 +67,7 @@ export async function runNativeModelRegression(options) {
             if (Object.hasOwn(source, key)) counters[key] = typeof source[key] === 'number' ? source[key] : source[key] === null ? null : 'non_numeric';
           }
           usageObservations.push({ request, event: event.type, counters });
-        } catch { /* Raw stream data stays in memory and is never reported. */ }
+        } catch { /* 原始流数据仅保留在内存中，不写入报告。 */ }
       }
     };
     return new Response(new ReadableStream({
@@ -125,7 +125,7 @@ export async function runNativeModelRegression(options) {
     report.cases.push({ name: 'restart_and_receipt_replay', status: 'passed', modelRequests: continued.modelRequests, duplicateNetworkRequests: 0 });
     await store.close(); store = undefined;
 
-    // Cut a real service response at its first complete SSE event. Retain no upstream text in the report.
+    // 在首个完整 SSE 事件处截断真实服务响应。报告不保留上游文本。
     currentCase = 'real_stream_cut_and_restart';
     globalThis.fetch = async (...args) => {
       const response = await countedFetch(...args);
@@ -162,7 +162,7 @@ export async function runNativeModelRegression(options) {
     report.status = 'passed';
   } catch (error) {
     report.status = 'failed';
-    // Never copy adapter/provider messages: configuration may contain credentials.
+    // 不复制适配器或服务商的消息：配置可能包含凭据。
     report.failure = { case: currentCase, kind: error instanceof assert.AssertionError ? 'assertion' : 'execution', code: /^[a-z_]{1,64}$/.test(error?.code ?? '') ? error.code : 'regression_failed' };
     if (store) report.failure.diagnostic = store.replay(0, 1000).filter(record => record.event.type === 'model_request_failed').at(-1)?.event.failure;
   } finally {

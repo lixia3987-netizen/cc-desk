@@ -6,7 +6,7 @@ import { NativeActiveClock } from './active-pause';
 
 const port = process.parentPort;
 if (!port) throw new Error('Native worker requires an Electron utilityProcess parent.');
-// Worker transport contains credentials. Disable diagnostic reports that could include them.
+// 工作进程传输包含凭据；禁用可能含有凭据的诊断报告。
 process.report.reportOnFatalError = false;
 process.report.reportOnSignal = false;
 process.report.reportOnUncaughtException = false;
@@ -19,7 +19,7 @@ function fail(error: unknown) {
   abort.abort();
   for (const item of pending.values()) { item.dispose(); item.reject(new Error('Native worker host disconnected.')); }
   pending.clear();
-  // Do not transmit arbitrary errors, headers, environment or model credentials.
+  // 不要传输任意错误、请求头、环境或模型凭据。
   port.postMessage({ type: 'fatal', version: WORKER_PROTOCOL, identity, seq: ++sequence, message: error instanceof Error && error.message === 'Native event backlog exceeded.' ? error.message : 'Native worker execution failed.' });
   process.exit(1);
 }
@@ -64,7 +64,7 @@ async function start(message: WorkerStart) {
     store: {
       beginRun: request => rpc('store.beginRun', request),
       append: async (run, event) => {
-        // Drain this response's streaming RPCs before its authoritative UI replacement.
+        // 对界面进行权威替换前，等待此次响应的流式 RPC 全部完成。
         if (event.type === 'model_response' || event.type === 'model_request_failed') await eventChain;
         return rpc('store.append', { identity: run, event });
       },
@@ -94,7 +94,7 @@ async function start(message: WorkerStart) {
   await eventChain;
   completed = true;
   port.postMessage({ type: 'done', version: WORKER_PROTOCOL, identity, seq: ++sequence, result });
-  // Exit only after the host acknowledges the final result; host still owns all tools.
+  // 只有宿主确认最终结果后才退出；所有工具仍由宿主管理。
 }
 port.on('message', event => {
   try {

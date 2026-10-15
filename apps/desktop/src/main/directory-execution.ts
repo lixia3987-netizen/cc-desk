@@ -5,7 +5,7 @@ import path from 'node:path';
 export interface DirectoryOwner { sessionId: string; providerId: string; generation: number }
 export interface DirectoryLease { readonly token: string; readonly owner: DirectoryOwner; readonly roots: readonly string[] }
 
-/** Canonicalize existing ancestors too, for management of a removed worktree. */
+/** 同时规范化现有祖先目录，以便管理已移除的工作树。 */
 export function canonicalDirectory(value: string): string {
   let current = path.resolve(value);
   const missing: string[] = [];
@@ -30,7 +30,7 @@ export function directoriesOverlap(a: string, b: string): boolean {
   return contains(a, b) || contains(b, a);
 }
 
-/** App-owned roots only: this is mutual exclusion, not an OS filesystem sandbox. */
+/** 仅适用于应用持有的根目录：这是互斥机制，不是操作系统文件系统沙箱。 */
 export class DirectoryExecutionCoordinator {
   private leases = new Map<string, DirectoryLease>();
   conflicts(roots: readonly string[], exceptSessionId?: string): DirectoryLease[] {
@@ -48,8 +48,8 @@ export class DirectoryExecutionCoordinator {
         throw new Error('会话仍持有旧工作目录，请先完全停止再改变目录或执行引擎。');
       }
       if (existing.owner.generation === owner.generation) return existing;
-      // An outer queue/workflow can retain the directory across an explicitly
-      // cancelled turn. Renew its inner generation without opening a lock gap.
+      // 外层队列或工作流可跨越显式取消的轮次，
+      // 继续持有目录。更新内层代次时不能出现锁保护空档。
       this.leases.delete(existing.token);
     }
     const lease = Object.freeze({ token: randomUUID(), owner: Object.freeze({ ...owner }), roots: Object.freeze(normalized) });

@@ -21,7 +21,7 @@ interface DiagnosticRequest {
   promise: Promise<NativeConnectionTestResult>;
 }
 
-/** Fixed low-volume request, with no project context, tools, follow-up, or retries. */
+/** 固定的小请求，不包含项目上下文、工具、后续调用或重试。 */
 export const nativeConnectionProbe = Object.freeze({
   prompt: 'Reply with the single word OK. This is a connection test.',
   maxOutputTokens: 256,
@@ -46,7 +46,7 @@ function responseCode(response: ModelResponse): NativeConnectionTestCode {
   return hasText ? 'ok' : 'protocol';
 }
 
-/** Never serialize the original error, its message/cause, or any provider data. */
+/** 绝不序列化原始错误、其消息和原因，或任何供应商数据。 */
 function failure(error: unknown): Pick<NativeConnectionTestResult, 'code' | 'httpStatus'> {
   if (!(error instanceof ResponsesModelError) && !(error instanceof ChatCompletionsModelError) && !(error instanceof AnthropicModelError)) return { code: 'transport' };
   if (error.code === 'http') {
@@ -65,7 +65,7 @@ function failure(error: unknown): Pick<NativeConnectionTestResult, 'code' | 'htt
   return { code: Object.hasOwn(codes, error.code) ? codes[error.code] : 'transport' };
 }
 
-/** Main-only, opt-in protocol check. Calling list/readiness never creates this request. */
+/** 仅主进程提供、需主动启用的协议检查；调用 list/readiness 绝不会发起此请求。 */
 export class NativeConnectionDiagnostics {
   private active?: DiagnosticRequest;
   private readonly recent = new Map<string, DiagnosticRequest>();
@@ -73,7 +73,7 @@ export class NativeConnectionDiagnostics {
 
   constructor(private readonly connections: ConnectionStore, private readonly options: {
     onChanged?: () => void;
-    /** Internal test seam, not a renderer-controlled timeout. */
+    /** 内部测试接口，超时不由渲染进程控制。 */
     timeoutMs?: number;
   } = {}) {}
 
@@ -92,14 +92,14 @@ export class NativeConnectionDiagnostics {
     try { connection = this.connections.resolveForDiagnostic({ id: value.id, revision: value.revision }); }
     catch { return result('configuration'); }
     const entry: DiagnosticRequest = { input: value, controller: new AbortController(), promise: result('busy') };
-    // Acquire before scheduling network work, so mutation/start/cancel cannot race it.
+    // 调度网络工作前先获得锁，避免修改、启动或取消操作与之竞争。
     this.active = entry;
     entry.promise = Promise.resolve().then(() => this.run(entry, connection)).finally(() => {
       if (this.active === entry) this.active = undefined;
       this.options.onChanged?.();
     });
     this.recent.set(value.requestId, entry);
-    // Bound completed result retention; no response bodies or secrets are cached.
+    // 限制已完成结果的保留数量；不缓存响应正文或秘密信息。
     while (this.recent.size > 32) this.recent.delete(this.recent.keys().next().value!);
     this.options.onChanged?.();
     return entry.promise;
@@ -111,7 +111,7 @@ export class NativeConnectionDiagnostics {
     if (this.active?.input.requestId === parsed.data.requestId) this.active.controller.abort();
   }
 
-  /** Renderer navigation, crash, and destruction have no reliable unmount callback. */
+  /** 渲染进程导航、崩溃和销毁时没有可靠的卸载回调。 */
   cancelAll(): void { this.active?.controller.abort(); }
 
   async shutdown(): Promise<void> {
@@ -121,7 +121,7 @@ export class NativeConnectionDiagnostics {
     this.recent.clear();
   }
 
-  /** A failed application quit leaves the settings screen available for use. */
+  /** 应用退出失败后，设置界面仍可使用。 */
   resumeAfterFailedShutdown(): void { this.closing = false; }
 
   private async run(entry: DiagnosticRequest, connection: ResolvedNativeConnection): Promise<NativeConnectionTestResult> {

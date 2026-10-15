@@ -179,7 +179,7 @@ test('SSE accepts comments, CRLF, CR, multiline data and request notifications t
     const json = JSON.stringify({ jsonrpc: '2.0', id: body.id, result: complete });
     const split = json.indexOf(',');
     response.write(`data: ${json.slice(0, split + 1)}\rdata: ${json.slice(split + 1)}\r\r`);
-    // Deliberately remain open: the client must close once the final response arrives.
+    // 有意保持打开：最终响应到达后，客户端必须关闭连接。
   });
   assert.deepEqual(await client.callTool(tool, {}, active()), complete);
   await close;
@@ -334,7 +334,7 @@ test('catalog bounds include invalid tools and cap directory pages', async t => 
 
 test('oversized response and request bounds fail before unsafe accumulation or request dispatch', async t => {
   const { client, requests } = await fixture(t, ({ send }) => send({ resultType: 'complete', content: [{ type: 'text', text: 'x'.repeat(1024 * 1024) }] }));
-  // The 64 KiB schema-input budget rejects this before the transport's 128 KiB request limit.
+  // 64 KiB 的结构输入预算先于传输层 128 KiB 的请求限制拒绝此输入。
   await rejects(client.callTool(tool, { large: 'x'.repeat(128 * 1024) }, active()), 'tool_arguments', 'not_executed');
   assert.equal(requests.length, 0);
   await rejects(client.callTool(tool, {}, active()), 'response_limit', 'unknown');

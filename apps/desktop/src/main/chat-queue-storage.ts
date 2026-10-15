@@ -19,7 +19,7 @@ export interface StoredChatQueue extends ChatQueueSnapshot {
   version: 1; receipts: { requestId: string; messageId: string; digest: string }[];
 }
 
-/** Commit an accepted prompt before acknowledging it to the renderer. */
+/** 向渲染进程确认前，先提交已接收的提示词。 */
 export class ChatQueueStorage {
   private directory: string;
   constructor(directory: string) { this.directory = path.join(directory, 'chat-queue'); }

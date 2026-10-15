@@ -4,21 +4,21 @@ import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeMo
 import { validateResponsesImageInputs } from './context-maintenance.js'
 
 export interface ResponsesModelOptions {
-  /** API base, normally https://api.openai.com/v1. /responses is appended. */
+  /** API 基础地址通常为 https://api.openai.com/v1。随后追加 /responses。 */
   baseURL: string
   model: string
   apiKey?: string
   instructions?: string
-  /** Fixed tool catalog included in every input estimate and request. Defaults to no tools. */
+  /** 每次输入估算和请求均包含固定工具目录。默认不提供工具。 */
   toolDefinitions?: readonly ToolDefinition[]
-  /** HTTP is accepted only for literal loopback/localhost and this explicit opt-in. */
+  /** 仅显式启用后，才允许字面形式的回环地址或 localhost 使用 HTTP。 */
   allowLoopbackHttp?: boolean
   timeoutMs?: number
   maxResponseBytes?: number
   maxRequestBytes?: number
 }
 
-/** Deliberately contains no provider body, URL, header, or original error cause. */
+/** 有意不包含提供方响应体、URL、请求头或原始错误原因。 */
 export class ResponsesModelError extends Error {
   constructor(readonly code: string, message: string, readonly httpStatus?: number) {
     super(message)
@@ -26,8 +26,8 @@ export class ResponsesModelError extends Error {
   }
 }
 
-// An error code/status alone cannot grant retry permission: callbacks can throw
-// arbitrary exceptions, including a manually constructed adapter error.
+// 仅错误码或状态不能授予重试权限：回调可能抛出
+// 任意异常，包括手工构造的适配器错误。
 const rejectedHttpRequests = new WeakMap<ResponsesModelError, number>()
 
 const failure = (code: string, message: string, reason: ModelFailureReason | undefined = defaultModelFailureReason(code)): never => {
@@ -42,7 +42,7 @@ const positive = (value: number | undefined, fallback: number, maximum: number):
   return result
 }
 
-/** Bounded SSE framing, accepting CRLF, CR, LF, comments, and multi-line data. */
+/** 有限的 SSE 分帧，接受 CRLF、CR、LF、注释和多行数据。 */
 class EventStreamParser {
   private line = ''
   private data: string[] = []
@@ -62,7 +62,7 @@ class EventStreamParser {
     }
   }
   finish(): void {
-    // An unterminated event is not a complete protocol response.
+    // 未终止的事件不属于完整的协议响应。
     if (this.line.length || this.data.length) failure('interrupted', 'The model stream ended inside an event.', 'truncated_event')
   }
   private consumeLine(): void {
@@ -111,8 +111,8 @@ function usageFrom(value: JsonValue | undefined): Usage | null {
 
 type ProtectedValues = string | readonly (string | undefined)[] | undefined
 const protectedValues = (value: ProtectedValues): string[] => [...new Set((Array.isArray(value) ? value : [value]).filter((item): item is string => typeof item === 'string' && item.length > 0))]
-// Scan every combination so unrelated private fields cannot separate pieces
-// of a credential carried by another pair of content fields.
+// 扫描所有组合，避免无关私有字段隔开其他一对内容字段
+// 中携带的凭据片段。
 const contentCredentialGroups = [
   ['text'], ['thinking'], ['signature'], ['data'],
   ['text', 'thinking'], ['text', 'signature'], ['text', 'data'], ['thinking', 'signature'], ['thinking', 'data'], ['signature', 'data'],
@@ -122,7 +122,7 @@ const contentCredentialGroups = [
 const contentStrings = (items: JsonObject[], fields: string[]): string => items.flatMap(item => Array.isArray(item.content)
   ? item.content.flatMap(part => object(part) ? fields.flatMap(field => typeof part[field] === 'string' ? [part[field] as string] : []) : []) : []).join('')
 
-/** Fail closed if protected credentials occur in model inputs, outputs, or host RPC data. */
+/** 模型输入、输出或宿主 RPC 数据出现受保护凭据时，默认拒绝。 */
 export function assertNoModelCredential(value: unknown, secrets: ProtectedValues): void {
   const values = protectedValues(secrets)
   if (!values.length) return
@@ -131,10 +131,10 @@ export function assertNoModelCredential(value: unknown, secrets: ProtectedValues
     const current = pending.pop()
     if (typeof current === 'string') {
       if (values.some(secret => current.includes(secret))) failure('credential_echo', 'Model data contained a protected credential.')
-      // Function arguments and tool outputs are nested JSON strings. Escaping a
-      // key must not bypass the check before those strings are later decoded.
+      // 函数参数和工具输出是嵌套 JSON 字符串。对密钥进行转义
+      // 不得绕过检查，因为这些字符串随后还会被解码。
       if (/^[\s]*[\[{\"]/.test(current)) {
-        try { pending.push(JSON.parse(current)) } catch { /* ordinary model text */ }
+        try { pending.push(JSON.parse(current)) } catch { /* 普通模型文本 */ }
       }
     }
     if (Array.isArray(current)) {
@@ -151,7 +151,7 @@ export function assertNoModelCredential(value: unknown, secrets: ProtectedValues
   }
 }
 
-/** Hold the suffix that could become a credential when the next delta arrives. */
+/** 保留下一段增量到达时可能构成凭据的后缀。 */
 export class SafeModelDeltas {
   private pending: ModelStreamEvent[] = []
   private channels = new Map<string, { length: number; safe: number; scanTail: string }>()
@@ -206,7 +206,7 @@ const responsesTools = (tools: readonly ToolDefinition[]): JsonObject[] => tools
 }))
 const estimateWithTools = (context: ModelContext, instructions: string, toolsJson: string): number => estimateContextInputTokens(context, instructions + toolsJson)
 
-/** Same conservative UTF-8 estimate used by ResponsesModel, usable without credentials. */
+/** 与 ResponsesModel 共用相同的保守 UTF-8 估算，无凭据时也可使用。 */
 export function estimateResponsesInputTokens(context: ModelContext, instructions = '', toolDefinitions: readonly ToolDefinition[] = []): number {
   return estimateWithTools(context, instructions, canonicalJson(responsesTools(toolDefinitions)))
 }
@@ -226,9 +226,9 @@ function completeResponse(response: JsonObject): ModelResponse {
       if (!nonempty(item.call_id) || !nonempty(item.name) || typeof item.arguments !== 'string' || ids.has(item.call_id)) {
         return failure('schema', 'Invalid or duplicate model tool call.', 'invalid_tool_call')
       }
-      // Preserve even an unknown function name or malformed argument string.
-      // Core durably records the complete response before rejecting that call;
-      // no argument delta or provider name directly reaches ToolPort execution.
+      // 即使函数名称未知或参数字符串格式错误，也保留原内容。
+      // 核心先持久化完整响应，再拒绝该调用；
+      // 参数增量或提供方名称都不能直接进入 ToolPort 执行。
       ids.add(item.call_id)
       toolCalls.push({ id: item.call_id, name: item.name, arguments: item.arguments })
     } else if (item.type === 'message') {
@@ -244,8 +244,8 @@ function completeResponse(response: JsonObject): ModelResponse {
       }
     }
   }
-  // Preserve all output fields (including unknown passive items, phase, annotations,
-  // and encrypted reasoning). They are replayed verbatim as manual input history.
+  // 保留所有输出字段，包括未知的无执行语义项、phase、注解和
+  // 加密推理。这些字段作为手工输入历史原样重放。
   return {
     outputItems: response.output,
     toolCalls,
@@ -275,8 +275,8 @@ export class ResponsesModel implements ModelPort {
     this.#model = options.model
     this.#apiKey = options.apiKey
     this.#instructions = options.instructions
-    // Detach schemas from mutable discovery results and bind generation to the
-    // same catalog that the run loop budgets before any network request.
+    // 将结构与可变的发现结果分离，并使生成使用的工具目录
+    // 与运行循环在任何网络请求前核算预算的目录一致。
     this.#tools = structuredClone(responsesTools(options.toolDefinitions ?? []))
     this.#toolsJson = canonicalJson(this.#tools)
     this.#timeoutMs = positive(options.timeoutMs, 120_000, 600_000)
@@ -296,7 +296,7 @@ export class ResponsesModel implements ModelPort {
   }
 
   estimateInputTokens(context: ModelContext): number {
-    // Conservative UTF-8 byte estimate; never represents provider-billed usage.
+    // 保守的 UTF-8 字节估算；绝不代表提供方计费用量。
     return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson)
   }
 
@@ -330,8 +330,8 @@ export class ResponsesModel implements ModelPort {
       input: request.context.items,
       ...(this.#instructions === undefined ? {} : { instructions: this.#instructions }),
       tools: this.#tools,
-      // ToolPort executes the completed batch sequentially. The flag also asks the
-      // provider to emit at most one call, but incoming batches remain supported.
+      // ToolPort 按顺序执行完整批次。该标记也要求提供方
+      // 最多生成一次调用，但仍支持接收批量调用。
       parallel_tool_calls: false,
       store: false,
       stream: true,
@@ -429,7 +429,7 @@ export class ResponsesModel implements ModelPort {
             }
             if (item.type === 'function_call' && typeof item.arguments === 'string') {
               let parsed: unknown
-              try { parsed = JSON.parse(item.arguments) } catch { /* core records invalid arguments */ }
+              try { parsed = JSON.parse(item.arguments) } catch { /* 核心记录无效参数 */ }
               assertNoModelCredential(parsed, this.#apiKey)
             }
           }
@@ -440,8 +440,8 @@ export class ResponsesModel implements ModelPort {
             if (!object(item) || item.type !== 'function_call' || item.id !== call.itemId || item.call_id !== call.callId) return failure('schema', 'Completed tool calls differ from the model stream.', 'invalid_tool_call')
           }
         }
-        // Unknown event types are forward-compatible display metadata. Only a
-        // validated response.completed supplies executable calls or saved items.
+        // 未知事件类型视为向前兼容的显示元数据。只有通过校验的
+        // response.completed 才提供可执行调用或待保存项。
       })
       for (;;) {
         const chunk = await reader.read()
@@ -460,13 +460,13 @@ export class ResponsesModel implements ModelPort {
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       if (timedOut) return failure('timeout', 'Model request timed out.')
       if (error instanceof ResponsesModelError) throw error
-      // fetch errors and callback errors can include credentials or remote text.
+      // fetch 错误及回调错误可能包含凭据或远程文本。
       return failure('transport', 'Model transport failed or returned invalid UTF-8.')
     } finally {
       clearTimeout(timer)
       request.signal.removeEventListener('abort', cancel)
       controller.abort()
-      try { await reader?.cancel() } catch { /* transport already closed */ }
+      try { await reader?.cancel() } catch { /* 传输已关闭 */ }
       reader?.releaseLock()
     }
   }

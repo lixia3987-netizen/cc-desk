@@ -1,7 +1,7 @@
 import type { JsonObject, JsonValue } from '@cc-desk/agent-core'
 import { assertMcpInputSchema, assertMcpOutputSchema, assertMcpToolOutput } from './mcp-schema.js'
 
-/** This client intentionally does not negotiate or fall back to older MCP revisions. */
+/** 此客户端有意不协商旧版 MCP，也不回退到旧版。 */
 export const MCP_PROTOCOL_VERSION = '2026-07-28'
 export type McpProtocolVersion = typeof MCP_PROTOCOL_VERSION | '2025-11-25'
 
@@ -14,7 +14,7 @@ export interface McpTool {
 
 export type McpCallOutcome = 'not_executed' | 'unknown' | 'failed'
 
-/** Errors never contain a remote body, endpoint, header, credential, or original cause. */
+/** 错误绝不包含远程响应体、端点、请求头、凭据或原始原因。 */
 export class McpClientError extends Error {
   constructor(readonly code: string, readonly outcome: McpCallOutcome) {
     super(`MCP request failed (${code}).`)
@@ -60,7 +60,7 @@ export function validateJson(value: unknown, code: string): asserts value is Jso
 
 export interface HeaderParameter { path: string[]; name: string; type: 'string' | 'integer' | 'boolean' }
 
-/** Find all annotations, including invalid ones hidden under array/composition/$ref branches. */
+/** 查找所有注解，包括隐藏在数组、组合或 $ref 分支下的无效注解。 */
 export function headerParameters(schema: JsonObject): HeaderParameter[] {
   const result: HeaderParameter[] = []
   const names = new Set<string>()
@@ -106,7 +106,7 @@ export function validateTool(value: unknown, legacy = false): McpTool {
   } catch { fail('tool_schema') }
   if (own(value, 'execution') && (!object(value.execution) ||
       (value.execution.taskSupport !== undefined && !['optional', 'forbidden'].includes(String(value.execution.taskSupport))))) fail('tool_schema')
-  // Server annotations, instructions, icons and extension metadata grant no local privileges.
+  // 服务端注解、指令、图标及扩展元数据不授予任何本地权限。
   return { name: value.name, ...(typeof value.description === 'string' ? { description: value.description } : {}), inputSchema: value.inputSchema,
     ...(object(value.outputSchema) ? { outputSchema: value.outputSchema } : {}) }
 }
@@ -123,9 +123,9 @@ export function assertNoSecrets(value: unknown, forbiddenValues: readonly string
       const text = item.value
       strings.push(text)
       if (forbiddenValues.some(secret => text.includes(secret))) fail('credential_echo')
-      // Also inspect escaped JSON strings that downstream tools may decode.
+      // 同时检查下游工具可能解码的转义 JSON 字符串。
       if (/^\s*[\[{"]/.test(item.value)) {
-        try { pending.push({ value: JSON.parse(item.value), depth: item.depth + 1 }) } catch { /* ordinary text */ }
+        try { pending.push({ value: JSON.parse(item.value), depth: item.depth + 1 }) } catch { /* 普通文本 */ }
       }
     } else if (Array.isArray(item.value)) {
       for (let index = item.value.length - 1; index >= 0; index--) pending.push({ value: item.value[index], depth: item.depth + 1 })
@@ -159,8 +159,8 @@ export function envelope(message: JsonObject, id: string, allowNotification: boo
   if (message.id !== id || own(message, 'method') || own(message, 'result') === own(message, 'error')) fail('response_schema')
   if (own(message, 'error')) {
     if (!object(message.error) || !Number.isInteger(message.error.code) || typeof message.error.message !== 'string') fail('response_schema')
-    // Even an internal-error response can arrive after a tool committed effects.
-    // Only a complete tool result determines completion; RPC errors do not.
+    // 即使是内部错误响应，也可能在工具已提交副作用之后才到达。
+    // 仅完整的工具结果能确定执行完成；RPC 错误不能证明完成。
     return fail('rpc_error')
   }
   if (!object(message.result)) fail('response_schema')
@@ -168,7 +168,7 @@ export function envelope(message: JsonObject, id: string, allowNotification: boo
 }
 
 
-/** Normalize the bounded synchronous result subset shared by both transports. */
+/** 规范化两种传输方式共用的有限同步结果子集。 */
 export function normalizeToolResult(result: JsonObject, tool: McpTool, legacy: boolean): JsonObject {
   if ((legacy ? own(result, 'resultType') : result.resultType !== 'complete') || !Array.isArray(result.content) ||
       (result.isError !== undefined && typeof result.isError !== 'boolean') || own(result, 'inputRequests') || own(result, 'requestState') || own(result, 'task') ||

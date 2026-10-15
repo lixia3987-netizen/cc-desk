@@ -1,7 +1,7 @@
 import type { ExecutionDescriptor } from '../../shared/execution';
 import type { Session } from '../../shared/types';
 
-/** An executor's availability does not imply that a particular model credential is ready. */
+/** 执行器可用，并不表示某个模型的凭据已就绪。 */
 export function currentEngineStatus(session: Session | undefined, executors: ExecutionDescriptor[], defaultProviderId: string) {
   const descriptor = executors.find(item => item.providerId === (session?.execution.providerId ?? defaultProviderId)
     && item.mode === (session?.execution.mode ?? 'structured'));

@@ -54,8 +54,8 @@ test('failed Windows helper retains late and trailing ancestors before its physi
     const created = '20260926123456123456';
     helper.stdout.write(JSON.stringify({ type: 'anchor', pid: 322, created, minimumCreated: created }) + '\n');
     helper.stdout.write(JSON.stringify({ type: 'result', released: true, phase: 'windows_terminate', code: 'running', snapshots: 1, terminationAttempts: 1, liveProcesses: 0, nativeCode: 0 }) + '\n');
-    // The final ownership line was written before helper termination but arrives
-    // without a newline. It must be consumed before close releases retry admission.
+    // 最后一行所有权数据在辅助进程终止之前已写出，但到达时没有
+    // 换行符。关闭事件解除重试限制之前，必须消费该行。
     helper.stdout.write(JSON.stringify({ type: 'anchor', pid: 323, created: 'tombstone', exited: true, minimumCreated: created }));
     helper.emit('exit', 0, null);
     helper.stdout.end(); helper.stderr.end();

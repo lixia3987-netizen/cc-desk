@@ -16,7 +16,7 @@ import { contextSummaryItem, requireCompleteContext, contextPendingCalls, native
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
 
-/** Keep pre-image request identities byte-for-byte compatible with existing journals. */
+/** 确保引入图像之前的请求标识与现有日志逐字节兼容。 */
 export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue): string {
   const value = Array.isArray(imageAttachments) && imageAttachments.length ? canonical({ input, imageAttachments }) : input;
   return createHash('sha256').update(value).digest('hex');
@@ -30,14 +30,14 @@ export interface RunStoreLimits {
 }
 export type RunStoreFaultPoint = 'before_append' | 'after_write' | 'after_sync' | 'before_checkpoint' | 'after_checkpoint_sync' | 'after_checkpoint_rename';
 export interface NativeRunStoreOptions {
-  /** Private application data directory, never the project directory. */
+  /** 应用的私有数据目录，绝不使用项目目录。 */
   rootDirectory: string;
-  /** Host-generated UUID; never a session name or external conversation identifier. */
+  /** 宿主生成的 UUID；绝不使用会话名称或外部对话标识。 */
   conversationId: string;
   limits?: Partial<RunStoreLimits>;
-  /** Credential values resolved by the host. Matching writes fail rather than silently corrupting context. */
+  /** 宿主解析的凭据值。写入内容命中凭据时失败，避免静默破坏上下文。 */
   forbiddenValues?: readonly string[];
-  /** Deterministic fault injection. Not persisted. */
+  /** 确定性的故障注入，不会被持久化。 */
   fault?: (point: RunStoreFaultPoint, eventType: string) => void | Promise<void>;
 }
 export interface StoredToolState {
@@ -47,9 +47,9 @@ export interface StoredToolState {
   completed?: Extract<RunJournalEvent, { type: 'tool_completed' }>;
   preparedSeq?: number;
   completedSeq?: number;
-  /** Host-attested receipts only; never supplied by the model worker. */
+  /** 仅接受宿主认证的回执；绝不由模型执行进程提供。 */
   changeSetProgress?: Array<NativeChangeSetFileEvent & { seq: number }>;
-  /** Starting a command acknowledges its handle, not its eventual process outcome. */
+  /** 启动命令只确认句柄已建立，不表示最终进程结果。 */
   commandProgress?: Array<NativeCommandLifecycleEvent & { seq: number }>;
 }
 export interface StoredRun {
@@ -71,7 +71,7 @@ export interface RecoveryReport {
   classification: 'safe_to_continue' | 'unknown_effects' | 'unsupported_protocol';
   tools: Array<{ callId: string; name: string; status: 'completed' | 'not_executed' | 'unknown' }>;
 }
-/** Host-only launch reservation. Environment values and process handles never enter this record. */
+/** 仅供宿主使用的启动预留记录。环境变量值和进程句柄绝不进入此记录。 */
 export interface NativeStartupRequest {
   identity: RunIdentity;
   startupId: string;
@@ -92,9 +92,9 @@ interface StoredStartup extends NativeStartupRequest { preparedSeq: number; clos
 export interface ContextCompactionSource {
   expectedHash: string;
   sourceSeq: number;
-  /** Only the older prefix is sent for summarization; retained turns are excluded. */
+  /** 仅将较旧的前缀发送给摘要模型；保留的对话轮次不包含在内。 */
   context: ModelContext;
-  /** Exact goals and complete suffix that a summary cannot remove. */
+  /** 摘要不能移除的精确目标及完整后缀。 */
   retainedContext: ModelContext;
   beforeBytes: number;
   scope: 'prefix';
@@ -108,9 +108,9 @@ export interface ContextCompactionPlan {
   afterBytes: number;
   context: ModelContext;
   retainedTurns: Array<{ runId: string; start: number }>;
-  /** Actual summary request usage, when returned by the service. */
+  /** 服务返回的实际摘要请求用量。 */
   usage?: Usage | null;
-  /** Durable reservation for a single automatic summary request. */
+  /** 为单次自动摘要请求持久化预留的额度。 */
   automaticRequestId?: string;
 }
 export interface ContextCompactionReceipt {
@@ -126,7 +126,7 @@ export interface AutoCompactionRequest {
   requestId: string;
   inputDigest: string;
   configurationDigest: string;
-  /** Conversation head observed before reserving the summary request. */
+  /** 预留摘要请求之前观察到的对话头部。 */
   expectedHash: string;
 }
 export interface AutoCompactionAttempt extends AutoCompactionRequest {
@@ -219,8 +219,8 @@ const DEFAULT_LIMITS: RunStoreLimits = {
 const ZERO_HASH = '0'.repeat(64);
 const VALID_STATUSES = new Set(['completed', 'cancelled', 'failed', 'budget_exhausted', 'recovery_required']);
 const TOOL_STATUSES = new Set(['completed', 'failed', 'denied', 'cancelled', 'not_executed', 'unknown']);
-// JSON may expand a retained UTF-8 byte to six ASCII bytes. The envelope covers
-// every bounded identity/call field and the small running receipt.
+// JSON 可能将保留的一个 UTF-8 字节扩展为六个 ASCII 字节。封装预留覆盖
+// 所有限制大小的标识及调用字段，以及较小的运行中回执。
 const COMMAND_ENVELOPE_BYTES = 32 * 1024;
 const commandTerminalBytes = (maxOutputBytes: number): number => maxOutputBytes * 6 + 2048 * 6 + COMMAND_ENVELOPE_BYTES;
 const uncertainCommand = (tool: StoredToolState): boolean => !!tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished';
@@ -308,9 +308,9 @@ function payloadDigest(request: BeginRunRequest): string {
 }
 
 /**
- * Host-owned, single-writer, append-and-fsync conversation ledger. Checkpoints are
- * verified indexes of the journal, never an alternate source of model context.
- * No automatic recovery replays a prepared tool or resumes an interrupted run.
+ * 宿主管理、单写入方、每次追加后执行 fsync 的对话账本。检查点是
+ * 经校验的日志索引，绝不是模型上下文的另一数据源。
+ * 自动恢复绝不重放已准备的工具，也不恢复被中断的运行。
  */
 export class NativeRunStore implements RunStore {
   readonly conversationId: string;
@@ -322,7 +322,7 @@ export class NativeRunStore implements RunStore {
   private readonly runs = new Map<string, InternalRun>();
   private readonly submissions = new Map<string, string>();
   private readonly startups = new Map<string, Map<string, StoredStartup>>();
-  /** Not reconstructed during replay: only this writer may attest its own resource cleanup. */
+  /** 重放时不重新构造：仅此写入方能确认自身资源已清理。 */
   private readonly liveStartups = new Set<StoredStartup>();
   private readonly recoveredStartupRequests = new Set<string>();
   private context: ModelContext | null = null;
@@ -366,7 +366,7 @@ export class NativeRunStore implements RunStore {
     } catch (error) { await release().catch(() => undefined); throw error; }
   }
 
-  /** Read immutable submission bytes without acquiring writer ownership or recovering runs. */
+  /** 读取不可变的提交字节，不取得写入方所有权，也不恢复运行。 */
   static async readSubmission(options: Pick<NativeRunStoreOptions, 'rootDirectory' | 'conversationId' | 'limits'>, runId: string): Promise<BeginRunRequest | undefined> {
     assertUuid(options.conversationId, 'conversationId');
     assertUuid(runId, 'runId');
@@ -413,8 +413,8 @@ export class NativeRunStore implements RunStore {
   }
 
   private async load(): Promise<void> {
-    // An interrupted checkpoint can leave one bounded temporary copy. Remove
-    // only our UUID-named private regular files while holding writer ownership.
+    // 检查点写入中断后可能留下一份限制大小的临时副本。持有写入方
+    // 所有权时，仅移除我们创建的以 UUID 命名的私有普通文件。
     for (const name of await readdir(this.directory)) {
       if (!/^checkpoint-[0-9a-f-]{36}\.tmp$/.test(name)) continue;
       const temporary = path.join(this.directory, name);
@@ -431,8 +431,8 @@ export class NativeRunStore implements RunStore {
       await this.commit(undefined, { type: 'conversation_created' });
       return;
     }
-    // Even a model-only interrupted run may have owned external resources in the
-    // old main process. The host must verify cleanup before opening a new attempt.
+    // 即使被中断的运行只调用模型，也可能在旧主进程中持有
+    // 外部资源。宿主必须确认清理完成后，才能开始新的尝试。
     for (const run of this.runs.values()) {
       if (run.status === 'active') await this.commit(undefined, { type: 'run_recovered', runId: run.identity.runId, reason: 'Previous host stopped before committing a terminal run; resources and prepared effects require verification' });
     }
@@ -441,7 +441,7 @@ export class NativeRunStore implements RunStore {
     }
   }
 
-  /** Shared pure replay: both writer startup and read-only retrieval use every transition check. */
+  /** 共享的纯重放逻辑：写入方启动和只读查询都执行全部状态转换检查。 */
   private replaySnapshot(journal: string | undefined, rawCheckpoint: string | undefined): boolean {
     let checkpoint: Checkpoint | undefined;
     if (rawCheckpoint !== undefined) {
@@ -773,8 +773,8 @@ export class NativeRunStore implements RunStore {
       this.context = clone(event.result.context);
       run.status = 'cancelled';
       run.recoveryResolution = { expectedHash: event.expectedHash, seq: record.seq, result: event.result };
-      // A committed original submission receipt is immutable, even if its
-      // recovery barrier is subsequently resolved by a distinct host action.
+      // 已提交的原始提交回执不可变，即使其恢复屏障
+      // 随后由另一项独立宿主操作解除，也不例外。
       if (!run.result) { run.result = event.result; run.finishedSeq = record.seq; }
       return;
     }
@@ -838,7 +838,7 @@ export class NativeRunStore implements RunStore {
     }
   }
 
-  /** Remaining receipts retain their reservation while unrelated model/tools append. */
+  /** 不相关的模型或工具追加记录时，剩余回执仍保留各自的预留额度。 */
   private commandHeadroom(identity?: RunIdentity, event?: StoreEvent): { bytes: number; records: number } {
     let bytes = 0, records = 0;
     for (const run of this.runs.values()) {
@@ -873,8 +873,8 @@ export class NativeRunStore implements RunStore {
       const summary = this.runCompactionAttempts.get(run.identity.runId);
       const modelPending = changed && event.type === 'model_request_started' || !!model && !model.outcome && !(changed && ['model_response', 'model_request_failed'].includes(event.type));
       const summaryPending = changed && event.type === 'run_context_compaction_attempted' || summary?.status === 'attempted' && !(changed && ['run_context_compacted', 'run_context_compaction_failed'].includes(event.type));
-      // An ordinary request and summary cannot overlap. Both share the one run
-      // terminal reservation; a pending request additionally owns its outcome.
+      // 普通请求与摘要请求不能重叠。两者共享同一轮运行的
+      // 终止预留额度；待完成请求还单独持有其结果的预留额度。
       if (modelPending || summaryPending) records += 2;
       else if (model || summary) records++;
     }
@@ -899,8 +899,8 @@ export class NativeRunStore implements RunStore {
     if (this.journalBytes + bytes + commandHeadroom.bytes + requestHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + commandHeadroom.records + requestHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Model outcome and terminal run have reserved durable storage');
     if (event.type === 'tool_prepared' && event.prepared.call.name === 'apply_change_set') {
       const preview = (event.prepared.preconditions as JsonObject).changeSet as unknown as NativeChangeSetPreview;
-      // Reserve every before/after file receipt now. A later file must not consume
-      // the room needed to attest its own effects, tool result and terminal run.
+      // 现在就为每个文件的操作前后回执预留空间。后续文件不得占用
+      // 确认自身副作用、工具结果及运行终止状态所需的空间。
       const receiptBytes = preview.files.reduce((sum, file) => sum + 2 * (Buffer.byteLength(canonical({ type: 'change_set_file', toolCallId: event.prepared.call.id, progress: { changeSetDigest: preview.digest, index: file.index, path: file.path, status: 'not_applied', beforeHash: file.beforeHash, afterHash: file.afterHash, errorCode: 'x'.repeat(64) } })) + Buffer.byteLength(canonical(ownedIdentity)) + 1024), 0);
       if (this.journalBytes + bytes + receiptBytes + 2 * this.limits.maxRecordBytes + commandHeadroom.bytes > this.limits.maxJournalBytes || this.records.length + 1 + 2 * preview.files.length + 2 + commandHeadroom.records > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable headroom for every change-set file receipt');
     }
@@ -925,7 +925,7 @@ export class NativeRunStore implements RunStore {
     } catch (error) { this.poisoned = true; throw error; }
   }
 
-  /** Commit exact host approval before any local service process may be spawned. Never authorizes a replay. */
+  /** 启动任何本地服务进程之前，提交精确的宿主审批。绝不据此授权重放。 */
   prepareStartup(request: NativeStartupRequest): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
@@ -939,7 +939,7 @@ export class NativeRunStore implements RunStore {
     });
   }
 
-  /** Only the writer that prepared the startup can confirm all of its local resources have closed. */
+  /** 只有准备启动的写入方，才能确认其所有本地资源已关闭。 */
   closeStartup(identity: RunIdentity, startupId: string): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
@@ -1007,7 +1007,7 @@ export class NativeRunStore implements RunStore {
     return prepared.prepared.preconditions.changeSet;
   }
 
-  /** Host-only write-ahead/effect receipts. No worker RPC exposes this method. */
+  /** 仅供宿主使用的预写及副作用回执。执行进程 RPC 不暴露此方法。 */
   recordChangeSetEvent(identity: RunIdentity, call: ToolCall, progress: NativeChangeSetFileEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
@@ -1018,7 +1018,7 @@ export class NativeRunStore implements RunStore {
     });
   }
 
-  /** Host-only lifecycle facts; the execution worker cannot call or forge this API. */
+  /** 仅供宿主记录的生命周期事实；执行进程不能调用或伪造此 API。 */
   recordCommandEvent(identity: RunIdentity, call: ToolCall, progress: NativeCommandLifecycleEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
@@ -1032,9 +1032,9 @@ export class NativeRunStore implements RunStore {
     return this.exclusive(async () => {
       this.writable(); this.activeOwner(identity);
       if (!Number.isSafeInteger(bytes) || bytes < 0) fail('invalid_limits', 'Capacity request must be a nonnegative integer');
-      // One writer, sequential core: no other run can consume this headroom.
-      // Keep room for a bounded prepared/result record and terminal context, plus
-      // the atomic checkpoint's old and new copies (separately size-limited).
+      // 单写入方、串行核心：其他运行无法消耗这些预留空间。
+      // 为限制大小的准备及结果记录、终止上下文，以及原子检查点的
+      // 旧副本和新副本保留空间；两份副本各自限制大小。
       const reserved = bytes + 3 * this.limits.maxRecordBytes;
       const commands = this.commandHeadroom();
       if (this.journalBytes + reserved + commands.bytes > this.limits.maxJournalBytes || this.records.length + 3 + commands.records > this.limits.maxRecords) fail('limit_exceeded', 'Insufficient durable storage headroom before tool execution');
@@ -1130,7 +1130,7 @@ export class NativeRunStore implements RunStore {
       usage, context, committed: true } };
   }
 
-  /** Explicit host action after cleanup, never automatic tool execution or approval reuse. */
+  /** 清理后的显式宿主操作，绝不自动执行工具或复用审批。 */
   resolveRecovery(request: { runId: string; expectedHash: string; resourcesVerified: true }): Promise<RunResult> {
     return this.exclusive(async () => {
       this.writable();
@@ -1143,7 +1143,7 @@ export class NativeRunStore implements RunStore {
     });
   }
 
-  /** Images pin their entire original turn and every following item. */
+  /** 图像会固定其所属的完整原始轮次及其后所有项目。 */
   private firstImageTurnStart(): number | undefined {
     if (!this.context || !contextHasUserImages(this.context)) return undefined;
     const imageIndex = this.context.items.findIndex(item => contextHasUserImages({ protocol: this.context!.protocol, items: [item] }));
@@ -1168,13 +1168,13 @@ export class NativeRunStore implements RunStore {
     if (start.type !== 'run_started') fail('corrupt_store', 'Current run has no original input');
     const firstRun = this.runs.values().next().value!;
     const sameOriginal = firstRun.identity.runId === identity.runId;
-    // The whole current turn is already in this suffix, so do not copy its
-    // input ahead of the summary or lose the earlier retained turns/batches.
+    // 当前完整轮次已包含在此后缀中，因此不得将其输入复制到
+    // 摘要之前，也不得丢失此前保留的轮次或批次。
     if (imageStart !== undefined) return { boundary: imageStart, goals: clone(this.originalUserItems!), currentStart: 0, imageSuffix: true };
     return { boundary: batch.start, goals: [...clone(this.originalUserItems!), ...(sameOriginal ? [] : clone(start.request.userItems))], currentStart: sameOriginal ? 0 : this.originalUserItems!.length };
   }
 
-  /** Complete durable model/tool boundary. The execution worker cannot invoke this host API. */
+  /** 完整且已持久化的模型及工具执行边界。执行进程不能调用此宿主 API。 */
   getRunCompactionSource(identity: RunIdentity, expectedContext?: ModelContext): RunCompactionSource {
     this.writable();
     if (expectedContext !== undefined && !equal(expectedContext, this.context)) fail('context_mismatch', 'Worker context differs from the durable run context');
@@ -1186,7 +1186,7 @@ export class NativeRunStore implements RunStore {
       beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), retainedContext: { protocol: clone(this.context!.protocol), items: [...goals, ...clone(this.context!.items.slice(boundary))] } };
   }
 
-  /** Reserve once per run before any billable summary request. A lost acknowledgment never authorizes retry. */
+  /** 每轮运行在任何付费摘要请求之前只预留一次额度。确认丢失绝不授予重试权限。 */
   reserveRunCompaction(identity: RunIdentity, request: RunCompactionRequest): Promise<{ kind: 'reserved' | 'existing'; attempt: RunCompactionAttempt }> {
     return this.exclusive(async () => {
       this.writable(); this.owner(identity); validateRunCompactionRequest(request);
@@ -1220,7 +1220,7 @@ export class NativeRunStore implements RunStore {
         : [{ runId: identity.runId, start: prefix.length }] };
   }
 
-  /** Construct and publish the complete replacement in one serialized append+fsync. */
+  /** 在一次串行的追加及 fsync 操作中，构造并发布完整的替换内容。 */
   commitRunCompaction(identity: RunIdentity, input: RunCompactionInput): Promise<RunCompactionReceipt> {
     return this.exclusive(async () => {
       this.writable(); this.owner(identity);
@@ -1273,7 +1273,7 @@ export class NativeRunStore implements RunStore {
       retainedContext: { protocol: clone(this.context!.protocol), items: [...clone(this.originalUserItems!), ...clone(this.context!.items.slice(boundary))] } };
   }
 
-  /** Reserve before contacting a model. An uncertain append must be inspected after reopening. */
+  /** 联系模型之前先预留额度。追加状态不确定时，必须在重新打开后检查。 */
   reserveAutoCompaction(request: AutoCompactionRequest): Promise<{ kind: 'reserved' | 'existing'; attempt: AutoCompactionAttempt }> {
     return this.exclusive(async () => {
       this.writable();
@@ -1334,7 +1334,7 @@ export class NativeRunStore implements RunStore {
         .map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length })) };
   }
 
-  /** One append-and-fsync event publishes the new context; all raw records stay intact. */
+  /** 以单个追加并 fsync 的事件发布新上下文；所有原始记录保持完整。 */
   commitContextCompaction(plan: ContextCompactionPlan): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
@@ -1351,7 +1351,7 @@ export class NativeRunStore implements RunStore {
 
   getLastCompaction(): ContextCompactionReceipt | null { return clone(this.lastCompaction); }
 
-  /** Current protocol context; original protocol records remain available through replay. */
+  /** 当前协议上下文；原始协议记录仍可通过重放获取。 */
   loadContext(): ModelContext | null { return clone(this.context); }
   listRuns(): StoredRun[] {
     return [...this.runs.values()].map(run => {
@@ -1372,7 +1372,7 @@ export class NativeRunStore implements RunStore {
     const tool = this.runs.get(runId)?.tools.get(toolCallId);
     return tool ? clone(tool) : undefined;
   }
-  /** Stable seq supports idempotent host/UI projection. */
+  /** 稳定的 seq 支持宿主及 UI 的幂等投影。 */
   replay(afterSeq = 0, limit = 1000): RunStoreRecord[] {
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) fail('invalid_limits', 'Invalid replay range');
     return clone(this.records.filter(record => record.seq > afterSeq).slice(0, limit));

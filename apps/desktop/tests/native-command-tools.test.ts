@@ -59,7 +59,7 @@ async function fixture(t: import('node:test').TestContext, options: {
 test('start requires an exact approval, is single-flight, and observes the run lifetime signal', async t => {
   const f = await fixture(t), prepared = await f.prepare(), context = f.context();
   await assert.rejects(f.local.execute(prepared, context), /approval/);
-  // A failed authorization attempt cannot be retried under the same call identity.
+  // 授权尝试失败后，不能使用相同调用标识重试。
   const approved = await f.prepare('approved');
   const [first, same] = await Promise.all([f.local.execute(approved, context, f.approval(approved)), f.local.execute(approved, context, f.approval(approved))]);
   assert.deepEqual(first, same); assert.equal(f.children.length, 1);
@@ -188,7 +188,7 @@ test('run cancellation remains effective after start returned and cleanup uncert
   f.abort.abort(); await tick();
   assert.equal(f.children[0].settled, true); assert.equal(f.children[0].result.cancelled, true);
   assert.equal(f.events.at(-1)?.status, 'unknown');
-  // A later physical retry cannot rewrite the durable unknown receipt.
+  // 后续实际重试不能改写已持久化的未知状态回执。
   f.children[0].result.cleanup = 'released';
   await assert.rejects(f.manager.closeAll(), /unconfirmed/);
   assert.equal(f.events.filter(event => event.status === 'unknown').length, 1);

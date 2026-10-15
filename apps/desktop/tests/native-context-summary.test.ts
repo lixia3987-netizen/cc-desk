@@ -5,7 +5,7 @@ import { runAgent, type ModelContext } from '@cc-desk/agent-core';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
 import { summarizeNativeContext, type SummarizeNativeContextOptions } from '../src/main/engines/native/context-summary';
 import { NativeWorkerCleanupError, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall, reasoningItem } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const sentinel = 'sk-context-summary-secret-sentinel';
@@ -160,8 +160,8 @@ test('a committed core deadline is reported as timeout before the outer timer fi
       const model = new ResponsesModel(worker.model), generate = model.generate.bind(model);
       model.generate = async request => {
         const response = await generate(request);
-        // Deterministically exhaust the core clock while the outer real-time
-        // deadline remains open, independent of OS timer callback ordering.
+        // 以确定的方式耗尽核心时钟，而外层实时期限仍未到达，
+        // 不依赖操作系统计时器回调的执行顺序。
         now = worker.request.budget!.maxActiveMs!;
         return response;
       };

@@ -3,13 +3,13 @@ import path from 'node:path';
 
 export interface WindowsProcessAnchor {
   pid: number;
-  /** UTC yyyyMMddHHmmssffffff, captured from a previously opened process handle. */
+  /** 从先前打开的进程句柄采集的 UTC 时间，格式为 yyyyMMddHHmmssffffff。 */
   created?: string;
-  /** Without a creation identity, this PID may only identify an exited parent. */
+  /** 若无创建标识，该 PID 只能用于标识已退出的父进程。 */
   exited?: boolean;
   spawnStartedAt?: number;
   spawnCompletedAt?: number;
-  /** Inherited owner/parent birth lower bound, retained even for tombstones. */
+  /** 继承的所有者或父进程创建时间下界，即使记录已标记删除也会保留。 */
   minimumCreated?: string;
 }
 
@@ -43,11 +43,11 @@ function validAnchor(anchor: WindowsProcessAnchor): boolean {
     && (anchor.spawnCompletedAt === undefined || Number.isSafeInteger(anchor.spawnCompletedAt) && anchor.spawnCompletedAt >= 0);
 }
 
-/** Internal builder exported for Windows process/handshake regressions, not a package entry point. */
+/** 为 Windows 进程及握手回归测试导出的内部构建器，不作为包入口。 */
 export function buildWindowsTreeCleanupScript(anchors: readonly WindowsProcessAnchor[], timeoutMs: number, input: 'inline' | 'stdin' = 'inline'): string {
   if (!anchors.length || anchors.length > 4096 || !anchors.every(validAnchor)
     || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) throw new Error('Invalid Windows cleanup identity or budget.');
-  // These values contain only validated numbers, booleans and numeric identities.
+  // 这些值仅包含已验证的数字、布尔值和数字形式的身份标识。
   const serialized = JSON.stringify(anchors.map(anchor => ({ ...anchor, exited: anchor.exited === true })));
   return `
 [Console]::Out.WriteLine('{"type":"progress","phase":"windows_snapshot","code":"running","snapshots":0,"terminationAttempts":0,"liveProcesses":0,"nativeCode":0,"helperStage":"bootstrap"}')
@@ -240,7 +240,7 @@ const identityFailures = new Set(['parent_birth_missing', 'parent_creation_missi
   'snapshot_mismatch', 'bound_snapshot_mismatch', 'handle_snapshot_mismatch', 'handle_before_owner', 'spawn_window_mismatch',
   'live_tombstone', 'owned_handle_mismatch', 'spawn_window_missing', 'snapshot_spawn_window_mismatch']);
 
-/** One helper owns discovery, identity checks and termination, without PID re-lookups at kill time. */
+/** 单个辅助进程负责发现、身份校验和终止，终止时无需再次按 PID 查找。 */
 export function runWindowsTreeCleanup(options: {
   anchors: readonly WindowsProcessAnchor[];
   environment: NodeJS.ProcessEnv;
@@ -249,12 +249,12 @@ export function runWindowsTreeCleanup(options: {
   onProgress?: (progress: WindowsCleanupProgress) => void;
   onHelper?: (helper: ChildProcess, whenClosed: Promise<void>) => void;
 }): Promise<{ released: boolean; diagnostic: WindowsCleanupProgress }> {
-  // Keep a large retained ancestry out of Windows' 32,767-character command line.
+  // 避免将大量保留的祖先记录写入 Windows 长度上限为 32,767 字符的命令行。
   const script = buildWindowsTreeCleanupScript(options.anchors, options.timeoutMs, 'stdin');
   const systemRoots = Object.entries(options.environment).filter(([key]) => key.toUpperCase() === 'SYSTEMROOT');
   const systemRoot = systemRoots[0]?.[1];
-  // Missing or filtered SystemRoot cannot authorize resolving a helper from
-  // the approved command's cwd/PATH. Only a local drive-qualified OS root is accepted.
+  // SystemRoot 缺失或被过滤时，不得从获批命令的
+  // cwd/PATH 解析辅助程序；仅接受包含本地驱动器标识的操作系统根目录。
   if (systemRoots.length !== 1 || !systemRoot || /[\0\r\n]/.test(systemRoot) || !path.win32.isAbsolute(systemRoot)
     || !/^[A-Za-z]:[\\/]/.test(systemRoot)) {
     return Promise.resolve({ released: false, diagnostic: { phase: 'windows_snapshot', code: 'spawn_error', snapshots: 0, terminationAttempts: 0, liveProcesses: 0 } });
@@ -264,8 +264,8 @@ export function runWindowsTreeCleanup(options: {
     const helper = spawn(executable, ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script], {
       shell: false, windowsHide: true, env: options.environment, stdio: ['pipe', 'pipe', 'pipe'],
     });
-    // An explicit EOF pipe follows the normal execFile bootstrap path; avoid a
-    // Windows NUL console handle. Neither input nor stderr carries tool content.
+    // 显式 EOF 管道采用正常的 execFile 启动流程；避免使用
+    // Windows NUL 控制台句柄；输入和标准错误输出都不承载工具内容。
     helper.stdin!.on('error', () => {});
     helper.stdin!.end(JSON.stringify(options.anchors));
     helper.stderr!.on('data', () => {});
@@ -291,8 +291,8 @@ export function runWindowsTreeCleanup(options: {
     const stop = (code: WindowsCleanupProgress['code'], deadlineExpired = false) => {
       stopping = code;
       helper.kill();
-      // A failed attempt may return at its deadline, but its owner keeps the
-      // whenClosed barrier and must not start another cleaner until it settles.
+      // 失败的尝试可在达到时限时返回，但其所有者仍须保留
+      // whenClosed 屏障，并在其完成前禁止启动另一个清理进程。
       if (deadlineExpired || Date.now() >= deadline) finish(false, { code });
     };
     const timer = setTimeout(() => stop('timeout', true), options.timeoutMs);
@@ -315,8 +315,8 @@ export function runWindowsTreeCleanup(options: {
       } else {
         if ((item.type !== 'progress' && item.type !== 'result') || !phases.has(String(item.phase)) || !codes.has(String(item.code))
           || !['snapshots', 'terminationAttempts', 'liveProcesses', 'nativeCode'].every(key => Number.isSafeInteger(item[key]) && Number(item[key]) >= 0)) throw new Error('Invalid cleanup status.');
-        // A failed attempt is immutable. Only ownership identities may arrive
-        // after its deadline; old progress must not overwrite a retry's status.
+        // 失败的尝试结果不可变更；超过时限后只能接收所有权标识，
+        // 旧的进度信息不得覆盖重试的状态。
         if (finished) return;
         diagnostic = { phase: item.phase as WindowsCleanupProgress['phase'], code: item.code as WindowsCleanupProgress['code'],
           snapshots: Number(item.snapshots), terminationAttempts: Number(item.terminationAttempts), liveProcesses: Number(item.liveProcesses), nativeCode: Number(item.nativeCode) };
@@ -337,8 +337,8 @@ export function runWindowsTreeCleanup(options: {
       }
     };
     helper.stdout!.on('data', (chunk: Buffer) => {
-      // Termination is asynchronous: retain already-written ancestor identities
-      // until the helper's actual close, even after returning a failed result.
+      // 终止是异步操作；应保留已写入的祖先标识，
+      // 直到辅助进程实际关闭，即使已返回失败结果也如此。
       bytes = Math.min(1_048_577, bytes + chunk.length);
       if (bytes > 1_048_576) { stop('invalid_snapshot'); return; }
       output += chunk.toString('utf8');
@@ -351,7 +351,7 @@ export function runWindowsTreeCleanup(options: {
       let malformed = false;
       try { readLine(output); }
       catch { malformed = true; }
-      // Publish the physical barrier only after consuming the final anchor line.
+      // 仅在消费最后一行锚点记录后才公布实际关闭屏障。
       closed();
       if (finished) return;
       if (stopping) { finish(false, { code: stopping }); return; }

@@ -10,7 +10,7 @@ export interface WorktreePlacement {
   name?: string;
 }
 
-/** A display title is not a path. Keep readable Unicode while producing a portable component. */
+/** 显示标题不是路径。保留可读 Unicode，并生成可移植路径组件。 */
 export function sanitizeWorktreeName(title: string): string {
   let name = title.normalize('NFC').replace(/[\u0000-\u001f\u007f<>:"/\\|?*]/g, '-')
     .replace(/\.{2,}/g, '-').replace(/\s+/g, '-').replace(/^[.\s-]+|[.\s-]+$/g, '');
@@ -25,12 +25,12 @@ export function containsPath(parent: string, child: string): boolean {
   return !relative || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-/** Resolve existing ancestors too, so a not-yet-created path cannot bypass containment through a symlink. */
+/** 同时解析已有祖先目录，避免尚未创建的路径经符号链接绕过范围限制。 */
 async function canonicalFuturePath(value: string): Promise<string> {
   try { return await fs.realpath(value); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-    // A dangling symlink must not be mistaken for a missing directory.
+    // 不能把悬空符号链接误认为缺失目录。
     const entry = await fs.lstat(value).catch((cause: NodeJS.ErrnoException) => { if (cause.code !== 'ENOENT') throw cause; });
     if (entry) throw new Error('工作区路径含无法解析的符号链接。');
     const parent = path.dirname(value);
@@ -60,7 +60,7 @@ export async function worktreeDestination(
   return path.join(root, `${sanitizeWorktreeName(placement.projectName)}-${projectHash}`, treeName);
 }
 
-/** Only create real directories and remember our own empty parents for conservative rollback. */
+/** 仅创建真实目录，并记录本应用创建的空父目录，以便谨慎回滚。 */
 export async function ensureWorktreeParent(directory: string, created: string[]): Promise<void> {
   const parent = path.dirname(directory);
   if (parent !== directory) await ensureWorktreeParent(parent, created);

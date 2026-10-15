@@ -24,7 +24,7 @@ export function assertNativeInputBudget(context: ModelContext, input: string, in
   if (usage.status === 'exceeded') throw new Error('压缩后本次输入仍超过运行预算，已暂停发送；请减少输入、调整预算或新建会话，不会连续请求摘要。');
 }
 
-/** A send owns the entire operation. Reserve before any model request; never retry an uncertain attempt. */
+/** 一次发送独占整个操作；模型请求前完成预留，绝不重试结果不确定的尝试。 */
 export async function autoCompactBeforeSend(options: {
   ledger: NativeRunStore; identity: RunIdentity; input: string; images?: UserImage[]; imageAttachments?: NativeImageAttachment[]; config: Config;
   model: NativeModelOptions; instructions: string; signal: AbortSignal;
@@ -38,10 +38,10 @@ export async function autoCompactBeforeSend(options: {
   if (previous && previous.inputDigest !== inputDigest) {
     throw new Error('此提交标识已用于不同的输入；请重新发送一条消息。');
   }
-  // No ordinary run exists yet. An explicit settings change may resume the
-  // retained message; the old summary authorization is never used for a new call.
-  // An uncertain attempt may already have reached the provider. Retain its debit
-  // even when the user disables automation before resuming this same submission.
+  // 此时尚无常规运行。显式修改设置可以恢复
+  // 保留的消息；新调用绝不复用旧摘要授权。
+  // 结果不确定的尝试可能已经到达供应商。必须保留其扣减，
+  // 即使用户在恢复同一次提交前关闭了自动化。
   const remainingRequests = config.maxModelRequests - (previous ? 1 : 0);
   if (previous?.status === 'committed') return { compacted: true, remainingRequests };
   const context = ledger.loadContext();
@@ -50,7 +50,7 @@ export async function autoCompactBeforeSend(options: {
   const estimator = createNativeModel({ ...model, instructions: options.instructions });
   const usage = contextBudgetUsage(pending, estimator.estimateInputTokens(pending), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
   if (usage.status === 'within_budget') return { compacted: false, remainingRequests };
-  // A large new message/instruction set cannot be fixed by summarizing old history.
+  // 过大的新消息或指令集无法通过压缩旧历史来解决。
   const minimum = pendingNativeContext({ protocol: context.protocol, items: [] }, input, model, images);
   if (contextBudgetUsage(minimum, estimator.estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
     throw new Error('本次新输入、项目指令与工具定义已超过运行预算，未调用自动摘要；请减少输入、所选工具或调整预算。');
@@ -62,8 +62,8 @@ export async function autoCompactBeforeSend(options: {
     throw error;
   }
   if (previous || ledger.getAutoCompactionForCurrentContext()) throw blocked();
-  // Images pin the entire suffix from their first turn. Even the shortest
-  // summary must fit alongside that suffix, this input, instructions and tools.
+  // 图片会固定从其首次出现轮次开始的全部后续内容。即使最短的
+  // 摘要也必须与这些后续内容、当前输入、指令及工具一起落在额度内。
   const retainedMinimum = pendingNativeContext({ ...source.retainedContext,
     items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] }, input, model, images);
   if (contextBudgetUsage(retainedMinimum, estimator.estimateInputTokens(retainedMinimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
@@ -77,7 +77,7 @@ export async function autoCompactBeforeSend(options: {
   await options.assertOwnership();
   const reservation = await ledger.reserveAutoCompaction({ requestId: identity.requestId, inputDigest, configurationDigest, expectedHash: source.expectedHash });
   if (reservation.kind !== 'reserved') throw blocked();
-  // The reservation itself advances the journal. Only its new head can bind the plan.
+  // 预留操作本身会推进日志；计划只能绑定推进后的日志头。
   source = ledger.getCompactionSource();
   await options.assertOwnership();
   const summaryMs = Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));

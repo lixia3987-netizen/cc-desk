@@ -1,7 +1,7 @@
 import type { Runtime } from '../runtime';
 import type { SessionExport, TerminalExecutor } from './ports';
 
-/** One PTY owner can serve multiple providers without duplicating lifecycle calls. */
+/** 单个 PTY 持有者可服务多个提供方，避免重复调用生命周期方法。 */
 export class PtyExecutor implements TerminalExecutor {
   constructor(private runtime: Runtime, private exportSources: (id: string) => Promise<SessionExport[]>) {}
   get activeCount() { return this.runtime.activeCount; }

@@ -25,12 +25,12 @@ const outcomeLabels: Record<string, string> = {
   budget_exhausted: '预算已用尽', recovery_required: '需要核查执行现场', interrupted: '本轮已中断',
 };
 
-/** A historical or incomplete receipt must never acquire a passing presentation. */
+/** 历史或不完整的回执不能展示为验收通过。 */
 export function nativeTaskEvidenceState(task: NativeTaskView, evidence: NativeTaskEvidence): NativeTaskVerification {
   if (evidence.stale || evidence.planRevision !== task.planRevision || evidence.acceptanceRevision !== task.acceptanceRevision
     || (task.workspace && evidence.workspaceFingerprint !== task.workspace.current.fingerprint)) return 'stale';
   if (!evidence.workspaceComplete || (task.workspace && !task.workspace.current.complete)) return 'unverified';
-  // A successful command is a receipt, not an acceptance decision. Only explicit human review can pass a criterion.
+  // 命令成功仅代表获得执行回执，并不代表验收通过；只有明确的人工审核才能通过验收条件。
   if (evidence.source === 'command') return evidence.status === 'failed' || (typeof evidence.exitCode === 'number' && evidence.exitCode !== 0) ? 'failed' : 'unverified';
   if (evidence.source === 'location') return 'unverified';
   if (!evidence.reason?.trim()) return 'unverified';
@@ -48,7 +48,7 @@ export function nativeTaskCanApprove(task: NativeTaskView): boolean {
 }
 
 function evidenceAnchor(taskId: string, evidenceId: string): string {
-  // Encode every UTF-16 unit, including separators, so arbitrary identifiers cannot collide or become executable URLs.
+  // 编码每个 UTF-16 单元，包括分隔符，避免任意标识符发生冲突或变为可执行的 URL。
   const encode = (value: string) => Array.from({ length: value.length }, (_, index) => value.charCodeAt(index).toString(16).padStart(4, '0')).join('');
   return `native-task-evidence-${encode(taskId)}-${encode(evidenceId)}`;
 }
@@ -57,7 +57,7 @@ function revealEvidence(event: MouseEvent<HTMLAnchorElement>, anchor: string) {
   const target = event.currentTarget.ownerDocument.getElementById(anchor);
   if (!target) return;
   event.preventDefault();
-  // The fragment points only into this task panel. Open the collapsed evidence group before focusing its saved receipt.
+  // 片段标识只指向此任务面板；聚焦已保存的回执前，先展开收起的证据组。
   for (let element: HTMLElement | null = target; element && !element.classList.contains('native-task-panel'); element = element.parentElement) {
     if (element.tagName === 'DETAILS') (element as HTMLDetailsElement).open = true;
   }
@@ -79,7 +79,7 @@ function LocationLinks({ task, stepId, criterionId }: { task: NativeTaskView; st
 function CodeLocation({ evidence }: { evidence: NativeTaskEvidence }) {
   const location = evidence.location;
   if (!location) return <p className="native-task-warning">此记录缺少代码位置内容，无法展示片段。</p>;
-  // Keep original line endings in the text nodes; line numbers do not rewrite the saved excerpt.
+  // 文本节点保留原始换行符，行号不会改写已保存的摘录。
   const lines = location.excerpt.match(/[^\n]*\n|[^\n]+$/g) || [''];
   return <>
     <p className="native-task-note">下方为记录时版本的只读片段，并非当前文件内容。步骤和条件关联由模型声明，供人工核查，不自动验收。</p>

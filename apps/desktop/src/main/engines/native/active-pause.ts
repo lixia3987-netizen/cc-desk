@@ -3,7 +3,7 @@ export interface NativeActivePauseSource {
   subscribe(listener: (paused: boolean) => void): () => void;
 }
 
-/** Overlapping visible approvals pause the shared active clock once. */
+/** 同时显示的多项审批只暂停一次共享的活动计时器。 */
 export class NativeActivePause implements NativeActivePauseSource {
   private count = 0;
   private listeners = new Set<(paused: boolean) => void>();
@@ -13,7 +13,7 @@ export class NativeActivePause implements NativeActivePauseSource {
   }
   private changed(): void {
     for (const listener of this.listeners) {
-      try { listener(this.paused); } catch { /* A failed observer must not leave the approval clock stuck. */ }
+      try { listener(this.paused); } catch { /* 观察者失败不能使审批计时器卡住。 */ }
     }
   }
   pause(): () => void {
@@ -23,7 +23,7 @@ export class NativeActivePause implements NativeActivePauseSource {
   }
 }
 
-/** Worker-local elapsed clock; wall time remains available for approval expiry. */
+/** 工作进程内部的耗时计时器；审批过期仍可使用实际时间。 */
 export class NativeActiveClock {
   private pausedAt: number | undefined;
   private pausedMs = 0;

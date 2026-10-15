@@ -13,22 +13,22 @@ export { newWorkflowSchema } from './workflow-schema';
 
 interface ActiveRun { cancelled: boolean; completion: Promise<void>; persistenceFailed?: boolean }
 export interface WorkflowEngineOptions {
-  /** Must reject deleted, archived, or non-structured sessions and return the declared executor identity. */
+  /** 必须拒绝已删除、已归档或非结构化会话，并返回已声明的执行器身份。 */
   getSession(sessionId: string): WorkflowBinding;
-  /** Resolves only after a real structured turn result (not after writing stdin). */
+  /** 仅在真实结构化轮次结果返回后完成，不能在写入 stdin 后完成。 */
   runStage(sessionId: string, prompt: string, titlePrompt: string, submission?: ExecutionSubmission): Promise<WorkflowStageResult>;
   cancelSession(sessionId: string): void | Promise<void>;
   onChange?(runs: WorkflowRun[]): void;
-  /** All stage results/terminal status are durable before releasing this outer owner. */
+  /** 释放此外层持有者前，必须持久化所有阶段结果和终态。 */
   settled?(sessionId: string): void | Promise<void>;
-  /** Refresh authoritative task evidence and workspace before approving a Native stage. */
+  /** 批准 Native 阶段前，刷新权威任务依据和工作区。 */
   inspectNativeTask?(receipt: WorkflowNativeReceipt): Promise<NativeTaskView | undefined>;
   nativePoliciesEnabled?: boolean;
 }
 
 function errorText(error: unknown): string { return (error instanceof Error ? error.message : String(error)).slice(0, 4000); }
 
-/** Sequential, durable orchestration. Cancellation never rolls back filesystem effects. */
+/** 顺序、持久化编排。取消不会回滚文件系统副作用。 */
 export class WorkflowEngine {
   readonly file: string;
   private state: WorkflowState;
@@ -64,7 +64,7 @@ export class WorkflowEngine {
     return run;
   }
 
-  /** Explicit history removal never cancels a task or modifies its output files. */
+  /** 显式移除历史不会取消任务或修改其输出文件。 */
   remove(id: string): void {
     this.inactive(id);
     this.commit(state => { state.runs = state.runs.filter(run => run.id !== id); });
@@ -231,7 +231,7 @@ export class WorkflowEngine {
     const token = this.active.get(id);
     if (run.status === 'completed' || (run.status === 'cancelled' && !token && this.sessionOwners.get(run.sessionId) !== id)) return run;
     const errors: unknown[] = [];
-    // Invalidate late completions before awaiting the process termination callback.
+    // 等待进程终止回调前，先使迟到的完成事件失效。
     if (token) token.cancelled = true;
     try { this.update(id, draft => {
       draft.status = 'cancelled';
@@ -250,7 +250,7 @@ export class WorkflowEngine {
       }
     }
     else if (!errors.length && this.sessionOwners.get(run.sessionId) === id) {
-      // An explicit cancel can repair a prior failed terminal ACK without replaying a stage.
+      // 显式取消可修复此前失败的终态确认，无须重放阶段。
       this.sessionOwners.delete(run.sessionId);
       await this.options.settled?.(run.sessionId);
     }
@@ -265,7 +265,7 @@ export class WorkflowEngine {
     return this.get(id);
   }
 
-  /** Called on application shutdown; restarting never silently repeats a tool call. */
+  /** 应用退出时调用；重启不能默默重复工具调用。 */
   async shutdown(): Promise<void> {
     this.closed = true;
     await this.interruptRuns('应用退出导致工作流中断，请检查现有结果后手动继续。');
@@ -280,11 +280,11 @@ export class WorkflowEngine {
     const selected = this.state.runs.filter(run => !sessionIds || sessionIds.has(run.sessionId));
     const selectedIds = new Set(selected.map(run => run.id));
     const running = [...this.active.entries()].filter(([id]) => selectedIds.has(id));
-    // Invalidate every selected late result before any persistence operation can fail.
+    // 在任何可能失败的持久化操作之前，使选中的全部迟到结果失效。
     for (const [,token] of running) token.cancelled = true;
     const errors:unknown[]=[];
-    // Include stale in-memory running records on a retry after a failed save;
-    // their runners may already have settled while storage was unavailable.
+    // 保存失败后重试时，也应包含内存中仍标记为运行的旧记录；
+    // 存储不可用期间，它们的运行器可能已经结束。
     for (const id of new Set([...running.map(([id])=>id),...selected.filter(run=>run.status==='running').map(run=>run.id)])) {
       try {
         this.update(id, run => {
@@ -297,7 +297,7 @@ export class WorkflowEngine {
     for(const result of await Promise.allSettled(running.map(([id])=>Promise.resolve().then(()=>this.options.cancelSession(this.get(id).sessionId))))) {
       if(result.status==='rejected')errors.push(result.reason);
     }
-    // Failed persistence or cancellation must not release maintenance before its runners settle.
+    // 持久化或取消失败时，必须等运行器结束后才能解除维护。
     if (waitForCompletion) for (const result of await Promise.allSettled(running.map(([,token]) => token.completion))) {
       if (result.status === 'rejected') errors.push(result.reason);
     }
@@ -341,11 +341,11 @@ export class WorkflowEngine {
     this.sessionOwners.set(run.sessionId, id);
     token.completion = Promise.resolve().then(() => this.execute(id, token)).catch(error => {
       if (token.cancelled) return;
-      // Storage errors stop dispatch; never continue into another stage after a failed save.
+      // 存储错误会停止派发；保存失败后不能继续下一个阶段。
       try { this.update(id, draft => {
         draft.status = 'interrupted'; draft.error = errorText(error);
         for (const stage of draft.stages) if (stage.status === 'running') stage.status = 'interrupted';
-      }); } catch { token.persistenceFailed = true; /* Keep ownership until a durable repair. */ }
+      }); } catch { token.persistenceFailed = true; /* 保留所有权，直到修复已持久化。 */ }
     }).finally(async () => {
       if (this.active.get(id) === token) this.active.delete(id);
       if (!token.persistenceFailed && this.sessionOwners.get(run.sessionId) === id) {
@@ -353,7 +353,7 @@ export class WorkflowEngine {
         await this.options.settled?.(run.sessionId);
       }
     });
-    void token.completion.catch(() => { /* wait() still reports cleanup failure; avoid detached rejection. */ });
+    void token.completion.catch(() => { /* wait() 仍会报告清理失败；避免未被等待的 Promise 拒绝。 */ });
     return this.get(id);
   }
 
@@ -399,7 +399,7 @@ export class WorkflowEngine {
         throw error;
       }
       if (token.cancelled) {
-        // Cancellation blocks advancement, but consumed requests and effects still belong to this attempt.
+        // 取消阻止阶段推进，但已消耗的请求和副作用仍属于本次尝试。
         if (receipt || run.providerId === 'native') try { this.update(id, draft => { this.recordReceipt(draft, draft.stages.find(item => item.id === stage.id)!, receipt); }); }
         catch (error) { token.persistenceFailed = true; throw error; }
         return;
@@ -458,7 +458,7 @@ export class WorkflowEngine {
     mutate(next);
     this.storage.save(next);
     this.state = next;
-    // Rendering failures must not cause retries of already completed stage side effects.
-    try { this.options.onChange?.(this.list()); } catch { /* State remains durable. */ }
+    // 渲染失败不能触发已完成阶段副作用的重试。
+    try { this.options.onChange?.(this.list()); } catch { /* 状态仍已持久化。 */ }
   }
 }

@@ -109,8 +109,8 @@ test('disabled stdio MCP protects each existing mapped value despite missing and
     } });
   assert.throws(() => store.resolve(created.id), /禁用/);
   privateValues(store.protectedValues(), secrets); publicValues(store.list(), secrets);
-  // Enabling still cannot resolve this incomplete mapping, yet must protect the
-  // known values independently of transport launch validation.
+  // 启用后仍无法解析这个不完整的映射，但必须保护已知值，
+  // 且不依赖传输启动校验。
   const { credentialConfigured: _configured, ready: _ready, error: _error, ...metadata } = created;
   store.upsert({ ...metadata, enabled: true });
   assert.throws(() => store.resolve(created.id), /映射的环境变量/);
@@ -129,7 +129,7 @@ test('unavailable encrypted credentials do not discard other model and MCP value
   }
   models.upsert({ ...model, auth: { mode: 'env', variable: 'ENV_SECRET' } });
   mcpStore.upsert({ ...mcp, auth: { mode: 'env', variable: 'ENV_SECRET' } });
-  models.upsert(model); mcpStore.upsert(mcp); // Missing memory values after restart.
+  models.upsert(model); mcpStore.upsert(mcp); // 重启后内存中的值缺失。
   const partiallyUnavailable: NativeSafeStorage = { ...safeStorage, decryptString: bytes => {
     const value = safeStorage.decryptString(bytes); if (value === blocked) throw new Error(blocked); return value;
   } };

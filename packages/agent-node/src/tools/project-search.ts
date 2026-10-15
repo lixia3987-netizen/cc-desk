@@ -21,13 +21,13 @@ export interface ProjectSearchMatch {
 }
 export interface ProjectSearchPage {
   matches: ProjectSearchMatch[];
-  /** Whether all in-scope candidates were scanned without omissions or uncertain versions. */
+  /** 是否已扫描作用域内的全部候选项，且没有遗漏或版本不确定的情况。 */
   scanComplete: boolean;
-  /** Whether this is the last page of the bounded observed snapshot. */
+  /** 是否为受限观测快照的最后一页。 */
   pageComplete: boolean;
   complete: boolean; truncated: boolean; truncationReasons: string[];
   nextCursor: string | null;
-  /** Exact only for this observed snapshot, never an estimated total for the repository. */
+  /** 仅对当前观测快照准确，绝不是仓库总量的估计值。 */
   totalMatches: number;
   scanned: { entries: number; files: number; bytes: number };
   skipped: Record<string, number>;
@@ -53,7 +53,7 @@ function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
   return `{${Object.keys(value).filter(key => (value as Record<string, unknown>)[key] !== undefined).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`;
 }
-/** Restrict glob grammar to literal path segments, ?, *, and a whole-segment **. */
+/** 将 glob 语法限制为字面路径段、?、* 以及占据整个路径段的 **。 */
 function validateGlob(glob: string): void {
   if (glob.length > 512 || /[\x00-\x1f\x7f\\:[\]{}()!]/.test(glob) || glob.startsWith('/') || glob.split('/').some(part => !part || part === '.' || part === '..' || part.includes('**') && part !== '**') || glob.split('/').length > 32) fail('invalid_search', 'Glob supports only literals, ?, *, and whole-segment **');
 }
@@ -78,7 +78,7 @@ export function validateProjectSearchInput(input: ProjectSearchInput): ProjectSe
     ...(input.glob !== undefined ? { glob: input.glob } : {}), ignoreDirectories, caseSensitive: input.caseSensitive ?? true,
     pageSize: bounded(input.pageSize, 100, 1, 1000, 'page size'), ...(input.cursor !== undefined ? { cursor: input.cursor } : {}) };
 }
-// Dynamic programming gives a finite O(pattern * path) bound; no glob regex executes.
+// 动态规划将复杂度限制为有限的 O(pattern * path)，不执行 glob 正则表达式。
 function segmentMatches(pattern: string, name: string): boolean {
   const characters = [...name];
   let previous = new Uint8Array(characters.length + 1); previous[0] = 1;
@@ -133,7 +133,7 @@ function literalLines(content: string, query: string, caseSensitive: boolean, li
   return { matches, limited: false };
 }
 
-/** Bounded snapshots are local to one tool host; a cursor never authorizes another run. */
+/** 受限快照仅属于当前工具宿主；游标绝不能授权其他运行。 */
 export class ProjectSearch {
   private readonly files: ProjectFiles;
   private readonly secret = randomBytes(32);
@@ -266,14 +266,14 @@ export class ProjectSearch {
             throwIfAborted(context.signal);
             if (error instanceof ProjectSearchError) throw error;
             const code = (error as NodeJS.ErrnoException).code;
-            // Do not reveal a protected root or follow any link merely to classify the failure.
+            // 不得仅为判定失败类别而泄露受保护的根目录或跟随任何链接。
             if (String((error as Error)?.message).includes('Protected path')) skip('policy_excluded');
             else skip(code === 'ENOENT' ? 'changed_during_scan' : 'unreadable_or_link', true);
           }
           continue;
         }
-        // Metadata for all ordinary candidates participates in cursor validity,
-        // including scoped AGENTS/CLAUDE files excluded by a filename glob.
+        // 所有普通候选项的元数据都参与游标有效性校验，
+        // 包括被文件名 glob 排除的作用域内 AGENTS/CLAUDE 文件。
         remember(observedFile);
         const within = input.path === '.' ? relative : relative.slice(input.path.length + 1);
         if (input.glob && !globMatches(input.glob, within, input.caseSensitive!)) { skip('glob_excluded'); continue; }
@@ -286,7 +286,7 @@ export class ProjectSearch {
         if (input.mode === 'files') { append({ path: relative, hash: null, hashStatus: 'not_read', identity, bytes }); continue; }
         if (bytes > this.files.maxFileBytes) { skip('file_byte_limit', true); continue; }
         if (snapshot.scanned.bytes + bytes > this.maxBytes) { skip('scan_byte_limit', true); continue; }
-        // Invalid UTF-8 and binary reads still consume I/O budget. Reserve before reading.
+        // 读取无效 UTF-8 内容或二进制文件仍会消耗 I/O 预算，读取前必须先预留预算。
         snapshot.scanned.bytes += bytes;
         try {
           const file = await this.files.read(relative, context.signal, bytes);
@@ -310,7 +310,7 @@ export class ProjectSearch {
       }
     };
     try {
-      // Root scope is validated even if the first operation cannot fit its scan budget.
+      // 即使扫描预算不足以完成首个操作，也要校验根作用域。
       await this.files.snapshot(input.path, 'directory');
       if (input.mode === 'regex') matcher = await BoundedRegex.create(input.query!, input.caseSensitive!, Math.min(1000, Math.max(1, deadline - performance.now())), context.signal);
       await visit(input.path, 0);

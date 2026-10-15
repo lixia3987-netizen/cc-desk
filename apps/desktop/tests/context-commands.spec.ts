@@ -159,8 +159,8 @@ test('context meter uses root request usage, invalidates after compact and clear
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
     await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].started).toBe(false);
-    // The CLI has not written the new transcript yet. Relaunching immediately
-    // after /clear must start that fresh identity rather than require --resume.
+    // CLI 尚未写入新的对话记录。在 /clear 后立即重新启动，
+    // 必须使用这个新标识启动，不能要求传入 --resume。
     await close(app); app = await f.launch(); page = await app.firstWindow(); input = page.getByLabel('提示词编辑器');
     await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
     await input.fill('继续'); await input.press('Enter'); await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6');
@@ -178,8 +178,8 @@ test('context meter refreshes from message delta usage without a context command
   try {
     const page = await app.firstWindow(), input = page.getByLabel('提示词编辑器'), meter = page.locator('.context-meter');
     await input.fill('读取文件后回复'); await input.press('Enter');
-    // The marker establishes that the second request's start and zero-valued
-    // assistant envelope have reached the UI while its delta is still gated.
+    // 该标记证明第二个请求的开始事件和数值为零的助手消息封装
+    // 已到达界面，而它的增量消息仍在等待放行。
     await expect(page.getByText('等待第二次请求用量', { exact: true })).toBeVisible();
     await expect(meter).toContainText('27,147 / 未知容量');
     await fs.writeFile(f.releaseDelta, 'continue');
@@ -203,7 +203,7 @@ test('context reports retain capacity through alias changes, metadata gaps and s
       await input.fill(text);
       if (text.startsWith('/')) await input.press('Escape');
       await input.press('Enter');
-      // Wait for the accepted turn to finish even when the displayed percentage is unchanged.
+      // 即使显示的百分比没有变化，也要等待已接受的轮次结束。
       await expect(input).toHaveValue('');
       await expect(page.getByRole('button', { name: '发送任务', exact: true })).toBeVisible();
     };
@@ -214,7 +214,7 @@ test('context reports retain capacity through alias changes, metadata gaps and s
       await expect(meter.locator('strong')).toHaveText(`${Number(percentage).toFixed(1)}%`);
     };
 
-    // Only /context supplies a window; its display alias differs from the actual API model ID.
+    // 只有 /context 提供上下文窗口；其显示别名与实际 API 模型 ID 不同。
     await send('/context');
     await expectUsage('30,000', '15');
     await send('报告后的普通对话');
@@ -227,7 +227,7 @@ test('context reports retain capacity through alias changes, metadata gaps and s
     await close(app); app = await f.launch(); page = await app.firstWindow();
     await expectUsage('12,000', '6');
 
-    // Refreshing the report must not make the following normal request lose its capacity again.
+    // 刷新报告后，后续正常请求不能再次丢失上下文容量。
     await send('/context');
     await expectUsage('30,000', '15');
     await send('再次报告后的普通对话');
@@ -252,8 +252,8 @@ test('context capacity follows the starting model across routed responses, tool 
       if (text.startsWith('/')) await input.press('Escape');
       await input.press('Enter');
       await expect(input).toHaveValue('');
-      // An unchanged percentage or the previous turn's completed state cannot
-      // establish that this prompt has run; include its journal and queue state.
+      // 百分比不变或上一轮的完成状态无法证明当前提示词已经执行；
+      // 还须结合它的日志和队列状态进行判断。
       await expect.poll(() => page.evaluate(async ({ id, text }) => {
         const snapshot = await window.desktop.chatSnapshot(id);
         return {
@@ -274,13 +274,13 @@ test('context capacity follows the starting model across routed responses, tool 
     await send('/context');
     await expectUsage('30,000', '15');
 
-    // The last root request uses 14k tokens. Neither the 900k result aggregate,
-    // 800k child input nor routed/child window entries belong to this baseline.
+    // 最后一个根请求使用 14k 个令牌。900k 的结果累计值、
+    // 800k 的子请求输入以及路由或子请求的窗口条目都不属于此基线。
     await send('路由响应携带冲突窗口');
     await expectUsage('14,000', '7');
 
-    // The process remains selected on Claude even though its previous response
-    // names another model; absent modelUsage must retain the reported 200k.
+    // 即使上一次响应标明了其他模型，该进程仍然选择 Claude；
+    // 缺少 modelUsage 时，必须保留报告的 200k 容量。
     await send('路由响应省略窗口');
     await expectUsage('18,000', '9');
     await send('路由响应省略全部用量');

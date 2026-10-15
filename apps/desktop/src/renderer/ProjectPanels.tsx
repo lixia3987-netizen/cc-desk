@@ -31,8 +31,8 @@ export function GitPanel({session,onError,onReview,draft,onDraft,visible=true}:{
   useEffect(()=>{
     if(!visible)return;
     mounted.current=true;void refresh();
-    // A fast turn can start and finish between two batched workspace snapshots.
-    // Use the task state carried by the immediate chat event, not only React props.
+    // 较快的轮次可能在两次批量工作区快照之间开始并结束。
+    // 应使用即时聊天事件携带的任务状态，不能只依赖 React 属性。
     const off=window.desktop.onChat((id,state)=>{if(id===session.id&&['completed','interrupted','error'].includes(state??''))scheduleRefresh();});
     window.addEventListener('focus',scheduleRefresh);
     return()=>{mounted.current=false;seq.current++;refreshSeq.current++;clearTimeout(refreshTimer.current);off();window.removeEventListener('focus',scheduleRefresh);};

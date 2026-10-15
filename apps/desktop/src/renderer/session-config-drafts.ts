@@ -27,7 +27,7 @@ function cleanDraft(config: EngineConfig): SessionConfigDraft {
   return { value: structuredClone(config), base: structuredClone(config), persisted: structuredClone(config), dirty: false, conflict: false, busy: false, saved: false };
 }
 
-/** Owned by one settings dialog: every section edits the same complete session draft. */
+/** 由一个设置对话框持有，所有区域编辑同一份完整的会话草稿。 */
 export class SessionConfigDraftStore {
   private readonly entries = new Map<string, SessionConfigDraft>();
   private readonly listeners = new Set<() => void>();
@@ -74,7 +74,7 @@ export class SessionConfigDraftStore {
     this.publish(sessionId, cleanDraft(current.persisted));
   }
 
-  /** Explicit conflict resolution keeps edited keys and retains other newly saved keys. */
+  /** 明确解决冲突时，保留已编辑的键，以及其他新保存的键。 */
   keepChanges(sessionId: string): void {
     const current = this.entries.get(sessionId);
     if (!current || current.busy || current.base.schemaVersion !== current.persisted.schemaVersion) return;

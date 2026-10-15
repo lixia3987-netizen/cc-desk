@@ -31,8 +31,8 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
   const supported = configurationSupported(descriptor, draft.engineConfig);
   const engineBlocked = !descriptor || !supported || !!descriptor.maintenance || (!!draft.fork && !descriptor.capabilities.fork);
   const isNative = draft.providerId === 'native';
-  // Pending imports reserve the owner in App. The originating paste remains valid
-  // while that import is busy, but changing its project/configuration invalidates it.
+  // 尚未完成的导入在 App 中预留所属对象；导入忙碌期间，原始粘贴仍然有效，
+  // 但变更其项目或配置会使该粘贴失效。
   const pasteIdentity = JSON.stringify([draft.projectId, draft.providerId, draft.mode, draft.engineConfig]);
   const pasteScope = useRef({ identity: pasteIdentity, generation: 0, enabled: false });
   if (pasteScope.current.identity !== pasteIdentity) pasteScope.current = { identity: pasteIdentity, generation: pasteScope.current.generation + 1, enabled: false };

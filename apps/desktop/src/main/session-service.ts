@@ -60,7 +60,7 @@ export class SessionService {
     this.runtime = new TerminalExecutions(execution);
     execution.events.subscribe(event => {
       const window = this.getWindow();
-      // Large message bodies stay in the paginated journal, not in renderer event queues.
+      // 大型消息正文保留在分页事件日志中，不放入渲染进程事件队列。
       if (event.type !== 'journal' || !['message', 'text_delta'].includes(event.event.type)) window?.webContents.send('execution:event', event);
       if (event.type === 'session.changed' || event.type === 'identity.changed') this.onState();
       if (event.type === 'terminal.data') window?.webContents.send('terminal:data', event.chunk);
@@ -98,7 +98,7 @@ export class SessionService {
           const previous = this.workflowStates.get(run.id); this.workflowStates.set(run.id, run.status);
           if (previous !== run.status && ['failed', 'interrupted', 'cancelled'].includes(run.status) && this.queue && !this.queue.isPrioritizing(run.sessionId)) {
             try { this.queue.pause(run.sessionId, '工作流已停止，待发送消息需要手动继续。'); }
-            catch { /* Keep the in-memory pause without preventing workflow cancellation. */ }
+            catch { /* 保留内存暂停状态，不阻止工作流取消。 */ }
           }
           this.queue?.wake(run.sessionId);
         }
@@ -151,8 +151,8 @@ export class SessionService {
     if(exists)this.select(id);
     const window=this.getWindow();
     if(!window || window.isDestroyed())return;
-    // Selection may already equal id. A separate navigation event still clears
-    // renderer filters and reveals the requested conversation on every click.
+    // 当前选择可能已等于 id。独立导航事件仍会在每次点击时清除
+    // 渲染进程筛选条件，并显示请求的会话。
     if(exists && !window.webContents.isDestroyed())window.webContents.send('session:navigate',id);
     if(window.isMinimized())window.restore();
     window.show();window.focus();
@@ -173,8 +173,8 @@ export class SessionService {
   }
   private occupied(id: string) { return this.runtime.has(id) || this.chat.has(id) || this.admissions.has(id); }
   private recoveryRequired(id: string) {
-    // Missing-provider records are retained for offline history; they cannot
-    // make an unrelated registered provider's admission fail globally.
+    // 缺少提供方的记录保留用于离线历史；不能使
+    // 无关的已注册提供方在全局范围内准入失败。
     return this.execution.executors().some(executor => executor.recoveryRequired?.(id));
   }
   private taskOccupied(id: string) { return this.runtime.has(id) || this.chat.isBusy(id) || this.admissions.has(id) || this.releaseOperations.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id) || this.recoveryRequired(id); }
@@ -187,7 +187,7 @@ export class SessionService {
   private async executionRoots(session: Session): Promise<string[]> {
     const cwd = this.pathKey(session.cwd);
     const root = await gitWorktreeRoot(session.cwd).catch(() => this.project(session.projectId).path);
-    // A linked worktree has its own root; git-common-dir is deliberately not a lock key.
+    // 关联工作树有自己的根目录；刻意不将 git-common-dir 用作锁键。
     return [...new Set([this.pathKey(root), cwd])];
   }
   private async assertRecoveryDirectories(keys: readonly string[]): Promise<void> {
@@ -208,7 +208,7 @@ export class SessionService {
     await this.assertRecoveryDirectories(keys);
     checkAdmission();
     this.assertDirectoriesUnlocked(keys);
-    // Reusable idle Claude connections may be drained; queue/workflow ownership must win.
+    // 可排空空闲且可复用的 Claude 连接；队列和工作流所有权必须优先。
     for (const conflict of this.directoryExecution.conflicts(keys, id)) {
       const other = this.store.state.sessions.find(value => value.id === conflict.owner.sessionId);
       if (other?.execution.mode === 'structured' && !this.taskOccupied(other.id) && !this.lifecycle.has(other.id)) {
@@ -234,7 +234,7 @@ export class SessionService {
       generation: this.cancellations.get(id) ?? 0 }, keys);
     this.executionLeases.set(id, lease);
   }
-  /** Revalidated by the native host immediately before/after tool-related awaits. */
+  /** 原生宿主在工具相关等待前后立即重新验证。 */
   assertExecutionOwnership(id: string): void {
     const session = this.session(id);
     this.assertEngineAvailable(session.execution.providerId);
@@ -248,7 +248,7 @@ export class SessionService {
     }
     this.assertDirectoriesUnlocked([...lease.roots]);
   }
-  /** Independent implementation children lease their own worktree without creating sidebar sessions. */
+  /** 独立实现子任务租用自己的工作树，不创建侧栏会话。 */
   async acquireNativeChildOwnership(parentId: string, identity: RunIdentity, cwd: string) {
     const binding = { ...identity };
     const assertIdentity = () => {
@@ -274,7 +274,7 @@ export class SessionService {
       release: () => { if (released) return; this.directoryExecution.release(childLease); released = true; },
     };
   }
-  /** Outer orchestration calls this only after its durable ACK/terminal commit. */
+  /** 外层编排仅在其确认或终态提交持久化之后调用。 */
   async refreshDirectoryRelease(id: string): Promise<void> {
     const inProgress = this.releaseOperations.get(id);
     if (inProgress) return inProgress;
@@ -285,8 +285,8 @@ export class SessionService {
       if (!session) throw new Error('仍持有目录的会话记录已移除，无法确认释放。');
       if (session.execution.mode === 'structured') {
         if (this.chat.isBusy(id)) return;
-        // Claude keeps its reusable CLI and live configuration between turns.
-        // A competing admission, management action or capacity eviction drains it.
+        // Claude 在轮次间保留可复用的 CLI 与实时配置。
+        // 竞争准入、管理操作或容量淘汰会将其排空。
         if (session.execution.providerId === 'claude' && this.chat.has(id)) return;
         await this.chat.stopIdle(id);
         await this.chat.whenReleased(id);
@@ -331,11 +331,11 @@ export class SessionService {
     if(this.admissions.has(id) || this.workflows.isSessionBusy(id) || this.queue.hasActive(id) || this.recoveryRequired(id)) throw new Error('请先停止正在执行的任务并核查未知副作用。');
     if (this.session(id).execution.mode === 'structured') this.queue.pause(id);
     this.beginLifecycle(id);
-    // Capture the driver before a record deletion. Its explicit barrier remains usable afterward.
+    // 删除记录前先捕获驱动。之后仍可使用其显式屏障。
     const driver = this.execution.registration(this.session(id)).executor;
     try { return await action(); } finally {
       this.lifecycle.delete(id);
-      // Deleted records must already have passed the explicit idle release barrier.
+      // 已删除记录必须已通过显式空闲释放屏障。
       if (this.store.state.sessions.some(session => session.id === id)) await this.refreshDirectoryRelease(id);
       else {
         const lease = this.executionLeases.get(id);
@@ -347,7 +347,7 @@ export class SessionService {
       }
     }
   }
-  /** Explicit native context operations share session, queue and directory ownership. */
+  /** 显式 Native 上下文操作共享会话、队列和目录所有权。 */
   async maintainNativeContext<T>(id: string, allowRecovery: boolean, action: () => Promise<T>): Promise<T> {
     const session = this.structured(id);
     if (session.execution.providerId !== 'native') throw new Error('此操作只适用于自研 Agent 会话。');
@@ -367,7 +367,7 @@ export class SessionService {
       this.assertDirectoriesUnlocked(roots);
       if (this.directoryExecution.conflicts(roots, id).length || this.directorySessions(roots).some(other => other.id !== id && this.taskOccupied(other.id))) throw new Error('同一工作目录还有执行或恢复任务，请先处理后重试。');
       if (!allowRecovery && this.store.state.sessions.filter(other => this.occupied(other.id)).length >= this.store.state.settings.maxSessions) throw new Error('已达到最大并发会话数，请等待其他任务完成后再压缩。');
-      // No await between the final checks and acquiring both kinds of ownership.
+      // 最终检查与取得两类所有权之间不能有 await。
       const existing = this.executionLeases.get(id);
       if (!existing) this.executionLeases.set(id, this.directoryExecution.acquire({ sessionId: id, providerId: session.execution.providerId, generation: epoch }, roots));
       keys = roots;
@@ -397,8 +397,8 @@ export class SessionService {
     const releases = await Promise.allSettled(this.directorySessions(keys).filter(session=>this.chat.has(session.id)).map(session=>this.chat.stopIdle(session.id)));
     for (const result of releases) if (result.status === 'rejected') throw result.reason;
     for (const lease of this.directoryExecution.conflicts(keys)) await this.refreshDirectoryRelease(lease.owner.sessionId);
-    // Locks prevent new admissions while exits are pending. Keep a final process
-    // check: no Git mutation may run merely because a UI task badge is complete.
+    // 等待退出期间，由锁阻止新准入。保留最终进程
+    // 检查：不能仅因界面任务标记已完成就执行 Git 修改。
     if (this.directoryExecution.conflicts(keys).length || this.directorySessions(keys).some(s => this.occupied(s.id) || this.workflows.isSessionBusy(s.id) || this.queue.hasActive(s.id))) throw new Error(message);
   }
   private async worktreeDirectories(s: Session) {
@@ -406,9 +406,9 @@ export class SessionService {
   }
   private async worktreeDeletionDirectories(s: Session) {
     const recorded = [this.worktreeBase(s), s.worktree!];
-    // Damaged or already removed worktrees cannot report their Git root. Keep
-    // the recorded paths locked as well as every root Git can still resolve;
-    // only the force-cleanup helper may decide whether deletion is safe.
+    // 损坏或已移除的工作树无法报告 Git 根目录。应锁定
+    // 记录中的路径以及 Git 仍能解析的所有根目录；
+    // 仅强制清理辅助函数可判断删除是否安全。
     const roots = await Promise.all(recorded.map(directory => gitWorktreeRoot(directory).catch(() => undefined)));
     return [...new Set([...recorded, ...roots.filter((root): root is string => !!root)].map(directory => this.pathKey(directory)))];
   }
@@ -417,7 +417,7 @@ export class SessionService {
     return this.store.state.sessions.some(other => other.id !== s.id &&
       (this.contains(target,this.pathKey(other.cwd)) || (other.worktree && other.worktreeBase && this.contains(target,this.pathKey(other.worktreeBase)))));
   }
-  /** Keep source and project-local destination locked until the dependent session is saved. */
+  /** 保存依赖会话之前，持续锁定来源及项目内目标目录。 */
   async withSessionCreation<T>(cwd: string, isolated: boolean, action: () => Promise<T>, destinationProjectPath?: string): Promise<T> {
     const epoch = this.globalAdmissionEpoch;
     this.assertAvailable();
@@ -484,8 +484,8 @@ export class SessionService {
       } finally { this.lifecycle.delete(idle.id); }
       assertReady();
     }
-    // Idle eviction awaits process-tree shutdown; another session may have
-    // claimed the same native transcript while that wait was in progress.
+    // 空闲淘汰会等待进程树关闭；等待期间，另一会话可能
+    // 已取得同一 Native 对话记录的所有权。
     assertReady();
     } catch (error) {
       this.admissions.delete(id);
@@ -497,7 +497,7 @@ export class SessionService {
     const s = this.session(id);
     const checkAdmission = this.captureEngineAdmission(s.execution.providerId);
     const epoch = this.cancellations.get(id) ?? 0;
-    if(s.execution.mode === 'structured') return; // Started by first message; no empty model request.
+    if(s.execution.mode === 'structured') return; // 由首条消息启动；不发出空模型请求。
     if(this.runtime.has(id)) return;
     if(this.chat.has(id)) throw new Error('此会话已由图形化运行器占用。');
     await this.reserve(id);
@@ -507,7 +507,7 @@ export class SessionService {
       await this.runtime.start(id);
     } finally {
       this.admissions.delete(id);
-      // Terminal ownership spans the whole process lifetime, including natural exit.
+      // 终端所有权覆盖完整进程生命周期，包括自然退出。
       void this.refreshDirectoryRelease(id).catch(() => { this.onState(); });
     }
   }
@@ -580,7 +580,7 @@ export class SessionService {
       assertPermissionChangeAllowed: session => {
         this.assertUnlocked(session);
         if (this.recoveryRequired(session.id)) throw new Error('请先核查并恢复会话记录，再修改权限。');
-        // Execution admissions are allowed: this changes only a future run's saved mode.
+        // 允许执行准入：此处仅修改未来运行所保存的模式。
       },
     });
     registerChatHandlers(handle, {
@@ -617,8 +617,8 @@ export class SessionService {
     const errors:unknown[]=[];
     try { this.queue.pauseAll('工作台已退出，待发送消息需要手动继续。'); } catch (error) { errors.push(error); }
     try { await this.workflows.shutdown(); } catch(error) { errors.push(error); }
-    // A persistence failure must not prevent another runtime from terminating.
-    // Keep retries live: a later quit attempt must be able to flush after recovery.
+    // 持久化失败不能阻止另一运行时终止。
+    // 保留重试能力：后续退出尝试必须能在恢复后刷新存储。
     for(const result of await Promise.allSettled([this.execution.shutdown()])) {
       if(result.status==='rejected')errors.push(result.reason);
     }
@@ -632,7 +632,7 @@ export class SessionService {
     this.maintenance = true;
     try {
       this.execution.setMaintenance(true);
-      // Stop each runner even when another runner cannot save or terminate.
+      // 即使其他运行器无法保存或终止，也停止各个运行器。
       const results = await Promise.allSettled([Promise.resolve().then(() => this.queue.pauseAll('CLI 更新已暂停队列，请手动继续。')), this.workflows.disconnectAll(), this.execution.disconnectAll()]);
       const deadline = Date.now() + 10_000;
       while (this.admissions.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
@@ -652,8 +652,8 @@ export class SessionService {
     this.maintenanceOperation = true;
     this.maintainedEngines.add(providerId);
     this.maintenanceEpochs.set(providerId, (this.maintenanceEpochs.get(providerId) ?? 0) + 1);
-    // Fix the scope only after closing admission. Existing asynchronous work is
-    // cancelled even if it resumes after this maintenance operation has ended.
+    // 关闭准入后再固定操作范围。现有异步任务仍会
+    // 被取消，即使它在此次维护结束后才恢复执行。
     const sessions = this.store.state.sessions.filter(session => session.execution.providerId === providerId);
     const ids = sessions.map(session => session.id);
     const targeted = new Set(ids);
@@ -666,8 +666,8 @@ export class SessionService {
       try { this.execution.setEngineMaintenance(providerId, ids, true); }
       catch (error) { errors.push(error); }
       try { this.onState(); } catch (error) { errors.push(error); }
-      // Persistence or one driver's failure must not prevent independent target
-      // cleanup. Surviving providers retain their queues, processes and owners.
+      // 持久化失败或某个驱动失败不能阻止独立目标
+      // 清理。仍保留的提供方继续持有其队列、进程和所有者。
       const results = await Promise.allSettled([
         Promise.resolve().then(() => this.queue.pauseSessions(sessions.filter(session => session.execution.mode === 'structured').map(session => session.id), '执行引擎维护已暂停队列，请手动继续。')),
         Promise.resolve().then(() => this.workflows.disconnectSessions(workflowIds, '执行引擎维护已中断工作流，请手动继续。')),

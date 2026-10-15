@@ -10,7 +10,7 @@ export function engineDefaults(descriptor: ExecutionDescriptor | undefined, sett
   return config;
 }
 
-/** Only newly created Native sessions opt into following the settings policy. */
+/** 仅新建的 Native 会话会选择沿用设置中的策略。 */
 export function newSessionEngineDefaults(descriptor: ExecutionDescriptor | undefined, settings: Settings | undefined): EngineConfig {
   const config = engineDefaults(descriptor, settings);
   if (descriptor?.providerId === 'native' && config.schemaVersion === 1) {
@@ -29,7 +29,7 @@ function sameJsonValue(left: JsonValue, right: JsonValue): boolean {
   return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && sameJsonValue(left[key], right[key]));
 }
 
-/** Saving re-parses objects; property order and object identity are not edits. */
+/** 保存时会重新解析对象；属性顺序和对象引用变化不算编辑。 */
 export function sameEngineDefaults(left: Settings['engineDefaults'], right: Settings['engineDefaults']): boolean {
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) &&
@@ -53,7 +53,7 @@ interface Props {
   disabled?: boolean; prefix?: string; running?: boolean;
 }
 
-/** An empty or invalid draft never replaces the last valid persisted integer. */
+/** 空草稿或无效草稿不会覆盖上次持久化的有效整数。 */
 export function parseEngineConfigNumber(text: string, field: Pick<EngineConfigField, 'min' | 'max'>): number | undefined {
   if (!text.trim()) return undefined;
   const value = Number(text);
@@ -71,7 +71,7 @@ function IntegerConfigInput({ value, field, label, disabled, onChange }: { value
     onBlur={() => { if (!valid) setDraft(value); }} />;
 }
 
-/** Descriptions contain presentation data; providers still validate every write. */
+/** 描述仅包含展示数据；提供方仍会校验每次写入。 */
 export function EngineConfigFields({ value, fields, onChange, disabled = false, prefix = '', running = false }: Props) {
   return <>{fields.map(field => {
     const raw = value.options[field.key];

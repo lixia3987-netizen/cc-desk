@@ -33,7 +33,7 @@ const prefix = (text: string, characters: number) => {
   return text.slice(0, end);
 };
 
-/** Metadata paths are omitted whole, never presented as shortened but usable references. */
+/** 元数据路径应整体省略，绝不显示为缩短后仍可使用的引用。 */
 function boundedResult(result: NativeAgentResult, parentRunId: string, limit: number): { output: JsonObject; truncated: boolean } {
   const output = { source: 'untrusted_agent_result', parentRunId, result: structuredClone(result) } as unknown as JsonObject;
   if (bytes(output) <= limit) return { output, truncated: false };
@@ -48,8 +48,8 @@ function boundedResult(result: NativeAgentResult, parentRunId: string, limit: nu
     patch.nextOffset = end < (patch.totalCharacters as number) ? end : null;
   };
   setPatch('');
-  // Preserve useful forward progress instead of making every page spend its
-  // whole allowance on the same long summary or private metadata paths.
+  // 保留有效的向前读取进度，避免每页都把
+  // 全部额度消耗在同一长摘要或私有元数据路径上。
   const reserve = originalPatch?.length ? Math.min(1024, Math.floor(limit / 2)) : 0;
   const target = limit - reserve;
   const omit = (object: JsonObject, key: string, field: string) => {
@@ -89,8 +89,8 @@ function boundedResult(result: NativeAgentResult, parentRunId: string, limit: nu
     }
     object[key] = prefix(text, low);
   }
-  // The input/receipt schemas bound all remaining linkage fields. At the
-  // supported 2048-byte minimum they fit even when every ID has maximum length.
+  // 输入及回执模式限制所有其余关联字段的大小。在
+  // 支持的最小 2048 字节额度下，即使所有 ID 都达到最大长度也能容纳。
   if (bytes(output) > limit) throw new Error('Agent result metadata exceeds output budget.');
   if (patch && originalPatch !== undefined) {
     let low = 0, high = originalPatch.length;
@@ -109,13 +109,13 @@ interface CallState { prepared: PreparedTool; parent: RunIdentity; maxOutputByte
 export interface AgentResultToolOptions {
   dataDirectory: string;
   identity: RunIdentity;
-  /** Must resolve identities from the durable, host-owned run ledger. */
+  /** 必须从宿主管理的持久化运行账本中解析身份。 */
   resolveParent(parentRunId: string): RunIdentity | undefined;
   assertOwnership?(): Promise<void>;
   forbiddenValues?: readonly string[];
 }
 
-/** A read capability bound to this worker and a ledger-owned parent identity. */
+/** 读取能力绑定当前工作进程及由账本管理的父任务身份。 */
 export function createAgentResultTools(options: AgentResultToolOptions): ToolPort {
   const identity = identitySchema.parse(structuredClone(options.identity)), identityKey = encode(identity);
   const dataDirectory = options.dataDirectory;

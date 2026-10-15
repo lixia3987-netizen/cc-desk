@@ -49,7 +49,7 @@ export function registerWorkflowHandlers(handle: Register, ports: WorkflowPorts)
   });
   handle('workflow:delete', idSchema, id => ports.workflows.remove(id));
   handle('workflow:export', idSchema, async id => {
-    // Capture a stable, inactive record before showing a modal save dialog.
+    // 显示模态保存对话框前，先捕获稳定且非活动的记录。
     const content = ports.workflows.exportRun(id);
     const target = await dialog.showSaveDialog(ports.getWindow()!, {
       title: '导出工作流记录', defaultPath: `workflow-${id.slice(0, 8)}.json`,

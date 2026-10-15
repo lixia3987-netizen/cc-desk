@@ -8,7 +8,7 @@ const entrySchema = z.object({ id: z.string().regex(IMPORTED_FONT_ID), name: z.s
 const catalogSchema = z.array(entrySchema).max(MAX_IMPORTED_FONTS).refine(fonts => new Set(fonts.map(font => font.id)).size === fonts.length);
 const digest = (data: Buffer) => 'imported:' + createHash('sha256').update(data).digest('hex');
 
-/** Bound the container before the renderer's FontFace/OTS validates glyph data. */
+/** 在渲染进程的 FontFace/OTS 校验字形数据前，先限制容器大小。 */
 export function validateFont(data: Buffer, extension: string): ImportedFont['format'] {
   if (data.length < 12 || data.length > MAX_FONT_BYTES) throw new Error('字体文件为空、已损坏或超过 20 MiB。');
   const signature = data.toString('ascii', 0, 4);
@@ -36,7 +36,7 @@ export function validateFont(data: Buffer, extension: string): ImportedFont['for
   return format;
 }
 
-/** The renderer receives IDs and bytes, never an arbitrary filesystem reader. */
+/** 渲染进程仅接收 ID 和字节，不获得任意文件系统读取能力。 */
 export class FontLibrary {
   readonly directory: string;
   constructor(dataDirectory: string) { this.directory = path.join(dataDirectory, 'fonts'); }
@@ -107,7 +107,7 @@ export class FontLibrary {
     const fonts = this.list(), font = fonts.find(font => font.id === id);
     if (!font) return;
     this.save(fonts.filter(font => font.id !== id));
-    // Only delete our named copy; never touch the user's original file.
+    // 仅删除本应用命名的副本，不能改动用户原文件。
     const file = this.file(font);
     if (fs.lstatSync(file, { throwIfNoEntry: false })) fs.unlinkSync(file);
   }

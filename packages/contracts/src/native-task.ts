@@ -1,4 +1,4 @@
-/** Durable engineering-task state. This never replaces the operational RunStatus. */
+/** 持久化的工程任务状态，绝不替代运行层面的 RunStatus。 */
 export interface NativeTaskIdentity {
   sessionId: string; conversationId: string; runId: string; requestId: string; workerGeneration: number;
 }
@@ -10,30 +10,30 @@ export interface NativeTaskStep {
 export interface NativeTaskCriterion {
   id: string; description: string; stepIds: string[]; kind: 'command' | 'manual';
 }
-/** The model may propose these declarations, but cannot provide verification results. */
+/** 模型可以提出这些声明，但不能提供验证结果。 */
 export interface NativeTaskPlan {
   goal: string; steps: NativeTaskStep[]; criteria: NativeTaskCriterion[];
 }
 export interface NativeTaskCommand {
   executable: string; argv: string[]; cwd: string;
 }
-/** Bounded host scan; no file contents are persisted or sent to the model. */
+/** 有边界的宿主扫描；文件内容不会持久化，也不会发送给模型。 */
 export interface NativeTaskWorkspace {
   fingerprint: string; complete: boolean; rootFingerprint: string;
   files: Array<{ path: string; hash: string; bytes: number; mode: number }>;
   scope: string[]; issues: string[]; capturedAt: string;
 }
-/** Observed changes can include other actors; this is never a rollback allowlist. */
+/** 观测到的变更可能来自其他参与方，绝不作为回滚白名单。 */
 export interface NativeTaskChangeSummary {
   complete: boolean; added: string[]; modified: string[]; removed: string[];
   attribution: 'observed_since_task_start'; truncated: boolean;
 }
-/** Host-read source context, retaining its original line separators and complete-file identity. */
+/** 宿主读取的来源上下文，保留原始换行符及完整文件身份。 */
 export interface NativeTaskCodeLocation {
   path: string; startLine: number; endLine: number;
   fileHash: string; fileBytes: number; excerpt: string; excerptHash: string;
 }
-/** Host evidence from a committed tool receipt, explicit human review, or host-read observation durably recorded in the task store. */
+/** 宿主证据来自已提交的工具回执、显式人工审查，或在任务存储中持久化记录的宿主读取观测。 */
 export interface NativeTaskEvidence {
   id: string; identity: NativeTaskIdentity; stepIds: string[]; criterionIds: string[];
   source: 'command' | 'manual' | 'location'; status: 'unverified' | 'passed' | 'failed' | 'not_applicable';
@@ -41,7 +41,7 @@ export interface NativeTaskEvidence {
   workspaceFingerprint: string; workspaceComplete: boolean;
   toolCallId?: string; command?: NativeTaskCommand; exitCode?: number | null;
   output?: string; outputDigest?: string; truncated?: boolean;
-  /** Location receipts are context only and must remain unverified. */
+  /** 位置回执仅作为上下文，必须保持未验证状态。 */
   location?: NativeTaskCodeLocation;
   reason?: string; createdAt: string; stale?: boolean;
 }
@@ -60,7 +60,7 @@ export interface NativeTaskSnapshot extends NativeTaskPlan {
   history: NativeTaskHistoryEntry[];
   createdAt: string; updatedAt: string;
 }
-/** Host-authored, bounded execution receipt. Operational completion and acceptance stay separate. */
+/** 由宿主生成且有边界的执行回执。运行完成与验收相互独立。 */
 export interface NativeExecutionReceipt {
   version: 1;
   identity: NativeTaskIdentity;
@@ -86,21 +86,21 @@ export type NativeTaskMutation =
   | { type: 'review'; status: 'approved' | 'rejected'; reason: string }
   | { type: 'finish'; outcome: string }
   | { type: 'interrupt'; reason: string }
-  /** Only an explicit host continuation may rebind an existing task to a new run. */
+  /** 只有宿主显式延续任务时，才可以将已有任务重新绑定到新运行。 */
   | { type: 'continue'; previousRunId: string };
 export interface NativeTaskUpdate {
   identity: NativeTaskIdentity; taskId: string; mutationId: string;
-  /** Zero creates a task; subsequent writes compare-and-swap this durable revision. */
+  /** 零表示创建任务；后续写入以此持久化修订号进行比较并交换。 */
   expectedRevision: number; mutation: NativeTaskMutation;
 }
 
 export type NativeTaskWorkspaceView = Omit<NativeTaskWorkspace, 'files'> & { fileCount: number };
-/** Renderer view omits the full host file inventory. */
+/** 渲染进程视图省略完整的宿主文件清单。 */
 export type NativeTaskView = Omit<NativeTaskSnapshot, 'workspace'> & {
   workspace?: { baseline: NativeTaskWorkspaceView; current: NativeTaskWorkspaceView; changes: NativeTaskChangeSummary };
 };
 
-/** Shared display/host rule: only a human condition receipt can establish acceptance in N1. */
+/** 显示层与宿主共用的规则：N1 中只有人工条件回执才能确认验收通过。 */
 export function getNativeTaskCriterionVerification(task: NativeTaskSnapshot | NativeTaskView, criterionId: string): NativeTaskVerification {
   const evidence = [...task.evidence].reverse().find(item => item.source === 'manual' && item.criterionIds.includes(criterionId));
   if (!evidence) return 'unverified';

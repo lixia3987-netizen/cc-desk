@@ -96,7 +96,7 @@ test('AGENTS-only digest remains compatible and CLAUDE additions, edits and remo
   const { root } = await fixture(t);
   await fs.writeFile(path.join(root, 'AGENTS.md'), 'Use project conventions.');
   const original = await loadProjectInstructions({ projectRoot: root });
-  // Recorded from the AGENTS-only loader, so existing policy bindings remain stable.
+  // 记录自仅加载 AGENTS 的加载器，因此现有策略绑定保持稳定。
   assert.equal(original.digest, '9834fee665d6e0c68dd2369b7f74019c658699f4cf42870099894045d5e31a9e');
   await fs.writeFile(path.join(root, 'CLAUDE.md'), 'Claude conventions.');
   const added = await loadProjectInstructions({ projectRoot: root });

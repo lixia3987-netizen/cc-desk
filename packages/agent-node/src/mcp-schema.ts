@@ -1,7 +1,7 @@
 import type { JsonObject, JsonValue } from '@cc-desk/agent-core';
 
-// Deliberately bounded subset of JSON Schema. Unknown keywords never become an
-// accidental permission to send arguments the host has not validated.
+// 有意采用有限的 JSON Schema 子集。未知关键字绝不能意外授予
+// 发送未经宿主校验参数的权限。
 type Schema = JsonObject | boolean;
 const MAX_SCHEMA_BYTES = 16 * 1024;
 const MAX_VALUE_BYTES = 64 * 1024;
@@ -38,10 +38,10 @@ function checkJson(value: unknown, maxBytes: number): asserts value is JsonValue
   if (Buffer.byteLength(JSON.stringify(value)) > maxBytes) invalidSchema();
 }
 
-/** Check the full schema before exposing its tool; unsupported definitions are omitted. */
+/** 暴露工具之前检查完整结构；不支持的定义会被省略。 */
 export function assertMcpInputSchema(schema: JsonObject): void { assertMcpSchema(schema, true); }
 
-/** Output schemas retain the same bounded assertions and may describe any JSON root. */
+/** 输出结构保留相同的有限断言，并可描述任意 JSON 根值。 */
 export function assertMcpOutputSchema(schema: JsonObject): void { assertMcpSchema(schema, false); }
 
 function assertMcpSchema(schema: JsonObject, objectRoot: boolean): void {
@@ -77,7 +77,7 @@ function assertMcpSchema(schema: JsonObject, objectRoot: boolean): void {
   visit(schema, 0);
 }
 
-/** Validate every supported assertion locally, without coercion, defaults, network refs or regex. */
+/** 在本地校验所有支持的断言，不进行类型强制转换、默认值填充、网络引用或正则匹配。 */
 export function assertMcpToolInput(schema: JsonObject, input: JsonObject): void { assertMcpValue(schema, input, true); }
 
 export function assertMcpToolOutput(schema: JsonObject, output: JsonValue): void { assertMcpValue(schema, output, false); }
@@ -126,7 +126,7 @@ function assertMcpValue(schema: JsonObject, input: JsonValue, objectRoot: boolea
       if (own(rule, 'minimum') && value < (rule.minimum as number) || own(rule, 'maximum') && value > (rule.maximum as number) || own(rule, 'exclusiveMinimum') && value <= (rule.exclusiveMinimum as number) || own(rule, 'exclusiveMaximum') && value >= (rule.exclusiveMaximum as number)) return false;
     }
     if (typeof value === 'string') {
-      const length = [...value].length; // JSON Schema lengths count Unicode code points.
+      const length = [...value].length; // JSON Schema 的长度按 Unicode 码点计算。
       if (own(rule, 'minLength') && length < (rule.minLength as number) || own(rule, 'maxLength') && length > (rule.maxLength as number)) return false;
     }
     if (Array.isArray(value)) {

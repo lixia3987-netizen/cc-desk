@@ -106,7 +106,7 @@ for (const point of ['before_append', 'after_sync']) test(`receipt failure at ${
 
 test('all-file receipt and final result capacity is reserved before any file can be prepared', async t => {
   const f = await fixture(t, { limits: { maxRecords: 11 } });
-  // Existing records=3; one prepared + six file receipts + result + terminal=12.
+  // 现有记录为 3；加上 1 条准备、6 条文件回执、结果和终止记录，共 12 条。
   await assert.rejects(f.prepare(), { code: 'limit_exceeded' });
   assert.equal(f.store.getToolState(f.identity.runId, f.call.id).prepared, undefined);
   await assert.rejects(f.record(0, 'prepared'), { code: 'not_prepared' });

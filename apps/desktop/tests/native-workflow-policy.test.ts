@@ -18,9 +18,9 @@ import { NativeMcpConnectionStore } from '../src/main/engines/native/mcp-connect
 import { NativeCredentialStore } from '../src/main/engines/native/credentials';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error Shared loopback Responses fixture has no declarations.
+// @ts-expect-error 共享的回环 Responses 测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 type Scenario = 'read-only' | 'standard' | 'simple' | 'fail-once' | 'tool-budget' | 'approval-time';

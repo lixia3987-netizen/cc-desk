@@ -38,7 +38,7 @@ async function main() {
   stage = 'discover npm launcher without Node on PATH';
   assertNativeInvocation(cliInvocation(settings(''), { PATH: prefix }));
 
-  // Scope PATH changes to this short-lived verifier, restoring them even on failure.
+  // PATH 修改仅限于此短暂运行的验证程序；即使失败也会恢复。
   const pathKeys = Object.keys(process.env).filter(key => key.toLowerCase() === 'path');
   const originalPaths = pathKeys.map(key => [key, process.env[key]] as const);
   try {
@@ -71,7 +71,7 @@ async function main() {
       assert.ok(capabilities.flags.includes('--help'));
     }
 
-    // Only known version/flag counts reach CI logs; child stdout/stderr is private.
+    // CI 日志仅记录已知的版本与标志数量；子进程的 stdout/stderr 不对外输出。
     console.log(`Windows npm launcher verified: Claude Code ${expectedVersion}; configured flags=${configuredCapabilities.flags.length}, discovered flags=${discoveredCapabilities.flags.length}.`);
   } finally {
     for (const key of Object.keys(process.env)) if (key.toLowerCase() === 'path') delete process.env[key];
@@ -80,7 +80,7 @@ async function main() {
 }
 
 main().catch(() => {
-  // execFile errors can contain full child output. Do not print the exception.
+  // execFile 错误可能包含子进程的完整输出，因此不打印异常内容。
   console.error(`Windows npm launcher verification failed: ${stage}.`);
   process.exitCode = 1;
 });

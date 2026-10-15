@@ -107,7 +107,7 @@ test('a worker created during another approval keeps its startup budget and rece
   let now = 0; t.mock.method(performance, 'now', () => now);
   const pause = new NativeActivePause(), release = pause.pause(), tracked = source(pause), worker = new WaitingWorker(), abort = new AbortController();
   const running = runNativeWorker(options(worker, tracked.value, abort));
-  const cancelled = assert.rejects(running, { code: 'crash' }); // The fake exits without journaling a terminal result.
+  const cancelled = assert.rejects(running, { code: 'crash' }); // 模拟实现退出时不将终态结果写入日志。
   try {
     await tick(); now = 500; worker.ready();
     const start = worker.sent.find(value => value.type === 'start')!;
@@ -128,7 +128,7 @@ test('startup charges active intervals around an approval and publishes later tr
   const pause = new NativeActivePause(), tracked = source(pause), worker = new WaitingWorker(), abort = new AbortController();
   let finishFork!: (worker: WaitingWorker) => void;
   const running = runNativeWorker({ ...options(worker, tracked.value, abort), fork: () => new Promise<WaitingWorker>(resolve => { finishFork = resolve; }) });
-  const cancelled = assert.rejects(running, { code: 'crash' }); // The fake exits without journaling a terminal result.
+  const cancelled = assert.rejects(running, { code: 'crash' }); // 模拟实现退出时不将终态结果写入日志。
   try {
     now = 10; const release = pause.pause(); now = 510; finishFork(worker); await tick(); release();
     now = 530; worker.ready();

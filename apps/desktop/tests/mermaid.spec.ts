@@ -44,7 +44,7 @@ async function workspace(texts: string[], toolIndexes: number[] = []) {
   return { snapshot, launch, dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }) };
 }
 
-/** Exercise real renderer updates without starting a CLI or depending on a provider. */
+/** 验证真实渲染进程更新，无须启动 CLI 或依赖提供方。 */
 async function updateSnapshot(app: ElectronApplication, snapshot: ChatSnapshot) {
   const page = await app.firstWindow();
   const current = await page.evaluate(id => window.desktop.chatSnapshot(id), snapshot.sessionId);
@@ -85,7 +85,7 @@ test('mermaid: render real diagrams, switch individual blocks and copy the origi
     await first.getByRole('button', { name: '预览', exact: true }).click();
     await expect(first.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath('mermaid-preview.png') });
-    // Preview copies the input, never the generated SVG or visible labels.
+    // 预览仅复制输入内容，不复制生成的 SVG 或可见标签。
     await app.evaluate(({ clipboard }) => clipboard.writeText('replace this'));
     await first.getByRole('button', { name: '复制代码', exact: true }).click();
     await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(source);
@@ -94,10 +94,10 @@ test('mermaid: render real diagrams, switch individual blocks and copy the origi
     await expect(plain.getByRole('button', { name: '预览', exact: true })).toHaveCount(0);
     await plain.getByRole('button', { name: '复制代码', exact: true }).click();
     await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(ordinary);
-    // The desktop clipboard bridge accepts bounded plain text only; rejected input cannot overwrite it.
+    // 桌面剪贴板桥接仅接受受限的纯文本；被拒绝的输入不能覆盖剪贴板。
     await expect(page.evaluate(() => window.desktop.copyText({ text: 'not a string' } as never))).rejects.toThrow();
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(ordinary);
-    // UTF-8 size, rather than JavaScript string length, must enforce the 4 MiB limit.
+    // 必须按 UTF-8 字节大小执行 4 MiB 限制，而非按 JavaScript 字符串长度。
     await expect(page.evaluate(() => window.desktop.copyText('你'.repeat(1_400_000)))).rejects.toThrow();
     expect(await app.evaluate(({ clipboard }) => clipboard.readText())).toBe(ordinary);
     expect(errors).toEqual([]);
@@ -121,7 +121,7 @@ test('mermaid: an incomplete diagram stays readable, does not break siblings and
     expect(await first.locator('pre').textContent()).toBe(incomplete);
     await first.getByRole('button', { name: '复制代码', exact: true }).click();
     await expect.poll(() => app.evaluate(({ clipboard }) => clipboard.readText())).toBe(incomplete);
-    // Retry the same source explicitly; cached errors must not disable the preview switch.
+    // 显式重试相同源内容；缓存的错误不能禁用预览开关。
     await first.getByRole('button', { name: '预览', exact: true }).click();
     await expect(first.locator('.mermaid-loading')).toBeVisible();
     await expect(first.locator('.mermaid-error')).toBeVisible({ timeout: 15_000 });
@@ -134,7 +134,7 @@ test('mermaid: an incomplete diagram stays readable, does not break siblings and
     await expect(first.locator('.mermaid-preview')).toContainText('Recovered');
     await expect(first.locator('.mermaid-error')).toHaveCount(0);
     await expect(second.locator('.mermaid-preview')).toContainText('Other diagram');
-    // A stale successful render must not remain visible after subsequent invalid input.
+    // 后续输入无效时，不能继续显示先前成功渲染的过期结果。
     f.snapshot.messages[0].text = fence(incomplete);
     await updateSnapshot(app, f.snapshot);
     await expect(first.locator('.mermaid-error')).toBeVisible({ timeout: 15_000 });
@@ -163,13 +163,13 @@ test('mermaid: identical diagrams keep independent IDs and a collapsed tool resu
     await expect(tool).toHaveAttribute('open', '');
     await tool.locator('.mermaid-block').scrollIntoViewIfNeeded();
     await expect(tool.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible({ timeout: 15_000 });
-    // Mermaid may split a wrapped label into adjacent tspans without a literal space.
+    // Mermaid 可能将换行标签拆成相邻的 tspan，中间没有实际空格。
     await expect(tool.locator('.mermaid-preview .mermaid-svg > svg .node').filter({ hasText: /Separate\s*diagram/ })).toHaveCount(1);
     const svgIds = await blocks.locator('.mermaid-preview .mermaid-svg > svg').evaluateAll(elements => elements.map(element => element.id));
     expect(svgIds).toHaveLength(3);
     expect(svgIds.every(Boolean)).toBe(true);
     expect(new Set(svgIds).size).toBe(3);
-    // Arrow references belong to their own SVG; duplicate diagrams must not borrow another diagram's markers.
+    // 箭头引用属于各自的 SVG；重复图表不能借用其他图表的标记。
     const markers = await blocks.locator('.mermaid-preview .mermaid-svg > svg').evaluateAll(elements => elements.map(svg => {
       const arrows = Array.from(svg.querySelectorAll('[marker-end]'));
       return {

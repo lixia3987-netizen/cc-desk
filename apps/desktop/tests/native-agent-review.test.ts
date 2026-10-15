@@ -30,7 +30,7 @@ test('handoff carries host result identifiers and patch hash and separates integ
   for (const identity of ['parent-task', 'parent-session', 'parent-conversation', 'parent-run', 'batch', 'child-task', 'child-session', 'child-conversation', 'child-run', 'a'.repeat(64)]) assert.ok(prompt.includes(identity));
   assert.ok(!prompt.includes('parent-request')); assert.ok(!prompt.includes(agent.title));
   assert.match(prompt, /父回合工具审批/); assert.match(prompt, /不代表父任务验收通过/); assert.match(prompt, /我的审阅意见：\n只整合/);
-  assert.ok(!prompt.includes('page')); // The saved patch is read through the scoped host tool, not copied into the draft.
+  assert.ok(!prompt.includes('page')); // 已保存的补丁通过限定范围的宿主工具读取，不复制到草稿中。
   assert.throws(() => nativeAgentReviewPrompt(result, 'a'.repeat(2001), 'review'), /2,000/);
   const unknown = nativeAgentReviewPrompt({ ...result, agent: { ...agent, status: 'unknown', missingTerminal: true } }, '', 'review');
   assert.match(unknown, /先确认终局与已发生的操作/); assert.ok(!unknown.includes('若适合整合'));

@@ -3,11 +3,11 @@ import type { NativeConnectionView } from './native-connections';
 export interface ClaudeModelImportChoice {
   model: string;
   sources: string[];
-  /** Claude aliases without a configured concrete mapping cannot be sent to the native API. */
+  /** 未配置具体模型映射的 Claude 别名不能发送到原生 API。 */
   nativeImportable: boolean;
 }
 
-/** Metadata only. Credentials and file contents never cross the renderer boundary. */
+/** 仅包含元数据，凭据与文件内容不会跨越渲染进程边界。 */
 export interface ClaudeModelImportPreview {
   token: string;
   expiresAt: string;
@@ -24,7 +24,7 @@ export interface ClaudeModelImportPreview {
 export interface ClaudeModelImportInput {
   token: string;
   credentialMode?: 'memory' | 'encrypted';
-  /** Only a model shown in this preview may be selected. */
+  /** 只能选择此预览中展示的模型。 */
   model?: string;
   allowLoopbackHttp?: boolean;
 }

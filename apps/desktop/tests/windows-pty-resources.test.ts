@@ -15,7 +15,7 @@ import { releaseWindowsPty, windowsPtyCreationIdentity } from '../src/main/execu
 import { spawnTerminal, assertPatchedWindowsPty } from '../src/main/execution/spawn-terminal';
 
 const require = createRequire(import.meta.url);
-// Exercise the installed Windows implementation without loading its native agent.
+// 验证已安装的 Windows 实现，不加载其原生代理。
 const { WindowsTerminal } = require('node-pty/lib/windowsTerminal');
 
 async function connectedSockets() {

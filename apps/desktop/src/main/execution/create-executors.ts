@@ -28,7 +28,7 @@ const shellCapabilities: ExecutionCapabilities = {
   commands: false, contextUsage: false, liveConfig: false, attachments: false, export: true,
 };
 
-/** The only place that chooses and wires concrete execution providers. */
+/** 唯一选择并组装具体执行提供方的位置。 */
 export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; mcpConnections?: NativeMcpConnectionStore; modelCapabilities?: NativeModelCapabilityService; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void; acquireNativeChildOwnership?: NativeExecutorOptions['acquireChildOwnership'] } = {}) {
   const registry = new ExecutionRegistry(id => {
     const session = store.state.sessions.find(session => session.id === id);

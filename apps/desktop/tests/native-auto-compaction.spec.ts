@@ -9,7 +9,7 @@ import type { Session } from '../src/shared/types';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error The executable HTTP/SSE fixture is shared with agent-node tests.
+// @ts-expect-error 与 agent-node 测试共享这个可执行 HTTP/SSE 测试装置。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Fixture { baseURL: string; requests: Array<Record<string, unknown>>; errors: unknown[]; close(): Promise<void> }
@@ -20,9 +20,9 @@ const recentGoal = 'AUTO_RECENT_TURN_读取 fixture.txt，保留完整工具调�
 const nextGoal = 'AUTO_NEXT_TASK_沿用历史继续，不重复先前操作。';
 const summaryText = 'AUTO_COMPACTED_HISTORY_前两轮分析已完成，文件没有改动；后续仍遵守最初约束。';
 const automaticAttemptNotice = '本次发送尝试自动压缩。原始记录保留；若未完成，请手动压缩或调整设置后继续。摘要可能产生费用，不会自动重复尝试。';
-// Three completed turns exceed 90% of a 50,000-byte input budget. The first
-// two turns still fit in one summary request, and the last complete turn fits
-// comfortably alongside the summary and the next instruction.
+// 三个已完成轮次超过 50,000 字节输入预算的 90%。前两个轮次
+// 仍可容纳在一个摘要请求中，而最后一个完整轮次可与摘要和下一条指令
+// 一同容纳在预算内，并留有余量。
 const longAnswer = (turn: number) => `AUTO_ORIGINAL_ANSWER_${turn}\n${'x'.repeat(16_000)}`;
 
 async function workspace() {
@@ -112,7 +112,7 @@ test('native opt-in auto compaction persists UI settings and sends one summary b
     expect(fixture.requests.every(request => (request.tools as unknown[]).length > 0)).toBe(true);
     const before = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
     await saveAutomaticCompaction(page, session.id, true);
-    // Enabling the option and relaunching never starts a request on their own.
+    // 启用选项和重新启动本身都不会发起请求。
     await closeNativeApp(app); app = await f.launch(); page = await ready(app);
     await page.evaluate(id => window.desktop.setSelection(id), session.id);
     await openSessionSettings(page, 'compaction');
@@ -199,8 +199,8 @@ test('native cancelling an automatic summary keeps the queued message and origin
     await closeNativeApp(app);
     const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: session.execution.conversationId! });
     try {
-      // The durable automatic-attempt receipt advances the journal head, while
-      // all model protocol items remain exactly as they were before the send.
+      // 持久化的自动尝试回执会推进日志头位置，
+      // 同时所有模型协议条目都与发送前保持完全一致。
       expect(ledger.loadContext()!.items).toEqual([
         ...(fixture.requests[3].input as unknown[]), assistantMessage('auto_turn_3', longAnswer(3)),
       ]);

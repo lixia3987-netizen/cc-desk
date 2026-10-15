@@ -5,7 +5,7 @@ import { object, string } from './chat-protocol.js';
 const TAIL_BYTES = 2 * 1024 * 1024;
 const MESSAGE_LIMIT = 200;
 
-/** Read a bounded tail for display. The CLI remains responsible for full resume. */
+/** 读取有界的尾部记录用于显示；完整恢复仍由 CLI 负责。 */
 export async function readTranscriptPreview(file: string): Promise<{ messages: ChatMessage[]; truncated: boolean }> {
   const handle = await fs.open(file, 'r');
   try {

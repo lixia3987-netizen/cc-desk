@@ -1,4 +1,4 @@
-/** Protocol items are preserved as JSON, never reduced to display text. */
+/** 协议项保留为 JSON，绝不简化为显示文本。 */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
 export type JsonObject = { [key: string]: JsonValue }
 
@@ -25,9 +25,9 @@ export interface RunResult {
   toolCalls: number
   usage: Usage | null
   context: ModelContext
-  /** False means persistence failed; the host must retain a recovery barrier. */
+  /** false 表示持久化失败；宿主必须保留恢复屏障。 */
   committed: boolean
-  /** Durable run outcome remains authoritative; host must repair failed display projection. */
+  /** 持久化运行结果仍是权威来源；宿主必须修复失败的显示投影。 */
   projectionError?: string
 }
 export interface ToolCall { id: string; name: string; arguments: string }
@@ -49,14 +49,14 @@ export interface ModelRequest {
   onEvent(event: ModelStreamEvent): void
 }
 export interface ModelResponse {
-  /** Complete, ordered provider output, including reasoning/continuation items. */
+  /** 提供方完整且有序的输出，包含推理和续接项。 */
   outputItems: JsonValue[]
   toolCalls: ToolCall[]
   continuation?: JsonValue
   finishReason: 'completed' | 'tool_calls' | 'refused' | 'incomplete'
   usage: Usage | null
 }
-/** Sanitized transport classification; never contains provider text, URLs or headers. */
+/** 经过脱敏的传输分类；绝不包含提供方文本、URL 或请求头。 */
 export type ModelFailureProtocol = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages'
 export type ModelFailureStage = 'request' | 'response_headers' | 'message_start' | 'content' | 'thinking' | 'tool_call' | 'completion'
 export type ModelFailureReason =
@@ -67,7 +67,7 @@ export interface ModelFailureDiagnostic {
   category: 'authentication' | 'configuration' | 'rate_limit' | 'service_unavailable' | 'service_error' | 'protocol' | 'network' | 'timeout' | 'security' | 'unknown'
   httpStatus?: number
   retryable: boolean
-  /** Optional for legacy journals; adapter-owned finite values only. */
+  /** 兼容旧日志的可选字段；仅接受适配器定义的有限取值。 */
   protocol?: ModelFailureProtocol
   stage?: ModelFailureStage
   reason?: ModelFailureReason
@@ -76,10 +76,10 @@ export interface ToolResult {
   status: 'completed' | 'failed' | 'denied' | 'cancelled' | 'not_executed' | 'unknown'
   output: JsonValue
   truncated?: boolean
-  /** Actual changes/exit status; stored with the bounded model output. */
+  /** 实际变更或退出状态；与限制大小的模型输出一同保存。 */
   effects?: JsonValue
 }
-/** Host-validated local image; remote URLs and file references are not accepted. */
+/** 经宿主校验的本地图像；不接受远程 URL 和文件引用。 */
 export interface UserImage { mimeType: 'image/png' | 'image/jpeg'; dataUrl: string }
 export interface ModelPort {
   readonly protocol: ProtocolVersion
@@ -87,7 +87,7 @@ export interface ModelPort {
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[]
   estimateInputTokens(context: ModelContext): number
   generate(request: ModelRequest): Promise<ModelResponse>
-  /** Classify only trusted adapter errors; unrecognized errors must be unknown. */
+  /** 仅分类可信的适配器错误；无法识别的错误必须归为 unknown。 */
   classifyError?(error: unknown): ModelFailureDiagnostic
 }
 export interface ApprovalBinding extends RunIdentity {
@@ -119,22 +119,22 @@ export interface ToolExecutionContext {
 export interface PreparedTool {
   call: ToolCall
   definition: ToolDefinition
-  /** Host schema validation must succeed before returning this value. */
+  /** 返回此值之前，必须通过宿主的结构校验。 */
   input: JsonObject
   inputDigest: string
   policyRevision: string
   requiresApproval: boolean
-  /** File versions, scoped instruction hashes and directory ownership proof. */
+  /** 文件版本、作用域内的指令哈希，以及目录所有权证明。 */
   preconditions: JsonValue
 }
 export interface ToolPort {
   readonly definitions: ToolDefinition[]
   prepare(call: ToolCall, context: ToolExecutionContext): Promise<PreparedTool>
-  /** Recheck exact input, ownership, instruction revisions and file versions after approval. */
+  /** 审批后重新核对精确输入、所有权、指令修订和文件版本。 */
   validate(prepared: PreparedTool, context: ToolExecutionContext): Promise<void>
-  /** Ordinary tools settle after resource release. An explicit host-owned command handle may
-   * outlive its start call; the host must settle it before run completion. Throw/unknown
-   * after preparation is uncertain and never authorizes automatic replay. */
+  /** 普通工具在释放资源后结束。宿主显式管理的命令句柄可以
+   * 在启动调用返回后继续存在；宿主必须在运行完成前将其结束。准备后的异常或 unknown
+   * 表示结果不确定，绝不能据此自动重放。 */
   execute(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult>
 }
 export interface BeginRunRequest {
@@ -157,13 +157,13 @@ export type RunJournalEvent =
   | { type: 'tool_completed'; call: ToolCall; result: ToolResult; resultItems: JsonValue[] }
   | { type: 'run_finished'; result: RunResult }
 export interface RunStore {
-  /** Atomically claim requestId/payload and append userItems; accepted context includes them. */
+  /** 原子占用 requestId/payload 并追加 userItems；接纳后的上下文包含这些内容。 */
   beginRun(request: BeginRunRequest): Promise<BeginRunResult>
-  /** Resolves only after durable commit. A rejected append must never be assumed committed. */
+  /** 仅在持久化提交后完成。追加请求被拒绝时，绝不能假定其已提交。 */
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }>
-  /** Reserve enough storage before any side effect; do not silently prune history. */
+  /** 产生任何副作用之前预留足够存储空间；不得静默裁剪历史记录。 */
   ensureCapacity(identity: RunIdentity, bytes: number): Promise<void>
-  /** Durable snapshot of committed events; a failure blocks subsequent execution. */
+  /** 已提交事件的持久化快照；失败时阻止后续执行。 */
   checkpoint(identity: RunIdentity, context: ModelContext): Promise<void>
 }
 export interface RunBudget {
@@ -182,17 +182,17 @@ export type AgentEvent =
   | { type: 'run_finished'; identity: RunIdentity; result: RunResult }
 export interface Deadline { signal: AbortSignal; dispose(): void }
 export interface RuntimeHost {
-  /** Optional host-coordinated active clock excluding shared nested approvals. now() remains wall time for expiry. */
+  /** 可选的宿主协调活跃计时器，排除共享嵌套审批的耗时。now() 仍以实际时间判断过期。 */
   activeNow?(): number
-  /** Epoch milliseconds, shared with the approval/tool host; must not move backwards within a run. */
+  /** 与审批及工具宿主共用的 Unix 时间戳毫秒值；同一轮运行内不得倒退。 */
   now(): number
-  /** Stable cryptographic digest supplied by the host; input is canonical JSON. */
+  /** 宿主提供的稳定加密摘要；输入为规范 JSON。 */
   digest(input: string): string | Promise<string>
-  /** Parent cancellation and deadline cancellation must both abort the returned signal. */
+  /** 父级取消和超时取消都必须中止返回的信号。 */
   deadline(timeoutMs: number, parent: AbortSignal): Deadline
-  /** Cancellable backoff. Without this capability automatic retries stay disabled. */
+  /** 可取消的退避等待。未提供此能力时，自动重试保持禁用。 */
   wait?(milliseconds: number, signal: AbortSignal): Promise<void>
-  /** Reserve shared parent capacity before model-request/tool-preparation journal records; false means exhausted. */
+  /** 写入模型请求或工具准备日志之前，预留父级共享额度；false 表示额度耗尽。 */
   consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>
   emit(event: AgentEvent): void | Promise<void>
 }
@@ -204,15 +204,15 @@ export interface AgentRunRequest {
   policyRevision: string
   signal: AbortSignal
   budget?: Partial<RunBudget>
-  /** Default off. Retry at most two explicitly transient HTTP failures per run. */
+  /** 默认关闭。每轮最多重试两次明确属于暂时性问题的 HTTP 失败。 */
   modelRetry?: 'off' | 'safe_transient'
 }
 export interface ContextMaintenanceRequest {
   identity: RunIdentity
-  /** Complete durable model/tool boundary; the host must verify its own journal. */
+  /** 完整且已持久化的模型及工具执行边界；宿主必须核验自身日志。 */
   context: ModelContext
   budget: RunBudget
-  /** Requests already consumed before the prospective maintenance request. */
+  /** 发起本次维护请求之前已消耗的请求数。 */
   modelRequests: number
   toolCalls: number
   remainingActiveMs: number
@@ -224,9 +224,9 @@ export type ContextMaintenanceResult =
   | { kind: 'compacted'; modelRequests: 1; usage: Usage | null; context: ModelContext }
   | { kind: 'failed'; modelRequests: 0 | 1; usage: Usage | null; reason: ContextMaintenanceFailureReason }
 export interface ContextMaintenancePort {
-  /** At most one model-only request. A replacement must already be durably committed.
-   * Unchanged/failed confirm the original context remains authoritative; throw when
-   * commit or cleanup is uncertain. Never replay tools or reuse an approval. */
+  /** 最多发起一次仅调用模型的请求。替换内容必须已完成持久化提交。
+   * unchanged/failed 确认原上下文仍为权威来源；提交或清理状态
+   * 不确定时抛出异常。绝不重放工具或复用审批。 */
   maintain(request: ContextMaintenanceRequest): Promise<ContextMaintenanceResult>
 }
 export interface AgentPorts {

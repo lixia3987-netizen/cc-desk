@@ -12,7 +12,7 @@ import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest } from '@cc-desk/agent-core';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 test('native MCP settings persist explicit protocol choices locally and clear write-only credentials on metadata changes, close and restart', async () => {
@@ -205,7 +205,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await expect(choices).toContainText('协议 2026-07-28');
     await expect(choices.getByLabel(`MCP 禁用服务 (${connections.disabled.id})`, { exact: true })).toBeDisabled();
     const missing = choices.getByLabel('MCP missing-service (missing-service)', { exact: true });
-    // Removing an unavailable selection also removes its checkbox.
+    // 移除不可用的选项时，也会移除它的复选框。
     await missing.click();
     await expect(missing).toHaveCount(0);
     await choices.getByLabel(`MCP 可选服务 (${connections.ready.id})`, { exact: true }).check();
@@ -215,7 +215,7 @@ test('native MCP choices save per session, retain removable unavailable entries,
     await expect(choices).toContainText('已选 0 / 4');
     await expect(choices.getByRole('checkbox')).toHaveCount(0);
 
-    // Replace only the local metadata handler with a delayed fixture. No MCP endpoint is contacted.
+    // 仅将本地元数据处理函数替换为延迟的测试装置，不连接任何 MCP 端点。
     await app.evaluate(({ ipcMain }) => {
       const state = globalThis as typeof globalThis & { finishMcpList?: (value: unknown) => void };
       ipcMain.removeHandler('native:mcp-connections-list');
@@ -343,8 +343,8 @@ test('native readiness is per session, preserves saved history and Claude defaul
     selectedSessionId: sessionId,
     settings: { claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {} },
   }));
-  // Seed durable native context so this case isolates connection readiness from
-  // the separate read-only recovery path for missing model history.
+  // 预先写入持久化的原生上下文，使本用例将连接就绪状态与
+  // 模型历史缺失时的独立只读恢复路径隔离。
   const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
   const request: BeginRunRequest = {
     identity: { sessionId, conversationId, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 },
@@ -381,7 +381,7 @@ test('native readiness is per session, preserves saved history and Claude defaul
       return window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret: 'sk-test-only-no-network' });
     });
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
-    // The transition adds an opt-in provider; the default remains Claude.
+    // 此转换增加一个需要主动选择的提供方；默认仍为 Claude。
     await expect(page.getByLabel('权限模式', { exact: true })).toHaveCount(0);
     await expect(page.getByRole('button', { name: '新会话设置', exact: true })).toBeVisible();
     const descriptor = await page.evaluate(async () => (await window.desktop.snapshot()).executors.find(item => item.providerId === 'native' && item.mode === 'structured')!);

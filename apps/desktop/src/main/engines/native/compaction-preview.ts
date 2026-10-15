@@ -5,7 +5,7 @@ import type { NativeContextCompactionPreview } from '../../../shared/chat';
 const unavailable = (): NativeContextCompactionPreview => ({ status: 'unavailable', reason: 'unavailable' });
 const object = (value: JsonValue): value is { [key: string]: JsonValue } => value !== null && typeof value === 'object' && !Array.isArray(value);
 
-/** Input is the host's validated ledger source, never a renderer projection. */
+/** 输入来自宿主已验证的账本源，绝非渲染进程投影。 */
 export function nativeCompactionPreview(source: ContextCompactionSource): NativeContextCompactionPreview {
   try {
     const { context, retainedContext } = source;
@@ -24,14 +24,14 @@ export function nativeCompactionPreview(source: ContextCompactionSource): Native
         retainedImages += item.content.filter(part => object(part) && part.type === imageType).length;
       }
     }
-    // Only whitelisted scalars cross the snapshot boundary. These independently
-    // serialized sizes overlap at the original goal and are not net savings.
+    // 只有白名单中的标量可以跨越快照边界。这些独立
+    // 序列化的大小在原始目标处有所重叠，并非净节省量。
     return { status: 'available', summarizableBytes, retainedBytes, retainedImages,
       retention: retainedImages ? 'image_suffix' : 'recent_turns' };
   } catch { return unavailable(); }
 }
 
-/** Never expose thrown messages: they may contain local paths or provider data. */
+/** 绝不暴露抛出的错误消息，因为其中可能包含本地路径或供应商数据。 */
 export function unavailableCompactionPreview(error: unknown): NativeContextCompactionPreview {
   if (!(error instanceof RunStoreError)) return unavailable();
   switch (error.code) {

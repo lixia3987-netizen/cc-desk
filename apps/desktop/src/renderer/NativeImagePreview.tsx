@@ -3,7 +3,7 @@ import { Loader2, X } from 'lucide-react';
 import { Dialog } from './Dialog';
 import { NativeImagePreviewController, nativeImagePreviewKey, scheduleNativeImagePreview, type NativeImagePreviewSelection, type NativeImagePreviewState } from './native-image-preview-state';
 
-/** Kept separate from the portal so every visible state has a direct render test. */
+/** 与门户组件分离，让每种可见状态都能直接进行渲染测试。 */
 export function NativeImagePreviewContent({ selection, state, onClose, onRetry, onDecodeError }: {
   selection: NativeImagePreviewSelection; state: NativeImagePreviewState;
   onClose: () => void; onRetry: () => void; onDecodeError: (version: number) => void;
@@ -17,7 +17,7 @@ export function NativeImagePreviewContent({ selection, state, onClose, onRetry, 
 
 export type NativeImagePreviewVisualState = { status: 'loading'; version: number } | { status: 'ready'; version: number; dataUrl: string } | { status: 'error'; version: number; message: string };
 
-/** Shared visual shell; the caller owns the source and its saved/unsaved label. */
+/** 共享的外观容器；调用方负责图片来源及已保存或未保存的标签。 */
 export function NativeImagePreviewBody({ name, bytes, versionLabel, state, onClose, onRetry, onDecodeError }: {
   name: string; bytes: number; versionLabel: string; state?: NativeImagePreviewVisualState;
   onClose: () => void; onRetry: () => void; onDecodeError: (version: number) => void;

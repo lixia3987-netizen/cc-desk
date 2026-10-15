@@ -15,7 +15,7 @@ export function toggleMcpConnection(selected: readonly string[], id: string): st
   return selected.length < selectionLimit ? [...selected, id] : [...selected];
 }
 
-/** Missing or disabled choices are retained until the user explicitly removes them. */
+/** 缺失或已禁用的选项会保留，直到用户明确移除。 */
 export function NativeMcpChoices({ selected, disabled = false, onChange, result }: Omit<Props, 'sessionId'> & { result?: NativeMcpConnectionList }) {
   const entries = result?.connections ?? [];
   const missing = selected.filter(id => !entries.some(entry => entry.id === id));
@@ -70,7 +70,7 @@ function NativeMcpSelectionForSession({ selected, disabled = false, onChange }: 
   </section>;
 }
 
-/** A new session owns a fresh request generation; late responses cannot cross sessions. */
+/** 新会话使用新的请求代次，迟到响应不能跨会话应用。 */
 export function NativeMcpSelection(props: Props) {
   return <NativeMcpSelectionForSession key={props.sessionId} {...props} />;
 }

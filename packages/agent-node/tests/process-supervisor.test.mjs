@@ -15,17 +15,17 @@ async function fixture(t, options = {}) {
   t.after(async () => {
     let failure;
     try { await supervisor.dispose(); } catch (error) { failure = error; }
-    // Preserve a failed release assertion, but do not let its owned test guardian
-    // keep the entire Windows runner alive and hide the diagnostics indefinitely.
+    // 保留释放失败的断言，但不能让其持有的测试守护进程
+    // 使整个 Windows 测试执行器持续存活并无限期掩盖诊断结果。
     if (failure) for (const record of supervisor.records) {
-      try { record.child.kill('SIGKILL'); } catch { /* The original release still fails this test. */ }
+      try { record.child.kill('SIGKILL'); } catch { /* 原始释放操作仍会使此测试失败。 */ }
       record.child.stdout?.destroy(); record.child.stderr?.destroy();
       record.child.channel?.unref(); record.child.unref();
-      // A failed attempt also retains its cleaner process until physical close.
-      // Rescue those original handles too; otherwise their pipes keep the test
-      // file alive long after its intentionally failing release assertion.
+      // 失败的尝试也会持有清理进程，直至其实际关闭。
+      // 也要释放这些原始句柄；否则在有意失败的释放断言之后，
+      // 这些管道仍会使测试文件长时间无法结束。
       for (const helper of record.windowsHelpers.values()) {
-        try { helper.kill('SIGKILL'); } catch { /* Preserve the original failure. */ }
+        try { helper.kill('SIGKILL'); } catch { /* 保留原始失败。 */ }
         helper.stdin?.destroy(); helper.stdout?.destroy(); helper.stderr?.destroy();
         helper.unref();
       }
@@ -47,8 +47,8 @@ async function isLive(pid) {
     return (await linuxLiveProcesses({ pid })).some(item => item.pid === pid);
   }
   if (process.platform === 'darwin') {
-    // kill(pid, 0) also succeeds for an exited, unreaped zombie. Observe its
-    // actual state once; do not delay/retry a failed live-process assertion.
+    // kill(pid, 0) 对已退出但未回收的僵尸进程也会成功。只观察一次其
+    // 实际状态；不要延迟或重试失败的存活进程断言。
     const { stdout, stderr } = await execFileAsync('/bin/ps', ['-A', '-o', 'pid=,stat='], {
       timeout: 1_500, maxBuffer: 2 * 1024 * 1024,
     });
@@ -62,15 +62,15 @@ function darwinSnapshotIsLive(snapshot, pid, observerPid) {
   const states = new Map();
   for (const line of snapshot.split(/\r?\n/)) {
     if (!line.trim()) continue;
-    // Only Z proves exit; halted, stopped and unknown states still count live.
-    // Apple adv_cmds ps/tasks.c defines states; ps/print.c defines modifiers.
+    // 仅 Z 状态证明已退出；暂停、停止及未知状态仍视为存活。
+    // Apple adv_cmds 的 ps/tasks.c 定义状态；ps/print.c 定义修饰符。
     const match = /^\s*(\d+)\s+([HIRSTUZ?][<NXEVLs+]*)\s*$/.exec(line);
     if (!match || !Number.isSafeInteger(Number(match[1])) || states.has(Number(match[1]))) {
       throw new Error('Invalid Darwin process-state snapshot.');
     }
     states.set(Number(match[1]), match[2]);
   }
-  // An empty/truncated snapshot is not proof that the target disappeared.
+  // 空的或被截断的快照不能证明目标已消失。
   if (!states.has(observerPid) || states.get(observerPid).startsWith('Z')) {
     throw new Error('Darwin process-state snapshot is missing the live observer.');
   }

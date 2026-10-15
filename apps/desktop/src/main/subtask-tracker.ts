@@ -12,7 +12,7 @@ const bounded = (value: unknown, max: number) => typeof value==='string' ? value
 const validIdentity = (value: unknown): value is string => typeof value==='string' && value.length>0 && value.length<=200 && !/[\x00-\x1f\x7f]/.test(value);
 const at = () => new Date().toISOString();
 
-/** Independent of the bounded chat message window, shared by structured and PTY adapters. */
+/** 独立于有界聊天消息窗口，由结构化和 PTY 适配器共用。 */
 export class SubtaskTracker {
   constructor(private store: StateStore, private onState: () => void) {}
   private activity(id: string): SubtaskActivity | undefined { return this.store.state.sessions.find(s=>s.id===id)?.subtasks; }
@@ -34,7 +34,7 @@ export class SubtaskTracker {
     const matches=(task:Subtask)=> {
       if(task.source!==observation.source)return false;
       if(task.source==='hooks'&&task.taskId&&validIdentity(observation.taskId)&&task.taskId!==observation.taskId)return false;
-      // Resuming an agent creates another tool invocation even when its agent ID is reused.
+      // 恢复 Agent 会创建新的工具调用，即使复用了 Agent ID。
       if(task.toolUseId&&validIdentity(observation.toolUseId)&&task.toolUseId!==observation.toolUseId)return false;
       return identities.some(key=>validIdentity(observation[key])&&task[key]===observation[key]) ||
         task.source==='stream'&&(task.kind==='agent'||observation.kind==='agent')&&
@@ -42,13 +42,13 @@ export class SubtaskTracker {
     };
     let candidates=activity.tasks.filter(task=>task.turnId===turnId&&matches(task));
     if(!candidates.length && observation.phase!=='start' && !validIdentity(observation.turnId)) {
-      // A delayed completion belongs to its original turn, not the prompt currently on screen.
+      // 迟到的完成事件属于原轮次，不属于当前屏幕上的提示词。
       const older=activity.tasks.filter(matches);
       const latest=older.at(-1);
       if(latest)candidates=older.filter(task=>task.turnId===latest.turnId);
     }
     if(new Set(candidates.map(task=>task.toolUseId).filter(Boolean)).size>1) {
-      // Sparse system events cannot combine distinct Agent invocations. Prefer the current live one.
+      // 稀疏系统事件不能合并不同的 Agent 调用。优先使用当前活跃调用。
       const preferred=candidates.filter(task=>isSubtaskActive(task.status)).at(-1)??candidates.at(-1)!;
       candidates=candidates.filter(task=>!task.toolUseId||task.toolUseId===preferred.toolUseId);
     }
@@ -56,7 +56,7 @@ export class SubtaskTracker {
     const timestamp=at();
     const key=identities.find(field=>validIdentity(observation[field]))!;
     let next: Subtask=existing?{...existing}:{id:JSON.stringify([turnId,observation.source,key,observation[key]]),turnId,source:observation.source,kind:observation.kind??'task',status:observation.status,description:'子任务',startedAt:timestamp,updatedAt:timestamp};
-    // Alias records may arrive before their linking envelope. Merge them into one stable row.
+    // 别名记录可能早于关联信封到达。应合并为单个稳定条目。
     for(const task of candidates.slice(1)) {
       for(const field of identities)if(!next[field]&&task[field])next[field]=task[field];
       for(const field of ['parentToolUseId','summary','progress','lastTool','toolUses','totalTokens','durationMs','background'] as const) {
@@ -73,7 +73,7 @@ export class SubtaskTracker {
     if(observation.kind)next.kind=observation.kind;
     if(observation.description?.trim() && (!stale || next.description==='子任务'))next.description=bounded(observation.description.trim(),500)!;
     if(!stale) {
-      // Replayed launch envelopes must not send an executing task back to its queued state.
+      // 重放的启动信封不能把执行中的任务退回排队状态。
       if(!existing || observation.phase!=='start' || next.status==='pending')next.status=observation.status;
       for(const field of ['summary','progress','lastTool'] as const) {
         const value=bounded(observation[field],field==='lastTool'?200:2000);

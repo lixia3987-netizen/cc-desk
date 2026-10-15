@@ -14,7 +14,7 @@ export interface QueueRecord {
   interrupted?: boolean; failed?: boolean;
 }
 
-/** Real Electron, IPC, child processes and stream-json; only the remote model is replaced. */
+/** 使用真实 Electron、IPC、子进程与 stream-json，仅替换远端模型。 */
 export async function chatQueueWorkspace() {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-desk-chat-queue-')));
   const data = path.join(directory, 'data'), projectPath = path.join(directory, '项目 with spaces');

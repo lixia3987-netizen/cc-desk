@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import type { JsonObject } from '@cc-desk/agent-core';
 import type { ResolvedNativeMcpConnection } from './mcp-connections';
 
-/** Only command metadata and environment references may reach approval or storage. */
+/** 只有命令元数据和环境引用可以进入审批或存储。 */
 export async function mcpStartupMetadata(connections: ResolvedNativeMcpConnection[], cwd: string): Promise<JsonObject> {
   const servers: JsonObject[] = [];
   for (const connection of connections) {
@@ -20,7 +20,7 @@ export async function mcpStartupMetadata(connections: ResolvedNativeMcpConnectio
   return { cwd, servers };
 }
 
-/** No resolved environment value may enter the model request or durable run configuration. */
+/** 解析后的环境值不得进入模型请求或持久化运行配置。 */
 export function mcpConnectionMetadata(connection: ResolvedNativeMcpConnection): JsonObject {
   const shared = { connectionId: connection.connectionId, revision: connection.revision, name: connection.name,
     transport: connection.transport, protocolVersion: connection.protocolVersion };

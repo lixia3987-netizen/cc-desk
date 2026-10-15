@@ -1,4 +1,4 @@
-/* Palette values mirror THEMES in themes.ts; tests keep the two in sync. */
+/* 配色值与 themes.ts 中的 THEMES 一致，由测试保证两者同步。 */
 
 :root, :root[data-theme="forest"], .theme-preview[data-theme="forest"] {
   color-scheme: dark;
@@ -286,7 +286,7 @@
 }
 
 
-/* Existing components use these aliases; palette meanings remain explicit. */
+/* 现有组件使用这些别名，配色含义仍保持明确。 */
 :root { --mint: var(--accent); --muted: var(--text-muted); --line: var(--border); }
 ::selection { background: var(--selection-bg); color: var(--selection-text); }
 :where(a, summary, [tabindex]):focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }

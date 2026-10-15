@@ -24,7 +24,7 @@ function stringField(value: Record<string, unknown>, key: string, max: number): 
 }
 function concreteModel(model: string): boolean { return !aliases.has(model.toLowerCase()) && !/\[[^\]]*\]$/.test(model); }
 
-/** Main-only parse result. Never serialize the secret or the original source object. */
+/** 仅用于主进程的解析结果。不能序列化密钥或原始来源对象。 */
 export interface ParsedClaudeModelConfig {
   preview: Omit<ClaudeModelImportPreview, 'token' | 'expiresAt'>;
   secret?: string;
@@ -140,7 +140,7 @@ export class ClaudeModelImporter {
     this.prune();
     const pending = this.pending.get(input.token);
     if (!pending) throw new Error('导入预览已过期或已使用，请重新读取 Claude 配置。');
-    // Every attempt consumes the capability, including failed imports. Original configuration stays untouched.
+    // 每次尝试都会消耗授权能力，包括导入失败的尝试。原配置保持不变。
     this.drop(input.token);
     const selectedModel = input.model ?? pending.preview.model;
     const choice = pending.preview.models.find(item => item.model === selectedModel);
@@ -158,7 +158,7 @@ export class ClaudeModelImporter {
   }
 
   dispose(): void { for (const token of this.pending.keys()) this.drop(token); }
-  private changed(): void { try { this.options.onChanged?.(); } catch { /* A UI notification cannot turn a committed import into a reported failure. */ } }
+  private changed(): void { try { this.options.onChanged?.(); } catch { /* 界面通知不能把已提交的导入变成失败报告。 */ } }
   private drop(token: string): void { const value = this.pending.get(token); if (value) clearTimeout(value.timer); this.pending.delete(token); }
   private prune(): void { const now = this.now(); for (const [token, value] of this.pending) if (value.expiresAt <= now) this.drop(token); }
   private read(sourcePath: string): unknown {

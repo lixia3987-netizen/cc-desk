@@ -18,7 +18,7 @@ export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxOutputTokens: 16_384,
 })
 
-/** Shared exact-input representation for approvals and durable submission identity. */
+/** 审批与持久化提交标识共用的精确输入表示。 */
 export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value === 'boolean' || typeof value === 'string') return JSON.stringify(value)
   if (typeof value === 'number') {
@@ -58,7 +58,7 @@ function sameBinding(a: ApprovalBinding, b: ApprovalBinding): boolean {
     a.toolCallId === b.toolCallId && a.inputDigest === b.inputDigest && a.policyRevision === b.policyRevision
 }
 
-/** Sequential, framework-free loop. Host promises own durable storage and resource release. */
+/** 不依赖框架的串行循环。宿主负责持久化存储及资源释放。 */
 export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Promise<RunResult> {
   const { model, tools, store, approvals, host } = ports
   const activeNow = () => host.activeNow?.() ?? host.now()
@@ -73,7 +73,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   const inputDigest = await host.digest(canonicalJson({
     input: request.input, userItems, protocol: { ...model.protocol }, configuration, policyRevision: request.policyRevision,
   }))
-  // Admission failures and active duplicates do not manufacture a new run/terminal event.
+  // 接纳失败及正在执行的重复请求不会生成新的运行或终止事件。
   const admission = await store.beginRun({
     identity, input: request.input, inputDigest, userItems, protocol: clone(model.protocol),
     configuration, policyRevision: request.policyRevision,
@@ -145,7 +145,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   })
   const completeTool = async (call: ToolCall, result: ToolResult, project = true): Promise<void> => {
     if (result.status === 'unknown') throw new Stop('recovery_required', 'tool_result_unknown')
-    // Never silently replace a returned result with a lossy summary in the context.
+    // 绝不在上下文中静默地用有损摘要替换已返回的结果。
     if (byteLength(result.output) > budget.maxToolOutputBytes) {
       throw new Stop('recovery_required', 'tool_output_limit_violated')
     }
@@ -182,8 +182,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   const maintainContext = async (): Promise<void> => {
     if (!ports.contextMaintenance || maintenanceAttempted || modelRequests === 0 ||
       budget.maxModelRequests - modelRequests < 2) return
-    // This is called only between complete model/tool batches. Reserve one
-    // request before the host can contact a model, retaining a continuation slot.
+    // 仅在完整的模型及工具批次之间调用。宿主联系模型之前
+    // 预留一次请求，并保留续接请求的名额。
     const previousRequests = modelRequests++
     let maintained: ContextMaintenanceResult
     try {
@@ -209,8 +209,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
     } catch (error) {
       if (error instanceof Stop) { modelRequests--; throw error }
-      // The host may have committed a replacement without acknowledging it. Do
-      // not checkpoint the old context, retry the summary, or run another tool.
+      // 宿主可能已经提交了替换内容，但未返回确认。不得
+      // 为旧上下文创建检查点、重试摘要或运行其他工具。
       maintenanceAttempted = true
       usageUnknown = true
       throw new PersistenceFailure('context_maintenance')
@@ -232,7 +232,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     const result = makeResult(status, reason, true)
     await append({ type: 'run_finished', result })
     emit({ type: 'run_finished', identity, result })
-    // A terminal projection failure cannot rewrite the already committed outcome or replay it.
+    // 终止状态投影失败不能改写已提交的结果，也不能重放该结果。
     await Promise.all(emitted.splice(0))
     if (projectionFailure) result.projectionError = 'projection_failed'
     return result
@@ -253,8 +253,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       await capacity(8192)
       checkStopped()
       await consumeSharedBudget('model')
-      // Reserve before append: an acknowledgement may be lost after a durable
-      // attempt. Never turn that uncertainty into another paid request.
+      // 追加前先预留额度：持久化尝试后，确认消息可能
+      // 丢失。绝不能因这种不确定性再发起一次付费请求。
       modelRequests++
       const attempt = ++modelAttempt
       await append({ type: 'model_request_started', attempt })
@@ -269,14 +269,14 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
         })))
       } catch (error) {
         acceptingEvents = false
-        // A rejected request may have been billed. Unknown usage must not be
-        // presented as a free retry or as an exact aggregate token/cost total.
+        // 被拒绝的请求也可能已经计费。用量未知时，不得
+        // 将重试描述为免费，也不得给出精确的汇总 token 数或费用。
         usageUnknown = true
         let failure: ModelFailureDiagnostic = { category: 'unknown', retryable: false }
         try {
           const classified = error instanceof Stop ? undefined : model.classifyError?.(error)
           if (validateModelFailureDiagnostic(classified)) failure = clone(classified)
-        } catch { /* Adapter classification never exposes arbitrary errors. */ }
+        } catch { /* 适配器分类绝不暴露任意错误内容。 */ }
         const eligible = request.modelRetry === 'safe_transient' && !!host.wait && failure.retryable && !partial
         const delay = modelRetries === 0 ? 500 : 1500
         const retryDelayMs = eligible && modelRetries < 2 && modelRequests < budget.maxModelRequests &&
@@ -299,8 +299,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     }
   }
   const checkProgress = async (): Promise<void> => {
-    // Assess only complete, durable batches. Polling a host command can be
-    // useful even when a sample has not changed; it is not a stalled task.
+    // 仅评估完整且已持久化的批次。即使采样结果没有变化，
+    // 轮询宿主命令仍可能有意义；这不表示任务停滞。
     const failed = batchResults.length > 0 && batchResults.every(item => ['failed', 'denied'].includes(item.result.status))
     const repeatedRead = batchResults.length > 0 && batchResults.every(item => item.result.status === 'completed' &&
       tools.definitions.find(definition => definition.name === item.call.name)?.risk === 'read' &&
@@ -308,7 +308,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     if (!failed && !repeatedRead) { lastStalledBatch = undefined; stalledBatches = 0; return }
     const fingerprint = await host.digest(canonicalJson(batchResults.map(({ call, result }) => {
       let input: JsonValue = call.arguments
-      try { input = JSON.parse(call.arguments) as JsonValue } catch { /* Invalid input is itself a stable failure. */ }
+      try { input = JSON.parse(call.arguments) as JsonValue } catch { /* 无效输入本身就是一个稳定的失败结果。 */ }
       return { name: call.name, input, result: result as unknown as JsonValue }
     })))
     stalledBatches = fingerprint === lastStalledBatch ? stalledBatches + 1 : 1
@@ -382,7 +382,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       return
     }
     checkStopped()
-    // Reserve bounded result + protocol envelope/checkpoint before writing a prepared marker.
+    // 写入准备标记之前，为限制大小的结果、协议封装及检查点预留空间。
     await capacity(budget.maxToolOutputBytes * 3 + byteLength(prepared) + byteLength(context) + 8192)
     checkStopped()
     if (approval && approval.expiresAt <= host.now()) {
@@ -422,7 +422,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
       const response = await requestModel()
       accumulateUsage(response.usage)
-      // No tool may run before the complete response and continuation are durable.
+      // 完整响应及续接数据持久化之前，不得运行任何工具。
       await recordResponse(response)
       await flushEvents()
       checkStopped()

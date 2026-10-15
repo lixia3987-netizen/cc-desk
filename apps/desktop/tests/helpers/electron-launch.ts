@@ -1,16 +1,16 @@
 import { desktopRoot } from './paths';
 
-/** Keep desktop tests on real windows and suppress only native test credential prompts. */
+/** 桌面测试使用真实窗口，仅屏蔽原生测试凭据提示。 */
 export function electronLaunchArgs(
   appArgs: readonly string[] = [desktopRoot],
   platform: NodeJS.Platform = process.platform,
   display = process.env.DISPLAY,
 ): string[] {
-  // Playwright injects this through its loader for the development Electron
-  // binary, but skips that loader when executablePath points to a packaged app.
-  // Unsigned macOS apps can otherwise block network-service startup on a native
-  // Keychain prompt before Playwright has an application/window to control.
-  // This is a test launch argument, never a production app command-line default.
+  // Playwright 会通过加载器向开发版 Electron 可执行文件注入此参数，
+  // 但 executablePath 指向已打包应用时会跳过加载器。
+  // 否则，未签名的 macOS 应用可能在 Playwright 尚未获得可控制的应用或窗口前，
+  // 因原生钥匙串提示而阻塞网络服务启动。
+  // 这是测试启动参数，不是生产应用的默认命令行参数。
   // https://releases.electronjs.org/pr/53790
   if (platform === 'darwin') return [...appArgs, '--use-mock-keychain'];
   if (platform !== 'linux') return [...appArgs];

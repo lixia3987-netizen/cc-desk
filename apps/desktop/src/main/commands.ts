@@ -11,7 +11,7 @@ import {
   type ClaudeCommandHost,
 } from '@cc-desk/engine-claude/commands';
 export { CLIResolutionError, parseCapabilities } from '@cc-desk/engine-claude/commands';
-/** Only Claude commands use this host; generic Shell resolution stays local. */
+/** 仅 Claude 命令使用此宿主；通用 Shell 解析仍在本地进行。 */
 const claudeCommandHost: ClaudeCommandHost = { environment, findExecutable };
 
 export function resolveNpmLauncher(file: string, env = environment(), platform: NodeJS.Platform = process.platform) {

@@ -8,7 +8,7 @@ export interface NativeCommandResult {
   stdout: string; stderr: string; outputBytes: number; truncated: boolean;
   timedOut: boolean; cancelled: boolean; cleanup: 'released' | 'cleanup_failed'; error?: string;
 }
-/** Host-only facts. IDs are opaque application handles, never operating-system process IDs. */
+/** 仅包含宿主事实。ID 是不透明的应用句柄，绝不是操作系统的进程 ID。 */
 export type NativeCommandLifecycleEvent =
   | { commandId: string; status: 'prepared'; taskId: string; command: NativeCommandDescriptor; timeoutMs: number; maxOutputBytes: number; at: string }
   | { commandId: string; status: 'running'; at: string }

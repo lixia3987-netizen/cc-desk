@@ -17,7 +17,7 @@ export interface CLIUpdateActions {
   changed(state: CLIUpdateState): void;
 }
 
-/** CLI versions are releases with an optional SemVer prerelease suffix. */
+/** CLI 版本采用发布版本号，可附带 SemVer 预发布后缀。 */
 export function cliVersion(value: string): string {
   const version = value.trim().match(/(?:^|\s)v?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)(?:\+[0-9A-Za-z.-]+)?(?=\s|$)/)?.[1];
   if (!version || version.length > 100) throw new Error('无法识别 Claude Code 版本号，请检查 CLI 安装后重试。');
@@ -54,7 +54,7 @@ export class CLIUpdateService {
     this.actions.changed(this.state);
   }
   dismiss() { if (!this.busy) this.publish({ showBanner: false }); }
-  /** Quitting may cancel admission to an installer, never interrupt its writes. */
+  /** 退出可取消安装器的准入，但不能中断其写入。 */
   cancelPendingUpdate() {
     if (this.state.phase === 'updating') return false;
     this.updateEpoch++;
@@ -100,7 +100,7 @@ export class CLIUpdateService {
         this.publish({ phase: 'available', message: `已取消更新，当前继续使用 Claude Code ${candidate.currentVersion}。` });
         return this.state;
       }
-      // A changed path or externally updated installation needs another check and confirmation.
+      // 路径变化或外部更新过的安装需要重新检查并确认。
       await this.actions.verify(candidate);
       assertCurrent();
       this.publish({ phase: 'disconnecting', message: '正在停止 Claude 会话、终端和工作流…' });

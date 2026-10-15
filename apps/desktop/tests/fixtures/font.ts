@@ -1,6 +1,6 @@
-// Original test-only WOFF2, under the project MIT license. Contains a triangular A
-// outline and an empty space; built with FontBuilder at 1000 units/em, 600 advance,
-// 800 ascent and -200 descent. No third-party font data or npm package is required.
+// 原创测试专用 WOFF2，依项目 MIT 许可证授权。包含三角形 A
+// 轮廓和一个空白字符；使用 FontBuilder 构建，每 em 为 1000 单位，字符推进宽度为 600，
+// 上升高度为 800，下降高度为 -200；无须第三方字体数据或 npm 包。
 export const fontFixture = Buffer.from(
   'd09GMgABAAAAAAF8AAoAAAAAA0wAAAE0AAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAABmAAPAokQQE2AiQDCAsIAAQgBYIpBygb' +
   'rwIALgt4Q2q57zidhcccBqyWfGEVG1QRD8/fjzr3vT8d2EEz1CBRZWFROohrTbhCuw3CYwWpAYOZ8/U/QH34hAUoz5qn6wLd' +

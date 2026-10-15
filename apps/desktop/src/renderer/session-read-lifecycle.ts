@@ -5,7 +5,7 @@ interface SessionReads {
   pending: number;
 }
 
-/** A deletion invalidates passive reads before its IPC or workspace broadcast settles. */
+/** 删除操作会在 IPC 或工作区广播完成前，使被动读取失效。 */
 export class SessionReadLifecycle {
   private sessions = new Map<string, SessionReads>();
   private retained?: Set<string>;
@@ -50,9 +50,9 @@ export class SessionReadLifecycle {
       return value;
     } catch (error) {
       reads.generation++; reads.state = this.retained && !this.retained.has(id) ? 'deleted' : 'ready';
-      // A failed deletion keeps the session usable, including automatic refresh.
+      // 删除失败时，会话仍可使用，包括自动刷新。
       for (const refresh of reads.state === 'ready' ? reads.listeners : []) {
-        try { refresh(); } catch { /* An observer must not replace the deletion error. */ }
+        try { refresh(); } catch { /* 观察者不能覆盖删除操作的错误。 */ }
       }
       throw error;
     } finally { this.release(id, reads); }

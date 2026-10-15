@@ -56,8 +56,8 @@ const pastedImagesSchema = z.object({
     dataUrl: z.string().min(1).max(pastedImageEncodedLimit + 23),
   }).strict()).min(1).max(NATIVE_IMAGE_MAX_COUNT),
 }).strict().refine(({ images }) =>
-  // Bound IPC input before storage decodes and validates the actual combined bytes.
-  // Each file adds a MIME prefix and may have its own base64 padding.
+  // 在存储解码并校验实际合并字节前，先限制 IPC 输入。
+  // 每个文件都会添加 MIME 前缀，也可能包含自己的 base64 填充。
   images.reduce((total, image) => total + image.dataUrl.length, 0) <= pastedImageEncodedLimit + images.length * 27,
   '粘贴图片合计不能超过 1 MiB。');
 const responseSchema = z.object({
@@ -149,7 +149,7 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     });
     if (result.canceled) return [];
     checkAdmission();
-    // A native picker may outlive deletion, archiving or maintenance of its source session.
+    // 原生选择器可能在来源会话删除、归档或维护后仍保持打开。
     const current = assertCanStageAttachments(id);
     return current.execution.providerId === 'native' ? ports.attachments.addNative(id, result.filePaths) : ports.attachments.add(id, result.filePaths);
   });
@@ -172,8 +172,8 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   });
   handle('files:add-dropped', droppedFilesSchema, ({ id, paths }) => {
     const session = assertCanStageAttachments(id);
-    // Only stage private copies. Model execution and content interpretation stay
-    // in the existing explicit send/queue flow, even while another turn is running.
+    // 仅暂存私有副本。模型执行与内容解释仍通过
+    // 现有的显式发送和队列流程进行，即使另一轮仍在运行。
     return session.execution.providerId === 'native' ? ports.attachments.addNative(id, paths) : ports.attachments.add(id, paths);
   });
   handle('files:add-pasted-native-images', pastedImagesSchema, ({ id, images }) => {
@@ -186,8 +186,8 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
       }
     };
     assertCanPaste();
-    // Storage repeats the admission check inside its serial operation so an import
-    // queued before deletion, archiving or maintenance cannot recreate a draft.
+    // 存储会在串行操作内部再次检查准入，避免在删除、归档或维护前
+    // 入队的导入操作重新创建草稿。
     return ports.attachments.addNativePastedImages(id, images, assertCanPaste);
   });
   handle('files:attachments', idSchema, async id => {

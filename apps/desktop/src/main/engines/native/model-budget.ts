@@ -4,7 +4,7 @@ const object = (value: unknown): value is Record<string, unknown> => value !== n
 const sources = new Set<ModelCapabilitySource>(['provider', 'catalog', 'fallback']);
 const fields = ['contextWindow', 'maxInputTokens', 'maxOutputTokens'] as const;
 
-/** Only bounded token counts and their provenance can enter the display ledger. */
+/** 只有有界的令牌计数及其来源可以进入显示账本。 */
 export function nativeModelCapabilityUsage(value: unknown, model: string): ContextUsage['modelCapabilities'] {
   if (!object(value) || value.model !== model || !object(value.capabilities)) return undefined;
   const capabilities: ModelTokenCapabilities = {};
@@ -21,7 +21,7 @@ export function nativeModelCapabilityUsage(value: unknown, model: string): Conte
   };
 }
 
-/** Custom ceilings only decrease; model mode uses known capacity and retains a bounded unknown fallback. */
+/** 自定义上限只会降低；模型模式使用已知容量，并保留未知情况下的有界回退值。 */
 export function nativeModelBudget<T extends { maxInputTokens: number; maxOutputTokens: number; inputBudgetMode?: 'custom' | 'model' }>(configured: T, capabilities?: ModelTokenCapabilities): T {
   const maxOutputTokens = Math.min(configured.maxOutputTokens, capabilities?.maxOutputTokens?.value ?? configured.maxOutputTokens);
   const knownInputLimits = [

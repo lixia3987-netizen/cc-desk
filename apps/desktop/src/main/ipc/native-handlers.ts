@@ -5,8 +5,8 @@ import { NativeConnectionDiagnostics, nativeConnectionTestCancelSchema, nativeCo
 import { NativeConnectionModelCatalog, nativeConnectionModelListCancelSchema, nativeConnectionModelListSchema } from '../engines/native/connection-models';
 import { NativeModelCapabilityService, nativeModelCapabilitySchema } from '../engines/native/model-capabilities';
 
-// Zod's default unrecognized-key diagnostics can echo arbitrary supplied keys.
-// These dedicated channels only return a fixed validation message, including for malformed secret input.
+// Zod 默认的未知键诊断可能回显任意传入键名。
+// 这些专用通道仅返回固定校验消息，包括格式错误的密钥输入。
 function privateInput<T>(schema: z.ZodType<T>): z.ZodType<T> {
   return z.unknown().transform((input, context) => {
     const parsed = schema.safeParse(input);
@@ -16,7 +16,7 @@ function privateInput<T>(schema: z.ZodType<T>): z.ZodType<T> {
   });
 }
 
-/** Reuses the main root's trusted renderer / main-frame gate. No read-key channel exists. */
+/** 复用主进程组合根的可信渲染进程与主框架检查。不提供读取密钥的通道。 */
 export function registerNativeHandlers(handle: Register, store: ConnectionStore, onChanged: () => void = () => {}, diagnostics = new NativeConnectionDiagnostics(store), modelCatalog = new NativeConnectionModelCatalog(store), modelCapabilities = new NativeModelCapabilityService(store, modelCatalog)): void {
   handle('native:connections-list', z.undefined(), () => store.list());
   handle('native:connections-upsert', privateInput(nativeConnectionInputSchema), input => { const result = store.upsert(input); onChanged(); return result; });

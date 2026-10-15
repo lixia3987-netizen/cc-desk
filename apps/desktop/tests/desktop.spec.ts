@@ -18,7 +18,7 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     const rendererErrors:string[]=[];page.on('pageerror',error=>rendererErrors.push(error.message));
     await expect(page.getByRole('heading',{name:/让每个想法/})).toBeVisible();
     await page.screenshot({path:documentationPath('screenshots', 'workspace.png')});
-    // Existing Shell sessions remain supported after the new-session UI becomes structured-only.
+    // 新建会话界面改为仅支持结构化模式后，仍须支持已有 Shell 会话。
     await page.evaluate(async p=>{const project=await window.desktop.addProject(p);const session=await window.desktop.createSession({projectId:project.id,title:'终端验证',kind:'shell',providerId:'shell',mode:'terminal',engineConfig:{schemaVersion:1,options:{}},isolated:false});await window.desktop.setSelection(session.id);},project);
     await expect(page.getByRole('heading',{name:'终端验证',exact:true})).toBeVisible();
     await page.getByRole('button',{name:'启动会话',exact:true}).click();
@@ -52,7 +52,7 @@ test('desktop: real terminal, session switching, rename/archive, persistence and
     await app.close();app=await launch();page=await app.firstWindow();
     await expect(page.getByRole('button',{name:/已验证的项目终端.*已停止/})).toBeVisible();
     const state=await page.evaluate(async()=>(await window.desktop.snapshot()).state);
-    // Project identity uses the canonical filesystem path (macOS /var is a symlink to /private/var).
+    // 项目标识使用规范化文件系统路径（macOS 的 /var 是指向 /private/var 的符号链接）。
     expect(state.projects[0].path).toBe(await fs.realpath(project));expect(state.sessions).toHaveLength(2);
     await expect(page.evaluate(()=>window.desktop.createSession({projectId:'invalid',title:'x',kind:'shell',isolated:false}))).rejects.toThrow();
   }finally{
@@ -120,7 +120,7 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     await expect(page.getByRole('region',{name:'工具审批'})).toBeVisible();await expect(page.locator('.status-tag').first()).toContainText('等待审批');
     await page.getByLabel('审批说明').fill('只允许这一次，保留我的说明');
     await page.locator('.session-row').filter({hasText:'会话 B'}).click();await expect(page.getByRole('region',{name:'工具审批'})).toHaveCount(0);await expect(page.getByLabel('提示词编辑器')).toHaveValue('B 的独立草稿');
-    // Requests from another project remain discoverable even when sidebar filters hide both sessions.
+    // 即使侧栏筛选隐藏了两个会话，仍须能发现另一个项目的请求。
     const attentionProject=path.join(directory,'审批项目');await fs.mkdir(attentionProject);
     const attentionSession=await page.evaluate(async folder=>{const project=await window.desktop.addProject(folder);const session=await window.desktop.createSession({projectId:project.id,title:'跨项目提问 C',kind:'agent',engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}},isolated:false,mode:'structured'});await window.desktop.setSelection(session.id);return session.id;},attentionProject);
     await expect(page.getByRole('heading',{name:'跨项目提问 C',exact:true})).toBeVisible();
@@ -159,20 +159,20 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
     const workflowExport=path.join(directory,'workflow-export.json');
     await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},workflowExport);
     await workflowPanel.getByRole('button',{name:'导出',exact:true}).click();
-    // Other regions, including the CLI update banner, can report status at the same time.
+    // 其他区域（包括 CLI 更新横幅）也可能同时报告状态。
     await expect(workflowPanel.getByRole('status')).toHaveText('工作流记录已导出');
     expect(JSON.parse(await fs.readFile(workflowExport,'utf8')).runs[0].stages).toHaveLength(3);
     await page.keyboard.press(process.platform==='darwin'?'Meta+k':'Control+k');await expect(page.getByRole('dialog',{name:'命令面板'})).toBeVisible();await page.getByLabel('查找命令与会话').fill('会话 B');await page.locator('.palette-results button').filter({hasText:'会话 B'}).click();await expect(page.getByRole('heading',{name:'会话 B',exact:true})).toBeVisible();
     await page.getByLabel('全部工作流记录').check();await page.getByRole('button',{name:/^已结束（/}).click();await expect(page.locator('.workflow-run')).toHaveCount(1);await page.getByRole('button',{name:'删除记录',exact:true}).click();await page.getByRole('button',{name:'确认删除工作流',exact:true}).click();await expect(page.locator('.workflow-run')).toHaveCount(0);
     await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});},path.join(project,'example.ts'));
     await page.getByRole('button',{name:'添加附件',exact:true}).click();await page.getByLabel('提示词编辑器').fill('');await expect(page.getByRole('button',{name:'发送任务',exact:true})).toBeEnabled();await page.getByRole('button',{name:'发送任务',exact:true}).click();await expect(page.locator('.chat-message.assistant')).toHaveCount(1);await expect(page.locator('.attachment-chips')).toHaveCount(0);
-    // Notification clicks use this same main-process selection/state path, across all filters.
+    // 在所有筛选条件下，点击通知都使用相同的主进程选择与状态路径。
     const archivedSessionId=await page.evaluate(async()=>{const snapshot=await window.desktop.snapshot();const session=snapshot.state.sessions.find(item=>item.title==='会话 A')!;await window.desktop.stopSession(session.id);return session.id;});
     await expect.poll(()=>page.evaluate(async id=>(await window.desktop.snapshot()).state.sessions.find(session=>session.id===id)?.status,archivedSessionId)).toBe('stopped');await page.evaluate(id=>window.desktop.updateSession({id,archived:true}),archivedSessionId);
     const otherProject=path.join(directory,'另一个项目');await fs.mkdir(otherProject);await page.evaluate(folder=>window.desktop.addProject(folder),otherProject);await selectProjectFilter(page,'另一个项目');await page.getByLabel('搜索会话').fill('没有匹配的名称');
     await page.evaluate(async()=>{const snapshot=await window.desktop.snapshot();await window.desktop.setSelection(snapshot.state.sessions.find(item=>item.title==='会话 A')!.id);});
     await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveText('全部项目');await expect(page.locator('.session-row.active')).toContainText('会话 A');await expect(page.getByRole('button',{name:'查看活跃会话',exact:true})).toBeVisible();
-    // Clicking another notification for the already-selected session still reveals it.
+    // 点击已选中会话的另一条通知，仍须让该会话显示出来。
     await selectProjectFilter(page,'另一个项目');await page.getByLabel('搜索会话').fill('再次隐藏当前会话');await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},archivedSessionId);await expect(page.getByRole('heading',{name:'会话 A',exact:true})).toBeVisible();await expect(page.getByLabel('搜索会话')).toHaveValue('');await expect(page.getByLabel('工作空间筛选')).toHaveText('全部项目');await expect(page.locator('.session-row.active')).toContainText('会话 A');
     expect(rendererErrors).toEqual([]);
   }finally{

@@ -44,7 +44,7 @@ interface Confirmation {
 const errorMessage = (error: unknown) => error instanceof Error
   ? error.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(error);
 
-/** Each operation captures the row's identity, independently of the open workspace. */
+/** 每次操作都捕获对应行的标识，与当前打开的工作区无关。 */
 export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew, executors, busy, perform, report, flushDrafts, setNotice, onSessionHidden }: Props) {
   const [confirmation, setConfirmation] = useState<Confirmation>();
   const [renameTarget, setRenameTarget] = useState<Session>();

@@ -141,7 +141,7 @@ test('experience: project groups preserve navigation and drafts with a compact h
     await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},f.sessions[0].id);
     await expect(groupB.locator('.session-row.active')).toBeVisible();
     await groupB.locator('.project-group-toggle').click();
-    // The selected ID is unchanged: notification navigation must still reveal its project.
+    // 所选 ID 没有变化：通知导航仍须显示它所属的项目。
     await app.evaluate(({BrowserWindow},id)=>{BrowserWindow.getAllWindows()[0].webContents.send('session:navigate',id);},f.sessions[0].id);
     await expect(groupB.locator('.project-group-toggle')).toHaveAttribute('aria-expanded','true');
     await selectProjectFilter(page,f.projects[0].name);await page.getByLabel('搜索会话').fill('隐藏全部');
@@ -225,7 +225,7 @@ test('experience: new-session project, template append, terminal selection and r
     await page.getByRole('button',{name:'新建会话',exact:false}).click();await expect(page.getByLabel('工作空间',{exact:true})).toHaveValue(f.projects[1].id);await select(page,'长对话 B');
     await selectProjectFilter(page,'项目 A');
     await page.getByRole('button',{name:'新建会话',exact:false}).click();
-    // Reopening an unsent page preserves its chosen workspace; changing a sidebar filter creates no record.
+    // 重新打开未发送页面会保留已选工作区；更改侧栏筛选不会创建记录。
     await expect(page.getByLabel('工作空间',{exact:true})).toHaveValue(f.projects[1].id);
     await page.getByLabel('工作空间',{exact:true}).selectOption(f.projects[0].id);
     await selectProjectFilter(page,'全部项目');await select(page,'长对话 B');
@@ -242,7 +242,7 @@ test('experience: new-session project, template append, terminal selection and r
     });
     await select(page,'短对话 B');await select(page,'长对话 B');await expect(page.locator('.chat-message')).toHaveCount(90);await settleReading(page);
     await expect.poll(()=>page.locator('.chat-scroll').evaluate(element=>element.scrollTop)).toBe(300);
-    // Width changes reflow messages; the same message stays at the same visible offset.
+    // 宽度变化会重新排布消息；同一消息须保持相同的可见偏移量。
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1100,800));await settleReading(page);
     const offset=await page.locator('.chat-scroll').evaluate((element,id)=>{
       const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.dataset.messageId===id)!;
@@ -269,7 +269,7 @@ test('experience: delayed terminal activation cannot steal composer input or los
   try{
     const page=await app.firstWindow();
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
-    // Hold animation frames during selection so input can arrive before terminal activation.
+    // 在选择期间暂停动画帧，让输入可以在终端激活前到达。
     await page.evaluate(()=>{
       const request=window.requestAnimationFrame,cancel=window.cancelAnimationFrame;
       const queued=new Map<number,FrameRequestCallback>();let sequence=0;
@@ -293,7 +293,7 @@ test('experience: delayed terminal activation cannot steal composer input or los
     await page.keyboard.insertText('保留现有草稿');await expect(editor).toHaveValue('保留现有草稿');
     await openPanel(page,'工作流');await page.getByRole('button',{name:'新建工作流',exact:true}).click();await page.getByRole('button',{name:'添加完整开发提示词',exact:true}).click();
     await expect(editor).toHaveValue(/^保留现有草稿\n\n请完成以下任务/);
-    // Ordinary terminal selection still focuses the active terminal by default.
+    // 正常选择终端时，默认仍将焦点置于当前终端。
     await select(page,'Shell B');
     await expect(page.locator('.terminal-slot:visible .xterm-helper-textarea')).toBeFocused();
     await select(page,'CLI 终端 B');
@@ -411,7 +411,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
         claude:{...state.settings.engineDefaults.claude,options:{...state.settings.engineDefaults.claude.options,model:'claude-cli-existing',effort:'high'}}
       }});
     });
-    // Reopen the renderer from the persisted fixture before beginning a preferences draft.
+    // 开始编辑偏好设置草稿前，先从已持久化的测试装置重新打开渲染进程。
     await page.reload();
     const open=async()=>{
       await page.getByRole('button',{name:'设置与连接',exact:true}).click();
@@ -537,7 +537,7 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByLabel('发送权限模式',{exact:true}).selectOption('bypassPermissions');
     await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.engineConfig.options.permissionMode;}).toBe('bypassPermissions');
     await select(page,'长对话 B');
-    // The source is manual even though the global default is bypass.
+    // 即使全局默认值为 bypass，源会话仍采用手动审批。
     await page.evaluate(id=>window.desktop.updateSession({id,engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}}}),f.sessions[0].id);
     await sessionAction(page,'长对话 B','从此会话创建分支');
     await expect(page.getByLabel('权限模式',{exact:true})).toHaveCount(0);
@@ -585,7 +585,7 @@ test('experience: save-and-detect probes the edited npm CLI path, including an u
   const f=await workspace();const a=await cliProbe(f.directory,'fixture-A'),b=await cliProbe(f.directory,'fixture-B');
   const file=path.join(f.data,'workspace.json');const state=JSON.parse(await fs.readFile(file,'utf8')) as AppState;
   state.settings.claudePath=a.cli;state.sessions[0].started=true;await fs.writeFile(file,JSON.stringify(state));
-  // Count only save-and-detect probes; the updater legitimately performs its own version check.
+  // 仅统计保存并检测的探测次数；更新器可以正常执行自己的版本检查。
   const app=await f.launch({DISABLE_UPDATES:'1'});
   try{
     const page=await app.firstWindow();await page.getByRole('button',{name:'设置与连接',exact:false}).click();await page.getByRole('tab',{name:'终端与CLI',exact:true}).click();

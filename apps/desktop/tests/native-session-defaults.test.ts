@@ -39,7 +39,7 @@ function fixture() {
     validateConfig: providerId === 'native' ? createNativeConfig : config => config,
     capabilities: () => ({ available: true, structured: true, terminal: false, approvals: false, resume: true, fork: true,
       commands: false, contextUsage: false, liveConfig: false, attachments: false }),
-    // Native currently disallows forks; the creation boundary must also preserve any future provider source config.
+    // 原生引擎目前不允许分叉；创建边界也必须保留未来提供方的源配置。
     createIdentity: input => ({ providerId, mode: 'structured',
       conversationId: input.conversationId && !input.fork ? input.conversationId : randomUUID(),
       ...(input.fork ? { forkFrom: input.conversationId } : {}),

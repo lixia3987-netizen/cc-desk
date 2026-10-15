@@ -21,7 +21,7 @@ const renderChoices = (selected: string[], data: NativeSkillsListResult | undefi
 }));
 
 test('project Skills start with explicit discovery and preserve previously selected paths before reading', () => {
-  // No window/desktop bridge exists in this test: initial rendering must not use one.
+  // 本测试不存在窗口或桌面桥接；初始渲染不能使用它们。
   const initial = renderToStaticMarkup(createElement(NativeProjectSkills, { sessionId: 'one', selected: [], onChange: fail }));
   assert.match(initial, /type="button"[^>]*>读取项目 Skills<\/button>/);
   assert.match(initial, /已选 0 \/ 16/);

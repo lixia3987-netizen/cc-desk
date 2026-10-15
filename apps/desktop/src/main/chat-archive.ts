@@ -11,7 +11,7 @@ interface Index {
 }
 interface RecordLine { start:number; end:number; value?:Record<string,unknown> }
 
-/** Byte offsets, never the full transcript, are cached. Incomplete tails are retried on the next read. */
+/** 仅缓存字节偏移，不缓存完整对话记录。不完整的尾部会在下次读取时重试。 */
 async function* lines(file:FileHandle,start:number,end:number):AsyncGenerator<RecordLine> {
   const buffer=Buffer.alloc(64*1024);let position=start,lineStart=start,parts:Buffer[]=[],length=0;
   while(position<end){
@@ -23,7 +23,7 @@ async function* lines(file:FileHandle,start:number,end:number):AsyncGenerator<Re
       if(length<=RECORD_BYTES&&stop>offset)parts.push(Buffer.from(buffer.subarray(offset,stop)));else if(length>RECORD_BYTES)parts=[];
       if(stop===bytesRead)break;
       let value:Record<string,unknown>|undefined;
-      if(length&&length<=RECORD_BYTES){try{const parsed:unknown=JSON.parse(Buffer.concat(parts,length).toString('utf8'));if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))value=parsed as Record<string,unknown>;}catch{/* Mark damaged records as incomplete; preserve the journal. */}}
+      if(length&&length<=RECORD_BYTES){try{const parsed:unknown=JSON.parse(Buffer.concat(parts,length).toString('utf8'));if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))value=parsed as Record<string,unknown>;}catch{/* 将损坏记录标记为不完整，保留事件日志。 */}}
       yield {start:lineStart,end:position+stop+1,value};
       lineStart=position+stop+1;parts=[];length=0;offset=stop+1;
     }
@@ -42,7 +42,7 @@ const preview=(message:ChatMessage,query=''):ChatMessage=>{
   return result;
 };
 
-/** On-demand archive browsing. Only two sessions' bounded offset indexes remain resident. */
+/** 按需浏览归档。仅常驻两个会话的有界偏移索引。 */
 export class ChatArchive {
   private indexes=new Map<string,Index>();
   private serial=new Map<string,Promise<unknown>>();
@@ -50,7 +50,7 @@ export class ChatArchive {
   forget(id:string){this.indexes.delete(id);}
   private async withArchive<T>(id:string,snapshot:ChatSnapshot,action:(file:FileHandle|undefined,index:Index,ids:string[],fallback:Map<string,ChatMessage>)=>Promise<T>):Promise<T>{
     if(!/^[a-z0-9-]{1,100}$/i.test(id))throw new Error('无效会话 ID。');
-    // Serializing per session prevents an older scan from replacing a newer index.
+    // 按会话串行执行，防止较早的扫描覆盖更新的索引。
     const previous=this.serial.get(id)??Promise.resolve();
     const operation=previous.catch(()=>{}).then(async()=>{
       let file:FileHandle|undefined;
@@ -115,7 +115,7 @@ export class ChatArchive {
       const messages:ChatMessage[]=[];let bytes=0;
       for(let i=start;i<end;i++){
         const message=preview(await this.message(file,index,ids[i],fallback),options.query);
-        // Each preview is bounded, including input. The page has a separate IPC byte budget.
+        // 每项预览均受限，包括输入。页面另设 IPC 字节预算。
         const size=Buffer.byteLength(JSON.stringify(message));
         if(bytes+size>PAGE_BYTES&&messages.length){
           if(options.around&&i<=at||options.before){while(messages.length&&bytes+size>PAGE_BYTES){bytes-=Buffer.byteLength(JSON.stringify(messages.shift()!));start++;}}
@@ -137,7 +137,7 @@ export class ChatArchive {
         incomplete ||= !!message.truncated;
         const text=[message.text,message.toolName??'',message.input?JSON.stringify(message.input):'',...(message.nativeImageAttachments?.map(image=>image.name)??[])].join('\n');
         if(text.toLowerCase().includes(needle))hits.push({id:message.id,role:message.role,toolName:message.toolName,createdAt:message.createdAt,excerpt:excerpt(text,needle,Math.max(240,needle.length+60))});
-        // Limit scan work as well as results. The continuation is explicit even when this segment has no matches.
+        // 同时限制扫描工作量和结果数。即使当前段无匹配项，也显式返回续读信息。
         if(hits.length>=50||cursor-position>=1000)break;
       }
       return {hits,nextBefore:position>0?ids[position]:null,incomplete};

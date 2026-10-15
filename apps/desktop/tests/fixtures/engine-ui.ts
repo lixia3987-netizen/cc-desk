@@ -11,7 +11,7 @@ import { ChatArchive } from '../../src/main/chat-archive';
 import type { ChatDecision, ChatMessage, ChatPageOptions, ChatTurnResult, TaskState } from '../../src/shared/chat';
 import { getSessionIdentity, type EngineConfig } from '../../src/shared/execution';
 
-// This module is reachable only through the test build's esbuild resolver.
+// 仅能通过测试构建的 esbuild 解析器访问此模块。
 export const TEST_ENGINE_MARKER = 'P2_ONLY_HETEROGENEOUS_ENGINE';
 const configSchema = z.object({ schemaVersion: z.literal(7), options: z.object({ route: z.string().min(1), responseStyle: z.enum(['terse', 'expanded']) }).strict() }).strict();
 const pendingHistory = new Map<string, () => void>();

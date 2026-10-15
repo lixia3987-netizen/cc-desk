@@ -1,7 +1,7 @@
 import type { EnvironmentDiagnostics } from '../shared/diagnostics';
 import type { HistoryPage } from '../shared/types';
 
-/** Read-only provider integrations are supplied by the composition root. */
+/** 只读提供方集成由组合根提供。 */
 export interface WorkspaceQueries {
   history(cwd: string, options: { providerId?: string; query?: string; offset?: number; limit?: number }): Promise<HistoryPage>;
   diagnose(cwd?: string): Promise<EnvironmentDiagnostics>;

@@ -50,8 +50,8 @@ for (const protocol of ['openai-responses', 'openai-chat-completions']) test(`${
   const request = fixtureRequest(protocol), rootDirectory = path.join(directory, 'native', 'conversations');
   const ledger = await NativeRunStore.open({ rootDirectory, conversationId: request.identity.conversationId });
   await ledger.beginRun(request);
-  // Keep the writer active: preview may inspect a fully committed submission,
-  // but cannot append an interruption/recovery event or acquire the writer.
+  // 保持写入器活跃：预览可检查已完整提交的请求，
+  // 但不能追加中断或恢复事件，也不能获取写入器。
   const before = await files(directory);
   const host = previewHost(request, { directory, readSubmission: NativeRunStore.readSubmission });
   assert.deepEqual(await host.preview(previewRequest(request)), { image, dataUrl });
@@ -165,8 +165,8 @@ async function serviceFixture(t: TestContext) {
       started: true, status: 'error', taskState: 'error', error: 'prior recovery barrier', archived: true, createdAt: now, updatedAt: now });
   });
   const registry = new ExecutionRegistry(id => { const item = store.state.sessions.find(value => value.id === id); if (!item) throw new Error('deleted'); return item; });
-  // No engine or connection is registered. Offline preview must not consult
-  // execution availability, model credentials or hydrate a writer-backed ledger.
+  // 此处没有注册引擎或连接。离线预览不能查询执行可用性、
+  // 模型凭据，也不能加载依赖写入器的账本。
   const service = new SessionService(store, registry, () => {}, () => null, {} as never);
   const handlers = new Map<string, (input: unknown) => unknown>();
   service.register((name, schema, action) => handlers.set(name, input => action(schema.parse(input))));

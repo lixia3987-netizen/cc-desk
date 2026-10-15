@@ -5,8 +5,8 @@ const STRUCTURED_FLAGS = ['--print', '--input-format', '--output-format', '--ver
 export function claudeCapabilities(cli: Capabilities, mode: ExecutionMode): ExecutionCapabilities {
   const structured = mode === 'structured';
   const missing = structured ? STRUCTURED_FLAGS.filter(flag => !cli.flags.includes(flag)) : [];
-  // Offline identity creation uses implemented adapter features. Once CLI flags
-  // are known, retain their narrower support even if a later probe is unavailable.
+  // 离线创建身份使用适配器已实现的功能。得知 CLI 参数后，
+  // 即使后续探测不可用，也保留这些参数所限定的较窄支持范围。
   const undiscovered = !cli.available && cli.flags.length === 0;
   return {
     available: cli.available && !missing.length,

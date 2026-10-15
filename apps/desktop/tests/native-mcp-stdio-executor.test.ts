@@ -15,7 +15,7 @@ import { NativeCredentialStore } from '../src/main/engines/native/credentials';
 import { NativeMcpConnectionStore } from '../src/main/engines/native/mcp-connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig, parseNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error The test-only ESM fixture has no declarations.
+// @ts-expect-error 测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
@@ -138,7 +138,7 @@ async function fixture(options: { mode?: Mode; workerFailure?: boolean; selected
     async dispose() {
       await executor.shutdown().catch(() => {}); await Promise.allSettled(pending); await server.close(); store.flush();
       for (const record of await childRecords()) if (record.event === 'spawn') {
-        try { process.kill(record.pid, 0); process.kill(record.pid, 'SIGKILL'); } catch { /* Confirmed-dead fixture needs no fallback cleanup. */ }
+        try { process.kill(record.pid, 0); process.kill(record.pid, 'SIGKILL'); } catch { /* 已确认停止的测试装置无须兜底清理。 */ }
       }
       if (previousUnrelated === undefined) delete process.env.CC_DESK_STDIO_FIXTURE_UNRELATED;
       else process.env.CC_DESK_STDIO_FIXTURE_UNRELATED = previousUnrelated;

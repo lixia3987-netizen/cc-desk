@@ -17,7 +17,7 @@ test('all sections share one complete session draft and switching sessions prese
   store.observe('one', initial()); store.observe('two', initial());
   store.change('one', update(store.get('one')!.value, { maxInputTokens: 32000 }));
   store.change('two', update(store.get('two')!.value, { maxToolCalls: 20 }));
-  // Returning to another section reads the same complete draft, rather than a per-section copy.
+  // 返回其他区域时读取相同的完整草稿，而非各区域的独立副本。
   store.change('one', update(store.get('one')!.value, { autoCompact: 'off' }));
   assert.deepEqual(store.dirtySessionIds(), ['one', 'two']);
   await store.save('one', async config => { saved.push(config); });

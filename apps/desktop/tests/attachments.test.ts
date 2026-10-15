@@ -76,7 +76,7 @@ test('failed dispatch keeps retained attachments visible and removable without d
   try {
     const source=path.join(root,'retry.txt');await fs.writeFile(source,'retry bytes');
     const manager=new Attachments(root), [file]=await manager.add('session',[source]);
-    await manager.retain('session',[file.path]); // CLI startup fails before markSent.
+    await manager.retain('session',[file.path]); // CLI 启动在调用 markSent 前失败。
     const restarted=new Attachments(root);assert.deepEqual(await restarted.list('session'),[file]);
     await restarted.removeFile('session',file.path);
     assert.deepEqual(await new Attachments(root).list('session'),[]);

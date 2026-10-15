@@ -11,7 +11,7 @@ interface RegistrationBase {
   history?: boolean;
   defaultWorkflowError?(session: Session): string | undefined;
   capabilities(): ExecutionCapabilities;
-  /** Provider-specific identity validation belongs to its adapter. */
+  /** 提供方专属身份校验由对应适配器负责。 */
   validateSession?(session: Session): void;
   createIdentity?(input: { conversationId?: string; fork?: boolean }): SessionExecution;
 }

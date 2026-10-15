@@ -20,7 +20,7 @@ export function nativeConnectionUnavailable(session: Session, checked?: CheckedC
   return checked.result.ready ? undefined : (checked.result.error || '此会话的模型连接尚未就绪，请检查设置。');
 }
 
-/** Readiness is per session, independent of the provider-wide execution capabilities. */
+/** 就绪状态以会话为单位，与提供方层面的执行能力相互独立。 */
 export function useNativeConnectionReadiness(sessions: readonly Session[] | undefined): (session: Session) => string | undefined {
   const requests = (sessions ?? []).flatMap(session => { const request = nativeConnectionRequest(session); return request ? [request] : []; });
   const encoded = JSON.stringify(requests);
@@ -43,8 +43,8 @@ export function useNativeConnectionReadiness(sessions: readonly Session[] | unde
         if (mounted && request === generation) setChecked(Object.fromEntries(values));
       });
     };
-    // State broadcasts are also used after connection mutations. Debouncing avoids
-    // decrypting the same credential for every streamed chat projection event.
+    // 连接变更后也会广播状态；通过防抖避免
+    // 在每个流式聊天投影事件中都解密同一凭据。
     const schedule = () => { if (timer) clearTimeout(timer); timer = setTimeout(refresh, 150); };
     refresh();
     const off = window.desktop?.onState(schedule);

@@ -1,6 +1,6 @@
 import type { NativeTaskSnapshot, NativeTaskView, NativeTaskWorkspace, NativeTaskWorkspaceView } from '@cc-desk/contracts/native-task';
 
-/** Human review of a particular durable task and observed workspace version. */
+/** 针对某个持久任务及已观察工作区版本的人工审核。 */
 export interface NativeTaskReviewInput {
   taskId: string;
   expectedRevision: number;
@@ -10,7 +10,7 @@ export interface NativeTaskReviewInput {
   reason: string;
 }
 
-/** IPC needs the scan result and version, never the full per-file hash inventory. */
+/** IPC 仅需扫描结果与版本，不传递完整的逐文件哈希清单。 */
 export function toNativeTaskView(snapshot: NativeTaskSnapshot): NativeTaskView {
   const { workspace, ...task } = snapshot;
   const workspaceView = ({ files, ...metadata }: NativeTaskWorkspace): NativeTaskWorkspaceView => ({ ...structuredClone(metadata), fileCount: files.length });

@@ -16,7 +16,7 @@ export function ConnectionManager({ sessions, projects, executors, limit, disabl
   const [error, setError] = useState('');
   const inFlight = useRef(new Set<string>()), mounted = useRef(true);
   const currentSessions = useRef(sessions); currentSessions.current = sessions;
-  // Include resident idle connections and stopping processes across every project/filter.
+  // 包含所有项目和筛选范围内常驻的空闲连接，以及正在停止的进程。
   const connected = sessions.filter(session => session.status === 'running' || session.status === 'stopping');
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   useEffect(() => {
@@ -35,7 +35,7 @@ export function ConnectionManager({ sessions, projects, executors, limit, disabl
     inFlight.current.add(session.id); setPending(new Set(inFlight.current)); setError('');
     try {
       await window.desktop.stopSession(session.id);
-      // Keep the row disabled until the authoritative state confirms the process stopped.
+      // 保持该行禁用，直到权威状态确认进程已停止。
     } catch (cause) {
       inFlight.current.delete(session.id);
       if (mounted.current) {

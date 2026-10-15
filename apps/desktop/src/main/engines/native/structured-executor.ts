@@ -94,12 +94,12 @@ export interface NativeExecutorOptions {
   modelCapabilities?: NativeModelCapabilityService;
   worker?: typeof runNativeWorker;
   supervisor?: ProcessSupervisor;
-  /** Supplied by the host's directory coordinator where available. */
+  /** 如可用，由宿主的目录协调器提供。 */
   assertOwnership?(id: string, identity: RunIdentity): void | Promise<void>;
   acquireChildOwnership?(parentId: string, identity: RunIdentity, cwd: string): Promise<{ assert(): void | Promise<void>; release(): void | Promise<void> }>;
   onError?(error: Error): void;
 }
-/** Main process owns the durable ledger, permissions, files and command children. */
+/** 主进程管理持久化账本、权限、文件及命令子进程。 */
 export class NativeStructuredExecutor implements StructuredExecutor {
   private active = new Map<string, ActiveRun>();
   private contextOperations = new Map<string, ContextOperation>();
@@ -186,8 +186,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     }
   }
   hydrate(id: string): Promise<void> {
-    // Renderer refreshes can arrive after quit starts. Preserve the existing
-    // projection, but never open another writer behind the shutdown barrier.
+    // 退出开始后，渲染进程刷新请求仍可能到达。保留现有
+    // 投影，但绝不在关闭屏障后打开另一个写入器。
     if (this.hydrationClosed) return Promise.resolve();
     const pending = this.hydration.get(id); if (pending) return pending;
     const operation = (async () => {
@@ -252,7 +252,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async openTaskSession(id: string, forbiddenValues: string[] = []) {
     const session = this.session(id);
-    // Retry retained metadata cleanup before acquiring another writer for this conversation.
+    // 为当前会话取得另一个写入器前，先重试尚未完成的元数据清理。
     for (const [ledger, owner] of this.taskLedgers) if (owner === id) await this.closeTaskStore(ledger);
     const taskStore = await NativeTaskStore.open({ rootDirectory: path.join(this.store.directory, 'native'),
       sessionId: id, conversationId: session.execution.conversationId!, forbiddenValues });
@@ -284,7 +284,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     } finally { await this.closeTaskStore(tasks.store); }
   }
   private async refreshTaskView(id: string, ledger: NativeRunStore) {
-    // The run owns its writer. Idle refreshes own a short-lived writer, serialized by hydrate().
+    // 运行独占其写入器；空闲刷新使用短暂写入器，由 hydrate() 串行化。
     const active = this.active.get(id);
     if (this.taskReviews.has(id) || active && (!active.tasks || this.taskErrors.has(id))) return;
     let tasks: NativeTaskSession | undefined;
@@ -315,13 +315,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       try {
         await this.hydration.get(id); assertCurrent();
         const forbiddenValues: string[] = [];
-        try { const config = parseNativeConfig(session.engineConfig); forbiddenValues.push(this.connections.resolve(config.connectionId, config.model || undefined).apiKey); } catch { /* Offline review remains available. */ }
+        try { const config = parseNativeConfig(session.engineConfig); forbiddenValues.push(this.connections.resolve(config.connectionId, config.model || undefined).apiKey); } catch { /* 离线审查仍可使用。 */ }
         for (const connectionId of parseNativeConfig(session.engineConfig).mcpConnections) {
           try {
             const connection = this.options.mcpConnections?.resolve(connectionId);
             if (connection?.transport === 'stdio') forbiddenValues.push(...Object.values(connection.environment));
             else if (connection?.bearerToken) forbiddenValues.push(connection.bearerToken);
-          } catch { /* A disconnected MCP service must not prevent local review. */ }
+          } catch { /* MCP 服务断开不能阻止本地审查。 */ }
         }
         tasks = await this.openTaskSession(id, forbiddenValues); assertCurrent();
         return await tasks.review(input, assertCurrent);
@@ -368,9 +368,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const task = this.taskViews.get(id);
     if (task && (!active || active.taskId === task.taskId)) snapshot.nativeTask = toNativeTaskView(task);
     if (this.taskErrors.has(id)) { delete snapshot.nativeTask; snapshot.nativeTaskError = this.taskErrors.get(id); }
-    // Only published ledger runs define snapshot authority. A preflight identity
-    // may be abandoned (for example after canceled automatic compaction); exposing
-    // it would make the next durable snapshot regress its worker generation.
+    // 只有已发布的账本运行定义快照的权威性。预检身份
+    // 可能被弃用，例如自动压缩取消后；若暴露此身份，
+    // 会导致下一个持久化快照的工作进程代次回退。
     return snapshot;
   }
   async page(id: string, options?: ChatPageOptions) { await this.hydrate(id); return this.projection.page(id, options); }
@@ -394,8 +394,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (previous) {
       if (previous.requestId !== requestId || previous.input !== text || previous.sourceOptions !== sourceOptions || previous.continuedTaskId !== continuedTaskId || canonicalJson(json(previous.executionPolicy ?? null)) !== canonicalJson(json(executionPolicy ?? null)) || canonicalJson(json(previous.expectedImageAttachments ?? [])) !== canonicalJson(json(expectedImageAttachments ?? []))) return Promise.reject(new Error('此会话仍持有执行资源，请等待停止完成。'));
       if (!previous.attachmentPaths.length && !attachments.length) return previous.promise;
-      // Re-read the selected manifest entries for duplicate submissions. The
-      // running request retains its original snapshot even if a file changes.
+      // 重复提交时重新读取所选清单条目。正在运行的
+      // 请求保留原始快照，即使文件已变化。
       return Promise.all([previous.imageSnapshot ?? Promise.resolve({ images: previous.images, metadata: previous.imageAttachments }),
         readNativeImageAttachments(this.store.directory, id, [...attachments])]).then(([initial, current]) => {
         if (canonicalJson(json(initial)) !== canonicalJson(json(current))) throw new Error('此提交标识已用于不同的图片附件。');
@@ -430,9 +430,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     try {
       this.assertActive(id, active);
       active.imageSnapshot = readNativeImageAttachments(this.store.directory, id, active.attachmentPaths).catch(() => { throw new Error('图片附件无效或已变更，请重新选择 PNG/JPEG 图片。'); });
-      // Snapshot capture starts before the first await for concurrent duplicate
-      // callers. Observe rejection now, but inspect historical ownership before
-      // surfacing it so an invalid old attachment cannot change newer state.
+      // 为处理并发重复调用，在首次 await 前开始捕获快照。
+      // 立即观察拒绝结果，但在将其报告前先检查历史所有权，
+      // 防止无效旧附件改变较新的状态。
       void active.imageSnapshot.catch(() => {});
       await this.hydration.get(id);
       this.assertActive(id, active);
@@ -444,12 +444,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       } : {}) };
       let config = boundedConfig;
       const optionsDigest = digest(active.options + (active.executionPolicy ? canonicalJson(json(active.executionPolicy)) : ''));
-      // Receipt lookup precedes credential resolution and worker creation. Retries cannot execute again.
+      // 先查回执，再解析凭据并创建工作进程；重试不得再次执行。
       let ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId! });
       active.store = ledger;
       await this.refreshProjection(id, ledger);
       if (ledger.recoveryRequired || this.projection.hasMissingContext(id)) this.recovery.add(id);
-      // A terminal model receipt is not proof that its local service resources closed.
+      // 模型终态回执不能证明其本地服务资源已关闭。
       if (ledger.getRecoveryReport()?.tools.some(tool => tool.name === 'mcp_stdio_startup' && tool.status === 'unknown')) throw new Error(RECOVERY);
       const priorStartup = ledger.lookupStartup(active.requestId);
       if (priorStartup?.status === 'recovery_required') throw new Error(RECOVERY);
@@ -597,8 +597,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         await recheck();
         this.changed(id, 'starting');
       }
-      // Catalog reads are explicit consequences of this session's selected services.
-      // They precede the model request and share its elapsed-time/input budget.
+      // 读取目录是当前会话显式选择服务产生的操作。
+      // 这些读取先于模型请求，且共用耗时和输入预算。
       if (mcpConnections.length) {
         const remaining = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
         if (remaining < 1) throw new Error('本次执行时长预算已耗尽，未读取 MCP 工具目录。');
@@ -637,7 +637,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         record: async (call, progress) => {
           if (progress.status === 'prepared') await assertOwnership();
           await ledger.recordCommandEvent(identity, call, progress);
-          try { await this.refreshProjection(id, ledger); } catch { /* Durable lifecycle remains authoritative if projection repair fails. */ }
+          try { await this.refreshProjection(id, ledger); } catch { /* 投影修复失败时，持久化生命周期仍是权威依据。 */ }
         },
         onFailure: () => { active.cleanupUnconfirmed = true; this.recovery.add(id); active.abort.abort(); },
         onPrepared: async (prepared, signal) => active.tasks!.commandStarted({ taskId: active.taskId, identity, prepared, signal }),
@@ -652,13 +652,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           await assertOwnership();
         }, recordChangeSetEvent: async (run, call, progress) => {
           if (!sameRun(run, identity)) throw new Error('变更集回执的运行归属已失效。');
-          // Before effects, require a current owner. After effects, preserve the
-          // receipt even if cancellation or lease loss arrived during the write.
+          // 操作生效前必须有当前所有者。操作生效后保留
+          // 回执，即使写入期间收到取消或丢失租约。
           if (progress.status === 'prepared') await assertOwnership();
           await ledger.recordChangeSetEvent(run, call, progress);
-          // Projection repair must not turn a committed effect receipt into an
-          // apparent persistence failure. The ledger remains authoritative.
-          try { await this.refreshProjection(id, ledger); } catch { /* hydrate reported the projection error */ }
+          // 投影修复不得将已提交的操作回执变成
+          // 看似持久化失败的结果；账本仍是权威依据。
+          try { await this.refreshProjection(id, ledger); } catch { /* hydrate 已报告投影错误 */ }
         } })]);
         if (!mcpTools) return local;
         const remote = mcpTools, instructionDigest = instructions.digest;
@@ -691,7 +691,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         onCompacting: () => { active.phase = 'compacting'; this.changed(id, 'thinking'); },
         onCommitted: () => this.refreshProjection(id, ledger) });
       if (automatic.compacted) {
-        // Project instructions may change while the summary request is in flight.
+        // 摘要请求进行期间，项目指令可能发生变化。
         instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
         modelInstructions = modelInstructionsFor(nativePermissionInstructions(config.permissionMode) + '\n' + instructions.text + '\n' + collaborationInstructions);
         tools = stageTools();
@@ -699,8 +699,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         assertNativeInputBudget(ledger.loadContext()!, active.input, modelInstructions, config, model, active.images);
       }
       await assertOwnership();
-      // Every submission shares one active-time budget, including preparation
-      // when no MCP discovery or automatic compaction was needed.
+      // 每次提交的全部阶段共用一个活动时间预算，包括准备阶段，
+      // 即使无需 MCP 发现或自动压缩。
       const maxActiveMs = Math.floor(config.maxActiveMs - elapsedActiveMs());
       if (maxActiveMs < 1) throw new Error('本次执行时长预算已耗尽，未发起后续模型请求；请调整预算或缩小任务后重新发送。');
       if (automatic.remainingRequests < 1) throw new Error('本次模型请求预算已耗尽；请检查已保存记录并调整预算后重新发送。');
@@ -714,8 +714,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           if (active.continuedTaskId) { await assertTaskOwnership(); await active.tasks!.continueTask(active.continuedTaskId, identity, assertTaskOwnership); }
         } await this.refreshProjection(id, ledger); return accepted; },
         append: async (run, event) => {
-          // Model completion does not release a running command. All owned
-          // process trees and terminal receipts close before committing it.
+          // 模型完成不会释放仍在运行的命令。提交模型结果前，所有管理的
+          // 进程树和终态回执必须先结束。
           if (event.type === 'run_finished') {
             try { await active.delegation?.closeAll(); await commandTools?.closeAll(); }
             catch (error) { active.cleanupUnconfirmed = true; throw error; }
@@ -770,7 +770,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (error && typeof error === 'object' && 'cleanupUnconfirmed' in error && error.cleanupUnconfirmed) active.cleanupUnconfirmed = true;
       result = { success: false, summary: '', error: active.abort.signal.aborted ? '执行已取消。' : this.safeError(error), interrupted: active.abort.signal.aborted };
     } finally {
-      // File descriptors opened while hydration runs belong to this active run.
+      // 水合期间打开的文件描述符属于当前活动运行。
       await active.imageSnapshot?.catch(() => {});
       active.phase = undefined;
       active.approval?.settle('denied');
@@ -789,7 +789,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       }
       try {
         if (active.store) {
-          // A worker crash can leave an active ledger. Reopen below to mark it interrupted/unknown.
+          // 工作进程崩溃可能留下活动账本；下方重新打开并标记为 interrupted/unknown。
           await this.refreshProjection(id, active.store);
           await active.store.close(); active.store = undefined;
         }
@@ -808,13 +808,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       }
       if (active.cleanupUnconfirmed) {
         this.recovery.add(id);
-        // Task metadata ownership still blocks another run, but cannot undo a
-        // committed execution receipt or cause an already executed queue item to replay.
+        // 任务元数据所有权仍会阻止新运行，但不能撤销
+        // 已提交的执行回执，或使已执行队列项被重放。
         if (executionCleanupUnconfirmed || !result?.success) result = { success: false, summary: '', error: '进程或记录的清理尚未确认，目录继续保持占用。请先解决清理失败。' };
       }
-      // A historical receipt (including a rejected identity mismatch) belongs
-      // to its original run. It must not overwrite a newer run's live state.
-      // Actual recovery or resource-release failures still publish a barrier.
+      // 历史回执，包括因身份不匹配被拒绝的回执，归属于
+      // 原始运行，不得覆盖较新运行的当前状态。
+      // 实际的恢复失败或资源释放失败仍会发布屏障。
       try {
         if (!receiptOnly || this.recovery.has(id)) this.changed(id,
           this.recovery.has(id) ? 'error' : result?.success ? 'completed' : result?.interrupted ? 'interrupted' : 'error',
@@ -828,7 +828,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (this.active.get(id) !== active || active.abort.signal.aborted || this.maintenance || this.sessionMaintenance.has(id)) throw new Error('执行已取消或运行归属已失效。');
   }
   private safeError(error: unknown) {
-    // Keep host diagnostics useful without persisting arbitrary transport errors or credentials.
+    // 保留有用的宿主诊断信息，不持久化任意传输错误或凭据。
     const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
     const contextErrors: Record<string, string> = {
       active_time_budget: '本次执行时长预算已耗尽，未发起后续模型请求；请调整预算或缩小任务后重新发送。',
@@ -845,9 +845,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async turnResult(result: RunResult, ledger: NativeRunStore, task?: NativeTaskSnapshot | null, activeMs?: number,
     counts?: { modelRequests: number; toolCalls: number }): Promise<ChatTurnResult> {
-    // Compacted context contains host-authored historical assistant data. Only
-    // the current run's latest durable model response may become its workflow
-    // artifact; a tool-only or empty response deliberately produces no summary.
+    // 压缩后的上下文含有宿主编写的历史助手数据。只有
+    // 当前运行最新的持久化模型响应可以成为其工作流
+    // 产物；纯工具响应或空响应明确不生成摘要。
     let summary = '', foundResponse = false;
     const details: NativeRunErrorDetails = { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: 0 };
     const startedAttempts = new Set<number>();
@@ -863,8 +863,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         } else if (event.type === 'model_request_started') startedAttempts.add(event.attempt);
         else if (event.type === 'model_request_failed') {
           if (details.modelFailure === undefined) { details.modelFailure = event.failure.category; details.diagnostic = event.failure; details.partial = event.partial; }
-          // A scheduled delay cancelled before the next durable attempt is not
-          // an executed retry. Backward replay has already seen later starts.
+          // 在下一次持久化尝试前取消的已调度延迟不算
+          // 已执行的重试；逆向重放已经见过后续启动记录。
           if (event.retryDelayMs !== undefined && startedAttempts.has(event.attempt + 1)) details.retries!++;
         } else if (event.type === 'run_started') { end = 0; break; }
       }
@@ -880,7 +880,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             sessionId: result.identity.sessionId, conversationId: result.identity.conversationId });
           task = snapshots.find(item => sameRun(item.identity, result.identity)) ?? null;
         }
-        // Older completed runs have no elapsed receipt. Charge a conservative saved ceiling rather than invent zero time.
+        // 较早的已完成运行没有耗时回执；按保守的已保存上限计费，不虚构零耗时。
         const savedOptions = ledger.getRun(result.identity.runId)?.configuration.sessionOptions;
         const savedTime = savedOptions && typeof savedOptions === 'object' && !Array.isArray(savedOptions) ? savedOptions.maxActiveMs : undefined;
         const savedCeiling = typeof savedTime === 'number' && Number.isSafeInteger(savedTime) && savedTime > 0 ? savedTime : DEFAULT_RUN_BUDGET.maxActiveMs;
@@ -888,7 +888,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         await saveNativeExecutionReceipt(this.store.directory, receipt);
       }
     } catch {
-      // A receipt metadata failure cannot turn a committed operation into a queue replay.
+      // 回执元数据失败不能让已提交操作触发队列重放。
       receipt = undefined; this.options.onError?.(new Error('Native execution receipt metadata is unavailable; workflow verification must pause.'));
     }
     return { success: result.status === 'completed' && result.committed, summary, ...(receipt ? { nativeReceipt: receipt } : {}),
@@ -916,8 +916,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const cancel = () => settle('denied');
       const timer = setTimeout(() => settle('expired'), Math.max(0, request.expiresAt - Date.now()));
       active.approval = { publicId, kind, request: structuredClone(request), createdAt: new Date().toISOString(), settle };
-      // Remote schemas may themselves define a parameter named "preconditions".
-      // Keep arbitrary MCP arguments separate so the approval displays the exact call.
+      // 远程模式本身可能定义名为 "preconditions" 的参数。
+      // 将任意 MCP 参数单独保存，使审批显示精确调用。
       const approvalInput = child ? { arguments: request.input, preconditions: request.preconditions,
         delegatedAgent: { title: child.title, cwd: child.cwd, taskId: child.taskId, runId: child.identity.runId } } : request.tool.name.startsWith('mcp_')
         ? { arguments: request.input, preconditions: request.preconditions }
@@ -948,8 +948,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (this.has(id)) throw new Error('请停止运行后修改配置。');
     const current = parseNativeConfig(session.engineConfig);
     if (session.started && (options.connectionId !== current.connectionId || options.model !== current.model)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
-    // Structured session updates delegate persistence to their provider. Commit
-    // the normalized configuration before the IPC reports a successful save.
+    // 结构化会话更新由其提供者负责持久化。IPC 报告保存成功前，
+    // 先提交规范化配置。
     this.store.change(state => { state.sessions.find(item => item.id === id)!.engineConfig = { schemaVersion: config.schemaVersion, options }; });
   }
   interrupt(id: string) { const active = this.active.get(id); active?.abort.abort(); active?.approval?.settle('denied'); this.contextOperations.get(id)?.abort.abort(); this.taskReviews.get(id)?.abort.abort(); }
@@ -1014,8 +1014,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (!operation.cleanupUnconfirmed) {
           operation.released = true;
           if (this.contextOperations.get(id) === operation) this.contextOperations.delete(id);
-          // Reopen after ambiguous append errors: only the durable ledger decides
-          // whether a recovery/compaction committed, never the rejected promise.
+          // 追加错误结果不明确时重新打开；只有持久化账本能决定
+          // 恢复或压缩是否已提交，不能根据被拒绝的 Promise 判断。
           try { await this.hydrate(id); }
           catch { this.recovery.add(id); failure ??= new Error('原始记录无法核验，请检查磁盘；会话保持只读。'); }
         } else {
@@ -1033,7 +1033,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     return this.contextOperation(id, 'resume', expectedHead, async operation => {
       const ledger = operation.store!;
       const previous = ledger.listRuns().find(run => run.recoveryResolution?.expectedHash === expectedHead);
-      if (previous) return; // A retried acknowledgement never creates another run.
+      if (previous) return; // 重试确认绝不会创建另一次运行。
       const report = ledger.getRecoveryReport();
       if (!report || report.expectedHash !== expectedHead) throw new Error('恢复记录已改变，请刷新后重新核查。');
       if (report.classification !== 'safe_to_continue') throw new Error('存在结果未知的操作或不完整协议，此会话只读，请核查后新建会话。');
@@ -1062,8 +1062,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const previous = ledger.listRuns().at(-1)?.configuration;
       if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
       const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
-      // Manual maintenance has no current task/tool catalog. Check the retained
-      // context itself here; sending rechecks the complete request with its rules.
+      // 手动维护没有当前任务或工具目录。此处检查保留的
+      // 上下文本身；发送时连同规则重新检查完整请求。
       const minimum = { ...source.retainedContext, items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] };
       if (contextBudgetUsage(minimum, createNativeModel(model).estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
         throw new Error('必须保留的上下文已超过运行预算，未调用摘要模型；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
@@ -1116,12 +1116,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   async shutdown() {
     this.maintenance = true;
     this.hydrationClosed = true;
-    // Even an idle history refresh owns a writer while opening/rebuilding its
-    // ledger. Wait through open, projection and close before the app can exit.
+    // 即使空闲历史刷新在打开或重建账本时也持有写入器。
+    // 应用退出前，等待打开、投影及关闭全过程完成。
     const results = await Promise.allSettled([this.disconnectAll(), ...this.hydration.values()]);
     const errors: unknown[] = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
-    // A failed close remains owned, so a later quit attempt can retry its actual
-    // release instead of treating an already-rejected hydration as cleanup.
+    // 关闭失败时仍保留所有权，以便后续退出尝试重试实际
+    // 释放，而非把已拒绝的水合过程视为清理完成。
     const releases = await Promise.allSettled([...this.hydrationLedgers].map(async ledger => {
       await ledger.close(); this.hydrationLedgers.delete(ledger);
     }));

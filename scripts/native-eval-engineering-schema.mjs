@@ -1,4 +1,4 @@
-// Pure validation shared by the operator report and verification runner.
+// 操作者报告与验证运行器共用的纯校验逻辑。
 export const MAX_ATTEMPTS = 120;
 export const MAX_REPORT_BYTES = 8 * 1024 * 1024;
 export const MAX_RECORD_BYTES = 16 * 1024;

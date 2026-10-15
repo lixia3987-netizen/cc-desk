@@ -51,17 +51,17 @@ const bytes = (value: unknown) => Buffer.byteLength(encode(value));
 interface CallState { prepared: PreparedTool; maxOutputBytes: number; execution?: Promise<ToolResult> }
 export interface NativeTaskToolOptions {
   identity: RunIdentity;
-  /** Chosen by the host for this run; model arguments cannot select another task. */
+  /** 由宿主为此次运行指定；模型参数不能选择其他任务。 */
   taskId: string;
   forbiddenValues: string[];
-  /** Rechecks run ownership, cancellation and the applicable project instructions. */
+  /** 重新检查运行所有权、取消状态及适用的项目指令。 */
   assertOwnership(): Promise<void>;
   store: { read(taskId: string): NativeTaskSnapshot | null | undefined; apply(update: NativeTaskUpdate): Promise<NativeTaskSnapshot> };
-  /** Host may append a workspace observation; the returned revision is read after it. */
+  /** 宿主可追加工作区观察；返回的修订在追加后读取。 */
   onCommitted?(snapshot: NativeTaskSnapshot): Promise<void>;
 }
 
-/** Only model declarations cross this tool boundary. Evidence/review remain host-only. */
+/** 只有模型声明跨越此工具边界；证据及审查仅由宿主管理。 */
 export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
   const states = new Map<string, CallState>();
   const boundIdentity = structuredClone(options.identity), taskId = options.taskId;
@@ -157,7 +157,7 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
         try { await guard(context); }
         catch { return { status: 'not_executed', output: { error: 'task_preconditions_changed' } }; }
         try {
-          // The store must repeat its host guard immediately before durable commit.
+          // 持久化提交前，存储必须立即再次执行宿主守卫。
           const committed = await options.store.apply({ identity: boundIdentity, taskId,
             mutationId: `plan:${digest(encode({ identity: boundIdentity, callId: prepared.call.id }))}`,
             expectedRevision: input.expectedRevision,
@@ -173,8 +173,8 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
             note: 'Plan progress is a declaration. Verification requires host evidence and explicit review; this does not authorize other tools.',
           } }, context);
         } catch {
-          // Metadata writes have read risk so they need no permission dialog. An
-          // uncertain commit must still stop core; a plain throw would be swallowed.
+          // 元数据写入归为读取风险，因此无需权限对话框。但结果
+          // 不确定的提交仍必须停止核心；普通抛出会被吞掉。
           return { status: 'unknown', output: { error: 'task_commit_unconfirmed' } };
         }
       })();

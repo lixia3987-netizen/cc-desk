@@ -3,13 +3,13 @@ import type { NativeImageAttachment } from '@cc-desk/contracts/chat';
 export const NATIVE_IMAGE_MAX_COUNT = 4;
 export const NATIVE_IMAGE_MAX_BYTES = 1024 * 1024;
 
-/** Bytes from an explicit editor paste event, never a clipboard read request. */
+/** 字节数据来自明确的编辑器粘贴事件，不来自剪贴板读取请求。 */
 export interface NativePastedImage {
   mimeType: 'image/png' | 'image/jpeg';
   dataUrl: string;
 }
 
-/** Explicit local view only; never part of a model submission or chat snapshot. */
+/** 仅用于明确的本地查看，不加入模型提交或聊天快照。 */
 export type NativeImagePreviewRequest = {
   sessionId: string;
   conversationId: string;

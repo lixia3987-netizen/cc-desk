@@ -11,7 +11,7 @@ const MAX_UNTRACKED_BYTES = 64 * 1024 * 1024;
 
 export interface NativeAgentBaseline {
   repositoryRoot: string;
-  /** Preserve a parent session rooted in a repository subdirectory. */
+  /** 保留根目录位于仓库子目录中的父会话。 */
   relativeCwd: string;
   parentHead: string;
   mode: 'head' | 'snapshot';
@@ -30,7 +30,7 @@ export interface NativeAgentWorkspaceEvidence {
   head: string;
   baseCommit: string;
   changedFiles: Array<{ path: string; status: string }>;
-  /** Includes tracked, deleted and non-ignored new files without changing the index. */
+  /** 包含已跟踪、已删除及未忽略的新文件，不修改索引。 */
   patch: Buffer;
 }
 
@@ -38,15 +38,15 @@ export class NativeAgentWorktreeError extends Error {
   constructor(readonly code: string, message: string) { super(message); this.name = 'NativeAgentWorktreeError'; }
 }
 
-/** Git operations receive argv directly. No shell, hooks, prompts or inherited index override. */
+/** Git 操作直接接收 argv，不使用 shell、钩子、提示交互或继承的索引覆盖。 */
 async function gitBytes(cwd: string, args: string[], signal?: AbortSignal, extraEnv: NodeJS.ProcessEnv = {}, input?: Buffer): Promise<Buffer> {
   const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' };
   for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[key];
   const pending = execute('git', ['-c', 'core.hooksPath=', '-c', 'core.quotePath=false', '-C', cwd, ...args], {
     encoding: 'buffer', maxBuffer: MAX_GIT_BYTES, timeout: 30000, windowsHide: true, signal, env: { ...env, ...extraEnv },
   });
-  // The promisified execFile exposes its ChildProcess; stdin is a literal byte stream.
-  // This preserves NUL-separated Git index entries without shell quoting or temp scripts.
+  // Promise 化的 execFile 提供 ChildProcess；stdin 是原始字节流。
+  // 这样可保留以 NUL 分隔的 Git 索引条目，无需 shell 转义或临时脚本。
   if (input) (pending as typeof pending & { child: ChildProcess }).child.stdin!.end(input);
   const result = await pending;
   return result.stdout;
@@ -74,7 +74,7 @@ async function workspaceFingerprint(root: string, signal?: AbortSignal): Promise
       hash.update(await fs.readFile(target));
     }
   }
-  // A changed HEAD or status is evidence that this observation crossed a mutation.
+  // HEAD 或状态变化表明此次观察期间发生了修改。
   if ((await git(root, ['rev-parse', '--verify', 'HEAD^{commit}'], signal)).trim() !== head ||
       await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], signal) !== status) {
     throw new NativeAgentWorktreeError('baseline_changed', '父工作区正在变化，请重新确认委派基线。');
@@ -82,7 +82,7 @@ async function workspaceFingerprint(root: string, signal?: AbortSignal): Promise
   return { head, fingerprint: hash.digest('hex'), dirty: status.length > 0 };
 }
 
-/** Observe only; no stash, commit, index change or checkout of the parent workspace. */
+/** 仅观察父工作区，不执行 stash、commit、索引修改或 checkout。 */
 export async function prepareAgentBaseline(cwd: string, mode: 'head' | 'snapshot', signal?: AbortSignal): Promise<NativeAgentBaseline> {
   let root: string;
   try { root = await fs.realpath((await git(cwd, ['rev-parse', '--show-toplevel'], signal)).trim()); }
@@ -119,21 +119,21 @@ async function treeFromWorkspace(root: string, indicesRoot: string, signal?: Abo
   const index = path.join(indicesRoot, `index-${randomUUID()}`), env = { GIT_INDEX_FILE: index };
   try {
     await git(root, ['read-tree', '--empty'], signal, env);
-    // Include deliberately tracked ignored files and current staged entries.
-    // Copy entries through Git rather than copying an index with split-index/FSMN
-    // extensions whose dependencies may live next to the real index.
+    // 包含刻意跟踪的忽略文件及当前暂存条目。
+    // 通过 Git 复制条目，而不直接复制含 split-index/FSMN
+    // 扩展的索引，因为这些扩展的依赖可能位于真实索引旁。
     const actualIndex = await gitBytes(root, ['ls-files', '--stage', '-z'], signal);
     await gitBytes(root, ['update-index', '-z', '--index-info'], signal, env, actualIndex);
     await git(root, ['add', '--all', '--', '.'], signal, env);
     return (await git(root, ['write-tree'], signal, env)).trim();
   } finally {
-    // These exact files were allocated inside our verified directory, never a user index.
+    // 这些指定文件都创建于已验证的目录内，绝不是用户索引。
     await fs.rm(index, { force: true });
     await fs.rm(`${index}.lock`, { force: true });
   }
 }
 
-/** Materialize one snapshot for a batch. Git objects are added without moving parent refs. */
+/** 为一个批次生成一份快照；只添加 Git 对象，不移动父仓库引用。 */
 export async function materializeAgentBaseline(baseline: NativeAgentBaseline, root: string, signal?: AbortSignal): Promise<string> {
   const canonical = await independentRoot(root, baseline.repositoryRoot), indices = path.join(canonical, '.indices');
   await fs.mkdir(indices, { recursive: true });
@@ -151,7 +151,7 @@ export async function createAgentWorktree(baseline: NativeAgentBaseline, root: s
   if (!/^[0-9a-f-]{36}$/i.test(childId) || !/^[0-9a-f]{40,64}$/i.test(baseCommit)) throw new NativeAgentWorktreeError('invalid_worktree_identity', '无效的子 Agent 工作区标识。');
   const canonical = await independentRoot(root, baseline.repositoryRoot);
   const destination = path.join(canonical, childId), branch = `codex/native-agent-${childId}`;
-  // A partial worktree add remains recoverable. Never delete an existing path or branch.
+  // 部分完成的 worktree add 仍可恢复；绝不删除已有路径或分支。
   await git(baseline.repositoryRoot, ['worktree', 'add', '--no-track', '-b', branch, destination, baseCommit], signal);
   const observedRoot = await fs.realpath((await git(destination, ['rev-parse', '--show-toplevel'], signal)).trim());
   if (observedRoot !== await fs.realpath(destination) || (await git(destination, ['rev-parse', 'HEAD'], signal)).trim() !== baseCommit ||
@@ -162,7 +162,7 @@ export async function createAgentWorktree(baseline: NativeAgentBaseline, root: s
     parentHead: baseline.parentHead, baseline: baseline.mode };
 }
 
-/** Keep every worktree and branch. Integration is an explicit review/cherry-pick/patch action. */
+/** 保留所有工作树和分支；集成必须显式执行审查、cherry-pick 或补丁操作。 */
 export async function collectAgentWorkspaceEvidence(worktree: NativeAgentWorktree, root: string): Promise<NativeAgentWorkspaceEvidence> {
   const canonical = await independentRoot(root, worktree.path), indices = path.join(canonical, '.indices');
   await fs.mkdir(indices, { recursive: true });

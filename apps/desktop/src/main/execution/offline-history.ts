@@ -4,7 +4,7 @@ import type { ChatPageOptions, ChatSnapshot } from '../../shared/chat';
 import { ChatHistory } from '../chat-history';
 import { ChatArchive } from '../chat-archive';
 
-/** Passive access to host-owned display records; never loads an execution adapter. */
+/** 被动读取宿主持有的显示记录，不加载执行适配器。 */
 export class OfflineHistory {
   private history: ChatHistory;
   private archive: ChatArchive;

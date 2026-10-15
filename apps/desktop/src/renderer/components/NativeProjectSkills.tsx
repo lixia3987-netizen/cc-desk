@@ -11,7 +11,7 @@ interface Props {
 
 const selectionLimit = 16;
 
-/** Discovery never rewrites the saved selection, including missing or rejected paths. */
+/** 发现过程不会改写已保存的选择，包括缺失或已拒绝的路径。 */
 export function toggleProjectSkill(selected: readonly string[], path: string): string[] {
   if (selected.includes(path)) return selected.filter(value => value !== path);
   return selected.length < selectionLimit ? [...selected, path] : [...selected];
@@ -105,7 +105,7 @@ function NativeProjectSkillsForSession({ sessionId, selected, disabled = false, 
   </section>;
 }
 
-/** A session change unmounts pending discovery so late results cannot reach another session. */
+/** 切换会话会卸载尚未完成的发现过程，避免迟到结果进入其他会话。 */
 export function NativeProjectSkills(props: Props) {
   return <NativeProjectSkillsForSession key={props.sessionId} {...props} />;
 }

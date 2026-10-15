@@ -98,7 +98,7 @@ export function SessionActionMenu({ anchor, title, items, onClose }: SessionActi
       return;
     }
     if (event.key === 'Tab') {
-      // Start normal tab navigation at the opener, rather than a removed portal.
+      // 常规 Tab 导航从打开面板的控件开始，不从已移除的门户节点开始。
       close(true);
       return;
     }

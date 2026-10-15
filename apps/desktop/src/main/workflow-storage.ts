@@ -6,7 +6,7 @@ import type { WorkflowState } from './workflow-schema';
 
 const MAX_STORAGE_BYTES = 64 * 1024 * 1024;
 
-/** Atomic workflow storage keeps the previous durable state available as a backup. */
+/** 原子工作流存储将上一份持久化状态保留为备份。 */
 export class WorkflowStorage {
   readonly file: string;
 

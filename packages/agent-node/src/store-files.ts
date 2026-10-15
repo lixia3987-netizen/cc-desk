@@ -21,8 +21,8 @@ async function createDurableDirectory(directory: string): Promise<void> {
     if (code === 'ENOENT' && parent !== directory) { await createDurableDirectory(parent); await createDurableDirectory(directory); return; }
     if (code !== 'EEXIST') throw error;
   }
-  // Directory fsync alone commits its contents, not its entry in the parent.
-  // Commit every newly created level before any side effect can be authorized.
+  // 仅对目录执行 fsync 只提交其内容，不会提交父目录中的对应条目。
+  // 授权任何副作用之前，提交每个新建目录层级。
   if (parent !== directory) await syncDirectory(parent);
 }
 
@@ -40,8 +40,8 @@ export async function safeDirectory(root: string, conversationId: string): Promi
 }
 
 export async function syncDirectory(directory: string): Promise<void> {
-  // Windows has no portable directory fsync in Node. File handles are always synced;
-  // directory sync is performed on POSIX and unsupported Windows errors are explicit.
+  // Node 在 Windows 上没有可移植的目录 fsync。文件句柄始终会同步；
+  // 目录同步在 POSIX 上执行，Windows 不支持的错误会被明确处理。
   let handle;
   try {
     handle = await open(directory, constants.O_RDONLY);
@@ -67,7 +67,7 @@ export async function readRegularFile(file: string, maximum: number): Promise<st
   } finally { await handle.close(); }
 }
 
-/** Conservative cross-process writer lock: a live/reused/unverifiable PID is never stolen. */
+/** 保守的跨进程写入锁：绝不抢占存活、复用或无法核验的 PID。 */
 export async function acquireWriter(directory: string): Promise<() => Promise<void>> {
   const file = path.join(directory, '.writer-lock');
   const nonce = randomUUID();
@@ -89,8 +89,8 @@ export async function acquireWriter(directory: string): Promise<() => Promise<vo
       };
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      // Only one contender may reclaim a stale lock. A crashed reclamation
-      // marker deliberately fails closed instead of racing a replacement writer.
+      // 仅一个竞争方能回收过期锁。崩溃遗留的回收标记
+      // 有意默认拒绝，避免与替代写入方发生竞争。
       const recoveryFile = path.join(directory, '.writer-recovery-lock');
       let recovery;
       try { recovery = await open(recoveryFile, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600); }

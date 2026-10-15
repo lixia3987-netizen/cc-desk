@@ -47,12 +47,12 @@ function integer(value: unknown, fallback: number, min: number, max: number): nu
   return result;
 }
 
-/** The host holds process handles; tool JSON never contains an operating-system PID. */
+/** 进程句柄由宿主持有；工具 JSON 绝不包含操作系统 PID。 */
 export function createCommandTools(options: NativeCommandToolOptions): NativeCommandTools {
   const entries = new Map<string, Entry>(), controls = new Map<string, Control>(), starts = new Set<Promise<ToolResult>>();
   let closing = false, failed = false;
-  // Retain a conservative suffix, including JSON unicode escapes, until a whole
-  // protected value can be checked. Prefixes remain stable as output grows.
+  // 保守保留末尾内容，包括 JSON Unicode 转义，直到能检查完整的
+  // 受保护值。输出增长时，已释放的前缀保持稳定。
   const hold = Math.max(0, ...options.forbiddenValues.map(value => value.length * 6 + 12));
   const credentials = (value: unknown) => assertNoModelCredential(value, options.forbiddenValues);
   const checkText = (text: string) => {
@@ -70,9 +70,9 @@ export function createCommandTools(options: NativeCommandToolOptions): NativeCom
     const value: NativeCommandResult = { exitCode: result.exitCode, signal: result.signal, stdout: '', stderr: '', outputBytes: result.outputBytes,
       truncated: result.truncated, timedOut: result.timedOut, cancelled: result.cancelled, cleanup: result.cleanup, ...(result.error ? { error: result.error.slice(0, 1024) } : {}) };
     try {
-      // The supervisor already preserves bounded UTF-8 prefixes. Keep this
-      // independent contract boundary so malformed/binary future adapters cannot
-      // inflate replacement characters beyond the approved aggregate budget.
+      // 监督器已保留有界 UTF-8 前缀。仍保留此
+      // 独立契约边界，以防未来格式异常或二进制适配器
+      // 产生超出已批准总预算的替换字符。
       checkText(result.stdout); checkText(result.stderr);
       const stdout = bytePrefix(result.stdout, maximum), stderr = bytePrefix(result.stderr, maximum - Buffer.byteLength(stdout));
       const bounded = stdout.length !== result.stdout.length || stderr.length !== result.stderr.length;
@@ -104,9 +104,9 @@ export function createCommandTools(options: NativeCommandToolOptions): NativeCom
       catch { result = { ...result, cleanup: 'cleanup_failed', error: 'Command cleanup could not be confirmed.' }; }
     }
     entry.phase = 'unknown'; entry.final = result;
-    // A failed append may already be durable. Never repeat launch or overwrite a
-    // previous terminal fact; an additional unknown is best-effort only.
-    if (entry.preparedWritten) try { await save(entry, { commandId: entry.commandId, status: 'unknown', result, at: new Date().toISOString() }); } catch { /* the original ledger remains the recovery authority */ }
+    // 追加失败时内容可能已经持久化。绝不重复启动或覆盖
+    // 既有终态事实；额外记录 unknown 仅尽力执行。
+    if (entry.preparedWritten) try { await save(entry, { commandId: entry.commandId, status: 'unknown', result, at: new Date().toISOString() }); } catch { /* 原账本仍是恢复的权威依据 */ }
   })();
   const observe = (entry: Entry) => {
     const snapshot = entry.handle?.snapshot(), raw = entry.final ?? snapshot?.result ?? emptyResult(false, 'Command has not launched.');
@@ -153,7 +153,7 @@ export function createCommandTools(options: NativeCommandToolOptions): NativeCom
       if (entry.handle.snapshot().settled) await entry.terminal;
       return { status: entry.phase === 'unknown' ? 'unknown' : 'completed', output: observe(entry) };
     } catch {
-      // An attempted durable prepared write can be uncertain even before spawn.
+      // 即使尚未 spawn，尝试持久化 prepared 状态的写入也可能结果不确定。
       await failedLifecycle(entry);
       return { status: 'unknown', output: { commandId: entry.commandId, state: 'unknown', error: 'command_lifecycle_unconfirmed' } };
     }

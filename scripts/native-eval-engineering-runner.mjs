@@ -15,7 +15,7 @@ const DEFAULT_TIMEOUT = 120_000;
 const MAX_TIMEOUT = 300_000;
 const sha = value => createHash('sha256').update(value).digest('hex');
 
-/** The source, imports and entry point are evaluator-owned, never candidate supplied. */
+/** 源码、导入项及入口均由评估器提供，不接受候选任务提供的内容。 */
 const VERIFICATION_PROGRAM = `
 import { verify } from ${JSON.stringify(pathToFileURL(path.join(suiteRoot, 'acceptance/verify.mjs')).href)};
 import { assertIntegrity } from ${JSON.stringify(pathToFileURL(path.join(suiteRoot, 'acceptance/common.mjs')).href)};
@@ -35,7 +35,7 @@ try {
 
 function clipped(buffer, limit = RETAINED_OUTPUT) {
   let end = Math.min(buffer.length, limit);
-  // Never turn a split UTF-8 sequence into replacement bytes beyond the budget.
+  // 不将被截断的 UTF-8 字节序列转成替换字符，以免超出预算。
   while (end > 0 && end < buffer.length && (buffer[end] & 0xc0) === 0x80) end--;
   return { text: buffer.subarray(0, end).toString('utf8'), truncated: buffer.length > end };
 }
@@ -46,14 +46,14 @@ function appendError(verification, message) {
   verification.stderrTruncated ||= output.truncated;
 }
 
-/** A complete receipt and matching process exit are required; stdout alone is not a verdict. */
+/** 必须取得完整回执及与其一致的进程退出结果；仅凭 stdout 不能判定。 */
 export function parseEngineeringVerificationReceipt(stdout, exitCode, taskId) {
   let output;
   try { output = JSON.parse(stdout); } catch { throw new Error('Verifier did not produce one complete JSON receipt.'); }
   return assertVerifierOutput(output, exitCode, taskId);
 }
 
-/** Reuse the production supervisor and its platform-specific release checks. */
+/** 复用生产环境的进程监管器及其针对各平台的释放检查。 */
 async function runVerifier(taskId, candidate, timeoutMs, signal) {
   let ProcessSupervisor;
   try { ({ ProcessSupervisor } = await import('@cc-desk/agent-node/process-supervisor')); }
@@ -121,7 +121,7 @@ async function snapshotCandidate(candidate, baseline) {
   return { head, digest: hashJson(files) };
 }
 
-/** Append an independently supervised verification attempt; never changes declared run outcomes. */
+/** 追加一次由独立进程监管器监督的验证尝试；不修改已声明的运行结果。 */
 export async function verifyEngineeringRun({ batchDirectory, runId, candidateDirectory, timeoutMs = DEFAULT_TIMEOUT, signal } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_TIMEOUT) throw new Error('Verification timeout must be an integer from 1 to 300000 ms.');
   if (signal !== undefined && (!signal || typeof signal.aborted !== 'boolean' || typeof signal.addEventListener !== 'function')) throw new Error('Invalid verification cancellation signal.');
@@ -201,7 +201,7 @@ export async function verifyEngineeringRun({ batchDirectory, runId, candidateDir
     resultPublished = true;
     return { attemptDirectory, intent, result };
   } finally {
-    // A crash, uncertain cleanup or unpublished result keeps the lock for inspection.
+    // 若发生崩溃、清理状态不确定或结果未发布，保留锁以供检查。
     if (!startedIntent || resultPublished && cleanupConfirmed) await fs.unlink(lockFile);
   }
 }

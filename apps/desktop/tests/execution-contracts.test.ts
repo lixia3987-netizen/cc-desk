@@ -30,7 +30,7 @@ const until = async (check: () => boolean) => {
   while (!check()) { if (Date.now() > deadline) throw new Error('Expected executor activity did not occur'); await new Promise(resolve => setTimeout(resolve, 5)); }
 };
 
-/** Deliberately not Claude: no CLI flags, UUID remote identities, or protocol frames. */
+/** 特意采用非 Claude 实现：没有 CLI 标志、UUID 远端标识或协议帧。 */
 class FakeStructured implements StructuredExecutor {
   active = new Set<string>();
   pending = new Map<string, (result: ChatTurnResult) => void>();
@@ -187,7 +187,7 @@ test('a non-Claude executor handles commands, messages and approvals through rea
     const pending = f.call<ChatTurnResult>('chat:send', { id: s.id, text: 'approve' });
     await until(() => executor.taskState(s.id) === 'waiting_approval');
     assert.equal((await f.call<unknown[]>('chat:attention')).length, 1);
-    caps.available = false; // An existing approval remains answerable while discovery is unavailable.
+    caps.available = false; // 发现服务不可用时，已有审批仍须能得到答复。
     await f.call('chat:respond', { id: s.id, requestId: 'opaque-approval', decision: { behavior: 'allow' } });
     assert.equal((await pending).success, true);
     assert.deepEqual(executor.decisions, [{ behavior: 'allow' }]);
@@ -282,7 +282,7 @@ test('conversation ownership is isolated by provider and rejects duplicate ident
   try {
     const a = f.register(), b = f.register('other.engine'); a.executor.hold = true; b.executor.hold = true;
     const first = f.add(), other = f.add('other.engine', 'structured', 'opaque/conversation:42', f.independent());
-    // Different directories isolate the identity contract from directory exclusion.
+    // 使用不同目录，将标识契约测试与目录互斥机制隔离。
     const duplicate = f.add('test.engine', 'structured', 'opaque/conversation:42', f.independent());
     const firstTurn = f.call('chat:send', { id: first.id, text: 'first' });
     await until(() => a.executor.isBusy(first.id));

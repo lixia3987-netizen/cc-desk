@@ -8,7 +8,7 @@ const desktopRoot = fileURLToPath(new URL('../', import.meta.url));
 const require = createRequire(import.meta.url);
 const args = [require.resolve('@playwright/test/cli'), 'test', '--config', path.join(desktopRoot, 'playwright.config.ts'), ...process.argv.slice(2)];
 const needsDisplay = process.platform === 'linux' && !process.env.DISPLAY?.trim();
-// Electron's ordinary BrowserWindow needs X11; Ozone headless is not a substitute.
+// Electron 的普通 BrowserWindow 需要 X11；Ozone 无头模式无法替代。
 const command = needsDisplay ? 'xvfb-run' : process.execPath;
 const commandArgs = needsDisplay
   ? ['-a', '-s', '-screen 0 1920x1080x24 -nolisten tcp', process.execPath, ...args]
@@ -18,8 +18,8 @@ const child = spawn(command, commandArgs, { cwd: desktopRoot, env: process.env, 
 let launchFailed = false;
 const forwardSignal = signal => {
   if (!ownProcessGroup) { child.kill(signal); return; }
-  // A dedicated group includes xvfb-run and Playwright descendants, without
-  // signalling this runner or any other process in the caller's terminal group.
+  // 使用专用进程组包含 xvfb-run 及 Playwright 的子孙进程，避免
+  // 向此运行器或调用方终端进程组中的其他进程发送信号。
   if (!child.pid) return;
   try { process.kill(-child.pid, signal); }
   catch (error) { if (error.code !== 'ESRCH') throw error; }

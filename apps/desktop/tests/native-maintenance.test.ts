@@ -12,8 +12,8 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// Real HTTP/SSE fixture, shared with utilityProcess and packaged acceptance.
-// @ts-expect-error Local test-only ESM fixture has no declarations.
+// 真实 HTTP/SSE 测试装置，与 utilityProcess 测试和打包验收测试共享。
+// @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
@@ -94,7 +94,7 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
   };
 }
 
-/** Simulate worker loss around a real approved filesystem side effect, using the host-owned durable store. */
+/** 使用宿主管理的持久化存储，模拟真实且已批准的文件系统副作用前后发生的工作进程丢失。 */
 function crashWorker(persistResult: boolean): Worker {
   let crashed = false;
   return async options => {

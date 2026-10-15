@@ -7,7 +7,7 @@ import type { ExecutionLifecycle, ExecutionRegistration, StructuredExecutor, Ter
 type Feature = Exclude<keyof ExecutionCapabilities, 'available' | 'error'>;
 const key = (providerId: string, mode: string) => JSON.stringify([providerId, mode]);
 
-/** The composition root registers adapters; orchestration only knows this boundary. */
+/** 组合根注册适配器；编排层仅了解此边界。 */
 export class ExecutionRegistry {
   private registrations = new Map<string, ExecutionRegistration>();
   private maintenance = new Set<string>();
@@ -93,7 +93,7 @@ export class ExecutionRegistry {
     return registration.executor;
   }
   executors(mode?: 'structured' | 'terminal'): ExecutionLifecycle[] {
-    // Claude and Shell may share one physical PTY runtime. Never disconnect it twice.
+    // Claude 和 Shell 可能共用一个物理 PTY 运行时。不能断开两次。
     return [...new Set([...this.registrations.values()].filter(item => !mode || item.mode === mode).map(item => item.executor))];
   }
   get activeCount() { return this.executors().reduce((count, executor) => count + executor.activeCount, 0); }
@@ -110,7 +110,7 @@ export class ExecutionRegistry {
     }));
   }
   setEngineMaintenance(providerId: string, ids: readonly string[], value: boolean) {
-    // Establish the admission fence before invoking any driver that may fail.
+    // 调用可能失败的驱动前，先建立准入隔离。
     if (value) this.maintenance.add(providerId);
     const errors: unknown[] = [];
     try {
@@ -124,8 +124,8 @@ export class ExecutionRegistry {
         } catch (error) { errors.push(error); }
       }
     } finally {
-      // An already admitted deletion may remove a session while draining. Its
-      // original driver still must be unfenced without re-reading that session.
+      // 已获准的删除操作可能在排空期间移除会话。
+      // 仍须解除原驱动的隔离，不能依赖重新读取该会话。
       if (!value) { this.maintenance.delete(providerId); this.maintenanceDrivers.delete(providerId); }
     }
     if (errors.length) throw new AggregateError(errors, '无法切换引擎维护状态。');

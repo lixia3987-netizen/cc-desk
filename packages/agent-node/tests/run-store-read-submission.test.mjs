@@ -70,7 +70,7 @@ test('read-only retrieval leaves active writer, checkpoint temp files and interr
   result.userItems[0].content[1].image_url = 'changed only in caller';
   assert.deepEqual(await f.read(), f.req);
   assert.deepEqual(f.store.lookupSubmission(f.req.identity.requestId).request, f.req);
-  // A subsequent real write proves the read did not disturb ownership.
+  // 后续真实写入证明读取没有干扰所有权。
   await f.store.append(f.req.identity, { type: 'model_response', response: { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Still writable' }] }], toolCalls: [], finishReason: 'completed', usage: null } });
 });
 
@@ -176,8 +176,8 @@ for (const mutation of ['append', 'truncate', 'same-size rewrite', 'file replace
     await fs.copyFile(path.join(f.directory + '-old', 'checkpoint.json'), f.checkpoint);
   };
   await hooked({ open: open => async (file, ...args) => {
-    // Windows forbids renaming a directory with open child handles. Replace it
-    // after path metadata was captured, but before opening the first child.
+    // Windows 禁止重命名含有已打开子项句柄的目录。应在捕获路径元数据
+    // 之后、打开首个子项之前替换该目录。
     if (mutation === 'parent replacement' && process.platform === 'win32' && !mutated) {
       mutated = true;
       await replaceParent();

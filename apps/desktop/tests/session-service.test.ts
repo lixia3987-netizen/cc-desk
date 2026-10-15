@@ -63,7 +63,7 @@ async function fixture(window:BrowserWindow|null=null) {
   };
   const independent = async (name: string) => {
     const root = path.join(dir,name); await fs.mkdir(root);
-    // A separate registered non-Git project has an independent authorized root.
+    // 单独注册的非 Git 项目具有独立的已授权根目录。
     const id = randomUUID(); store.change(state => state.projects.push({id,path:root,name,createdAt:now}));
     return { cwd:root, projectId:id };
   };
@@ -87,7 +87,7 @@ test('context recovery holds the lifecycle lock and preserves a paused queue whi
     assert.throws(() => f.service.workflows.create({ sessionId: session.id, goal: 'racing workflow', pauseAfterEachStage: false, maxAttempts: 2 }), /管理操作/);
     release(); await recovering;
     assert.equal(f.service.queue.snapshot(session.id).paused, true);
-    // Releasing the lifecycle lock restores ordinary user operations.
+    // 释放生命周期锁后恢复普通用户操作。
     await f.call('session:draft', { id: session.id, text: 'preserved draft' });
     assert.equal(f.store.state.sessions[0].draft, 'preserved draft');
   } finally { release?.(); t.mock.restoreAll(); await f.dispose(); }
@@ -275,8 +275,8 @@ test('engine maintenance waits for queue completion ownership after the model tu
     submitting = assert.rejects(f.call('chat:submit', { id: session.id, text: 'late attachment transaction' }), /正在更新|维护已取消/);
     await attaching;
     finishTurn();
-    // Drain promise continuations: the turn has finished, but its queue receipt
-    // is still behind the pending attachment transaction in the per-session FIFO.
+    // 执行完 Promise 后续回调：轮次已经结束，但其队列回执
+    // 在每个会话的先进先出队列中，仍排在待处理附件事务之后。
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal((f.service as unknown as { admissions: Set<string> }).admissions.has(session.id), false);
     assert.equal(f.service.queue.hasActive(session.id), true);
@@ -397,8 +397,8 @@ test('worktree operations refuse real structured tasks, workflows, and terminal 
     busy=false;workflow=true;await assert.rejects(attempt(),/全部会话/);
     workflow=false;f.active.add(session.id);await assert.rejects(attempt(),/全部会话/);
     assert.equal(created,false);assert.equal(stops,0);
-    // A synced native terminal can be idle while still holding cwd and having
-    // unreported background shell commands, so give a precise close-terminal hint.
+    // 同步的原生终端可能处于空闲状态，却仍占有工作目录并运行
+    // 未报告的后台 Shell 命令，因此须给出明确的关闭终端提示。
     f.store.change(state=>{state.sessions[0].execution.mode='terminal';state.sessions[0].terminalSync='synced';});
     await assert.rejects(attempt(),/原生 Claude 终端仍打开.*关闭终端/);
     assert.equal(stops,0);
@@ -469,8 +469,8 @@ test('slot reclamation rechecks native conversation ownership after asynchronous
     t.mock.method(f.service.chat,'stopIdle',async(id:string)=>{physical.delete(id);entered();await new Promise<void>(resolve=>{release=resolve;});});
     const pending=f.service.start(a.id);
     await Promise.race([ready,pending]);
-    // Admission itself prevents a competing public start; also test the final
-    // identity recheck against a late external/runtime registration.
+    // 准入本身会阻止竞争的公共启动操作；还要验证针对迟到的
+    // 外部或运行时注册进行的最终标识复查。
     await assert.rejects(f.service.start(b.id), /同一提供方的对话/);
     f.active.add(b.id);
     release();await assert.rejects(pending,/同一提供方的对话/);
@@ -496,7 +496,7 @@ test('archiving a queued session during idle eviction prevents its pending promp
     const pending=f.call('chat:send',{id:target.id,text:'queued task'});
     await Promise.race([ready,pending]);
     await assert.rejects(f.call('session:update',{id:target.id,archived:true}), /请先停止/);
-    // Simulate an already-admitted metadata writer completing after our await.
+    // 模拟已准入的元数据写入器在当前等待完成后才结束。
     f.store.change(state=>{state.sessions.find(session=>session.id===target.id)!.archived=true;});
     release();await assert.rejects(pending,/取消会话归档/);assert.equal(sent,0);
     await f.call('session:update',{id:target.id,archived:false});
@@ -563,7 +563,7 @@ test('cleanup preserves a worktree referenced as another worktree source', async
     assert.equal((await worktreeInfo(treeA,treeB,b.id)).owned,true);
     assert.equal((await f.call<{ok:boolean}>('worktree:cleanup',b.id)).ok,true);
     assert.equal((await f.call<{ok:boolean}>('worktree:cleanup',a.id)).ok,true);
-    // The active Git panel refreshes after cleanup, when both source and target may be gone.
+    // 当前 Git 面板在清理后刷新，此时源目录和目标目录可能都已删除。
     const removed=await f.call<WorktreeInfo>('worktree:info',b.id);
     assert.equal(removed.owned,false);
     assert.equal(removed.canMerge,false);
@@ -777,7 +777,7 @@ test('damaged worktree deletion releases idle workers under directory locks befo
     await assert.rejects(f.call('session:delete',request),/worker still exiting/);
     assert.equal(await fs.readFile(path.join(tree,'keep.txt'),'utf8'),'wait for worker release');
     failRelease=false;deleting=f.call('session:delete',request);
-    // Fail immediately if validation bypasses or rejects before the release barrier.
+    // 若校验绕过释放屏障或在屏障前拒绝操作，则立即使测试失败。
     await Promise.race([ready,deleting.then(()=>{throw new Error('deletion completed before worker release');})]);
     await assert.rejects(f.service.start(source.id),/管理操作/);
     await assert.rejects(f.service.withSessionCreation(tree,false,async()=>{}),/管理操作/);
@@ -904,7 +904,7 @@ test('fork creation reserves source and destination project roots until the depe
       entered();await pendingSave;
       return f.add(childTree,{id:childId,worktree:childTree,worktreeBase:sourceTree});
     },path.join(f.repo,'src'));
-    // If creation rejects before entering the callback, fail instead of waiting forever.
+    // 若创建在进入回调前被拒绝，应使测试失败，不能无限等待。
     await Promise.race([ready,held]);
     try{
       assert.equal(f.store.state.sessions.some(session=>session.id===childId),false);
@@ -929,7 +929,7 @@ test('fork creation refuses a busy destination project before running the creati
     let entered=false;
     await assert.rejects(f.service.withSessionCreation(sourceTree,true,async()=>{entered=true;},path.join(f.repo,'src')),/全部会话/);
     assert.equal(entered,false);
-    // A rejected reservation must not retain the otherwise idle source lock.
+    // 被拒绝的预留操作不能保留原本空闲的源锁。
     await f.service.start(source.id);
     assert.equal(f.active.has(source.id),true);
     await f.service.stop(source.id);await f.service.stop(projectSession.id);

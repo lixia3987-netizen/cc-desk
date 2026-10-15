@@ -8,7 +8,7 @@ const deferred = () => { let resolve; return { promise: new Promise(done => { re
 const rejected = (promise, code, outcome) => assert.rejects(promise, error =>
   error instanceof McpClientError && error.code === code && error.outcome === outcome);
 
-/** The response intentionally never observes fetch's signal, as in the raced native stream. */
+/** 响应有意不观察 fetch 的信号，以模拟存在竞态的原生流。 */
 function transport(t, action, timeoutMs = 1000) {
   const requests = [];
   t.mock.method(globalThis, 'fetch', async (_endpoint, options) => {

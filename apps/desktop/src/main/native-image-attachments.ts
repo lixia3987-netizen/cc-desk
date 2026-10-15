@@ -39,7 +39,7 @@ async function checkDirectories(directories:DirectorySnapshot[]) {
   }
 }
 
-/** Bounded descriptor read with pre/post path and identity checks; not an OS sandbox. */
+/** 有界描述符读取，包含前后路径与身份检查；不是操作系统沙箱。 */
 async function readStable(file:string,maxBytes:number,directories:DirectorySnapshot[],expectedBytes?:number) {
   await checkDirectories(directories);
   const before=await fs.lstat(file,{bigint:true});
@@ -134,7 +134,7 @@ function validateJPEG(bytes:Buffer) {
   throw invalid();
 }
 
-/** Header/chunk validation without decompressing untrusted image pixels. */
+/** 校验头部和数据块，不解压不可信图片像素。 */
 export function validateNativeImageBytes(bytes:Buffer,mimeType:ImageMime) {
   if(!bytes.length||bytes.length>NATIVE_IMAGE_MAX_BYTES)throw invalid();
   if(mimeType==='image/png')validatePNG(bytes);else validateJPEG(bytes);
@@ -149,7 +149,7 @@ function decodeImage(dataUrl:unknown,mimeType:ImageMime):Buffer {
   return bytes;
 }
 
-/** Explicit paste-event bytes only; callers generate all storage paths and names. */
+/** 仅接收显式粘贴事件的字节；所有存储路径和名称由调用方生成。 */
 export function decodeNativePastedImages(images:unknown):{mimeType:ImageMime;bytes:Buffer}[] {
   if(!Array.isArray(images)||!images.length||images.length>NATIVE_IMAGE_MAX_COUNT)throw invalid();
   let total=0;
@@ -161,7 +161,7 @@ export function decodeNativePastedImages(images:unknown):{mimeType:ImageMime;byt
   });
 }
 
-/** Verify a transported immutable snapshot without reopening user-controlled paths. */
+/** 验证传输中的不可变快照，不重新打开用户可控路径。 */
 export function verifyNativeImageAttachments(images:unknown,metadata:unknown):void {
   if(!Array.isArray(images)||!Array.isArray(metadata)||images.length!==metadata.length||images.length>NATIVE_IMAGE_MAX_COUNT||
     (metadata.length>0&&!isNativeImageAttachments(metadata)))throw invalid();
@@ -177,12 +177,12 @@ export function verifyNativeImageAttachments(images:unknown,metadata:unknown):vo
   }
 }
 
-/** Read only the current session's private staged manifest. No draft collection or writes. */
+/** 仅读取当前会话的私有暂存清单。不收集草稿，也不写入。 */
 export async function readNativeImageAttachments(directory:string,sessionId:string,paths:string[]):Promise<{images:UserImage[];metadata:NativeImageAttachment[]}> {
   return readNativeImages(directory,sessionId,paths,false);
 }
 
-/** One explicitly selected draft, using the same manifest capture as the image bytes. */
+/** 读取一个显式选择的草稿，与图片字节使用同一次清单捕获。 */
 export async function readNativeDraftImage(directory:string,sessionId:string,file:string):Promise<NativeImagePreview> {
   try {
     const {images,metadata}=await readNativeImages(directory,sessionId,[file],true);
@@ -217,7 +217,7 @@ async function readNativeImages(directory:string,sessionId:string,paths:string[]
       metadata.push({name:item.name,mimeType,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
     }
     await checkDirectories(directories);
-    // A manifest rewrite/revocation during capture invalidates this snapshot.
+    // 捕获期间重写或撤销清单会使此快照失效。
     if(!(await readStable(path.join(folder,'attachments.json'),MAX_MANIFEST_BYTES,directories)).equals(manifest))throw changed();
     verifyNativeImageAttachments(images,metadata);
     return {images,metadata};

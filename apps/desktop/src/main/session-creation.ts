@@ -8,7 +8,7 @@ import type { SessionService } from './session-service';
 import { isSessionBusy } from '../shared/session-activity';
 import { continuationDraft, previewContinuation } from './session-continuation';
 
-/** Session identity allocation is delegated to the registered provider. */
+/** 会话身份分配委托给已注册提供方。 */
 export class SessionCreation {
   private projects = new Map<string, number>();
   constructor(private store: StateStore, private services: SessionService, private notify: () => void, private defaultProvider: string) {}
@@ -32,7 +32,7 @@ export class SessionCreation {
     if (input.continuation && (input.kind !== 'agent' || input.mode !== 'structured' || input.conversationId || input.fork)) throw new Error('带入内容必须创建新的结构化会话，不能同时导入身份或分叉。');
     const continuationSource = input.continuation ? this.continuationSource(input.continuation.sourceSessionId) : undefined;
     if (continuationSource && continuationSource.projectId !== project.id) throw new Error('请在来源会话的项目内继续。');
-    // Resolve before allocating a worktree, then recheck after directory ownership is acquired.
+    // 分配工作树前先解析，取得目录所有权后再次检查。
     const resolveDraft = async () => input.continuation ? continuationDraft(await this.previewContinuation(input.continuation.sourceSessionId), input.continuation) : '';
     const draft = input.continuation ? await resolveDraft() : '';
     if (input.kind === 'shell' && (input.conversationId || input.fork || (input.providerId && input.providerId !== 'shell') || input.mode === 'structured')) throw new Error('Shell 会话不支持导入、分支或图形化执行。');

@@ -18,11 +18,11 @@ export class NativeContextContinuityError extends Error {
 export interface NativeContextContinuityOptions {
   identity: RunIdentity;
   taskId: string;
-  /** Read after NativeTaskSession.settled(); a missing task does not create one. */
+  /** 在 NativeTaskSession.settled() 后读取；任务缺失时不新建任务。 */
   task?: NativeTaskSnapshot | null;
-  /** The same run's durable receipts, read at a complete model/tool boundary. */
+  /** 在完整的模型或工具边界读取同一次运行的持久化回执。 */
   run?: StoredRun;
-  /** Host-owned metadata failures remain unknown, even if execution succeeded. */
+  /** 即使执行成功，宿主管理的元数据失败仍保持 unknown。 */
   issues?: readonly string[];
 }
 
@@ -31,10 +31,10 @@ const digest = (value: unknown) => digestText(canonicalJson(JSON.parse(JSON.stri
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 /**
- * Lossless indexes for facts that a model summary must not erase or promote.
- * This is serialized historical data, never system instructions or authority.
- * The caller must perform its credential check before sending or persisting it.
- * An over-budget snapshot fails before a summary request; no entries are sliced.
+ * 为模型摘要不得删除或提升为权威的事实提供无损索引。
+ * 这是序列化的历史数据，绝非系统指令或权威依据。
+ * 发送或持久化前，调用方必须执行凭据检查。
+ * 超出预算的快照在请求摘要前失败；不截断任何条目。
  */
 export function buildNativeContextContinuity(options: NativeContextContinuityOptions): string {
   const { identity, taskId, task, run } = options;

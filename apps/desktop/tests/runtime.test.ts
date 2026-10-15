@@ -32,11 +32,11 @@ function cleanupDiagnostic(value: unknown, depth = 0): unknown {
   if (typeof item.helperExited === 'boolean') result.helperExited = item.helperExited;
   if (item.cause) result.cause = cleanupDiagnostic(item.cause, depth + 1);
   if (value instanceof AggregateError) result.errors = value.errors.slice(0, 8).map(error => cleanupDiagnostic(error, depth + 1));
-  // The legacy wrapper carries its structured progress in this fixed message.
-  // Parse that payload but emit only the same whitelisted fields, never text.
+  // 旧版包装器通过这条固定消息传递结构化进度。
+  // 解析该载荷，但仅输出相同的白名单字段，不输出文本。
   const prefix = 'Windows process descendants have not released. ';
   if (value instanceof Error && value.message.startsWith(prefix)) {
-    try { result.windows = cleanupDiagnostic(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* Unknown diagnostics stay opaque. */ }
+    try { result.windows = cleanupDiagnostic(JSON.parse(value.message.slice(prefix.length)), depth + 1); } catch { /* 不解析未知诊断信息。 */ }
   }
   return result;
 }
@@ -59,9 +59,9 @@ async function finishFixture(root: string, runtimes: Runtime[], failures: unknow
   }
 }
 
-// Windows CI has completed every assertion in this file without the owning test
-// process exiting. Record only fixed resource types/counts. The native diagnostic
-// report API is exercised separately so it cannot alter every lifecycle test.
+// Windows CI 曾在所属测试进程未退出时完成本文件的所有断言。
+// 仅记录固定的资源类型与数量。原生诊断报告 API 单独验证，
+// 避免它影响每个生命周期测试。
 if (process.platform === 'win32') {
   const counts = (types: readonly string[]) => Object.fromEntries([...new Set(types)].sort()
     .map(type => [type, types.filter(value => value === type).length]));
@@ -75,7 +75,7 @@ if (process.platform === 'win32') {
   afterEach(() => snapshot(`after-test-${++completedTests}`));
   after(() => {
     snapshot('after');
-    // An unref timer observes an existing leak without extending file lifetime.
+    // 已取消引用的计时器观察现有泄漏，不延长测试文件的运行生命周期。
     for (const delay of [1000, 6000]) setTimeout(() => snapshot(`after-${delay}ms`), delay).unref();
   });
 }
@@ -110,11 +110,11 @@ test('real PTY supports Unicode/spaces, isolated output, input, resize, concurre
     assert.equal(fs.statSync(runtime.logPath(a.id) + '.previous').size, 5 * 1024 * 1024);
     await assert.rejects(runtime.start(b.id),/并发会话上限/);
     runtime.resize(a.id,120,40);
-    // Construct the marker from separate arguments: command echo alone must never satisfy the test.
+    // 从独立参数构造标记：单靠命令回显绝不能满足测试要求。
     const command=process.platform==='win32'?"Write-Output ('中文' + '输入完成'); Get-Content -LiteralPath './cwd-proof.txt'; (Get-Location).Path\r":"printf '\\n%s%s\\n' '中文' '输入完成'; cat ./cwd-proof.txt; pwd\r";
     runtime.write(a.id,command);
     const plain = () => stripVTControlCharacters(output.get(a.id) ?? '');
-    // A relative file read proves cwd identity across Windows 8.3 aliases without trusting prompt text.
+    // 通过读取相对路径文件证明 Windows 8.3 别名下的工作目录标识，无须信任提示文本。
     await until(() => plain().includes(cwdProof) && plain().includes('中文输入完成'),
       'command output', () => JSON.stringify({ expected: cwd, canonical: fs.realpathSync.native(cwd), tail: plain().slice(-4000), status: store.state.sessions[0].status }), 15000);
     assert.equal(output.has(b.id),false);
@@ -312,7 +312,7 @@ test('a process owning silent PTYs exits after natural exit, update disconnect a
   `;
   try {
     fs.writeFileSync(fixtureFile, script);
-    // Worker(file) inherits execArgv; --input-type=module is invalid for its file.
+    // Worker(file) 继承 execArgv；--input-type=module 对文件输入无效。
     const result = await execFileAsync(process.execPath, ['--import', 'tsx', fixtureFile], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), timeout: 20000, windowsHide: true, maxBuffer: 256 * 1024,
     }).catch(error => {
@@ -365,7 +365,7 @@ test('terminal exit keeps stopping status and ownership until all launch resourc
       await runtime.start(f.session.id);
       let released = false;
       releaseBarrier = runtime.whenReleased(f.session.id).then(() => { released = true; });
-      void releaseBarrier.catch(() => {}); // Still awaited below; never a floating rejection while the resource gate is held.
+      void releaseBarrier.catch(() => {}); // 下方仍会等待它；持有资源门控期间，不能出现未处理的拒绝。
       await until(() => fs.existsSync(ready), `${ending} fixture ready`);
       if (ending === 'stop') runtime.stop(f.session.id); else fs.writeFileSync(exit, 'exit');
       await until(() => closing, `${ending} resource close began`);
@@ -409,8 +409,8 @@ test('CLI update disconnects real terminals and cancels pending starts without p
     } catch (error) { failures.push({ phase, error }); }
   }
   if (failures.length) {
-    // A failed disconnect is retained by Runtime and shutdown reports it again. Preserve both
-    // phases and onError causes: the test runner does not print nested Error causes by default.
+    // Runtime 保留断开失败，并在关闭时再次报告。保留两个阶段及
+    // onError 原因：测试运行器默认不会打印嵌套 Error 原因。
     t.diagnostic(inspect({ failures, reportedErrors: f.errors, activeCount: f.runtime.activeCount,
       pendingCleanupCount: f.runtime.pendingCleanupCount, sessionStatus: f.store.state.sessions[0].status },
     { depth: 8, maxArrayLength: 20, maxStringLength: 6000, breakLength: 100 }));
@@ -436,8 +436,8 @@ test('session maintenance disconnects Claude while Shell stays interactive and n
   const failures: unknown[] = [];
   const runtime = new Runtime(f.store, () => {}, chunk => output.set(chunk.sessionId, (output.get(chunk.sessionId) ?? '') + chunk.data), {
     prepare: async session => session.execution.providerId === 'shell' ? shell.prepare(session) : {
-      // A resident CLI cancels the current turn on Ctrl-C and keeps its process.
-      // Announce readiness after installing the handler; no platform timing guess.
+      // 常驻 CLI 在收到 Ctrl-C 时取消当前轮次，但保留进程。
+      // 安装处理函数后再报告就绪，无须猜测不同平台的时序。
       file: process.execPath, args: ['-e', `
         process.on('SIGINT', () => process.stdout.write('claude-interrupted\\n'));
         process.stdout.write('claude-ready\\n');
@@ -511,7 +511,7 @@ test('session maintenance cancels deferred prepare and awaits its resource witho
   try {
     runtime.setSessionMaintenance([target.id], true);
     const disconnect = runtime.disconnectSessions([target.id]).then(() => { disconnected = true; });
-    // Even a short barrier permanently cancels prepares that crossed it.
+    // 即使屏障短暂存在，也会永久取消跨越它的准备操作。
     runtime.setSessionMaintenance([target.id], false);
     targetPrepare.resolve(); await resourceClosing.promise;
     assert.equal(disconnected, false, 'cancelled prepare still owns its launch resources');
@@ -654,8 +654,8 @@ test('session disconnect drains all selected PTYs after a state write fails even
     runtime.setSessionMaintenance([f.session.id, other.id], true);
     fs.mkdirSync(f.store.file + '.tmp');
     const rejected = assert.rejects(runtime.disconnectSessions([f.session.id, other.id]), /目标终端进程和资源已释放/);
-    // Recover before async process cleanup finishes; the failed stop record must
-    // still reject this maintenance attempt after every target has drained.
+    // 在异步进程清理完成前恢复；所有目标清理完成后，停止失败记录
+    // 仍必须让本次维护尝试被拒绝。
     fs.rmSync(f.store.file + '.tmp', { recursive: true, force: true });
     await rejected;
     assert.deepEqual(closed, new Set([f.session.id, other.id]));
@@ -699,7 +699,7 @@ test('session disconnect waits for a target descendant after its PTY root exits 
     assert.equal(childRunning, false);
     assert.equal(runtime.has(target.id), false); assert.equal(runtime.has(f.session.id), true);
   } finally {
-    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已经结束。 */ } }
     await runtime.shutdown(); await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true });
   }
 });
@@ -764,7 +764,7 @@ test('shutdown waits for an ignoring descendant after its root PTY has exited', 
     assert.equal(f.runtime.pendingCleanupCount, 0);
     assert.equal(f.runtime.activeCount, 0);
   } finally {
-    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已经结束。 */ } }
     await f.runtime.shutdown(); fs.rmSync(f.root, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   }
 });

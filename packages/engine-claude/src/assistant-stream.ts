@@ -14,7 +14,7 @@ interface AssistantOutput {
 }
 const now = () => new Date().toISOString();
 
-/** Reconciles streamed blocks and complete envelopes without conflating turns or child scopes. */
+/** 核对流式内容块与完整封包，不混淆交互轮次或子任务作用域。 */
 export class AssistantStream {
   readonly streams = new Map<string, string>();
   readonly assistants = new Map<string, AssistantGroup>();
@@ -46,8 +46,8 @@ export class AssistantStream {
     }
     const streamed = this.assistants.get(this.streams.get(JSON.stringify(parent ?? null)) ?? '');
     const texts = (Array.isArray(payload.content) ? payload.content : []).map(object).filter(block => block.type === 'text');
-    // An envelope without an API message id can only reconcile against the
-    // pending stream in this exact parent/turn scope.
+    // 没有 API 消息 ID 的封包只能与同一父任务及交互轮次作用域中的
+    // 待完成流进行核对。
     if (streamed && !streamed.completed && texts.length && texts.every(block => [...streamed.blocks.values()].some(candidate => this.compatible(candidate, string(block.text))))) {
       if (envelopeId) this.assistants.set(this.groupId(envelopeId, parent), streamed);
       return streamed;
@@ -56,8 +56,8 @@ export class AssistantStream {
   }
   completeText(group: AssistantGroup, index: number, text: string, used: Set<number>, singleBlock: boolean, envelopeId: string) {
     const indexed = group.blocks.get(index);
-    // A completed envelope can contain one block at a time, with indexes relative
-    // to that envelope. Match it to the stream's block before trusting the index.
+    // 完整封包可能逐个提供内容块，索引相对于该封包；
+    // 信任索引之前，应先匹配流中对应的内容块。
     const digest = this.digest(text);
     const candidates = [...group.blocks.values()].filter(block => !used.has(block.index) && (!block.finalized || !envelopeId || block.envelopeId === envelopeId));
     const exact = (block: TextBlock) => block.length === text.length && block.digest === digest;
@@ -77,8 +77,8 @@ export class AssistantStream {
     if (!group) return false;
     const blocks = [...group.blocks.values()].sort((a, b) => a.index - b.index).filter(block => block.length);
     if (!blocks.length) return false;
-    // Result text describes the latest root reply, not a new assistant message.
-    // Compare full-content fingerprints, independent of the bounded UI text.
+    // 结果文本描述最近一次根任务回复，并非新的助手消息。
+    // 比较完整内容指纹，不受界面文本上限影响。
     const last = blocks[blocks.length - 1];
     if (last.length === summary.length && last.digest === this.digest(summary)) return true;
     return ['', '\n', '\n\n'].some(separator => {
@@ -104,7 +104,7 @@ export class AssistantStream {
     const index = typeof event.index === 'number' ? event.index : 0;
     const group = this.assistants.get(this.streams.get(key) ?? ''); if (!group) return;
     if (event.type === 'message_delta') {
-      // Deltas carry cumulative usage for this API message, but no message ID.
+      // 增量携带本次 API 消息的累计用量，但不包含消息 ID。
       if (!parent && !group.stopped) this.output.context({ id: group.sourceId, usage: event.usage }, 'message_delta');
       return;
     }
@@ -125,11 +125,11 @@ export class AssistantStream {
       const existing = this.output.getMessage(messageId);
       this.output.message({ id: messageId, sourceId: group.sourceId, turnId: this.output.turnId()!, role: 'assistant', createdAt: now(), parentToolUseId: parent, ...existing, text: (existing?.text ?? '') + text }, text);
     }
-    // Thinking content is not persisted; its events still reset the idle watchdog.
+    // 思考内容不会持久化，但其事件仍会重置空闲看门狗。
   }
   prune() {
-    // Retain a bounded identity window for replayed complete envelopes. Active
-    // streams and the root reply needed for result reconciliation stay protected.
+    // 为重放的完整封包保留有界的身份窗口；活跃流以及
+    // 结果核对所需的根任务回复始终受到保护。
     if (this.assistants.size <= 1024) return;
     const active = new Set(this.streams.values());
     for (const [key, group] of this.assistants) {

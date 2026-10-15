@@ -12,7 +12,7 @@ import type { RunIdentity, ToolPort } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { runNativeWorker, type NativeWorkerChild, type NativeWorkerFork } from '../src/main/engines/native/worker-host';
 import { NativeAggregateBudget } from '../src/main/engines/native/aggregate-budget';
-// @ts-expect-error Shared loopback protocol fixture has no declarations.
+// @ts-expect-error 共享的回环协议测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const definition = { name: 'read_file', description: 'Read fixture state', inputSchema: { type: 'object', properties: {} }, risk: 'read' } as const;

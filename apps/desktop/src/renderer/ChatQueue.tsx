@@ -22,8 +22,8 @@ export function ChatQueue({ sessionId, queue, disabled, onError, refresh }: {
   };
   if (!queue) return null;
   const waiting = queue.items.filter(item => item.status === 'queued');
-  // Accepted messages already appear in the conversation. Execution progress is
-  // rendered by ChatPane; this section only represents work still in the queue.
+  // 已接收的消息已出现在会话中；执行进度由
+  // ChatPane 呈现，此区域只展示仍在队列中的任务。
   if (!waiting.length && !queue.error) return null;
   const unavailable = disabled || !!pending;
   return <section className="chat-queue" aria-label="待发送消息">

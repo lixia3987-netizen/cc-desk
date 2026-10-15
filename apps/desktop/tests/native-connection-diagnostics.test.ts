@@ -11,7 +11,7 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeConnectionDiagnostics, nativeConnectionProbe } from '../src/main/engines/native/connection-diagnostics';
 import { registerNativeHandlers } from '../src/main/ipc/native-handlers';
 import type { NativeConnectionView } from '../src/shared/native-connections';
-// @ts-expect-error Shared test-only ESM fixture has no declarations.
+// @ts-expect-error 共享的测试专用 ESM 装置没有类型声明。
 import { listenOnFetchLoopback } from '../../../packages/agent-node/tests/fixtures/fetch-loopback.mjs';
 
 const sentinel = 'sk-diagnostic-SECRET-DO-NOT-RETURN';

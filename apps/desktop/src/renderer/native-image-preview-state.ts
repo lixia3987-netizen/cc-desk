@@ -18,7 +18,7 @@ export const nativeImagePreviewKey = ({ request, expected }: NativeImagePreviewS
   request.sessionId, request.conversationId, request.source, expected.name, expected.bytes, expected.mimeType, expected.sha256,
 ]);
 
-/** A removed or queued draft can no longer keep its private bytes on screen. */
+/** 草稿已移除或已排入队列时，不能继续在屏幕上展示其私有字节数据。 */
 export function isNativeImagePreviewCurrent(selection: NativeImagePreviewSelection, sessionId: string, conversationId: string | undefined, attachments: readonly Attachment[]) {
   if (selection.request.sessionId !== sessionId || selection.request.conversationId !== conversationId) return false;
   const source = selection.request.source;
@@ -28,7 +28,7 @@ export function isNativeImagePreviewCurrent(selection: NativeImagePreviewSelecti
 const invalid = () => new Error('图片预览数据无效，请重试或重新选择图片。');
 const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
 
-/** Only bounded image bytes from the local preview IPC can become an image source. */
+/** 只有本地预览 IPC 返回的受限图片字节数据才能用作图片来源。 */
 export async function validateNativeImagePreview(value: unknown, selection: NativeImagePreviewSelection): Promise<NativeImagePreview> {
   if (selection.request.source.kind === 'history' && selection.expected.sha256 !== undefined && selection.expected.sha256 !== selection.request.source.sha256) throw invalid();
   return validateNativeImagePreviewReceipt(value, { ...selection.expected, ...(selection.request.source.kind === 'history' ? { sha256: selection.request.source.sha256 } : {}) });
@@ -56,7 +56,7 @@ export async function validateNativeImagePreviewReceipt(value: unknown, expected
   return { image: { ...image }, dataUrl: value.dataUrl };
 }
 
-/** One explicit viewer. Every close, source change or retry invalidates late promises. */
+/** 仅启用一个明确的查看器；每次关闭、切换来源或重试都会使迟到的 Promise 结果失效。 */
 export class NativeImagePreviewController {
   private generation = 0;
   private value: NativeImagePreviewState = { status: 'idle' };
@@ -91,7 +91,7 @@ export class NativeImagePreviewController {
   }
 }
 
-/** React StrictMode replays effects before microtasks; only the live setup starts IPC. */
+/** React StrictMode 会在微任务前重复执行副作用，只有当前有效的初始化才能发起 IPC。 */
 export function scheduleNativeImagePreview(controller: NativeImagePreviewController, selection: NativeImagePreviewSelection): () => void {
   let cancelled = false;
   const owned = structuredClone(selection);

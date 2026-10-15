@@ -9,7 +9,7 @@ export interface ChatReadingPosition {
   offset?: number;
 }
 
-/** Keep an anchor within the visible message, so wrapping and streamed text above it do not move the reader. */
+/** 在可见消息内部保留锚点，避免上方内容换行或流式更新改变阅读位置。 */
 export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefined, positions: Map<string, ChatReadingPosition>) {
   const position=useRef<ChatReadingPosition>(positions.get(sessionId)??{follow:true,top:0});
   const [follow,setFollow]=useState(position.current.follow);
@@ -25,7 +25,7 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     if(!next.follow){
       const top=element.getBoundingClientRect().top;
       const messages=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]'));
-      // Message rows are in document order. Avoid measuring every row on each scroll event.
+      // 消息行按文档顺序排列，避免在每次滚动事件中测量所有行。
       let low=0,high=messages.length;
       while(low<high){const middle=(low+high)>>>1;if(messages[middle].getBoundingClientRect().bottom<=top)low=middle+1;else high=middle;}
       const anchor=messages[low];
@@ -41,8 +41,8 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     else{
       const saved=position.current;
       const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]')).find(message=>saved.messageId?message.dataset.messageId===saved.messageId:!!saved.requestId&&message.dataset.requestId===saved.requestId);
-      // A page request can resolve before React commits its messages. Keep the explicit
-      // destination until it exists, rather than remembering the previous page's first row.
+      // 分页请求可能在 React 提交消息前完成，应保留明确的
+      // 目标直到它出现，避免记住上一页的首行。
       if(pendingJump.current&&!anchor)return;
       pendingJump.current=false;
       element.scrollTop=anchor&&saved.offset!==undefined

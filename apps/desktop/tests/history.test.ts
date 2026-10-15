@@ -101,7 +101,7 @@ test('history beyond metadata capacity reuses pages and preserves cached metadat
     assert.equal(changed.entries[0].id,ids[0]);
     assert.ok(historyCacheStats().parsedFiles-reads<=5000-2048+1,'cache hits must survive new misses within the scan');
     assert.ok(historyCacheStats().metadataEntries<=2048);assert.ok(historyCacheStats().queryEntries<=20000);
-    // A second population just over the boundary catches the original all-miss cycle.
+    // 使用刚好超过边界的第二组数据，捕获原先全部缓存未命中的循环问题。
     for(let start=2049;start<ids.length;start+=100)await Promise.all(ids.slice(start,start+100).map(id=>fs.rm(path.join(folder,id+'.jsonl'))));
     assert.equal((await queryHistory(cwd)).total,2049);
     const after=historyCacheStats().parsedFiles;

@@ -117,7 +117,7 @@ test('IDE startup errors and early nonzero exits are reported without leaking pr
 
 test('an actual executable launcher receives the exact worktree and detaches while its GUI process stays alive', { skip: process.platform === 'win32', timeout: 10_000 }, async () => {
   const f = fixture();
-  // Exercise a path alias on every POSIX runner, including macOS's /var alias.
+  // 在每个 POSIX 测试运行环境中验证路径别名，包括 macOS 的 /var 别名。
   const realProject = path.join(f.root, 'real-worktree');
   fs.renameSync(f.cwd, realProject);
   fs.symlinkSync(realProject, f.cwd, 'dir');
@@ -139,14 +139,14 @@ setInterval(() => {}, 1000);
     assert.equal(launchOptions?.detached, true);
     assert.equal(launchOptions?.stdio, 'ignore');
     assert.equal(launchOptions?.windowsHide, true);
-    // Arguments preserve the selected path; process.cwd() resolves directory aliases.
+    // 参数保留所选路径；process.cwd() 会解析目录别名。
     assert.deepEqual(JSON.parse(fs.readFileSync(record, 'utf8')), { args: [f.cwd], cwd: fs.realpathSync(f.cwd), keep: 'preserved' });
     assert.equal(env.ELECTRON_RUN_AS_NODE, '1', 'the parent environment is not mutated');
     assert.equal(fs.existsSync(path.join(f.cwd, 'forbidden')), false, 'shell syntax in a directory name is never evaluated');
   } finally {
     if (child && child.exitCode === null) {
-      // openIde deliberately unrefs the editor after handoff. Keep test cleanup
-      // alive until the exit event arrives, including on the Node 22 CI runners.
+      // openIde 有意在交接后取消对编辑器的引用。须保持测试清理过程运行，
+      // 直到退出事件到达，Node 22 的 CI 运行环境也应如此。
       child.ref();
       const exited = once(child, 'exit');
       child.kill();

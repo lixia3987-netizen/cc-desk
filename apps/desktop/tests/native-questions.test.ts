@@ -13,7 +13,7 @@ import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { createQuestionTool } from '../src/main/engines/native/question-tool';
 import { createNativeConfig } from '../src/main/engines/native/config';
-// @ts-expect-error Shared local protocol fixture has no declarations.
+// @ts-expect-error 共享的本地协议测试装置没有类型声明。
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 const secret = 'sk-question-fixture-never-display';
@@ -178,8 +178,8 @@ test('expired questions settle without replay and waiting does not consume activ
   const paused = await fixture({ budget: { maxActiveMs: 5000, approvalTimeoutMs: 30000 }, now: () => Date.now() + waitingMs });
   try {
     const running = paused.executor.send(paused.id, '等待用户'); const question = await paused.pending();
-    // Advance the host clock only while a real question is pending. The wait
-    // exceeds the active budget without requiring sub-second filesystem I/O.
+    // 仅在真实问题等待回答时推进宿主时钟。等待时间超过活跃预算，
+    // 同时无须依赖不到一秒的文件系统 I/O。
     waitingMs = 6000;
     paused.executor.respond(paused.id, question.requestId, { behavior: 'allow', answers });
     assert.equal((await running).success, true, 'human response time is excluded from active budget');

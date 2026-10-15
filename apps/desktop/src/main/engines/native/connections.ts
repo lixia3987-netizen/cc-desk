@@ -10,7 +10,7 @@ const id = z.string().min(1).max(100).regex(/^[a-zA-Z0-9_-]+$/);
 const revision = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 const text = z.string().trim().min(1).max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 const model = text;
-// Incomplete connections may be saved before catalog discovery; execution still requires a model.
+// 目录发现前可以保存不完整连接；执行仍必须指定模型。
 const savedModel = z.string().trim().max(200).refine(value => !/[\x00-\x1f\x7f]/.test(value));
 const pricing = z.object({ model, inputUSDPerMillion: z.number().finite().min(0).max(1_000_000), outputUSDPerMillion: z.number().finite().min(0).max(1_000_000) }).strict();
 const auth = z.discriminatedUnion('mode', [
@@ -36,15 +36,15 @@ type StoredConnection = z.infer<typeof persistedConnectionSchema>;
 export interface NativeConnectionStoreOptions {
   safeStorage?: NativeSafeStorage;
   platform?: string;
-  /** Consult all native executors; active includes preparing and stopping runs. */
+  /** 查询所有原生执行器；活动状态包含准备中和停止中的运行。 */
   isConnectionActive?(id: string): boolean;
-  /** A diagnostic consumes this connection until its request has fully settled. */
+  /** 诊断会占用此连接，直到请求彻底结束。 */
   isConnectionTesting?(id: string): boolean;
-  /** Include archived sessions: deleting a reference destroys their future readiness. */
+  /** 包含已归档会话：删除引用会破坏其后续就绪能力。 */
   isConnectionReferenced?(id: string): boolean;
   environment?: NodeJS.ProcessEnv;
 }
-/** Main-only result. Never serialize this object into state, logs or a run journal. */
+/** 仅供主进程使用的结果；绝不将此对象序列化到状态、日志或运行日志中。 */
 export interface ResolvedNativeConnection {
   readonly connectionId: string;
   readonly revision: number;
@@ -58,7 +58,7 @@ export interface ResolvedNativeConnection {
   readonly pricing?: Readonly<NativeModelPricing>;
 }
 
-/** Reject credentials, query tokens, fragments, non-HTTP protocols and implicit plaintext transport. */
+/** 拒绝凭据、查询令牌、片段、非 HTTP 协议及隐式明文传输。 */
 export function validateNativeBaseURL(value: string, allowLoopbackHttp: boolean): string {
   let url: URL;
   try {
@@ -73,7 +73,7 @@ export function validateNativeBaseURL(value: string, allowLoopbackHttp: boolean)
   return url.toString().replace(/\/$/, '');
 }
 
-/** Connection metadata and OS-encrypted blobs live outside ordinary workspace state. */
+/** 连接元数据及操作系统加密的数据块保存在普通工作区状态之外。 */
 export class ConnectionStore {
   private connections: StoredConnection[] = [];
   private loadError?: string;
@@ -92,8 +92,8 @@ export class ConnectionStore {
     return { connections: this.connections.map(item => this.view(item)), storage: this.credentials.protection(), ...(this.loadError ? { error: this.loadError } : {}) };
   }
 
-  /** Main-only redaction values, including disabled or diagnostic-locked connections.
-   * Never serialize this collection to IPC, logs, model input or a run journal. */
+  /** 仅主进程使用的脱敏值，包含已停用或被诊断锁定的连接。
+   * 绝不将此集合序列化到 IPC、日志、模型输入或运行日志中。 */
   protectedValues(): readonly string[] {
     const values = new Set<string>();
     for (const item of this.connections) {
@@ -103,7 +103,7 @@ export class ConnectionStore {
         else if (item.auth.mode === 'memory') value = this.credentials.get(item.id);
         else if (item.ciphertext) value = this.credentials.decrypt(item.ciphertext);
         if (typeof value === 'string' && value.length) values.add(value);
-      } catch { /* An unavailable encrypted value must not discard other credentials. */ }
+      } catch { /* 某个加密值不可用时，不得丢弃其他凭据。 */ }
     }
     return Object.freeze([...values]);
   }
@@ -143,7 +143,7 @@ export class ConnectionStore {
     return this.view(item);
   }
 
-  /** Imports create independent connections and commit metadata and credentials together. */
+  /** 导入会创建独立连接，并一起提交元数据和凭据。 */
   import(input: NativeConnectionInput, credential?: { mode: 'memory' | 'encrypted'; secret: string }): NativeConnectionView {
     this.assertLoaded();
     const parsed = nativeConnectionInputSchema.safeParse(input);
@@ -203,7 +203,7 @@ export class ConnectionStore {
     return Object.freeze({ connectionId: item.id, revision: item.revision, protocol: item.protocol, ...(item.authHeader ? { authHeader: item.authHeader } : {}), baseURL, model: selectedModel, apiKey, allowLoopbackHttp: item.allowLoopbackHttp, redirect: 'error', ...(item.pricing ? { pricing: Object.freeze({ ...item.pricing }) } : {}) });
   }
 
-  /** Synchronous revision / activity check before a diagnostic acquires its lock. */
+  /** 诊断获得锁前，同步检查修订和活动状态。 */
   resolveForDiagnostic(input: { id: string; revision: number }): ResolvedNativeConnection {
     this.assertLoaded();
     const parsed = nativeConnectionReferenceSchema.safeParse(input);
@@ -213,7 +213,7 @@ export class ConnectionStore {
     return this.resolve(parsed.data.id);
   }
 
-  /** Catalog discovery requires the same revision, credential and activity checks, but no generation model. */
+  /** 目录发现需执行相同的修订、凭据和活动检查，但无需生成模型。 */
   resolveForModelList(input: { id: string; revision: number }): ResolvedNativeConnection {
     this.assertLoaded();
     const parsed = nativeConnectionReferenceSchema.safeParse(input);
@@ -274,7 +274,7 @@ export class ConnectionStore {
     } catch { throw new Error('模型连接保存失败，请检查磁盘空间和数据目录权限。'); }
     finally {
       if (fd !== undefined) fs.closeSync(fd);
-      try { fs.unlinkSync(temporary); } catch { /* A completed rename removes the temporary file. */ }
+      try { fs.unlinkSync(temporary); } catch { /* 重命名完成后，临时文件已被移除。 */ }
     }
   }
 }

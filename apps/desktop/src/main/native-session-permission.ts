@@ -9,7 +9,7 @@ interface Ports {
   changed(): void;
 }
 
-/** Persist only the next-turn mode. This path never touches an active run, approval or queue. */
+/** 仅持久化下一轮的模式。此路径不改动活动运行、审批或队列。 */
 export function changeNativePermissionForNextTurn(id: string, mode: NativePermissionMode, ports: Ports): NativePermissionMode {
   const session = ports.session(id);
   if (session.kind !== 'agent' || session.execution.providerId !== 'native' || session.execution.mode !== 'structured') {

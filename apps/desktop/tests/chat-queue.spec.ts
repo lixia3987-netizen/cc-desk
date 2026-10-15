@@ -161,8 +161,8 @@ test('chat queue: session switches and restart retain isolated queues and requir
   try {
     let page = await app.firstWindow(); const [a, initialB] = f.sessions;
     await expect(page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();
-    // This test exercises parallel queues; separate registered roots authorize
-    // that concurrency without bypassing same-directory execution exclusion.
+    // 本测试验证并行队列；单独注册的根目录允许这种并发，
+    // 同时遵守同一目录的执行互斥限制。
     const independentRoot = path.join(path.dirname(a.cwd), 'independent-queue-project');
     await fs.mkdir(independentRoot);
     const b = JSON.parse(await page.evaluate(async ({ root, initialId, title, selected }) => {

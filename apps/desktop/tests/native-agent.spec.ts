@@ -9,7 +9,7 @@ import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
 import type { NativeConnectionView } from '../src/shared/native-connections';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
-// @ts-expect-error The same executable JS HTTP fixture is shared with agent-node tests.
+// @ts-expect-error 与 agent-node 测试共享同一个可执行 JS HTTP 测试装置。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Fixture { baseURL: string; requests: Array<Record<string, unknown>>; errors: unknown[]; close(): Promise<void> }
@@ -50,8 +50,8 @@ async function pendingTool(page: Page, sessionId: string, name: string) {
 }
 async function readyWindow(app: ElectronApplication): Promise<Page> {
   const page = await app.firstWindow();
-  // firstWindow can resolve while the initial about:blank document is alive.
-  // The workspace exists only after navigation, preload, and the state snapshot.
+  // 初始 about:blank 文档仍存在时，firstWindow 就可能完成。
+  // 只有在导航、预加载和状态快照完成后，工作区才存在。
   await expect(page.locator('main.workspace')).toBeVisible();
   return page;
 }
@@ -95,7 +95,7 @@ test('native utilityProcess completes approved patch/command, persists selected 
     expect(instructions).toContain(claudeSkill);
     expect(instructions).not.toContain(unselectedSkill);
   };
-  // process.execPath here is the Playwright Node host, never Electron's GUI binary.
+  // 此处的 process.execPath 指向 Playwright 的 Node 宿主，而非 Electron 的图形界面可执行文件。
   const fixture: Fixture = await startResponsesFixture({ task: { path: 'fixture.txt', content: 'native Electron fixture complete\n', command: {
     executable: process.execPath, argv: ['-e', 'if(process.env.OPENAI_API_KEY)process.exit(31);require("node:fs").writeFileSync("command-marker.txt","command-ok");process.stdout.write("native-command-ok")'], cwd: '.',
   } } });
@@ -111,7 +111,7 @@ test('native utilityProcess completes approved patch/command, persists selected 
     await skills.getByRole('button', { name: '读取项目 Skills', exact: true }).click();
     await expect(skills.getByRole('checkbox', { name: agentSkillPath, exact: true })).not.toBeChecked();
     await expect(skills.getByRole('checkbox', { name: claudeSkillPath, exact: true })).not.toBeChecked();
-    // Same directory names under the two roots are distinct UI choices. Only clicks select them.
+    // 两个根目录下的同名目录是不同的界面选项，只能通过点击选择。
     await skills.getByRole('checkbox', { name: agentSkillPath, exact: true }).check();
     await skills.getByRole('checkbox', { name: claudeSkillPath, exact: true }).check();
     await page.getByRole('button', { name: '保存配置', exact: true }).click();
@@ -159,13 +159,13 @@ test('native utilityProcess completes approved patch/command, persists selected 
     await closeSessionSettings(page);
     const restarted = await page.evaluate(async () => (await window.desktop.nativeConnections.list()).connections[0]);
     expect(restarted.credentialConfigured).toBe(false);
-    // A durable receipt may be queried without restoring a credential or starting a worker.
+    // 查询持久化回执时，无须恢复凭据或启动工作进程。
     const recoveredReceipt = await page.evaluate(({ id, text, requestId }) => window.desktop.sendChat(id, text, [], requestId), { id: session.id, text, requestId });
     expect(recoveredReceipt.success).toBe(true); expect(fixture.requests).toHaveLength(count);
-    // A new turn must reread both files, including edits made after a clean app restart.
+    // 新轮次必须重新读取两个文件，包括应用正常重启后进行的修改。
     await fs.writeFile(path.join(f.cwd, 'CLAUDE.md'), `${updatedClaudeRule}\n`);
     await page.evaluate(({ item, secret }) => window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret }), { item: restarted, secret: sentinel });
-    // An idle Shell terminal still owns the directory; stopping it releases that lease.
+    // 空闲的 Shell 终端仍占有目录；停止终端后才会释放该租约。
     await page.evaluate(id => window.desktop.startSession(id), competing.id);
     await expect(page.evaluate(id => window.desktop.sendChat(id, 'continue while shell owns directory'), session.id)).rejects.toThrow(/目录|占用/);
     expect(fixture.requests).toHaveLength(count);
@@ -339,7 +339,7 @@ test('native automatic workflow crosses two real workers without deadlock and ho
     stages[0].release();
     await expect.poll(() => fixture.requests.length).toBe(2);
     await expect.poll(() => page.evaluate(async id => (await window.desktop.workflows()).find(item => item.id === id)?.stages.map(stage => stage.status), run.id)).toEqual(['completed', 'running']);
-    // The workflow's reservation spans worker teardown and the next worker startup.
+    // 工作流预留的目录所有权覆盖工作进程销毁到下一个工作进程启动的全过程。
     await expect(page.evaluate(id => window.desktop.startSession(id), shell.id)).rejects.toThrow(/目录|占用/);
     stages[1].release();
     await expect.poll(() => page.evaluate(async id => (await window.desktop.workflows()).find(item => item.id === id)?.status, run.id)).toBe('completed');

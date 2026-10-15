@@ -81,7 +81,7 @@ test('MCP input bounds cover UTF-8 bytes, object shape, nested complexity and kn
   const controller = new AbortController(); controller.abort(new Error('model-secret-credential'));
   await assert.rejects(port.prepare(call(port), { ...ctx, signal: controller.signal }), /cancelled/);
   assert.equal(state.calls.length, 0);
-  // JSON Schema allows extra fields unless additionalProperties constrains them.
+  // 除非 additionalProperties 进行限制，否则 JSON Schema 允许额外字段。
   const valid = await port.prepare(call(port, 'valid', { extra: 2, value: 'go' }), ctx);
   assert.deepEqual(valid.input, { extra: 2, value: 'go' });
 });

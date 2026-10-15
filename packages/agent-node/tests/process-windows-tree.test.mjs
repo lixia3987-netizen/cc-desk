@@ -21,9 +21,9 @@ async function until(condition, phase, timeout = 3000) {
 }
 async function cleanupFixture(root, directory) {
   root.kill('SIGKILL');
-  // The parent uses its owned process handle. A detached fixture descendant is
-  // identified by a unique command-line marker, then bound to its creation time
-  // before the production helper opens and verifies the same process identity.
+  // 父进程使用自己持有的进程句柄。脱离的测试后代进程先通过
+  // 唯一的命令行标记识别，再绑定到创建时间；随后生产辅助进程
+  // 才会打开并核验同一进程身份。
   const marker = path.basename(directory);
   const result = await run(`$ErrorActionPreference='Stop'; $owned=@(Get-CimInstance -Query 'SELECT ProcessId,CreationDate,CommandLine FROM Win32_Process' | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -and $_.CommandLine.Contains(${quote(marker)}) } | ForEach-Object { @{ pid=[int]$_.ProcessId; created=$_.CreationDate.ToUniversalTime().ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture) } }); ConvertTo-Json -InputObject @($owned) -Compress; exit 0`);
   const anchors = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
@@ -51,8 +51,8 @@ test('Windows cleanup uses the production filtered environment and stdin identit
     assert.equal(live(root.pid), false);
   } finally {
     root.kill('SIGKILL');
-    // Failure still fails the test; its original helper handle must not keep
-    // the runner alive after the bounded production release attempt rejected.
+    // 失败仍应使测试失败；生产代码的有限释放尝试被拒绝之后，
+    // 原始辅助进程句柄不得继续使测试执行器保持存活。
     if (helper && !helperClosed) {
       helper.kill('SIGKILL'); helper.stdin?.destroy(); helper.stdout?.destroy(); helper.stderr?.destroy(); helper.unref();
     }
@@ -156,8 +156,8 @@ for (const [parentKind, missingBirth] of [['root', false], ['intermediate', fals
           root = startRoot();
           await until(() => exists(rootReady), 'root must precede the unrelated process');
         }
-        // This is a real older process. Only its reported PPID is changed below;
-        // the kernel creation times and all opened HANDLEs remain genuine.
+        // 这是一个真实的较早创建的进程。下面只修改其报告的 PPID；
+        // 内核创建时间及所有打开的 HANDLE 均保持真实。
         older = spawn(process.execPath, ['-e', `${record(olderReady)}setInterval(()=>{},1000);`],
           { cwd: directory, stdio: 'ignore', windowsHide: true });
         await until(() => exists(olderReady), 'the unrelated older process must start');
@@ -188,7 +188,7 @@ $all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${older.pid}) {
         let script = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)
           .replace('# windows-tree:after-snapshot', mutation);
         if (missingBirth) {
-          // An absent time does not prove staleness and must still fail closed.
+          // 缺少时间不能证明身份过期，此时仍必须默认拒绝。
           script = script.replace('CreationDate=$_.CreationDate }', 'CreationDate=$null }');
           await assert.rejects(run(script), error => {
             const result = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result');
@@ -207,7 +207,7 @@ $all=@($all | ForEach-Object { if([int]$_.ProcessId -eq ${older.pid}) {
         catch (error) {
           let reported;
           try { reported = error.stdout.trim().split('\n').map(line => JSON.parse(line)).findLast(item => item.type === 'result'); }
-          catch { /* A launch/protocol error is not evidence for the old identity rejection. */ }
+          catch { /* 启动或协议错误不能作为拒绝旧身份的证据。 */ }
           if (reported?.released === false && reported.code === 'identity_changed') {
             throw new Error('WINDOWS_STALE_PARENT_REJECTED:identity_changed', { cause: error });
           }
@@ -243,9 +243,9 @@ test('Windows exited-unbound anchors cannot adopt a live process and unknown cre
       assert.equal(result?.operation, 'validate_handle'); return true;
     });
     assert.equal(live(root.pid), true, 'a current live PID cannot be adopted by an unbound exited identity');
-    // Isolate the anchor validation branch. Unrelated processes can retain this
-    // PID as an old PPID; including them correctly fails earlier while reading
-    // the same missing birth as a parent, which is a different diagnostic.
+    // 隔离锚点校验分支。不相关进程可能将此 PID 保留为旧 PPID；
+    // 把它们纳入后，读取同样缺失的父进程出生时间时会正确地更早失败，
+    // 但这属于另一种诊断。
     const unknown = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot

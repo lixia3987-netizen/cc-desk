@@ -22,9 +22,9 @@ async function fixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'ccdesk-engine-ui-'));
   const data = path.join(directory, 'profile'), cwd = path.join(directory, 'project'), projectId = randomUUID();
   await fs.mkdir(data); await fs.mkdir(cwd);
-  // Keep the entire test application outside desktop/dist so failed tests can
-  // never leak their extra executor into an electron-builder artifact. This
-  // location still resolves the repository's external node-pty installation.
+  // 将整个测试应用放在 desktop/dist 之外，确保即使测试失败，
+  // 额外执行器也不会混入 electron-builder 的构建产物。该位置
+  // 仍可解析仓库外部安装的 node-pty。
   const cache = path.join(repositoryRoot, 'node_modules/.cache');
   await fs.mkdir(cache, { recursive: true });
   const testApp = await fs.mkdtemp(path.join(cache, 'ccdesk-engine-ui-'));
@@ -119,8 +119,8 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await send(page, 'queued message');
     await expect(page.locator('.queued-chat-message')).toContainText('queued message');
     await page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true }).click();
-    // Interrupted turns remain queued deliberately: remove the inspected old
-    // turn before explicitly continuing the still-unsent second message.
+    // 被中断的轮次会有意保留在队列中：先移除已检查的旧轮次，
+    // 再显式继续尚未发送的第二条消息。
     const interrupted = page.locator('.queued-chat-message').filter({ hasText: 'hold' });
     await interrupted.hover();
     await interrupted.getByRole('button', { name: /^移除排队消息/ }).click();
@@ -138,7 +138,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await page.getByRole('button', { name: '继续', exact: true }).click();
     await page.getByRole('button', { name: /^已结束（/ }).click();
     await expect(page.locator('.workflow-stage.completed')).toHaveCount(3);
-    // The inspector displays one tool at a time; session settings live in Context.
+    // 检查面板一次显示一个工具；会话设置位于上下文面板中。
     await page.getByRole('button', { name: '上下文', exact: true }).click();
     await openSessionSettings(page, 'limits');
     await page.getByLabel('会话路由', { exact: true }).fill('saved-route');
@@ -170,7 +170,7 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude).toEqual(claudeDefaults);
     await page.evaluate(async () => {
       const { state } = await window.desktop.snapshot(), config = state.settings.engineDefaults['test.native'];
-      // A semantically identical re-save may reconstruct both provider and option order.
+      // 语义相同的重新保存也可能重建提供方配置与选项顺序。
       await window.desktop.saveSettings({ ...state.settings, engineDefaults: { ...state.settings.engineDefaults,
         'test.native': { schemaVersion: config.schemaVersion, options: Object.fromEntries(Object.entries(config.options).reverse()) },
       } });
@@ -216,8 +216,8 @@ test('engine history ignores stale source results and unknown configurations ret
   try {
     const page = await app.firstWindow();
     await expect(page.locator('.chat-message.assistant')).toContainText('已保存的独立引擎记录');
-    // Unknown defaults must not block unrelated preferences. IPC serialization
-    // may rebuild either the outer options or nested objects in a new key order.
+    // 未知默认值不能阻止无关偏好设置；IPC 序列化可能
+    // 以新的键顺序重建外层选项或嵌套对象。
     await page.evaluate(async () => {
       const { state } = await window.desktop.snapshot();
       await window.desktop.saveSettings({ ...state.settings, fontSize: 15 });

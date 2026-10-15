@@ -1,7 +1,7 @@
 import type { ChatApproval, ChatDecision, ChatMessage, ChatSnapshot, ChatUsage, TaskState } from './chat.js';
 import type { ContextUsage, SessionIdentity, SessionStatus, TerminalChunk } from './execution.js';
 
-/** Durable, provider-neutral chat events. Transport frames and raw protocol data stay inside adapters. */
+/** 持久化且不依赖提供商的聊天事件。传输帧及原始协议数据保留在适配器内部。 */
 export type ChatJournalEvent =
   | { type: 'state'; taskState: TaskState; error?: string }
   | { type: 'message'; message: ChatMessage }
@@ -13,7 +13,7 @@ export type ChatJournalEvent =
   | { type: 'approval_requested'; approval: ChatApproval }
   | { type: 'approval_resolved'; requestId: string; decision: ChatDecision };
 
-/** Session-scoped execution events emitted by registered provider adapters. */
+/** 已注册提供商适配器发出的会话范围执行事件。 */
 export type ExecutionEvent =
   | { type: 'journal'; identity: SessionIdentity; event: ChatJournalEvent }
   | { type: 'conversation.changed'; identity: SessionIdentity; taskState: TaskState }

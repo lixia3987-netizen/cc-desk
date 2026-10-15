@@ -1,6 +1,6 @@
 import type { ChatApproval } from '../shared/chat';
 export interface ApprovalDraft {answers:Record<string,string>;reason:string}
-/** Owned by App, so switching or unmounting the active chat cannot discard an answer. */
+/** 由 App 持有，切换或卸载当前聊天不会丢失回答。 */
 export class ApprovalDrafts {
   private sessions=new Map<string,Map<string,ApprovalDraft>>();
   get(sessionId:string,requestId:string):ApprovalDraft {return this.sessions.get(sessionId)?.get(requestId)??{answers:{},reason:''};}

@@ -272,7 +272,7 @@ test('edit_file approval binds the exact displayed fragment replacement and cann
   await assert.rejects(port.execute(second, ctx, approve(prepared, ctx)), /approval/);
   assert.equal((await port.execute(second, ctx, approve(second, ctx))).status, 'completed');
   assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'again\nuntouched');
-  // Retries report the original durable result without applying the text twice.
+  // 重试报告原始持久化结果，不重复应用文本变更。
   assert.deepEqual(await port.execute(prepared, ctx, approve(prepared, ctx)), result);
   assert.equal(await fs.readFile(path.join(root, 'file'), 'utf8'), 'again\nuntouched');
 });

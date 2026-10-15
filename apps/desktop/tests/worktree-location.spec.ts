@@ -17,7 +17,7 @@ async function workspace() {
   await Promise.all([fs.mkdir(data), fs.mkdir(projectPath), fs.mkdir(customRoot)]);
   const git = (...args: string[]) => execFileSync('git', args, { cwd: projectPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
   git('init', '-b', 'main');
-  // Fixture bytes must not depend on the host's checkout newline policy.
+  // 测试装置字节不能依赖宿主的检出换行策略。
   git('config', 'core.autocrlf', 'false');
   git('config', 'user.name', 'Workbench Tests');
   git('config', 'user.email', 'tests@example.invalid');
@@ -42,7 +42,7 @@ async function openSettings(page: Page) {
   return page.getByRole('dialog', { name: '设置与连接', exact: true });
 }
 
-/** Keep the renderer, preload and IPC real; replace only the OS picker result. */
+/** 渲染进程、预加载脚本和 IPC 使用真实实现；仅替换系统选择器结果。 */
 async function pickerResult(app: ElectronApplication, selected: string | null) {
   await app.evaluate(({ dialog }, value) => {
     dialog.showOpenDialog = (async () => ({ canceled: value === null, filePaths: value === null ? [] : [value] })) as typeof dialog.showOpenDialog;
@@ -56,7 +56,7 @@ interface SnapshotReadGate {
   restore: () => void;
 }
 
-/** Delay one real IPC read so deletion cannot depend on platform timing. */
+/** 延迟一次真实 IPC 读取，使删除不依赖平台时序。 */
 async function gateSnapshotRead(app: ElectronApplication, sessionId: string, failure?: string) {
   await app.evaluate(({ ipcMain, BrowserWindow }, { sessionId, failure }) => {
     const handlers = ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> };
@@ -92,7 +92,7 @@ interface DeletionNotificationGate {
   release: () => void;
 }
 
-/** Keep the real deletion committed while its response and state event are in transit. */
+/** 在响应与状态事件传输期间，保持真实删除操作已提交。 */
 async function gateDeletionNotification(app: ElectronApplication, sessionId: string) {
   await app.evaluate(({ ipcMain, BrowserWindow }, sessionId) => {
     const handlers = ipcMain as unknown as { _invokeHandlers: Map<string, (...args: unknown[]) => unknown> };
@@ -213,8 +213,8 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(await fs.readFile(path.join(original.cwd, 'README.md'), 'utf8')).toBe('Original project content\n');
     expect(f.git('status', '--porcelain')).toBe('');
 
-    // A fork must start from its source tree's HEAD but be placed beside that tree,
-    // rather than accidentally nesting another .claude/worktrees inside the source.
+    // 分叉必须从源工作树的 HEAD 开始，但应放在源工作树旁，
+    // 避免意外在源目录内嵌套另一层 .claude/worktrees。
     await fs.writeFile(path.join(original.cwd, 'fork-source.txt'), 'Committed only in the source tree\n');
     execFileSync('git', ['add', 'fork-source.txt'], { cwd: original.cwd, stdio: 'pipe' });
     execFileSync('git', ['commit', '-m', 'Source tree commit'], { cwd: original.cwd, stdio: 'pipe' });
@@ -259,7 +259,7 @@ test('worktree location: UI creates named trees in both locations and preserves 
     expect(created.worktreeBase).toBe(f.project.path);
     expect(created.worktree).toBe(created.cwd);
     const worktrees = f.git('worktree', 'list', '--porcelain');
-    // Git uses forward slashes even when the native filesystem uses backslashes.
+    // 即使原生文件系统使用反斜杠，Git 仍使用正斜杠。
     expect(worktrees).toContain(`worktree ${created.cwd.replaceAll('\\', '/')}`);
     expect(worktrees).toContain(`worktree ${original.cwd.replaceAll('\\', '/')}`);
 
@@ -295,8 +295,8 @@ test('worktree branches: UI selects local or remote starts, refreshes remote ref
     execFileSync('git', ['init', '--bare', remotePath], { stdio: 'pipe' });
     f.git('remote', 'add', 'origin', remotePath);
     f.git('push', '-u', 'origin', 'main');
-    // Apply before clone's first checkout: configuring afterward would leave
-    // CRLF bytes that a later `git add .` could commit as an unrelated change.
+    // 克隆后的首次检出前应用配置；检出后再配置会留下 CRLF 字节，
+    // 后续 `git add .` 可能将它们作为无关更改提交。
     execFileSync('git', ['-c', 'core.autocrlf=false', 'clone', '-b', 'main', remotePath, publisherPath], { stdio: 'pipe' });
     const publishGit = (...args: string[]) => execFileSync('git', args, { cwd: publisherPath, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
     publishGit('config', 'core.autocrlf', 'false');
@@ -364,8 +364,8 @@ test('worktree branches: UI selects local or remote starts, refreshes remote ref
     await branches.selectOption('refs/remotes/origin/feature/remote-new');
     expect(f.git('rev-parse', 'refs/remotes/origin/feature/remote-new')).toBe(firstRemoteHead);
 
-    // Creating from a remote branch must fetch its latest commit, even if the
-    // picker was populated before another collaborator published an update.
+    // 从远端分支创建时必须拉取最新提交，即使选择器的数据是在其他
+    // 协作者发布更新前加载的。
     await fs.writeFile(path.join(publisherPath, 'remote-new.txt'), 'Latest remote commit at creation time\n');
     publishGit('add', '.'); publishGit('commit', '-m', 'Advance the selected remote branch');
     publishGit('push');
@@ -589,8 +589,8 @@ for (const damage of ['missing-git', 'missing-directory'] as const) {
       await fs.writeFile(path.join(created.cwd, 'untracked.txt'), 'Explicitly discarded local data\n');
       if (damage === 'missing-git') {
         await fs.rm(path.join(created.cwd, '.git'));
-        // Outside the source project, Git cannot accidentally find a parent
-        // repository; this reproduces the user's failing root-discovery call.
+        // 在源项目之外，Git 不会意外找到父仓库；
+        // 这可复现用户失败的根目录发现调用。
         expect(() => git('--literal-pathspecs', 'rev-parse', '--show-toplevel')).toThrow(/not a git repository/);
       } else {
         await fs.rm(created.cwd, { recursive: true });
@@ -640,8 +640,8 @@ test('session deletion: stale snapshot failures do not replace the workspace, wh
     await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.some(session => session.id === created.id)).toBe(false);
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
     await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.rejection)).toBe('会话不存在。');
-    // Round-trip after the rejected response, then allow React to commit. This
-    // proves the obsolete catch ran; an immediate absence assertion could race it.
+    // 收到拒绝响应后完成一次往返，再让 React 提交更新。这样可证明
+    // 过期的 catch 已运行；立即断言不存在可能与它产生时序竞争。
     await page.evaluate(async () => {
       await window.desktop.snapshot();
       await new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
@@ -671,8 +671,8 @@ test('session deletion: a committed deletion invalidates reads before its delaye
     await expect(heading).toBeVisible();
     await app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.release!());
     await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { snapshotReadGate: SnapshotReadGate }).snapshotReadGate.rejection)).toBe('会话不存在。');
-    // Deletion invalidated this read before IPC began; the late rejection must
-    // remain suppressed even before the workspace event or delete reply arrives.
+    // 删除在 IPC 开始前使这次读取失效；即使工作区事件或删除响应尚未到达，
+    // 也必须持续屏蔽迟到的拒绝。
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
     await expect(heading).toBeVisible();
     await expect(page.locator('.chat-pane [role=alert]')).toHaveCount(0);

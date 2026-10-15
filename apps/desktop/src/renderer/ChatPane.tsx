@@ -119,7 +119,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     return()=>{mounted.current=false;pageRequest.current++;snapshotSync.current?.dispose();};
   },[session.id]);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
-  // Capture before the live snapshot renders: its first layout cannot resolve an archived anchor.
+  // 在实时快照渲染前捕获锚点，首次布局无法解析归档消息中的锚点。
   const initialReading=useRef(readingPositions.get(session.id));
   const [archive,setArchive]=useState<ChatPage>(),[paging,setPaging]=useState(false),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
   const [historyNotice,setHistoryNotice]=useState(''),[exhaustedBefore,setExhaustedBefore]=useState('');
@@ -170,8 +170,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     });
     snapshotSync.current=sync;
     const resume=sessionReadLifecycle.subscribe(session.id,()=>{if(mounted.current)void sync.refresh();});
-    // Subscribe before the first read. Every event only requests host state;
-    // neither a late task label nor stream text can finish an engineering task.
+    // 在首次读取前订阅事件；每个事件只请求主进程状态，
+    // 迟到的任务标签或流式文本都不能判定工程任务完成。
     const off=window.desktop.onChat((id,_state,version)=>{
       if(id===session.id&&sync.notify(version)&&sync.canAutoRefresh&&!timer)timer=setTimeout(()=>{timer=undefined;if(sync.canAutoRefresh)void sync.refresh();},80);
     });
@@ -186,7 +186,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(!attentionTarget)return;
     if(readOnly||descriptor?.maintenance){handled.current();return;}
     let cancelled=false;
-    // Obtain a fresh snapshot before deciding whether a navigation target expired.
+    // 先获取新快照，再判断导航目标是否已过期。
     pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setShowSearch(false);
     void sessionReadLifecycle.read(session.id,async()=>{await load();return snapshotSync.current?.snapshot;}).then(value=>{
       if(!value||cancelled||!mounted.current)return;
@@ -218,8 +218,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const taskLabel=syncState.error?'状态未知':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
   const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error;
   useEffect(()=>{
-    // A final notification can be lost without a later sequence gap. Only an
-    // active/uncertain pane checks occasionally; two failures pause auto retries.
+    // 最终通知可能丢失，且后续没有序号缺口；仅当面板
+    // 处于活动或状态不确定时才定期检查，两次失败后暂停自动重试。
     if((!running&&!syncState.error)||syncState.failures>=2)return;
     const timer=setInterval(()=>{if(document.visibilityState!=='hidden')void load();},5000);
     return()=>clearInterval(timer);
@@ -257,8 +257,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const pasteAvailable=useRef(false);
-  // The import's own pending state must not cancel it. Leaving this pane,
-  // recovery and compaction do cancel a paste still reading clipboard bytes.
+  // 导入自身的等待状态不能取消导入；离开此面板、
+  // 恢复会话或压缩上下文则会取消仍在读取剪贴板字节的粘贴。
   pasteAvailable.current=session.execution.providerId==='native'&&!readOnly&&!composerDisabled&&!attachmentDisabled&&!!descriptor?.capabilities.attachments&&!descriptor.maintenance;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>

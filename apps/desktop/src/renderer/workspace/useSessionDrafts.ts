@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type RefObject } from 'react'
 import type { AppState } from '../../shared/types';
 import type { ReportError } from './types';
 
-/** Text drafts stay keyed by local session identity while backend conversations change. */
+/** 后端会话变化时，文本草稿仍按本地会话标识保存。 */
 export function useSessionDrafts(latestState: RefObject<AppState | undefined>, report: ReportError) {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const current = useRef<Record<string, string>>({});
@@ -35,7 +35,7 @@ export function useSessionDrafts(latestState: RefObject<AppState | undefined>, r
     timers.current.clear();
   }, [report]);
   const persistDrafts = useCallback(async () => {
-    // The update confirmation must wait for persisted text, including unchanged timer entries.
+    // 更新确认必须等到文本持久化完成，包括未发生变化的定时条目。
     await Promise.all([...pending.current].map(([id, text]) => window.desktop.saveDraft(id, text)));
   }, []);
   const appendDraft = (id: string, text: string) => {

@@ -34,7 +34,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
     forbiddenValues: ['sk-child-runner-protected'], approvals: approved, assertOwnership: async () => {} } };
 }
 
-/** Exercises the actual core and host tools/store; production uses the independent IPC worker. */
+/** 验证实际核心与宿主工具和存储；生产环境使用独立的 IPC 工作进程。 */
 function inProcessWorker(generate: (request: ModelRequest, options: NativeWorkerOptions) => Promise<ModelResponse>) {
   return async (options: NativeWorkerOptions) => {
     const transport = createNativeModel(options.model), model: ModelPort = {

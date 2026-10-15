@@ -5,22 +5,22 @@ import { ChatQueueStorage, type StoredChatQueue } from './chat-queue-storage';
 
 interface QueueOptions {
   assertAvailable(id: string): void;
-  /** Captures host admission generations before a queue operation starts waiting. */
+  /** 在队列操作开始等待之前，捕获宿主准入代次。 */
   captureAdmission?(id: string): () => void;
   blocked(id: string): boolean;
-  /** Bind Native images to the explicit submission before acknowledging queue ownership. */
+  /** 确认队列所有权之前，将 Native 图片绑定到显式提交。 */
   attachmentMetadata?(id: string, files: string[]): Promise<NativeImageAttachment[] | undefined>;
   acceptAttachments(id: string, files: string[], commit: (attachmentNames?: string[]) => void): Promise<void>;
   run(id: string, item: QueuedChatMessage): Promise<ChatTurnResult>;
-  /** Returns only after the old turn and its process resources have settled. */
+  /** 仅在上一轮及其进程资源均已结束后返回。 */
   interrupt(id: string): Promise<void>;
   changed(id: string): void;
-  /** Invoked after the durable turn ACK, never from inside the executor's send barrier. */
+  /** 在轮次确认已持久化之后调用，不在执行器的发送屏障内部调用。 */
   settled?(id: string): void | Promise<void>;
 }
 const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error)).slice(0, 4000);
 
-/** Durable per-session FIFO. A control ack is never treated as a completed turn. */
+/** 按会话持久化的先进先出队列。控制操作的确认不能视为轮次完成。 */
 export class ChatQueue {
   private storage: ChatQueueStorage;
   private states = new Map<string, StoredChatQueue>();
@@ -55,7 +55,7 @@ export class ChatQueue {
     const next = structuredClone(this.state(id)); mutate(next);
     this.storage.save(id, next); this.states.set(id, next); this.notify(id);
   }
-  private notify(id: string) { try { this.options.changed(id); } catch { /* A closed renderer cannot invalidate an accepted prompt. */ } }
+  private notify(id: string) { try { this.options.changed(id); } catch { /* 渲染进程关闭不能使已接收的提示词失效。 */ } }
   private async serial<T>(id: string, action: () => T | Promise<T>): Promise<T> {
     const current = (this.mutations.get(id) ?? Promise.resolve()).catch(() => {}).then(action);
     this.mutations.set(id, current);
@@ -105,7 +105,7 @@ export class ChatQueue {
   hasActive(id: string) { return this.active.has(id) || this.priorities.has(id) || this.failedAcks.has(id); }
   isPrioritizing(id: string) { return this.priorities.has(id); }
   references(id: string, file: string) { return this.state(id).items.some(item => item.attachments.includes(file)); }
-  /** Preview checks must not restore, normalize, cache or persist a cold queue. */
+  /** 预览检查不能恢复、规范化、缓存或持久化尚未加载的队列。 */
   referencesReadOnly(id: string, file: string) {
     return (this.states.get(id) ?? this.storage.load(id)).items.some(item => item.attachments.includes(file));
   }
@@ -126,7 +126,7 @@ export class ChatQueue {
   }
   pause(id: string, error?: string) {
     this.generation.set(id, (this.generation.get(id) ?? 0) + 1);
-    // In-memory suspension takes effect even if durable persistence fails.
+    // 即使持久化失败，内存中的暂停状态也立即生效。
     const state = this.state(id); state.paused = true;
     if (error) state.error = error;
     this.commit(id, () => {});
@@ -144,7 +144,7 @@ export class ChatQueue {
     const epoch = this.generation.get(id) ?? 0;
     const failedAck = this.failedAcks.get(id);
     if (failedAck) {
-      // Retry the acknowledgement, never the already-settled execution.
+      // 重试确认，不重试已经结束的执行。
       await this.complete(id, failedAck.messageId, failedAck.result);
       this.failedAcks.delete(id);
       await this.options.settled?.(id);
@@ -191,7 +191,7 @@ export class ChatQueue {
       await this.active.get(id);
       if (this.failedAcks.has(id)) throw new Error('上一轮执行回执尚未保存，请先继续队列以修复回执。');
       await this.serial(id, () => {
-        if (this.generation.get(id) !== epoch) return; // A later user stop or maintenance wins.
+        if (this.generation.get(id) !== epoch) return; // 后续用户停止操作或维护操作优先。
         assertAdmission();
         this.commit(id, next => { next.paused = false; delete next.error; });
       });
@@ -203,7 +203,7 @@ export class ChatQueue {
     setImmediate(() => {
       this.scheduled.delete(id);
       void this.serial(id, () => this.dispatch(id)).catch(error => {
-        try { this.pause(id, '队列已暂停：' + messageOf(error)); } catch { /* Memory remains paused; preserve durable evidence. */ }
+        try { this.pause(id, '队列已暂停：' + messageOf(error)); } catch { /* 内存保持暂停；保留持久化依据。 */ }
       });
     });
   }
@@ -229,7 +229,7 @@ export class ChatQueue {
       if (!this.failedAcks.has(id)) await this.options.settled?.(id);
       this.wake(id);
     });
-    // Cleanup failure keeps the directory lease; do not produce an unhandled rejection.
+    // 清理失败时保留目录租约；避免产生未处理的 Promise 拒绝。
     void running.catch(() => {});
     this.active.set(id, running);
   }
@@ -245,7 +245,7 @@ export class ChatQueue {
           next.error = (result.error || (result.interrupted ? '本轮已中断。' : '本轮执行失败。')).slice(0, 4000) + ' 消息已保留，请检查已产生的操作，移除不应重复执行的消息后再继续。';
         }
       });
-      // Failed ACK retries need the replacement decision just as much as the result.
+      // 重试失败的确认时，既需要结果，也需要替换决策。
       this.replaced.delete(messageId);
     });
   }

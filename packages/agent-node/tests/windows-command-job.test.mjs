@@ -229,7 +229,7 @@ async function stopFixture(root, job, helper) {
   try { if (job) await bounded(job.stop(5000), 'Fixture job stop did not settle.', 6000); }
   catch (error) { failures.push(error); }
   finally {
-    // These are the original owned ChildProcess handles, never cached-PID kills.
+    // 这些是原始持有的 ChildProcess 句柄，绝不使用缓存 PID 执行终止。
     try { helper?.kill('SIGKILL'); } catch (error) { failures.push(error); }
     try { root.child.kill('SIGKILL'); } catch (error) { failures.push(error); }
     try { await bounded(root.whenClosed, 'Fixture guardian did not physically close.'); } catch (error) { failures.push(error); }

@@ -5,7 +5,7 @@ export function readCachedTypography() {
   try { return typography(JSON.parse(localStorage.getItem(cacheKey) || '{}')); } catch { return typography(); }
 }
 export function cacheSavedTypography(value: TypographySettings) {
-  try { localStorage.setItem(cacheKey, JSON.stringify(typography(value))); } catch { /* The workspace remains authoritative. */ }
+  try { localStorage.setItem(cacheKey, JSON.stringify(typography(value))); } catch { /* 工作区仍是权威状态。 */ }
 }
 export function applyTypography(value: TypographySettings) {
   const settings = typography(value), style = document.documentElement.style;

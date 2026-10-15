@@ -8,7 +8,7 @@ import type { ChatSnapshot } from '../src/shared/chat';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
-// @ts-expect-error The shared executable fixture has no TypeScript declaration.
+// @ts-expect-error 共享的可执行测试装置没有 TypeScript 类型声明。
 import { assistantMessage, functionCall, startResponsesFixture } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 
 interface Fixture { baseURL: string; errors: unknown[]; requests: unknown[]; close(): Promise<void> }
@@ -67,7 +67,7 @@ test('native command UI receives terminal host events while the model is waiting
     await openChatAssistance(page, 'commands');
     await expect(panel(page).locator('[data-command-status="running"]')).toBeVisible();
     await fs.writeFile(path.join(f.cwd, 'finish.txt'), 'finish the fixture command');
-    // No model/tool polling request is needed for the command's final host notification.
+    // 命令的最终宿主通知无须模型或工具轮询请求。
     await expect.poll(async () => (await snapshot(page, session.id)).nativeCommands?.items[0]?.status).toBe('finished');
     const entry = panel(page).locator(`[data-command-id="${commandId}"]`); await entry.locator('summary').first().click();
     await expect(entry).toContainText('退出码：0'); await expect(entry).toContainText('清理：已确认');

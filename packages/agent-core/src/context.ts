@@ -1,6 +1,6 @@
 import type { JsonObject, ModelContext, RunBudget } from './types.js'
 
-/** Image-bearing history must stay intact until a lossless maintenance policy exists. */
+/** 在具备无损维护策略之前，含图像的历史记录必须保持完整。 */
 export function contextHasUserImages(context: ModelContext): boolean {
   return context.items.some(item => item !== null && typeof item === 'object' && !Array.isArray(item) && item.role === 'user' &&
     Array.isArray(item.content) && item.content.some(part => part !== null && typeof part === 'object' && !Array.isArray(part) &&
@@ -16,12 +16,12 @@ export interface ContextBudgetUsage {
   status: 'within_budget' | 'near_limit' | 'exceeded'
 }
 
-/** Conservative local estimate of history and instructions, not provider billing or a model window. */
+/** 对历史记录和指令作保守的本地估算，不代表提供方计费量或模型上下文窗口。 */
 export function estimateContextInputTokens(context: ModelContext, instructions = ''): number {
   return new TextEncoder().encode(JSON.stringify(context.items) + instructions).byteLength
 }
 
-/** Uses the same complete context byte boundary as the runtime's pre-request guard. */
+/** 使用与运行时请求前检查相同的完整上下文字节边界。 */
 export function contextBudgetUsage(context: ModelContext, estimatedInputTokens: number, budget: Pick<RunBudget, 'maxInputTokens' | 'maxContextBytes'>): ContextBudgetUsage {
   if (!Number.isFinite(estimatedInputTokens) || estimatedInputTokens < 0) throw new Error('Invalid context estimate')
   for (const limit of [budget.maxInputTokens, budget.maxContextBytes]) {

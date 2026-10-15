@@ -17,11 +17,11 @@ export function environment(): Record<string,string> {
   const extra = [path.join(os.homedir(), '.local', 'bin'), path.join(os.homedir(), '.npm-global', 'bin')];
   if (process.platform === 'win32') {
     if (env.APPDATA) extra.push(path.join(env.APPDATA, 'npm'));
-    // Windows treats keys case-insensitively. Pass exactly one PATH to child processes.
+    // Windows 的键名不区分大小写。仅向子进程传递一个 PATH。
     for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') delete env[key];
   } else extra.push('/opt/homebrew/bin', '/usr/local/bin');
   env.PATH = [...inheritedPath.split(path.delimiter), ...extra].map(unquote).filter(Boolean).join(path.delimiter);
-  // Electron's startup switches must not propagate to shell / CLI processes.
+  // Electron 的启动开关不能传递给 Shell 或 CLI 进程。
   delete env.ELECTRON_RUN_AS_NODE;
   delete env.WORKBENCH_DEV_URL;
   delete env.WORKBENCH_DATA_DIR;
@@ -42,7 +42,7 @@ export function findExecutable(name: string, env = environment(), platform: Node
       if (!fs.statSync(file).isFile()) continue;
       fs.accessSync(file, platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK);
       return path.resolve(file);
-    } catch { /* Try the next PATH entry. */ }
+    } catch { /* 尝试下一个 PATH 条目。 */ }
   }
 }
 

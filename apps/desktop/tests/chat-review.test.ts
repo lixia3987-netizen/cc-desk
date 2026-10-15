@@ -45,7 +45,7 @@ test('attachment selection and sending enforce file/aggregate limits and clean p
     await assert.rejects(attachments.add(session, files), /16 MiB/);
     assert.deepEqual(fs.readdirSync(path.join(directory, 'attachments', session)), []);
     const selected = [];
-    // Picking in separate native dialogs cannot bypass the total-send limit.
+    // 在多个原生对话框中分别选择文件不能绕过总发送量限制。
     for (const file of files) selected.push(...await attachments.add(session, [file]));
     await assert.rejects(attachments.validate(session, selected.map(item => item.path)), /16 MiB/);
     fs.truncateSync(selected[0].path, 8 * 1024 * 1024 + 1);

@@ -4,7 +4,7 @@ export const DEFAULT_THEME: ThemeId = 'forest';
 export function normalizeThemeId(value: unknown): ThemeId {
   return typeof value === 'string' && (THEME_IDS as readonly string[]).includes(value) ? value as ThemeId : DEFAULT_THEME;
 }
-/** Shared with the native window so a saved light theme also starts on a light surface. */
+/** 与原生窗口共享，确保保存浅色主题后，启动时也使用浅色界面。 */
 export const THEME_APPEARANCE: Record<ThemeId, { background: string; scheme: 'light' | 'dark' }> = {
   forest: { background: '#111515', scheme: 'dark' },
   cloud: { background: '#f7f9fe', scheme: 'light' },

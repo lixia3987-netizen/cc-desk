@@ -20,7 +20,7 @@ export interface NewSessionSubmissionPorts {
   created?(session: Session): void;
 }
 
-/** A first message can be retried without creating another session or message. */
+/** 重试首条消息时，无需另建会话或消息。 */
 export class NewSessionSubmission {
   private createdSession?: Session;
   private wasAccepted = false;
@@ -61,7 +61,7 @@ export class NewSessionSubmission {
       worktreeBaseRef: input.isolated ? input.worktreeBaseRef : undefined,
     };
     const submittedFiles = structuredClone(files);
-    // Set the gate before invoking any port, including a synchronously failing one.
+    // 调用任何接口前先设置执行门禁，包括会同步失败的接口。
     const operation = Promise.resolve().then(() => this.send(submittedInput, text, submittedFiles)).finally(() => {
       if (this.inFlight === operation) this.inFlight = undefined;
     });
@@ -75,8 +75,8 @@ export class NewSessionSubmission {
     const copies = [...this.staged].filter(([, file]) => file.sourcePath === sourcePath);
     const operation = Promise.resolve().then(async () => {
       for (const [selectionId, file] of copies) {
-        // The queue checks references under its submission lock. A lost ack must
-        // not let removing a chip delete a file already owned by a message.
+        // 队列在提交锁内检查引用；确认丢失时，也不能
+        // 让移除附件标签的操作删除已归属于消息的文件。
         await this.ports.removeAttachment(this.createdSession!.id, file.owned.path);
         this.staged.delete(selectionId);
       }
@@ -108,8 +108,8 @@ export class NewSessionSubmission {
     };
     const diskFiles = missing.filter((file): file is DraftAttachment => !isPastedDraftAttachment(file));
     const pastedImages = missing.filter(isPastedDraftAttachment);
-    // Keep each successful batch before starting the next. A failed paste must
-    // neither submit a partial message nor duplicate already staged disk files.
+    // 开始下一批前，保留每个成功的批次；粘贴失败时，不能
+    // 提交不完整的消息，也不能重复暂存已处理的磁盘文件。
     if (diskFiles.length) remember(diskFiles, await this.ports.stageDraftAttachments(session.id, diskFiles));
     if (pastedImages.length) remember(pastedImages, await this.ports.addPastedNativeImages(session.id, pastedImages.map(file => file.image)));
     const paths = files.map(file => prepared.get(file.selectionId)!.path);

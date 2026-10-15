@@ -4,7 +4,7 @@ import type { Session } from '../shared/types';
 import { CONTINUATION_MESSAGE_BYTES, CONTINUATION_MESSAGE_LIMIT, CONTINUATION_TOTAL_BYTES,
   type SessionContinuationInput, type SessionContinuationMessage, type SessionContinuationPreview } from '../shared/session-continuation';
 
-/** Copy only the text projection: never tool inputs/results or provider context items. */
+/** 仅复制文本投影：不复制工具输入、结果或提供方上下文项。 */
 export function previewContinuation(source: Session, page: ChatPage): SessionContinuationPreview {
   const messages: SessionContinuationMessage[] = [];
   let bytes = 0, incomplete = page.incomplete || !!page.before || !!page.after;
@@ -18,7 +18,7 @@ export function previewContinuation(source: Session, page: ChatPage): SessionCon
     messages.unshift({ id: message.id, role: message.role, text: message.text }); bytes += size;
   }
   const view = { sourceSessionId: source.id, sourceProviderId: source.execution.providerId, projectId: source.projectId, messages, incomplete };
-  // Include directory and engine identity in the freshness binding, but never transfer them as protocol state.
+  // 将目录和引擎身份纳入时效性绑定，但不能将其作为协议状态转移。
   const snapshotHash = createHash('sha256').update(JSON.stringify({ ...view, cwd: source.cwd, execution: source.execution })).digest('hex');
   return { ...view, snapshotHash };
 }

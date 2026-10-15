@@ -30,7 +30,7 @@ export function SessionInspector(props: Props) {
   const { active, report, appendReview, activePanels, updatePanel } = props;
   const layout = useInspectorPanels();
   const panelIds = visibleInspectorPanelIds(active.execution.providerId === 'native' && active.execution.mode === 'structured');
-  // Hide unsupported panels without discarding the stored selection when switching engines.
+  // 切换引擎时隐藏不支持的面板，同时保留已存储的选中状态。
   const openPanels = layout.openPanels.filter(id => panelIds.includes(id));
   const openingPanel = useRef<InspectorPanelId | null>(null);
   const empty = openPanels.length === 0;
@@ -69,7 +69,7 @@ export function SessionInspector(props: Props) {
       {panelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
         {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
-        {/* Saving a workflow draft does not require a live CLI or model credential. */}
+        {/* 保存工作流草稿无需活动的 CLI 或模型凭据。 */}
         {id === 'workflows' && <WorkflowPanel session={active} disabled={props.readOnly || nativeRecoveryReadOnly(active) || !!props.descriptor?.maintenance || !props.descriptor?.capabilities.structured} executionBlocked={run => {
           const session = props.sessions.find(item => item.id === run.sessionId);
           const descriptor = props.executors.find(item => item.providerId === run.providerId && item.mode === run.executionMode);

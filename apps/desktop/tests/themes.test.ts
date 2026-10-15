@@ -4,8 +4,8 @@ import { readFileSync } from 'node:fs';
 import { THEME_IDS, THEME_APPEARANCE, DEFAULT_THEME, normalizeThemeId } from '../src/shared/theme';
 import { THEMES, getTheme, getTerminalTheme } from '../src/renderer/themes';
 
-// WCAG relative luminance. Every foreground/background here is opaque; overlays
-// and disabled controls are not used to claim normal-text contrast compliance.
+// WCAG 相对亮度。此处所有前景与背景都不透明；不能用覆盖层
+// 和禁用控件宣称普通文本的对比度合规。
 function luminance(hex: string): number {
   assert.match(hex, /^#[\da-f]{6}$/i);
   const [r, g, b] = [1, 3, 5].map(offset => {

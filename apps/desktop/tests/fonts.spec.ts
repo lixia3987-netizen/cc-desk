@@ -224,7 +224,7 @@ test('fonts: corrupted glyph data is rolled back, and invalid sizes return to th
   const f = await workspace(), app=await f.launch();
   try {
     const page=await app.firstWindow(), settings=await openSettings(page);
-    // A bounded sfnt container passes the main-process header check but OTS rejects its absent glyph tables.
+    // 受限的 sfnt 容器可通过主进程头部检查，但 OTS 会因其缺少字形表而拒绝它。
     const invalid=Buffer.alloc(28); invalid.writeUInt32BE(0x00010000); invalid.writeUInt16BE(1,4);
     const source=path.join(f.directory,'broken.ttf'); await fs.writeFile(source,invalid);
     await picker(app,source); await settings.getByRole('button',{name:'导入字体',exact:true}).click();

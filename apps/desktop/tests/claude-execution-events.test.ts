@@ -149,7 +149,7 @@ test('structured shutdown waits for an ignoring descendant after the CLI root ha
     assert.equal(running, false, 'the descendant has stopped when shutdown settles');
     assert.equal(s.runtime.activeCount, 0);
   } finally {
-    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* Already gone. */ } }
+    for (const pid of [childPid, rootPid]) if (pid && alive(pid)) { try { process.kill(pid, 'SIGKILL'); } catch { /* 已经结束。 */ } }
     await s.cleanup();
   }
 });

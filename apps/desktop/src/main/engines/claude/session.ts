@@ -12,7 +12,7 @@ export function projectClaudeSession(session: Session, projectPath?: string): Cl
   };
 }
 
-/** Merge confirmed values into the latest configuration, including partial CLI successes. */
+/** 将已确认的值合并到最新配置中，包括 CLI 部分成功的结果。 */
 export function claudeSessionPatch(session: Session, patch: ClaudeSessionPatch): Partial<Session> {
   const { model, effort, permissionMode, ...runtime } = patch;
   if (model === undefined && effort === undefined && permissionMode === undefined) return runtime;

@@ -80,7 +80,7 @@ test('a lost result keeps its intent and lock, and cannot be retried automatical
   const report = await generateEngineeringReport(batch, path.join(root, 'interrupted-report.json'));
   assert.equal(report.summary.verificationStatuses.unknown, 1);
   await assert.rejects(verifyEngineeringRun({ batchDirectory: batch, runId, candidateDirectory: candidate, signal: cancelled() }), { code: 'EEXIST' });
-  // Simulate an operator removing the lock after inspection: the missing receipt still forbids reusing this candidate.
+  // 模拟操作者检查后移除锁：即使如此，缺少回执仍禁止复用该候选任务。
   await fs.unlink(path.join(batch, 'verification-lock.json'));
   await assert.rejects(verifyEngineeringRun({ batchDirectory: batch, runId, candidateDirectory: candidate, signal: cancelled() }), /unfinished verification/);
   assert.equal((await loadEngineeringBatch(batch)).attemptCount, 1);

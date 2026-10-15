@@ -9,7 +9,7 @@ async function syncDirectory(directory: string): Promise<void> {
   try { handle = await fs.open(directory, constants.O_RDONLY); await handle.sync(); }
   catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
-    // Node cannot portably fsync directory handles on Windows. Files always sync.
+    // Node 无法以跨平台方式在 Windows 上对目录句柄执行 fsync；文件始终执行同步。
     if (process.platform !== 'win32' || !['EPERM', 'EACCES', 'EINVAL', 'EISDIR', 'ENOTSUP'].includes(code ?? '')) throw error;
   } finally { await handle?.close(); }
 }
@@ -19,7 +19,7 @@ async function durableParent(directory: string): Promise<void> {
   for (const entry of created) await syncDirectory(path.dirname(entry));
 }
 
-/** Receipt publication is atomic; acknowledgements follow the file/directory release barrier. */
+/** 回执以原子方式发布；确认必须等待文件和目录释放屏障完成。 */
 export async function writeAgentReceipt(file: string, value: unknown): Promise<void> {
   const directory = path.dirname(file), temporary = `${file}.${randomUUID()}.tmp`;
   await durableParent(directory);
@@ -30,7 +30,7 @@ export async function writeAgentReceipt(file: string, value: unknown): Promise<v
   } finally { await fs.rm(temporary, { force: true }); }
 }
 
-/** Artifacts are append-only and retained even if receipt publication subsequently fails. */
+/** 产物只追加不覆盖，即使随后发布回执失败也会保留。 */
 export async function writeAgentArtifact(file: string, content: string | Buffer): Promise<void> {
   await durableParent(path.dirname(file));
   const handle = await fs.open(file, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0), 0o600);

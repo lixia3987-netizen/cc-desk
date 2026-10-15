@@ -21,7 +21,7 @@ test('inspector stop diagnostics preserve the real handler and retain only bound
     removeHandler: (channel: string) => { handlers.delete(channel); },
     handle: (channel: string, handler: typeof original) => { handlers.set(channel, handler); },
   };
-  // The exact function passed to app.evaluate must work without module closures.
+  // 传给 app.evaluate 的函数必须在没有模块闭包的情况下也能运行。
   const install = new Function(`return (${installInspectorStopDiagnostics.toString()})`)() as typeof installInspectorStopDiagnostics;
   install({ ipcMain } as unknown as Pick<typeof import('electron'), 'ipcMain'>, 'target');
   const event = {};
@@ -60,7 +60,7 @@ function fixture(stopFailure?: Error, closeFailure?: Error) {
     close: async () => {
       calls.push('close');
       if (closeFailure) throw closeFailure;
-      // The process exit notification may arrive after Playwright close resolves.
+      // 进程退出通知可能在 Playwright 的关闭操作完成后才到达。
       setImmediate(() => { child.exitCode = 0; child.emit('exit', 0, null); });
     },
   } as unknown as ElectronApplication;

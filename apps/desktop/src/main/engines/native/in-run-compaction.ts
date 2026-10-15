@@ -11,7 +11,7 @@ import { sameRun } from './worker-protocol';
 const errorCode = (error: unknown): string | undefined => error && typeof error === 'object' && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
 const unchanged = (): ContextMaintenanceResult => ({ kind: 'unchanged', modelRequests: 0, usage: null });
 
-/** Main-process compaction keeps the current worker, task and tools alive. */
+/** 主进程压缩会保持当前工作进程、任务及工具继续存活。 */
 export function createInRunCompaction(options: {
   ledger: NativeRunStore; identity: RunIdentity; model: NativeModelOptions;
   forbiddenValues: readonly string[]; signal: AbortSignal; remainingMs(): number;
@@ -40,8 +40,8 @@ export function createInRunCompaction(options: {
         if (['nothing_to_compact', 'commands_active'].includes(errorCode(error) ?? '')) return unchanged();
         throw error;
       }
-      // The current user request, project rules, tools and most recent complete
-      // tool batch cannot be removed to make a paid summary appear successful.
+      // 不能移除当前用户请求、项目规则、工具及最近一次完整的
+      // 工具批次，以制造付费摘要已成功的假象。
       let continuity: string;
       try {
         continuity = await options.continuity();
@@ -58,13 +58,13 @@ export function createInRunCompaction(options: {
       if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
       await options.assertOwnership();
       const requestId = `in-turn:${options.identity.runId}`;
-      // No external call is made until the one-per-run debit is durable. Any
-      // write acknowledgement failure propagates as an uncertain outcome.
+      // 每次运行限一次的扣减持久化之前，不发起外部调用。任何
+      // 写入确认失败都以结果不确定的状态向上传播。
       const reservation = await options.ledger.reserveRunCompaction(options.identity, { requestId, contextHash: source.contextHash });
       if (reservation.kind !== 'reserved') return unchanged();
       attempted = true;
       phaseStarted = true;
-      try { await options.onCompacting(); } catch { /* Projection cannot undo the durable debit. */ }
+      try { await options.onCompacting(); } catch { /* 投影不能撤销已持久化的扣减。 */ }
       const fail = async (reason: ContextMaintenanceFailureReason, usage: Usage | null): Promise<ContextMaintenanceResult> => {
         await options.ledger.failRunCompaction(options.identity, { requestId, reason, usage });
         return { kind: 'failed', modelRequests: 1, usage, reason };
@@ -88,7 +88,7 @@ export function createInRunCompaction(options: {
       try {
         const receipt = await options.ledger.commitRunCompaction(options.identity, { requestId, contextHash: source.contextHash,
           summary: summary.summary, continuity, usage: summary.usage });
-        // The host ledger is authoritative before the main worker can switch.
+        // 主工作进程切换前，宿主账本必须先成为权威依据。
         return { kind: 'compacted', modelRequests: 1, usage: summary.usage, context: receipt.context };
       } catch (error) {
         if (['compaction_not_smaller', 'invalid_summary', 'invalid_continuity'].includes(errorCode(error) ?? '')) return await fail('context_maintenance_unhelpful', summary.usage);
@@ -96,8 +96,8 @@ export function createInRunCompaction(options: {
       }
     } finally {
       maintaining = false;
-      // A UI repair must not turn a committed replacement into an unknown write.
-      if (phaseStarted) { try { await options.onSettled(); } catch { /* Hydration repairs the read-only projection. */ } }
+      // 界面修复不能将已提交的替换变成结果不确定的写入。
+      if (phaseStarted) { try { await options.onSettled(); } catch { /* 水合过程修复只读投影。 */ } }
     }
   } };
 }

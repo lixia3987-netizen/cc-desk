@@ -24,7 +24,7 @@ const requestSchema = z.object({
 export interface NativeImagePreviewPorts {
   directory: string;
   session(id: string): Pick<Session, 'id' | 'kind' | 'execution'>;
-  /** Returns a host-owned fence for maintenance, cancellation and lifecycle changes. */
+  /** 返回由宿主管理的隔离标记，用于维护、取消和生命周期变更。 */
   captureAdmission(id: string): () => void;
   queueReferences(id: string, file: string): boolean;
   readDraft?: typeof readNativeDraftImage;
@@ -40,7 +40,7 @@ function historicalImage(request: NativeImagePreviewRequest, submission: BeginRu
   if (submission.protocol.version !== 1 || !chat && submission.protocol.id !== 'openai-responses') throw unavailable();
   const images: UserImage[] = [];
   for (const item of submission.userItems) {
-    // Only user-origin image parts are eligible, never assistant/tool output.
+    // 仅用户来源的图片部分符合条件，助手或工具输出不符合。
     if (!object(item) || item.role !== 'user') throw unavailable();
     if (!Array.isArray(item.content)) continue;
     for (const part of item.content) {
@@ -55,15 +55,15 @@ function historicalImage(request: NativeImagePreviewRequest, submission: BeginRu
   const metadata: unknown = submission.configuration.imageAttachments;
   if (!isNativeImageAttachments(metadata)) throw unavailable();
   verifyNativeImageAttachments(images, metadata);
-  // Verification above validates the metadata shape as well as all image bytes,
-  // rather than trusting just the requested position in a partially bad record.
+  // 上方验证同时检查元数据结构和全部图片字节，
+  // 不只信任部分损坏记录中请求位置的数据。
   const image = metadata[request.source.index];
   const selected = images[request.source.index];
   if (!image || !selected || image.sha256 !== request.source.sha256) throw unavailable();
   return { image: { ...image }, dataUrl: selected.dataUrl };
 }
 
-/** Explicit bounded local reads; this host holds no cached bytes or writer handles. */
+/** 显式有界本地读取；此宿主不缓存字节，也不持有写入句柄。 */
 export class NativeImagePreviewHost {
   private pending = new Set<string>();
   constructor(private ports: NativeImagePreviewPorts) {}

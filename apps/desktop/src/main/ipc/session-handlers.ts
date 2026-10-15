@@ -101,8 +101,8 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
         const validated = ports.validateConfig(session.id, engineConfig);
         if (input.archived && ports.chat.has(session.id)) await ports.chat.stopIdle(session.id);
         if (session.execution.mode === 'structured') {
-          // The provider commits each confirmed change; never overwrite a
-          // partially applied live configuration with the request's old view.
+          // 提供方提交每项已确认变更；不能用请求中的旧视图
+          // 覆盖已经部分应用的实时配置。
           await ports.chat.updateConfig(session.id, validated);
         } else ports.store.change(state => { state.sessions.find(item => item.id === session.id)!.engineConfig = validated; });
         save();
@@ -117,16 +117,16 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
   handle('session:delete', deleteSchema, input => {
     const id = typeof input === 'string' ? input : input.id;
     if (typeof input !== 'string' && 'forceWorktree' in input) {
-      // Use the same directory locks and worker-release barrier as safe cleanup.
-      // Force only relaxes Git's clean/merged checks, never resource ownership.
+      // 使用与安全清理相同的目录锁和工作进程释放屏障。
+      // 强制操作仅放宽 Git 的干净与已合并检查，不放宽资源所有权检查。
       return ports.manageWorktreeDeletion(id, input.worktreePath, async session => {
         if (session.worktree !== input.worktreePath) throw new Error('隔离目录已改变，请重新打开删除确认后重试。');
         if (ports.cleanupDependencies(session)) throw new Error('其他会话的工作目录或 worktree 来源依赖此目录，不能强制删除。');
         const result = await forceCleanupWorktree(ports.worktreeBase(session), session.worktree!, id);
         if (!result.ok) throw new Error(result.message);
         try {
-          // Record the completed filesystem step so a later attachment/history
-          // removal failure can be retried as ordinary record-only deletion.
+          // 记录已完成的文件系统步骤，以便后续附件或历史
+          // 移除失败时，按普通的仅记录删除流程重试。
           ports.store.change(state => {
             const saved = state.sessions.find(item => item.id === id)!;
             saved.worktree = undefined;

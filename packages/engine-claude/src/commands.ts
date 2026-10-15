@@ -8,17 +8,17 @@ import { MISSING_TRANSCRIPT_ERROR } from './session-recovery.js';
 
 const execFileAsync = promisify(execFile);
 
-/** Desktop and other hosts own inherited environments and generic executable lookup. */
+/** 继承的环境及通用可执行文件查找由桌面端或其他宿主管理。 */
 export interface ClaudeCommandHost {
   environment(): Record<string, string>;
   findExecutable(name: string, env: Record<string, string>, platform?: NodeJS.Platform): string | undefined;
 }
 
-// These errors contain only application-owned text, never child-process output or paths.
+// 这些错误仅包含应用自身的文本，绝不包含子进程输出或路径。
 export class CLIResolutionError extends Error {}
 const unquote = (value: string) => value.trim().replace(/^"(.*)"$/, '$1');
 
-/** Resolve npm package metadata, never execute or interpret a CMD/BAT script. */
+/** 解析 npm 包元数据，绝不执行或解释 CMD/BAT 脚本。 */
 export function resolveNpmLauncher(file: string, env: Record<string, string>, platform: NodeJS.Platform, host: ClaudeCommandHost): { file: string; prefix: string[] } {
   const directory = path.dirname(file);
   const roots = [path.join(directory, 'node_modules', '@anthropic-ai', 'claude-code')];
@@ -43,17 +43,17 @@ export function resolveNpmLauncher(file: string, env: Record<string, string>, pl
   if (!relative || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) throw new CLIResolutionError('Claude Code npm 启动入口必须位于安装包内。');
   try { if (!fs.statSync(target).isFile()) throw new Error(); }
   catch { throw new CLIResolutionError('Claude Code npm 启动文件缺失，安装可能未完成。请重新安装并允许 npm 安装脚本执行。'); }
-  // New npm releases install a native binary and need no Node.js at runtime.
+  // 新版 npm 包安装原生二进制文件，运行时无需 Node.js。
   if (/\.exe$/i.test(target)) return { file: target, prefix: [] };
   if (!/\.(?:c|m)?js$/i.test(target)) throw new CLIResolutionError('Claude Code npm 启动入口类型不受支持；请选择 claude.exe 或标准 npm 安装生成的 claude.cmd。');
-  // Match npm's preference for a Node executable beside the shim; never select node.cmd.
+  // 遵循 npm 优先使用垫片旁 Node 可执行文件的规则，绝不选择 node.cmd。
   const nodeName = platform === 'win32' ? 'node.exe' : 'node';
   const node = host.findExecutable(path.join(directory, nodeName), env, platform) ?? host.findExecutable(nodeName, env, platform);
   if (!node) throw new CLIResolutionError('此旧版 Claude Code npm 包需要 Node.js。请将 node.exe 加入 PATH 并完全退出后重开客户端，或更新 Claude Code npm 包。');
   return { file: node, prefix: [target] };
 }
 
-/** Recognize npm's plain env-node shebang without interpreting arbitrary launcher scripts. */
+/** 识别 npm 的普通 env-node shebang，不解释任意启动脚本。 */
 function usesEnvNode(file: string): boolean {
   let descriptor: number | undefined;
   try {
@@ -68,19 +68,19 @@ function usesEnvNode(file: string): boolean {
   finally { if (descriptor !== undefined) fs.closeSync(descriptor); }
 }
 
-/** The supplied environment is enriched with the selected POSIX Node's directory.
- * Pass this same object to the child process so CLI tools inherit the resolved Node.
+/** 将选定的 POSIX Node 所在目录补充到传入环境。
+ * 将同一对象传给子进程，确保 CLI 工具继承已解析的 Node。
  */
 export function cliInvocation(settings: ClaudeSettings, env: Record<string, string>, host: ClaudeCommandHost): { file: string; prefix: string[] } {
-  // cc-desk owns update confirmation for the CLI processes it starts.
-  // Explicit `claude update` still works with the background updater disabled.
+  // cc-desk 负责确认其启动的 CLI 进程的更新。
+  // 禁用后台更新器后，显式执行 `claude update` 仍然有效。
   env.DISABLE_AUTOUPDATER = '1';
   const file = host.findExecutable(settings.claudePath || 'claude', env);
   if (!file) throw new CLIResolutionError('找不到 Claude Code。请先安装 CLI，或在设置中填写 claude 可执行文件的完整路径。');
   if (/\.(cmd|bat)$/i.test(file)) return resolveNpmLauncher(file, env, process.platform, host);
   if (process.platform !== 'win32' && usesEnvNode(file)) {
-    // Keep the selected bin directory: npm/nvm's claude is usually a symlink into
-    // lib/node_modules, while the matching Node remains beside that symlink.
+    // 保留选定的 bin 目录：npm/nvm 的 claude 通常是指向
+    // lib/node_modules 的符号链接，而配套 Node 位于该链接旁。
     const node = host.findExecutable(path.join(path.dirname(file), 'node'), env) ?? host.findExecutable('node', env);
     if (!node) throw new CLIResolutionError('此 Claude Code 启动文件需要 Node.js。请在 claude 所在目录安装 node，或将 Node.js 加入 PATH 并完全退出后重开客户端。');
     const directory = path.dirname(node);
@@ -112,7 +112,7 @@ export async function detectCLI(settings: ClaudeSettings, host: ClaudeCommandHos
     ]);
     return parseCapabilities(help.stdout, file, version.stdout);
   } catch (error) {
-    // A failed process can echo configuration/credentials through stderr. Do not forward it over IPC.
+    // 失败进程可能通过标准错误回显配置或凭据，禁止通过 IPC 转发。
     return { available: false, executable: '', version: '', flags: [], efforts: ['default'], error: error instanceof CLIResolutionError ? error.message : 'Claude Code 检测失败。请检查 CLI 安装、可执行路径和权限，然后重新检测。' };
   }
 }

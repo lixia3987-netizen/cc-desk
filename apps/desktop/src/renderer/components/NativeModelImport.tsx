@@ -3,7 +3,7 @@ import type { ClaudeModelImportPreview, ClaudeModelImportResult } from '../../sh
 import type { NativeConnectionList } from '../../shared/native-connections';
 import { nativeConnectionsChanged } from '../useNativeConnectionReadiness';
 
-/** Configuration previews contain metadata only; credentials stay in the main process. */
+/** 配置预览仅包含元数据，凭据保留在主进程中。 */
 export function NativeModelImport({ disabled = false, onConnections, onEditConnection, onUseConnection }: {
   disabled?: boolean;
   onConnections(): void;
@@ -54,7 +54,7 @@ export function NativeModelImport({ disabled = false, onConnections, onEditConne
   const importModel = () => {
     if (!api || locked || pending.current || !preview || !model || (preview.requiresLoopbackHttp && !allowLoopbackHttp)) return;
     const selected = preview;
-    // Every confirmation consumes its preview, including a failed attempt.
+    // 每次确认都会消耗对应的预览，即使尝试失败也一样。
     setPreview(undefined);
     void action(async () => {
       const imported = await api.import({ token: selected.token, model, credentialMode, allowLoopbackHttp });

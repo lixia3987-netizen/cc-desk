@@ -88,11 +88,11 @@ export interface DesktopAPI {
   pickAttachments(id: string): Promise<Attachment[]>;
   addPastedNativeImages(id: string, images: NativePastedImage[]): Promise<Attachment[]>;
   addDroppedAttachments(id: string, files: File[]): Promise<Attachment[]>;
-  /** Metadata for original files; call stageDraftAttachments before submitting. */
+  /** 原始文件的元数据，提交前需调用 stageDraftAttachments。 */
   chooseDraftAttachments(): Promise<DraftAttachment[]>;
   previewDraftNativeImage(selection: Pick<DraftAttachment, 'selectionId' | 'path'>): Promise<NativeImagePreview>;
   addDroppedDraftAttachments(files: File[]): Promise<DraftAttachment[]>;
-  /** Returns private session-owned paths, which are the only paths accepted for submission. */
+  /** 返回会话所属的私有路径，提交时只接受这些路径。 */
   stageDraftAttachments(id: string, files: DraftAttachment[]): Promise<Attachment[]>;
   listAttachments(id: string): Promise<Attachment[]>;
   removeAttachment(id: string, path: string): Promise<void>;

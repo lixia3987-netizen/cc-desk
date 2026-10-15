@@ -7,7 +7,7 @@ const resultStates: Record<ChangeSetResult['status'], string> = {
   completed: '本次变更集写入已记录', partial: '本次变更集部分应用', not_applied: '本次变更集未应用', unknown: '本次变更集结果未知',
 };
 
-/** Missing, truncated or malformed host previews must never fall back to ordinary JSON approval. */
+/** 主进程预览缺失、截断或格式错误时，不能退回普通 JSON 审批。 */
 export function nativeChangeSetCanApprove(preview: unknown): boolean {
   return isNativeChangeSetPreview(preview);
 }

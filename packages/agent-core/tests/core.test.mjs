@@ -903,7 +903,7 @@ test('image bytes enter the existing exact-input digest while text-only submissi
     f.ports.model.userItems = (input, images) => {
       if (!images?.length) return [{ role: 'user', content: input }]
       const items = [{ role: 'user', content: [{ type: 'input_text', text: input }, { type: 'input_image', image_url: images[0].dataUrl, detail: 'auto' }] }]
-      images[0].dataUrl = 'data:image/png;base64,ZA==' // Adapter cannot mutate caller-owned attachment data.
+      images[0].dataUrl = 'data:image/png;base64,ZA==' // 适配器不能修改调用方持有的附件数据。
       return items
     }
     f.hooks.begin = begin => { submissions.push(copy(begin)) }

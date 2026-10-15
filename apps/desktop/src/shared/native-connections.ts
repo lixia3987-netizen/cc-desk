@@ -13,7 +13,7 @@ export interface NativeModelCapabilitySnapshot {
   conservative?: boolean;
 }
 export interface NativeModelMetadata { id: string; name?: string; capabilities?: NativeModelCapabilities }
-/** Only references and connection metadata may cross the renderer boundary. */
+/** 仅引用与连接元数据可跨越渲染进程边界。 */
 export type NativeConnectionAuth = { mode: 'env'; variable: string } | { mode: 'memory' } | { mode: 'encrypted' };
 export interface NativeConnection {
   id: string;
@@ -36,11 +36,11 @@ export interface NativeConnectionList {
   storage: { persistentAvailable: boolean; reason?: string };
   error?: string;
 }
-/** The secret is accepted by one mutation only and is never returned. */
+/** 密钥仅由一次变更操作接收，且不会返回。 */
 export interface NativeCredentialMutation { id: string; revision: number; mode: 'memory' | 'encrypted'; secret: string }
 export interface NativeConnectionTestInput { id: string; revision: number; requestId: string }
 export type NativeConnectionTestCode = 'ok' | 'configuration' | 'busy' | 'cancelled' | 'timeout' | 'authentication' | 'permission' | 'endpoint' | 'rate_limit' | 'service' | 'http' | 'redirect' | 'protocol' | 'incomplete' | 'refused' | 'unexpected_tool' | 'credential_echo' | 'transport' | 'response_limit';
-/** Only locally constructed status fields cross IPC; never provider text or an exception. */
+/** 仅本地构造的状态字段可通过 IPC，不传递提供方文本或异常。 */
 export interface NativeConnectionTestResult {
   requestId: string;
   code: NativeConnectionTestCode;
@@ -51,7 +51,7 @@ export interface NativeConnectionTestResult {
 }
 export interface NativeConnectionModelListInput { id: string; revision: number; requestId: string }
 export type NativeConnectionModelListCode = 'ok' | 'configuration' | 'busy' | 'cancelled' | 'timeout' | 'authentication' | 'permission' | 'endpoint' | 'rate_limit' | 'service' | 'http' | 'redirect' | 'protocol' | 'credential_echo' | 'transport' | 'response_limit';
-/** Only validated model metadata crosses IPC; results remain tied to the saved connection revision. */
+/** 仅已校验的模型元数据通过 IPC，结果始终与已保存的连接修订版绑定。 */
 export interface NativeConnectionModelListResult {
   requestId: string;
   connectionId: string;

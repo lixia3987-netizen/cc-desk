@@ -52,7 +52,7 @@ test('MCP choices disambiguate IDs, preserve missing entries, and escape metadat
 test('actual checkbox handlers reject unavailable additions but allow unavailable saved selections to be removed', () => {
   let selected = ['disabled', 'missing'];
   const choices = inputs(NativeMcpChoices({ selected, result, onChange: next => { selected = next; } }));
-  choices[3].onChange(); // Unready connection cannot be added.
+  choices[3].onChange(); // 不能添加尚未就绪的连接。
   assert.deepEqual(selected, ['disabled', 'missing']);
   choices[2].onChange();
   assert.deepEqual(selected, ['missing']);

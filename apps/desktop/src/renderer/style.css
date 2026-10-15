@@ -195,7 +195,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .version{display:none}
 .welcome-foot>span{display:none}}
 
-/* v0.2 structured workbench */
+/* v0.2 结构化工作台 */
 .panel-content{overflow:auto;padding:18px 16px;min-height:0;flex:1}
 .panel-content h4{font-size:calc(12px * var(--ui-font-scale));font-weight:500;margin:19px 0 12px;color:var(--text-secondary)}
 .panel-heading{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
@@ -325,7 +325,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .slash-name small{margin-left:7px;font-weight:400;color:var(--text-muted)}
 .slash-kind{align-self:start;color:var(--accent);font-size:calc(9px * var(--ui-font-scale))}
 .slash-description{grid-column:1/-1;font-size:calc(10px * var(--ui-font-scale));font-weight:400;color:var(--text-muted);overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-/* Let task details yield height to the composer when banners or small windows reduce the chat area. */
+/* 横幅或小窗口缩减聊天区域时，任务详情应让出高度给发送框。 */
 .subtask-panel{display:flex;flex-direction:column;margin:6px 18px 0;border:1px solid var(--border);border-radius:8px;background:var(--surface);flex-shrink:1;min-width:0;min-height:37px;overflow:hidden}
 .subtask-toggle{width:100%;min-height:35px;flex-shrink:0;padding:8px 10px;gap:8px;justify-content:flex-start;text-align:left;font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
 .subtask-toggle:hover{background:var(--hover)}
@@ -454,7 +454,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .chat-services>span{display:inline-block;margin-right:14px}
 .chat-model{font-size:calc(9px * var(--ui-font-scale));max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-secondary)}
 
-/* CommonMark/GFM content uses the same constrained chat width as plain messages. */
+/* CommonMark/GFM 内容与普通消息使用相同的聊天宽度限制。 */
 .message-markdown {overflow-wrap:anywhere;line-height:1.65}
 .message-markdown p {margin:.45em 0}
 .message-markdown ul,.message-markdown ol {padding-left:1.6em;margin:.55em 0}
@@ -490,7 +490,7 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .message-truncated {padding-top:8px;border-top:1px dashed var(--border)}
 .modal:focus {outline:none}
 
-/* Theme-aware state treatments retain labels/icons as well as color. */
+/* 适配主题的状态样式在使用颜色的同时，也保留标签和图标。 */
 button.danger:not(:disabled):hover { color: var(--danger); background: var(--danger-bg); }
 .status-tag.error, .status-tag.failed { color: var(--danger); border-color: var(--danger-border); background: var(--danger-bg); }
 .status-tag.waiting, .status-tag.stopping { color: var(--warning); border-color: var(--warning-border); background: var(--warning-bg); }
@@ -502,7 +502,7 @@ button.danger:not(:disabled):hover { color: var(--danger); background: var(--dan
 
 input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 
-/* Settings keep the theme choices and commit actions within easy reach. */
+/* 设置界面让主题选项与提交操作便于触达。 */
 .ide-open {flex-shrink:0}
 .ide-path-row {display:flex;align-items:center;gap:8px}
 .ide-path-row input {flex:1;min-width:0}
@@ -520,7 +520,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .chat-scroll-content{display:flow-root}
 .review-file{display:block;overflow-wrap:anywhere;margin:12px 0 8px;font-size:calc(12px * var(--ui-font-scale))}
 
-/* History and attention controls use theme tokens to keep all five palettes readable. */
+/* 历史与待关注事项控件使用主题变量，确保五套配色都清晰可读。 */
 .chat-reading-toolbar{display:flex;align-items:center;gap:12px;min-height:36px;padding:5px 18px;border-bottom:1px solid var(--border);flex-shrink:0;font-size:calc(11px * var(--ui-font-scale));color:var(--text-muted)}
 .chat-reading-toolbar>span{margin-left:auto}
 .history-controls{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:8px 0 16px;font-size:calc(11px * var(--ui-font-scale));color:var(--text-muted)}
@@ -541,12 +541,12 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 
 .history-reading-note{margin:6px 18px;flex-shrink:0}
 
-/* Chat and interface typography are independent from the live terminal. */
+/* 聊天及界面的字体排版与活动终端相互独立。 */
 .chat-message,.message-markdown,.composer textarea,.approval-card legend,.question-options button>span{font-family:var(--chat-font-family)}
 .chat-message>header,.tool-card>summary{font-family:var(--ui-font-family)}
 .message-markdown code,.message-markdown pre,.tool-input{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono",monospace}
 .statusbar{height:auto;min-height:30px;gap:10px;padding-block:6px;flex-wrap:wrap}
-/* Session selection and row actions are sibling controls, never nested buttons. */
+/* 会话选择与行内操作使用同级控件，不能嵌套按钮。 */
 .session-row-wrap{position:relative;display:flex;align-items:center;margin-bottom:3px;border:1px solid transparent;border-radius:7px}
 .session-row-wrap.active{background:var(--selected);border-color:var(--selected-border)}
 .session-row-wrap:hover{background:var(--hover)}
@@ -571,7 +571,7 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .native-assistance-body>.native-agent-panel,.native-assistance-body>.native-command-panel,.native-assistance-body>.native-task-panel{margin:3px 0 6px;max-height:none}
 @media(max-width:650px){.native-assistance{margin:0 8px}.native-assistance-body{max-height:30vh}}
 
-/* Session permissions belong beside the composer; settings contain defaults. */
+/* 会话权限放在发送框旁，设置界面只保留默认值。 */
 .chat-composer>.chat-composer-permissions{padding:7px 12px 0;min-width:0}
 .composer-permission{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
 .composer-permission select{width:auto;max-width:min(250px,100%);padding:5px 8px;font-size:inherit;min-height:29px;background:var(--input-bg)}

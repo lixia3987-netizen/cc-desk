@@ -33,10 +33,10 @@ export class NativeContextSummaryError extends Error {
 
 export interface SummarizeNativeContextOptions {
   identity: RunIdentity;
-  /** A caller-validated prefix ending at a complete turn, never a display projection. */
+  /** 由调用方验证、结束于完整轮次的前缀，绝非显示投影。 */
   context: ModelContext;
   model: NativeModelOptions;
-  /** Main-process guards only; never sent to the model worker. */
+  /** 仅主进程使用的守卫；绝不发送到模型工作进程。 */
   forbiddenValues?: readonly (string | undefined)[];
   maxInputTokens: number;
   maxOutputTokens: number;
@@ -45,14 +45,14 @@ export interface SummarizeNativeContextOptions {
   worker?: typeof runNativeWorker;
 }
 
-/** Cheap preflight shared by callers which must reserve a debit before dispatch. */
+/** 派发前必须预留扣减的调用方共用的轻量预检。 */
 export function prepareNativeContextSummary(options: Pick<SummarizeNativeContextOptions, 'context' | 'model' | 'maxInputTokens' | 'forbiddenValues'>): string {
   if (contextHasUserImages(options.context)) throw new NativeContextSummaryError('image_context');
   const adapter = createNativeModel(options.model);
   if (!equal(options.context.protocol, adapter.protocol) || !options.context.items.length) throw new NativeContextSummaryError('configuration');
   const history = clone(options.context);
-  // Private continuation blocks belong to their original assistant message.
-  // Never reframe signatures or encrypted thinking as ordinary user content.
+  // 私有续接块归属于其原始助手消息。
+  // 绝不将签名或加密思考重新包装为普通用户内容。
   if (history.protocol.id === 'anthropic-messages') for (const item of history.items) {
     if (object(item) && item.role === 'assistant' && Array.isArray(item.content)) {
       item.content = item.content.filter(block => !object(block) || !['thinking', 'redacted_thinking'].includes(String(block.type)));
@@ -66,7 +66,7 @@ export function prepareNativeContextSummary(options: Pick<SummarizeNativeContext
   return input;
 }
 
-/** One isolated, model-only request. It cannot mutate the caller's durable ledger or run tools. */
+/** 一次隔离的纯模型请求，不能修改调用方的持久化账本或执行工具。 */
 export async function summarizeNativeContext(options: SummarizeNativeContextOptions): Promise<{ summary: string; usage: Usage | null }> {
   for (const value of [options.maxInputTokens, options.maxOutputTokens, options.maxActiveMs]) {
     if (!Number.isSafeInteger(value) || value < 1) throw new NativeContextSummaryError('configuration');
@@ -113,8 +113,8 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
         attemptPending = false;
       } else if (event.type === 'model_response') {
         if (!attemptPending) invalid();
-        // The protocol adapter has already validated the complete response's
-        // reported counters. A forbidden summary tool call still consumed them.
+        // 协议适配器已验证完整响应的
+        // 报告计数；被禁止的摘要工具调用仍已消耗这些额度。
         const reported = event.response.usage;
         if (reported && object(reported) && Object.entries(reported).every(([key, value]) =>
           ['inputTokens', 'outputTokens', 'totalTokens'].includes(key) && Number.isSafeInteger(value) && (value as number) >= 0)) observedUsage = clone(reported);
@@ -140,10 +140,10 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
         maxResponseBytes: Math.min(options.model.maxResponseBytes ?? MAX_RESPONSE_BYTES, MAX_RESPONSE_BYTES) },
       tools, store, approvals: { request: async () => invalid() }, onEvent: () => {}, signal: controller.signal, forbiddenValues,
     });
-    // Always await actual worker cleanup; cancellation cannot commit a late result.
+    // 始终等待工作进程实际清理完毕；取消后不能提交迟到的结果。
     if (options.signal.aborted) throw new NativeContextSummaryError('cancelled');
-    // Core's active deadline can settle before this process dispatches its
-    // timeout callback. Its committed timeout is authoritative even then.
+    // 核心活动截止时间可能先于此进程调度
+    // 超时回调结束；即便如此，核心已提交的超时仍为权威结果。
     if (deadlineExpired() || result.status === 'budget_exhausted' && result.reason === 'active_time_budget') throw new NativeContextSummaryError('timeout');
     if (!committed || !equal(result, committed) || result.status !== 'completed' || !result.committed || result.modelRequests !== 1 || result.toolCalls !== 0 || !response) invalid();
     const summary = extractNativeAssistantText(response.outputItems).trim();
@@ -151,7 +151,7 @@ export async function summarizeNativeContext(options: SummarizeNativeContextOpti
     assertNoModelCredential(summary, forbiddenValues);
     return { summary, usage: clone(response.usage) };
   } catch (error) {
-    // The executor must retain ownership if utilityProcess release could not be confirmed.
+    // 无法确认 utilityProcess 已释放时，执行器必须继续保留所有权。
     if (object(error) && error.cleanupUnconfirmed === true) throw error;
     const knownUsage = observedUsage ?? response?.usage ?? committed?.usage ?? null;
     if (options.signal.aborted) throw new NativeContextSummaryError('cancelled', knownUsage);

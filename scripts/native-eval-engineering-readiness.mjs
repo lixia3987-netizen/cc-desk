@@ -32,8 +32,8 @@ function inspectSlot(slot) {
     add('inconsistent_duration_budget', 'budget.activeDurationMs');
   }
   if (slot.attempts.length) add('existing_verification_attempt', 'attempts');
-  // Zero usage, false usageComplete and references on otherwise pending records
-  // are still evidence of an existing run, never permission to start it again.
+  // 即使记录仍处于待执行状态，零用量、为 false 的 usageComplete 或引用
+  // 也能证明已经运行过，不能据此允许再次启动。
   for (const [field, value] of Object.entries(record.result)) {
     const initial = field === 'failureClass' || field === 'failureReason' ? null : 'pending';
     if (value !== initial) add('existing_run_evidence', `result.${field}`);
@@ -50,15 +50,15 @@ function inspectSlot(slot) {
   };
 }
 
-/** Read only the fixed batch metadata; references are opaque declarations. */
+/** 仅读取固定批次的元数据；引用仅视为声明，不解析其内容。 */
 export async function checkEngineeringReadiness(batchDirectory) {
   let batch;
   try {
-    // Preserve the existing complete matrix, suite, size, attempt and lock
-    // validation. Invalid historical-schema data is an error, not a ready slot.
+    // 保留现有的完整矩阵、测试集、大小、尝试次数及锁
+    // 校验。旧版结构中的无效数据应报告错误，不能作为可运行的条目。
     batch = await loadEngineeringBatch(batchDirectory);
   } catch {
-    // Parser and filesystem errors can contain record fragments or paths.
+    // 解析器和文件系统错误可能包含记录片段或路径。
     throw new Error('Invalid engineering readiness batch; check manifest, records and attempts.');
   }
   const slots = batch.slots.map(inspectSlot);

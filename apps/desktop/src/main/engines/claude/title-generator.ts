@@ -6,7 +6,7 @@ import { ClaudeConnection } from './connection';
 
 export class SessionTitleCleanupError extends Error {}
 
-/** Auxiliary work obeys the same physical process-tree release barrier as chat. */
+/** 辅助任务遵循与聊天相同的物理进程树释放屏障。 */
 export function titleCleanupSucceeded(stopped: boolean, _closedBeforeCleanup: boolean, _platform: NodeJS.Platform = process.platform): boolean {
   return stopped;
 }
@@ -15,7 +15,7 @@ const TITLE_INSTRUCTION = '你是会话命名助手。仅总结用户消息所�
 const REQUIRED_FLAGS = ['--print', '--output-format', '--tools', '--strict-mcp-config', '--mcp-config', '--settings', '--no-session-persistence', '--system-prompt'];
 
 export function sessionTitleArguments(session: Pick<ClaudeConfig, 'model'>, capabilities?: Capabilities): string[] | undefined {
-  // Old CLIs lacking isolation controls may still chat normally; naming stays optional.
+  // 缺少隔离控制的旧版 CLI 仍可正常聊天；命名功能保持可选。
   if (!capabilities?.available || REQUIRED_FLAGS.some(flag => !capabilities.flags.includes(flag)) || (session.model && !capabilities.flags.includes('--model'))) return undefined;
   const args = ['--print', '--output-format', 'json', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--settings', '{"disableAllHooks":true}', '--no-session-persistence', '--system-prompt', TITLE_INSTRUCTION];
@@ -27,14 +27,14 @@ export function sessionTitleArguments(session: Pick<ClaudeConfig, 'model'>, capa
   return args;
 }
 
-/** A fresh, tool-free print invocation retains the CLI's existing provider/auth configuration. */
+/** 全新且不使用工具的 print 调用保留 CLI 现有的提供方和认证配置。 */
 export async function generateClaudeSessionTitle(request: SessionTitleRequest, options: { timeoutMs?: number; invocation?: { file: string; prefix: string[] } } = {}): Promise<string | undefined> {
   if (request.signal.aborted || request.session.execution.providerId !== 'claude') return undefined;
   const args = sessionTitleArguments(parseClaudeConfig(request.session.engineConfig), request.capabilities);
   if (!args) return undefined;
   const env = environment();
   const cli = options.invocation ?? cliInvocation(request.settings, env);
-  // Limit the auxiliary request while retaining context at both ends of long pasted input.
+  // 限制辅助请求，同时保留较长粘贴输入两端的上下文。
   const prompt = request.prompt.length > 12_000 ? request.prompt.slice(0, 8_000) + '\n[…中间内容省略…]\n' + request.prompt.slice(-4_000) : request.prompt;
   let connection: ClaudeConnection | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -57,13 +57,13 @@ export async function generateClaudeSessionTitle(request: SessionTitleRequest, o
           if (frame.type === 'result' && frame.subtype === 'success' && frame.is_error !== true && typeof frame.result === 'string') result = frame.result;
           else if (frame.type === 'result') invalid = true;
         },
-        // Even errors normally exit by themselves; let close settle before explicit cancellation.
+        // 即使出错，进程通常也会自行退出；显式取消前先等待关闭完成。
         error: () => { invalid = true; },
         outputLimit: () => {
           invalid = true;
-          // An oversized final write can arrive just before natural exit. The
-          // decoder has stopped but the pipe still drains; allow a brief close
-          // grace before cancellation. Physical tree cleanup still gates release.
+          // 过大的末次写入可能恰好在自然退出前到达。
+          // 解码器已经停止，但管道仍在排空；取消前应给予
+          // 短暂的关闭宽限期。释放仍须等待物理进程树清理完成。
           outputExitTimer = setTimeout(() => finish(), 250);
         },
         close: code => { closedBeforeCleanup = !connection?.ending; connection?.finish(); finish(code === 0 && !invalid ? result : undefined); },
@@ -80,7 +80,7 @@ export async function generateClaudeSessionTitle(request: SessionTitleRequest, o
     if (abort) request.signal.removeEventListener('abort', abort);
     connection?.terminate();
     if (connection?.termination) {
-      // Keep shutdown/update barriers alive until descendants are reaped too.
+      // 子孙进程也回收完成后，才解除退出与更新屏障。
       connection.killTimer?.ref();
       if (!titleCleanupSucceeded(await connection.termination, closedBeforeCleanup)) throw new SessionTitleCleanupError('无法确认会话命名进程已停止，请检查残留进程后重启工作台。');
     }

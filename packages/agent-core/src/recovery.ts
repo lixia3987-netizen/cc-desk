@@ -12,7 +12,7 @@ const reasons = new Set<ModelFailureDiagnostic['reason']>([
   'missing_terminal', 'truncated_event', 'stream_disconnected', 'unexpected_content_type', 'incomplete_response', 'response_limit',
 ])
 
-/** Closed diagnostic boundary shared by the core, host and durable journal. */
+/** 核心、宿主与持久化日志共同使用的封闭诊断边界。 */
 export function validateModelFailureDiagnostic(value: unknown): value is ModelFailureDiagnostic {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const item = value as Record<string, unknown>
