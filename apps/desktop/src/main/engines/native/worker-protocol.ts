@@ -11,6 +11,7 @@ export interface WorkerStart {
   definitions: ToolDefinition[];
   contextMaintenance?: boolean;
   sharedBudget?: boolean;
+  completionValidation?: boolean;
   activePaused?: boolean;
 }
 export interface WorkerActivePause { type: 'active_pause'; version: 1; identity: RunIdentity; paused: boolean }

@@ -22,6 +22,7 @@ import { sameRun } from './worker-protocol';
 import type { NativeAgentChildInput, NativeAgentChildResult } from './agent-delegation';
 import { containsPath } from '../../worktree-paths';
 import { buildNativeChildInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativePromptInstructionSections } from './agent-prompts';
+import { nativeChildMaterialReadEvidence, nativeReviewMaterialReferences } from './agent-delegation-audit';
 
 export type NativeChildRuntimeConfig = ReturnType<typeof parseNativeConfig>;
 export interface NativeAgentChildRunnerOptions {
@@ -153,6 +154,17 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
           maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
       model: { ...options.model, instructions: instructionsText, toolDefinitions: tools.definitions }, forbiddenValues,
       tools, store: durable, approvals: options.approvals, signal,
+      ...(input.toolPolicy === 'read_only' ? { completionValidation: { validate: async (candidate: Parameters<NonNullable<import('./worker-host').NativeWorkerOptions['completionValidation']>['validate']>[0]) => {
+        await assertInstructions();
+        if (candidate.signal.aborted || !sameRun(candidate.identity, identity) || encode(candidate.context) !== encode(ledger!.loadContext())) throw new Error('Delegated completion evidence identity changed.');
+        const child = ledger!.getRun(identity.runId);
+        if (!child || child.status !== 'active') throw new Error('Delegated completion evidence is unavailable.');
+        const references = nativeReviewMaterialReferences(input.goal), evidence = nativeChildMaterialReadEvidence(input.goal, child);
+        const paths = references.paths.filter(file => !evidence.observedPaths.includes(file));
+        if (candidate.signal.aborted) throw new Error('Delegated completion validation cancelled.');
+        // 只返回已声明材料的缺失路径；不读取文件、不代填报告，也不授予额外权限。
+        return paths.length ? { kind: 'continue' as const, code: 'declared_material_reads_missing' as const, paths } : { kind: 'accept' as const };
+      } } } : {}),
       consumeBudget: async (kind: 'model' | 'tool', run: RunIdentity) => {
         if (!sameRun(run, identity)) throw new Error('Delegated budget identity changed.');
         await assertInstructions();

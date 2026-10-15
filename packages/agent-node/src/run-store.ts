@@ -6,12 +6,12 @@ import type {
   ApprovalDecision, BeginRunRequest, BeginRunResult, ModelContext, RunIdentity, RunJournalEvent,
   JsonObject, JsonValue, RunResult, RunStore, ToolCall, Usage, ModelRequestDiagnostic,
 } from '@cc-desk/agent-core';
-import { contextHasUserImages, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage } from '@cc-desk/agent-core';
+import { contextHasUserImages, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { readStoreSnapshot } from './store-read.js';
-import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
+import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeCompletionFeedbackItems, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
@@ -654,6 +654,7 @@ export class NativeRunStore implements RunStore {
       if (last?.outcome === 'failed' && last.retryDelayMs === undefined) fail('model_retry_unavailable', 'A stopped model failure does not authorize another request');
       if ([...run.tools.values()].some(tool => !tool.completed || tool.completed.result.status === 'unknown')) fail('pending_tools', 'Model requests require complete known tool outcomes');
       if (this.runCompactionAttempts.get(identity.runId)?.status === 'attempted') fail('pending_model_request', 'A context summary has an unresolved outcome');
+      if (this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'completion_rejected').length > MAX_COMPLETION_CORRECTIONS) fail('invalid_record', 'Completion correction limit exhausted');
       return;
     }
     if (event.type === 'model_request_failed') {
@@ -684,6 +685,17 @@ export class NativeRunStore implements RunStore {
         if (ids.has(call.id) || run.tools.has(call.id)) fail('payload_mismatch', 'Tool call identity was reused');
         ids.add(call.id);
       }
+      return;
+    }
+    if (event.type === 'completion_rejected') {
+      const attempt = this.modelRequests.get(identity.runId)?.at(-1);
+      const previous = this.records.filter(record => record.identity?.runId === identity.runId && ['model_response', 'completion_rejected'].includes(record.event.type)).at(-1)?.event;
+      if (!Number.isSafeInteger(event.attempt) || !attempt || attempt.attempt !== event.attempt || attempt.outcome !== 'response' ||
+        this.records.filter(record => record.identity?.runId === identity.runId && record.event.type === 'completion_rejected').length > MAX_COMPLETION_CORRECTIONS ||
+        previous?.type !== 'model_response' || previous.response.finishReason !== 'completed' || previous.response.toolCalls.length ||
+        Object.keys(event).some(key => !['type', 'attempt', 'feedback', 'feedbackItems'].includes(key)) ||
+        !validateCompletionDecision(event.feedback) || event.feedback.kind !== 'continue' ||
+        !equal(event.feedbackItems, nativeCompletionFeedbackItems(this.context!.protocol, event.feedback))) fail('invalid_record', 'Completion feedback must bind the current complete model response');
       return;
     }
     if (event.type === 'tool_prepared') {
@@ -742,6 +754,8 @@ export class NativeRunStore implements RunStore {
       if (!validateUsage(result.usage)) fail('invalid_usage', 'Invalid terminal usage');
       validateContext(result.context);
       if (!equal(result.context, this.context)) fail('context_mismatch', 'Terminal context differs from durable model/tool items');
+      const completionBoundary = this.records.filter(record => record.identity?.runId === identity.runId && ['model_response', 'completion_rejected'].includes(record.event.type)).at(-1)?.event;
+      if (result.status === 'completed' && completionBoundary?.type === 'completion_rejected') fail('invalid_record', 'Rejected completion needs a new complete model response');
       const attempts = this.modelRequests.get(identity.runId);
       const modelPending = !!attempts?.length && !attempts.at(-1)!.outcome;
       if (attempts?.length) {
@@ -856,6 +870,8 @@ export class NativeRunStore implements RunStore {
       this.contextBatches.push({ runId: run.identity.runId, start: this.context!.items.length });
       this.context = { protocol: this.context!.protocol, items: [...this.context!.items, ...event.response.outputItems], ...(event.response.continuation === undefined ? {} : { continuation: event.response.continuation }) };
       for (const call of event.response.toolCalls) run.tools.set(call.id, { call, state: 'requested' });
+    } else if (event.type === 'completion_rejected') {
+      this.context = { ...this.context!, items: [...this.context!.items, ...event.feedbackItems] };
     } else if (event.type === 'tool_prepared') {
       const tool = run.tools.get(event.prepared.call.id)!;
       tool.prepared = event; tool.preparedSeq = record.seq; tool.state = 'prepared';
@@ -1036,7 +1052,7 @@ export class NativeRunStore implements RunStore {
   append(identity: RunIdentity, event: RunJournalEvent): Promise<{ seq: number }> {
     return this.exclusive(async () => {
       this.writable();
-      if (!['model_request_diagnostic', 'model_request_started', 'model_request_failed', 'model_response', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
+      if (!['model_request_diagnostic', 'model_request_started', 'model_request_failed', 'model_response', 'completion_rejected', 'tool_prepared', 'tool_completed', 'run_finished'].includes((event as { type: string }).type)) fail('invalid_record', 'Host records cannot be appended by the execution worker');
       const run = this.owner(identity);
       if (event.type === 'model_request_diagnostic') {
         const prior = this.records.find(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.requestKey === event.diagnostic.requestKey && record.event.diagnostic.phase === event.diagnostic.phase);

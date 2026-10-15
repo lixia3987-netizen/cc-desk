@@ -60,6 +60,7 @@ function fixture(responses = [response()]) {
           else delete current.continuation
         }
         if (event.type === 'tool_completed') current.items.push(...copy(event.resultItems))
+        if (event.type === 'completion_rejected') current.items.push(...copy(event.feedbackItems))
         if (event.type === 'run_finished') storedResult = copy(event.result)
         return { seq: events.length }
       },
@@ -114,6 +115,83 @@ function fixture(responses = [response()]) {
     replaceContext: (value) => { current = copy(value) },
     get storedResult() { return storedResult }, get context() { return copy(current) } }
 }
+
+test('completion validation retains rejected responses and continues the same run only after feedback', async () => {
+  const first = response([], { continuation: { opaque: 'preserved' } })
+  const f = fixture([first, response([call('material-read')]), response()])
+  const seen = []
+  f.ports.completionValidation = { validate: async request => {
+    seen.push(copy({ identity: request.identity, attempt: request.attempt, context: request.context }))
+    assert.equal(f.events.at(-1).type, 'model_response')
+    assert.equal(request.signal.aborted, false)
+    return f.executions.length ? { kind: 'accept' } : { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }
+  } }
+  const result = await f.run()
+  assert.equal(result.status, 'completed'); assert.equal(result.modelRequests, 3); assert.equal(result.toolCalls, 1)
+  assert.deepEqual(f.executions, ['material-read'])
+  assert.deepEqual(seen.map(item => item.attempt), [1, 3])
+  assert.ok(seen.every(item => JSON.stringify(item.identity) === JSON.stringify(f.request.identity)))
+  const rejection = f.events.find(item => item.type === 'completion_rejected')
+  assert.equal(rejection.attempt, 1); assert.match(rejection.feedbackItems[0].content, /review\.md/)
+  assert.deepEqual(f.modelInputs[1].context.items.slice(0, -1), [f.context.items[0], ...first.outputItems])
+  assert.deepEqual(f.modelInputs[1].context.continuation, first.continuation)
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 6, totalTokens: 36 })
+  assert.equal(f.events.filter(item => item.type === 'model_response').length, 3)
+})
+
+test('completion correction is bounded to two continuations and original model/shared budgets remain tighter', async () => {
+  const reject = async () => ({ kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] })
+  const f = fixture([response(), response(), response(), response()])
+  f.ports.completionValidation = { validate: reject }
+  const result = await f.run()
+  assert.equal(result.status, 'failed'); assert.equal(result.reason, 'completion_validation_limit'); assert.equal(result.modelRequests, 3)
+  assert.equal(f.events.filter(item => item.type === 'completion_rejected').length, 3)
+  for (const mode of ['model', 'shared']) {
+    const limited = fixture([response(), response()])
+    limited.ports.completionValidation = { validate: reject }
+    if (mode === 'model') limited.request.budget = { maxModelRequests: 1 }
+    else { let consumed = 0; limited.ports.host.consumeBudget = async kind => kind !== 'model' || ++consumed < 2 }
+    const stopped = await limited.run()
+    assert.equal(stopped.status, 'budget_exhausted'); assert.equal(stopped.reason, mode === 'model' ? 'model_request_budget' : 'shared_model_budget')
+    assert.equal(stopped.modelRequests, 1); assert.equal(limited.executions.length, 0)
+  }
+})
+
+test('completion validation cancellation and active deadlines take priority before and after host checks', async () => {
+  for (const mode of ['before', 'after', 'deadline']) {
+    const f = fixture(); let checks = 0
+    if (mode === 'before') f.hooks.append = event => { if (event.type === 'model_response') f.controller.abort() }
+    f.ports.completionValidation = { validate: async () => {
+      checks++
+      if (mode === 'deadline') f.setNow(600001); else f.controller.abort()
+      return { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }
+    } }
+    const result = await f.run()
+    assert.equal(result.status, mode === 'deadline' ? 'budget_exhausted' : 'cancelled')
+    assert.equal(checks, mode === 'before' ? 0 : 1)
+    assert.equal(f.events.some(item => item.type === 'completion_rejected'), false)
+  }
+})
+
+test('untrusted or failed completion validation cannot complete or leak error text', async () => {
+  for (const invalid of [{ kind: 'accept', extra: 'secret' }, { kind: 'continue', code: 'declared_material_reads_missing', paths: ['../escape'] }, 'throw']) {
+    const f = fixture()
+    f.ports.completionValidation = { validate: async () => { if (invalid === 'throw') throw new Error('secret failure'); return invalid } }
+    const result = await f.run()
+    assert.equal(result.status, 'failed'); assert.equal(result.reason, 'completion_validation_failed')
+    assert.equal(JSON.stringify(f.events).includes('secret'), false)
+  }
+})
+
+test('completion feedback persistence failure retains recovery state and sends no extra model request', async () => {
+  const f = fixture()
+  f.ports.completionValidation = { validate: async () => ({ kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }) }
+  f.hooks.append = event => { if (event.type === 'completion_rejected') throw new Error('disk failure') }
+  const result = await f.run()
+  assert.equal(result.status, 'recovery_required'); assert.equal(result.committed, false); assert.equal(result.modelRequests, 1)
+  assert.equal(f.events.some(item => item.type === 'model_response'), true)
+  assert.equal(f.events.some(item => item.type === 'run_finished'), false)
+})
 
 test('whole response is committed before ordered tools, and full opaque context survives normal continuation', async () => {
   const first = response([call('a'), call('b', 'write')], { continuation: { encrypted_state: 'preserved' } })

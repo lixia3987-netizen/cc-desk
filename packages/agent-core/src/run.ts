@@ -9,6 +9,7 @@ import { validateUserImages } from './images.js'
 import { sumUsage, validateUsage } from './usage.js'
 import { createModelRequestDiagnostic, validateModelRequestDiagnostic } from './diagnostics.js'
 import { getToolPreparationFeedback } from './tool-preparation-error.js'
+import { completionFeedbackText, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision } from './completion-validation.js'
 
 export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxModelRequests: 30,
@@ -89,6 +90,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   let modelRequests = 0
   let modelAttempt = 0
   let modelRetries = 0
+  let completionCorrections = 0
   let toolCalls = 0
   let usage: Usage | null = null
   let usageUnknown = false
@@ -501,6 +503,30 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
       if (response.toolCalls.length === 0) {
         if (response.finishReason === 'tool_calls') throw new Stop('failed', 'model_tool_calls_missing')
+        if (ports.completionValidation) {
+          checkStopped()
+          let decision
+          try {
+            decision = await activeOperation(signal => ports.completionValidation!.validate({ identity: clone(identity), attempt: modelAttempt, context: clone(context), signal }))
+          } catch {
+            checkStopped()
+            throw new Stop('failed', 'completion_validation_failed')
+          }
+          checkStopped()
+          if (!validateCompletionDecision(decision)) throw new Stop('failed', 'completion_validation_failed')
+          if (decision.kind === 'continue') {
+            const feedback = clone(decision), feedbackItems = clone(model.userItems(completionFeedbackText(feedback)))
+            if (!feedbackItems.length) throw new Stop('failed', 'completion_validation_failed')
+            await capacity(byteLength(feedbackItems) + byteLength(context) + 8192)
+            checkStopped()
+            await append({ type: 'completion_rejected', attempt: modelAttempt, feedback, feedbackItems })
+            context.items.push(...feedbackItems)
+            await checkpoint()
+            checkStopped()
+            if (completionCorrections++ >= MAX_COMPLETION_CORRECTIONS) throw new Stop('failed', 'completion_validation_limit')
+            continue
+          }
+        }
         return await finish('completed', 'model_completed')
       }
       batchResults = []

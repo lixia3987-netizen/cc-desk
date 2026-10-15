@@ -53,6 +53,7 @@ async function start(message: WorkerStart) {
   identity = message.request.identity;
   if (message.activePaused !== undefined && typeof message.activePaused !== 'boolean') throw new Error('Invalid native active clock state.');
   activeClock.setPaused(message.activePaused ?? false);
+  if (message.completionValidation !== undefined && typeof message.completionValidation !== 'boolean') throw new Error('Invalid native completion validation state.');
   const context = <T extends { signal: AbortSignal }>(value: T) => { const { signal: _signal, ...rest } = value; return rest; };
   const ports: AgentPorts = {
     model: createNativeModel({ ...message.model, toolDefinitions: message.definitions }),
@@ -73,6 +74,9 @@ async function start(message: WorkerStart) {
       checkpoint: (run, saved) => rpc('store.checkpoint', { identity: run, context: saved }),
     },
     approvals: { request: (request, signal) => rpc('approval', request, signal) },
+    ...(message.completionValidation ? { completionValidation: {
+      validate: (request: Parameters<NonNullable<AgentPorts['completionValidation']>['validate']>[0]) => rpc<Awaited<ReturnType<NonNullable<AgentPorts['completionValidation']>['validate']>>>('completion.validate', context(request), request.signal),
+    } } : {}),
     ...(message.contextMaintenance ? { contextMaintenance: {
       maintain: (request: Parameters<NonNullable<AgentPorts['contextMaintenance']>['maintain']>[0]) => rpc<Awaited<ReturnType<NonNullable<AgentPorts['contextMaintenance']>['maintain']>>>('context.maintain', context(request), request.signal),
     } } : {}),

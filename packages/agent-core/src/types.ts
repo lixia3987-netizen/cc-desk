@@ -219,6 +219,7 @@ export type RunJournalEvent =
   | { type: 'model_request_started'; attempt: number }
   | { type: 'model_request_failed'; attempt: number; failure: ModelFailureDiagnostic; partial: boolean; retryDelayMs?: number }
   | { type: 'model_response'; response: ModelResponse }
+  | { type: 'completion_rejected'; attempt: number; feedback: Extract<CompletionValidationDecision, { kind: 'continue' }>; feedbackItems: JsonValue[] }
   | { type: 'tool_prepared'; prepared: PreparedTool; approval?: ApprovalDecision }
   | { type: 'tool_completed'; call: ToolCall; result: ToolResult; resultItems: JsonValue[] }
   | { type: 'run_finished'; result: RunResult }
@@ -305,4 +306,12 @@ export interface AgentPorts {
   approvals: ApprovalPort
   host: RuntimeHost
   contextMaintenance?: ContextMaintenancePort
+  completionValidation?: CompletionValidationPort
+}
+
+export type CompletionValidationDecision = { kind: 'accept' } |
+  { kind: 'continue'; code: 'declared_material_reads_missing'; paths: string[] }
+export interface CompletionValidationPort {
+  /** 只检查当前已持久化响应及宿主证据，不代替模型执行工具。 */
+  validate(request: { identity: RunIdentity; attempt: number; context: ModelContext; signal: AbortSignal }): Promise<CompletionValidationDecision>
 }

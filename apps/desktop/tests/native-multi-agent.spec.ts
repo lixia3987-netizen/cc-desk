@@ -10,6 +10,7 @@ import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { closeNativeApp } from './helpers/native-app-cleanup';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
+import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import type { NativeAgentResult } from '../src/shared/chat';
 import { buildNativeReviewGoal } from '../src/main/engines/native/agent-prompts';
@@ -112,6 +113,67 @@ function parentResponse(body: Body, mode: 'review' | 'implement'): Response {
   }
   return final('parent-final', '子任务已结束，成果和证据已保留，等待审阅验收。');
 }
+
+test('native utilityProcess requires missing declared materials before accepting child completion', async () => {
+  const f = await workspace(), barrier = gate(), started = new Set<string>(), corrected = new Set<string>();
+  await fs.writeFile(path.join(f.cwd, 'review.md'), 'Independent review index for both delegated questions.\n');
+  const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body }: { body: Body }) => {
+    const done = toolResults(body);
+    if (!body.instructions.includes('independent delegated Native agent')) {
+      if (done.has('parent-plan') && !done.has('parent-delegate')) return responseCall('parent-delegate', 'delegate_review', {
+        tasks: ['A', 'B'].map(name => ({ title: `Review ${name}`, goal: `READ_${name}:\n` + buildNativeReviewGoal({
+          materials: 'files `fixture.txt` and `review.md`', version: 'Current local snapshot; obtain actual read receipts and hashes.',
+          question: name === 'A' ? 'What exact line does fixture.txt contain?' : 'Does fixture.txt end with a newline?',
+          scope: 'Both declared files', evidence: 'No parent evidence; child must read every declared material.',
+          exclusions: name === 'A' ? 'Do not evaluate newline formatting.' : 'Do not repeat a full text summary.',
+        }) })),
+      });
+      return parentResponse(body, 'review');
+    }
+    const name = userGoal(body).startsWith('READ_A') ? 'a' : 'b';
+    expect(body.tools.some(tool => ['apply_patch', 'run_command', 'start_command', 'delegate_review', 'delegate_implement'].includes(tool.name))).toBe(false);
+    if (!done.has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
+    if (!done.has(`child-${name}-index`)) {
+      const last = body.input.filter(item => item.role === 'user').at(-1)?.content;
+      const feedback = typeof last === 'string' ? last : last?.map(item => item.text ?? '').join('') ?? '';
+      if (!feedback.includes('Host completion validation: declared_material_reads_missing')) return final(`child-${name}-premature`, 'I claim that all declared materials are reviewed.');
+      expect(feedback).toContain('["review.md"]');
+      expect(feedback).not.toContain('Independent review index for both delegated questions.');
+      corrected.add(name);
+      return responseCall(`child-${name}-index`, 'read_file', { path: 'review.md' });
+    }
+    return final(`child-${name}-done`, `Review ${name} updated after the actual index read.`);
+  } });
+  const app = await f.launch();
+  try {
+    const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
+    const pending = page.evaluate(id => window.desktop.sendChat(id, '请并行分析 fixture.txt 的内容和换行格式，并读取 review.md。', [], 'completion-correction-review'), session.id);
+    await waitForChildren(started, page, session.id, fixture, f.data); barrier.release();
+    const result = await pending;
+    expect(result.success).toBe(true); expect(corrected.size).toBe(2); expect(fixture.errors).toEqual([]);
+    expect(fixture.requests).toHaveLength(13); expect(result.nativeReceipt?.usage.modelRequests).toBe(13);
+    expect(result.nativeReceipt?.usage.toolCalls).toBe(8);
+    const saved = await receipts(f.data); expect(saved).toHaveLength(2);
+    const audit = JSON.parse(await fs.readFile(nativeDelegationAuditPath(f.data, saved[0].parentIdentity), 'utf8'));
+    expect(audit.status).toBe('satisfied'); expect(audit.batches[0].childrenWithMaterialReads).toBe(2);
+    for (const child of saved) {
+      expect(child.result?.status).toBe('completed'); expect(child.result?.modelRequests).toBe(4); expect(child.result?.toolCalls).toBe(2);
+      const journal = await fs.readFile(child.result!.evidence!.runJournalPath!, 'utf8'); expect(journal).not.toContain(secret);
+      const records = journal.trim().split('\n').map(line => JSON.parse(line));
+      const rejection = records.find(record => record.event.type === 'completion_rejected');
+      expect(rejection.event.attempt).toBe(2); expect(rejection.event.feedback.paths).toEqual(['review.md']);
+      const reads = records.filter(record => record.event.type === 'tool_completed' && record.event.call.name === 'read_file');
+      expect(reads.map(record => record.event.result.output.path)).toEqual(['fixture.txt', 'review.md']);
+      expect(reads[0].seq).toBeLessThan(rejection.seq); expect(rejection.seq).toBeLessThan(reads[1].seq);
+      expect(records.filter(record => record.event.type === 'model_response')).toHaveLength(4);
+      const reopened = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: child.identity.conversationId });
+      try { expect(reopened.recoveryRequired).toBe(false); expect(reopened.getRun(child.identity.runId)?.status).toBe('completed'); }
+      finally { await reopened.close(); }
+    }
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('committed parent\n');
+    await expect.poll(() => childrenMetrics(app)).toBe(0);
+  } finally { barrier.release(); await closeNativeApp(app); await fixture.close(); await f.dispose(); }
+});
 
 test('a model role plan or claimed parallel success without actual delegation cannot pass host completion', async () => {
   const f = await workspace();

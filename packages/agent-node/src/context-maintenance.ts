@@ -1,5 +1,5 @@
 import type { JsonObject, JsonValue, ModelContext, ProtocolVersion, ToolCall, ToolResult } from '@cc-desk/agent-core';
-import { validateUserImages } from '@cc-desk/agent-core';
+import { completionFeedbackText, validateUserImages, type CompletionValidationDecision } from '@cc-desk/agent-core';
 import { RunStoreError } from './store-files.js';
 import { createHash } from 'node:crypto';
 
@@ -8,6 +8,15 @@ export const MAX_RUN_CONTINUITY_BYTES = 32 * 1024;
 const object = (value: unknown): value is JsonObject => value !== null && typeof value === 'object' && !Array.isArray(value);
 const nonempty = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 const invalid = (): never => { throw new RunStoreError('unsupported_protocol', 'Context maintenance requires complete supported native protocol items'); };
+
+/** 宿主纠正单独编码为用户角色消息，不冒充模型响应或工具回执。 */
+export function nativeCompletionFeedbackItems(protocol: ProtocolVersion, feedback: Extract<CompletionValidationDecision, { kind: 'continue' }>): JsonValue[] {
+  const text = completionFeedbackText(feedback);
+  if (protocol.version !== 1) return invalid();
+  if (protocol.id === 'anthropic-messages') return [{ role: 'user', content: [{ type: 'text', text }] }];
+  if (['openai-responses', 'openai-chat-completions'].includes(protocol.id)) return [{ role: 'user', content: text }];
+  return invalid();
+}
 
 /**
  * 摘要请求使用的只读数据投影，绝不替换原始账本或下一次原生协议输入。

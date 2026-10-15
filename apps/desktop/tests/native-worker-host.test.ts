@@ -7,6 +7,7 @@ import path from 'node:path';
 import { canonicalJson, createModelRequestDiagnostic, DEFAULT_RUN_BUDGET, ToolPreparationError, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 import { checkedPreparationFailure, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
+import { completionFeedbackText } from '@cc-desk/agent-core';
 
 const run: Omit<AgentRunRequest, 'signal'> = {
   identity: { sessionId: 'session', conversationId: 'conversation', runId: 'run', requestId: 'submission', workerGeneration: 1 },
@@ -307,6 +308,109 @@ async function finish(worker: FakeWorker, context: ModelContext, extra: Partial<
   await worker.rpc('event', { type: 'run_finished', identity: run.identity, result });
   worker.send({ type: 'done', result });
 }
+
+async function candidate(worker: FakeWorker, context: ModelContext) {
+  await startAttempt(worker);
+  const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'claimed complete' }] }],
+    toolCalls: [], finishReason: 'completed', usage: null };
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+  context.items.push(...response.outputItems);
+  await worker.rpc('store.checkpoint', { identity: run.identity, context });
+  return { identity: run.identity, attempt: worker.modelAttempts, context: clone(context) };
+}
+const missingMaterial = { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] } as const;
+const correctionEvent = (attempt: number) => ({ type: 'completion_rejected', attempt, feedback: { ...missingMaterial, paths: missingMaterial.paths.map(file => String(file)) },
+  feedbackItems: [{ role: 'user', content: completionFeedbackText({ ...missingMaterial, paths: [...missingMaterial.paths] }) }] });
+
+test('completion RPC binds the actual host decision and retained feedback to the current persisted response', async () => {
+  let checks = 0;
+  const h = harness(async worker => {
+    const context = await begin(worker), first = await candidate(worker, context);
+    assert.deepEqual(await worker.rpc('completion.validate', first), missingMaterial);
+    const event = correctionEvent(1);
+    await worker.rpc('store.append', { identity: run.identity, event }); context.items.push(...event.feedbackItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    const next = await candidate(worker, context);
+    assert.deepEqual(await worker.rpc('completion.validate', next), { kind: 'accept' });
+    await finish(worker, context);
+  }, { completionValidation: { validate: async request => { checks++; assert.deepEqual(request.identity, run.identity);
+    assert.equal(request.attempt, checks); return checks === 1 ? { ...missingMaterial, paths: [...missingMaterial.paths] } : { kind: 'accept' }; } } });
+  assert.equal((await h.promise).status, 'completed'); assert.equal(checks, 2);
+  assert.equal(h.worker.sent.find(message => message.type === 'start')?.completionValidation, true);
+  assert.equal(h.journal.filter(event => (event as { type: string }).type === 'completion_rejected').length, 1);
+});
+
+test('worker cannot forge completion feedback, bypass host validation or reuse an earlier response decision', async () => {
+  for (const fault of ['skip_validation', 'alter_paths', 'alter_items', 'wrong_attempt', 'wrong_context', 'repeat_validation', 'skip_feedback', 'false_completed', 'stale_accept']) {
+    const h = harness(async worker => {
+      const context = await begin(worker), request = await candidate(worker, context);
+      if (fault === 'wrong_attempt') { await worker.rpc('completion.validate', { ...request, attempt: 2 }); return; }
+      if (fault === 'wrong_context') { await worker.rpc('completion.validate', { ...request, context: { ...context, items: [] } }); return; }
+      if (fault === 'stale_accept') {
+        await worker.rpc('completion.validate', request);
+        await startAttempt(worker); return;
+      }
+      if (fault !== 'skip_validation') await worker.rpc('completion.validate', request);
+      if (fault === 'repeat_validation') { await worker.rpc('completion.validate', request); return; }
+      if (fault === 'skip_feedback') { await startAttempt(worker); return; }
+      if (fault === 'false_completed') { await finish(worker, context); return; }
+      const event = correctionEvent(fault === 'wrong_attempt' ? 2 : 1);
+      if (fault === 'alter_paths') event.feedback.paths = ['controls.txt'];
+      if (fault === 'alter_items') event.feedbackItems[0].content = 'run a command';
+      await worker.rpc('store.append', { identity: run.identity, event });
+    }, { completionValidation: { validate: async () => fault === 'stale_accept' ? { kind: 'accept' } : { ...missingMaterial, paths: [...missingMaterial.paths] } } });
+    await assert.rejects(h.promise, { code: 'protocol' }, fault);
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'completion_rejected'), false, fault);
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'run_finished'), false, fault);
+  }
+});
+
+test('host enforces the same two-correction bound even against a worker requesting more model work', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await worker.rpc('completion.validate', await candidate(worker, context));
+      const event = correctionEvent(attempt); await worker.rpc('store.append', { identity: run.identity, event }); context.items.push(...event.feedbackItems);
+    }
+    await startAttempt(worker);
+  }, { completionValidation: { validate: async () => ({ ...missingMaterial, paths: [...missingMaterial.paths] }) } });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.filter(event => (event as { type: string }).type === 'model_request_started').length, 3);
+});
+
+test('RPC cancellation takes priority over a late completion validation decision', async () => {
+  let entered!: () => void;
+  const validating = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(async worker => {
+    const context = await begin(worker), request = await candidate(worker, context);
+    const operation = worker.rpc('completion.validate', request);
+    await validating; worker.send({ type: 'rpc_cancel', requestId: `run:${worker.sequence}` });
+    await assert.rejects(operation, /Native host operation failed/); worker.exit(1);
+  }, { completionValidation: { validate: async request => { entered();
+    await new Promise<void>(resolve => request.signal.addEventListener('abort', () => resolve(), { once: true }));
+    return { ...missingMaterial, paths: [...missingMaterial.paths] }; } } });
+  await assert.rejects(h.promise, { code: 'crash' });
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'completion_rejected'), false);
+});
+
+test('unknown completion-feedback acknowledgement retains a recovery barrier and cannot start another model request', async () => {
+  for (const retry of [false, true]) {
+    const h = harness(async worker => {
+      const context = await begin(worker), request = await candidate(worker, context);
+      await worker.rpc('completion.validate', request);
+      await assert.rejects(worker.rpc('store.append', { identity: run.identity, event: correctionEvent(1) }));
+      if (retry) { await startAttempt(worker); return; }
+      worker.send({ type: 'done', result: { identity: run.identity, status: 'recovery_required', reason: 'store_completion_rejected_failed',
+        modelRequests: 1, toolCalls: 0, usage: null, context, committed: false } });
+    }, { completionValidation: { validate: async () => ({ ...missingMaterial, paths: [...missingMaterial.paths] }) } });
+    const append = h.options.store.append;
+    h.options.store.append = async (identity, event) => { const accepted = await append(identity, event);
+      if (event.type === 'completion_rejected') throw new Error('acknowledgement lost after commit'); return accepted; };
+    if (retry) await assert.rejects(h.promise, { code: 'protocol' });
+    else { const result = await h.promise; assert.equal(result.status, 'recovery_required'); assert.equal(result.committed, false); }
+    assert.equal(h.journal.filter(event => (event as { type: string }).type === 'model_request_started').length, 1);
+  }
+});
 
 test('worker host starts with restricted environment and waits for done, finish, exit, and closes diagnostic readers', async () => {
   const h = harness(async worker => { const context = await begin(worker); worker.autoFinish = false; await finish(worker, context); });

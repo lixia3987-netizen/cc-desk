@@ -16,10 +16,10 @@ import { nativeDelegationAuditPath } from '../src/main/engines/native/agent-dele
 // @ts-expect-error 回归报告纯函数在 Node 与 Electron 之间共享，不进入产品包。
 import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, monotonicMs, normalizeObservedUsage, regressionMaterial, regressionPrompt, safeRegressionFailureCode, sha256, workspaceHashes } from '../../../scripts/native-delegation-model-regression-lib.mjs';
 // @ts-expect-error 纯运行策略供 Node 与 Electron 回归共同使用。
-import { hasActiveChildTransportOverlap, REGRESSION_MAX_ACTIVE_MS } from '../../../scripts/native-regression-runtime-policy.mjs';
+import { hasActiveChildTransportOverlap, REGRESSION_MAX_ACTIVE_MS, safeUpstreamTransportFailure } from '../../../scripts/native-regression-runtime-policy.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
-type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null; injectionMaterialObserved?: boolean };
+type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null; injectionMaterialObserved?: boolean; upstreamFailure?: { stage: string; code: string } };
 interface Options { outputDirectory: string; claudeConfig: string; model?: string; protocol: 'anthropic' | 'responses' | 'chat-completions'; attempts: number; cases: string[]; candidateSha?: string; nativeDataDirectory?: string; connectionId?: string; nativeSessionId?: string; nativeProfileKey?: boolean; credentialProfileDirectory?: string;
   candidateBinding?: { requestedCandidate: string | null; actualHead: string | null; gitAvailable: boolean; sourceStatusKnown: boolean; workingTreeClean: boolean; verified: boolean; reason: string };
   buildProvenance?: { source: string; inputHashTiming: string; bundleInputsDigest: string; packageRuntimeDigest: string | null; bundleInputCount: number; packageRuntimeInputCount: number } }
@@ -100,7 +100,13 @@ async function observedTransport(endpoint: string, protocol: Options['protocol']
         inspect(decoder.decode() + '\n');
       }
       response.end(); observation.outcome = upstream.ok ? 'completed' : 'http_error';
-    } catch { observation.outcome = controller.signal.aborted ? 'cancelled' : 'connection_failed'; if (!response.headersSent) response.writeHead(502); response.end(); }
+    } catch (error) {
+      observation.outcome = controller.signal.aborted ? 'cancelled' : 'connection_failed';
+      observation.upstreamFailure = safeUpstreamTransportFailure(error, { aborted: controller.signal.aborted,
+        stage: observation.upstreamBeginMs === null ? 'request_preparation' : observation.httpStatus === null ? 'before_headers' : 'response_stream' });
+      if (!response.headersSent) response.writeHead(502);
+      response.end();
+    }
     finally { observation.endMs = monotonicMs(); controllers.delete(controller); response.off('close', closed); }
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
