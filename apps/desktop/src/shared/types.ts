@@ -49,6 +49,7 @@ export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStat
 export interface HistoryEntry { providerId: string; id: string; title: string; cwd: string; modifiedAt: string }
 export interface GitInfo { branch: string; status: string; diff: string; error?: string }
 export interface DesktopAPI {
+  setNativePermissionMode(id: string, mode: import('./native-permissions').NativePermissionMode): Promise<import('./native-permissions').NativePermissionMode>;
   previewNativeImage(input: NativeImagePreviewRequest): Promise<NativeImagePreview>;
   nativeConnections: NativeConnectionsAPI;
   claudeModelImport: ClaudeModelImportAPI;

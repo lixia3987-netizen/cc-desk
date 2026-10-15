@@ -13,6 +13,8 @@ import { execFileSync } from 'node:child_process';
 import type { LegacyAppState as AppState, LegacySession as Session } from './helpers/legacy-workspace';
 import type { ChatSnapshot } from '../src/shared/chat';
 
+const defaultPermission=(page:Page)=>page.locator('.settings-engine-defaults').filter({has:page.getByRole('heading',{name:'Claude Code',exact:true})}).getByLabel('默认权限模式',{exact:true});
+
 async function workspace(historyCount=90) {
   const directory=await fs.mkdtemp(path.join(os.tmpdir(),'cc-desk-experience-'));
   const data=path.join(directory,'data'),now=new Date().toISOString();
@@ -419,7 +421,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await settings.getByRole('tab',{name:'模型与上下文',exact:true}).click();
     await expect(settings.getByRole('region',{name:'Native 模型连接',exact:true})).toBeVisible();
     await expect(settings.getByLabel('Claude Code 路径',{exact:true})).toHaveCount(0);
-    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveCount(0);
+    await expect(defaultPermission(page)).toHaveCount(0);
     await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
     await expect(settings.getByLabel('默认推理强度',{exact:true})).toHaveCount(0);
     await expect(settings.getByRole('region',{name:'Native MCP 连接',exact:true})).toHaveCount(0);
@@ -433,7 +435,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await expect(settings.getByLabel('默认推理强度',{exact:true})).toHaveCount(0);
     await expect(settings.getByLabel('默认模型连接',{exact:true})).toHaveCount(0);
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
-    await settings.getByLabel('默认权限模式',{exact:true}).selectOption('plan');
+    await defaultPermission(page).selectOption('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
     await settings.getByLabel('默认每回合工具调用上限',{exact:true}).fill('25');
     await settings.getByLabel('最大并发会话',{exact:true}).fill('6');
@@ -453,7 +455,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await settings.getByLabel('终端字号',{exact:true}).fill('18');
     await settings.getByRole('tab',{name:'运行与权限',exact:true}).click();
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
-    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveValue('plan');
+    await expect(defaultPermission(page)).toHaveValue('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
     await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
     await expect(settings.getByRole('button',{name:'保存并检测',exact:true})).toHaveCount(0);
@@ -484,7 +486,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await expect(settings.getByLabel('默认模型覆盖',{exact:true})).toHaveValue('native-ui-choice');
     await settings.getByRole('tab',{name:'运行与权限',exact:true}).click();
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
-    await expect(settings.getByLabel('默认权限模式',{exact:true})).toHaveValue('plan');
+    await expect(defaultPermission(page)).toHaveValue('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
     await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
     await settings.getByRole('tab',{name:'终端与CLI',exact:true}).click();
@@ -511,37 +513,29 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await page.getByRole('tab',{name:'运行与权限',exact:true}).click();
     await page.getByRole('tab',{name:'权限与审批',exact:true}).click();
-    await expect(page.getByLabel('默认权限模式',{exact:true})).toHaveValue('default');
-    await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
+    await expect(defaultPermission(page)).toHaveValue('default');
+    await defaultPermission(page).selectOption('bypassPermissions');
     await page.keyboard.press('Escape');
     await page.getByRole('button',{name:'放弃未保存修改并关闭',exact:true}).click();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('default');
     await page.getByRole('button',{name:'设置与连接',exact:false}).click();
     await page.getByRole('tab',{name:'运行与权限',exact:true}).click();
     await page.getByRole('tab',{name:'权限与审批',exact:true}).click();
-    await page.getByLabel('默认权限模式',{exact:true}).selectOption('bypassPermissions');
+    await defaultPermission(page).selectOption('bypassPermissions');
     await page.getByRole('button',{name:'保存设置',exact:true}).click();
     await expect.poll(async()=>(await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('bypassPermissions');
     await page.keyboard.press('Escape');
-    await openSessionSettings(page,'permissions');
-    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('default');
-    await closeSessionSettings(page);
+    await expect(page.getByLabel('发送权限模式',{exact:true})).toHaveValue('default');
     await app.close();app=await f.launch();page=await app.firstWindow();
     await page.getByRole('button',{name:'新建会话',exact:false}).click();
     await expect(page.getByLabel('权限模式',{exact:true})).toHaveCount(0);
     await submitNewSession(page);
-    await openSessionSettings(page,'permissions');
-    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('bypassPermissions');
-    await page.getByLabel('会话权限模式',{exact:true}).selectOption('plan');
-    await page.getByRole('button',{name:'保存配置',exact:true}).click();
+    await expect(page.getByLabel('发送权限模式',{exact:true})).toHaveValue('bypassPermissions');
+    await page.getByLabel('发送权限模式',{exact:true}).selectOption('plan');
     await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.engineConfig.options.permissionMode;}).toBe('plan');
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('bypassPermissions');
-    await closeSessionSettings(page);
-    await openSessionSettings(page,'permissions');
-    await page.getByLabel('会话权限模式',{exact:true}).selectOption('bypassPermissions');
-    await page.getByRole('button',{name:'保存配置',exact:true}).click();
+    await page.getByLabel('发送权限模式',{exact:true}).selectOption('bypassPermissions');
     await expect.poll(async()=>{const {state}=await page.evaluate(()=>window.desktop.snapshot());return state.sessions.find(s=>s.id===state.selectedSessionId)?.engineConfig.options.permissionMode;}).toBe('bypassPermissions');
-    await closeSessionSettings(page);
     await select(page,'长对话 B');
     // The source is manual even though the global default is bypass.
     await page.evaluate(id=>window.desktop.updateSession({id,engineConfig:{schemaVersion:1,options:{model:'',effort:'default',permissionMode:'default'}}}),f.sessions[0].id);
@@ -553,9 +547,7 @@ test('experience: permission defaults persist while sessions, forks and import o
     await page.getByLabel('导入会话权限模式',{exact:true}).selectOption('acceptEdits');
     await page.getByLabel('历史会话 UUID').fill(randomUUID());
     await page.getByRole('button',{name:'导入会话',exact:true}).click();
-    await openSessionSettings(page,'permissions');
-    await expect(page.getByLabel('会话权限模式',{exact:true})).toHaveValue('acceptEdits');
-    await closeSessionSettings(page);
+    await expect(page.getByLabel('发送权限模式',{exact:true})).toHaveValue('acceptEdits');
     const modes=await page.evaluate(async({projectId,sourceId})=>{
       const input={projectId,title:'IPC permission test',kind:'agent' as const,isolated:false};
       const implicit=await window.desktop.createSession(input);

@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { NATIVE_PERMISSION_MODES } from '../../shared/native-permissions';
+import { changeNativePermissionForNextTurn } from '../native-session-permission';
 import type { EngineConfig, Session } from '../../shared/types';
 import { engineConfigSchema, idSchema, panelDraftsSchema } from '../../shared/schema';
 import type { StateStore } from '../store';
@@ -16,6 +18,7 @@ interface SessionPorts {
   attachments: Pick<Attachments, 'remove'>;
   session(id: string): Session;
   validateConfig(id: string, config: EngineConfig): EngineConfig;
+  assertPermissionChangeAllowed?(session: Session): void;
   taskOccupied(id: string): boolean;
   admissionPending(id: string): boolean;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
@@ -39,6 +42,22 @@ const deleteSchema = z.union([
 ]);
 
 export function registerSessionHandlers(handle: Register, ports: SessionPorts): void {
+  handle('session:native-permission', z.object({ id: idSchema, mode: z.enum(NATIVE_PERMISSION_MODES) }).strict(), ({ id, mode }) =>
+    changeNativePermissionForNextTurn(id, mode, {
+      session: ports.session,
+      assertAllowed: session => {
+        if (!ports.assertPermissionChangeAllowed) throw new Error('权限修改入口尚未就绪。');
+        ports.assertPermissionChangeAllowed(session);
+      },
+      validateConfig: ports.validateConfig,
+      commit: (sessionId, config) => ports.store.change(state => {
+        const saved = state.sessions.find(item => item.id === sessionId)!;
+        saved.engineConfig = config;
+        saved.updatedAt = new Date().toISOString();
+      }),
+      changed: ports.onState,
+    }));
+
   const removeRecord = async (id: string) => {
     if (ports.taskOccupied(id)) throw new Error('请先停止会话及工作流，再删除。');
     await ports.chat.stopIdle(id);

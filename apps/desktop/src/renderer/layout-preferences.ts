@@ -5,8 +5,12 @@ const openPanelsKey = 'cc-desk.inspector-open-panels';
 const selectedPanelKey = 'cc-desk.inspector-selected-panel';
 const panelWidthKey = 'cc-desk.inspector-width';
 
-export const inspectorPanelIds = ['context', 'git', 'workflows', 'diagnostics'] as const;
+export const inspectorPanelIds = ['context', 'git', 'workflows', 'commands', 'diagnostics'] as const;
 export type InspectorPanelId = typeof inspectorPanelIds[number];
+/** Native command controls are only available to structured Native sessions. */
+export function visibleInspectorPanelIds(nativeStructured: boolean): InspectorPanelId[] {
+  return inspectorPanelIds.filter(id => id !== 'commands' || nativeStructured);
+}
 const isPanelId = (value: unknown): value is InspectorPanelId => inspectorPanelIds.some(id => id === value);
 const uniquePanels = (values: unknown[]): InspectorPanelId[] => [...new Set(values.filter(isPanelId))];
 const parsePreference = (value: string | null): unknown => {

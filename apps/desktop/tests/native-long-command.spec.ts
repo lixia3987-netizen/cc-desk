@@ -50,7 +50,10 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
   await expect(panel(page)).toHaveCount(0);
   await page.getByRole('region', { name: '工具审批', exact: true }).getByRole('button', { name: '允许本次', exact: true }).click();
   await expect.poll(async () => (await snapshot(page, session.id)).nativeCommands?.items[0]?.status).toBe('running');
+  await expect(page.locator('.chat-pane').getByRole('region', { name: 'Native 长命令状态', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('region', { name: '后台命令面板', exact: true })).toBeHidden();
   await openChatAssistance(page, 'commands');
+  await expect(page.locator('#session-inspector').getByRole('region', { name: 'Native 长命令状态', exact: true })).toBeVisible();
   await expect(panel(page).locator('[data-command-status="running"]')).toBeVisible();
   return { page, session };
 }

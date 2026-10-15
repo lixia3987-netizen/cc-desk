@@ -570,3 +570,9 @@ input:focus-visible,select:focus-visible,textarea:focus-visible { outline: 2px s
 .native-assistance-body[hidden]{display:none}
 .native-assistance-body>.native-agent-panel,.native-assistance-body>.native-command-panel,.native-assistance-body>.native-task-panel{margin:3px 0 6px;max-height:none}
 @media(max-width:650px){.native-assistance{margin:0 8px}.native-assistance-body{max-height:30vh}}
+
+/* Session permissions belong beside the composer; settings contain defaults. */
+.chat-composer>.chat-composer-permissions{padding:7px 12px 0;min-width:0}
+.composer-permission{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-width:0;font-size:calc(10px * var(--ui-font-scale));color:var(--text-secondary)}
+.composer-permission select{width:auto;max-width:min(250px,100%);padding:5px 8px;font-size:inherit;min-height:29px;background:var(--input-bg)}
+.composer-permission small{display:inline-flex;align-items:center;gap:4px;color:var(--text-muted);font-size:inherit}

@@ -577,6 +577,11 @@ export class SessionService {
       cleanupDependencies: session => this.cleanupDependencies(session),
       forgetQueue: id => this.queue.delete(id),
       validateConfig: (id, config) => this.execution.validateConfig(id, config),
+      assertPermissionChangeAllowed: session => {
+        this.assertUnlocked(session);
+        if (this.recoveryRequired(session.id)) throw new Error('请先核查并恢复会话记录，再修改权限。');
+        // Execution admissions are allowed: this changes only a future run's saved mode.
+      },
     });
     registerChatHandlers(handle, {
       chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments, queue: this.queue,

@@ -13,6 +13,7 @@ const droppedPaths = (files: File[]): string[] => {
   });
 };
 const api: DesktopAPI = {
+  setNativePermissionMode: (id, mode) => ipcRenderer.invoke('session:native-permission', { id, mode }),
   previewNativeImage: input => ipcRenderer.invoke('native:image-preview', input),
   nativeMcp: {
     list: () => ipcRenderer.invoke('native:mcp-connections-list'),

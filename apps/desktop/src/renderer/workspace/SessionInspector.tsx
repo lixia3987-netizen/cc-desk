@@ -1,13 +1,14 @@
 import type { ExecutionDescriptor } from '../../shared/execution';
 import type { Session } from '../../shared/types';
 import { executionUnavailable } from '../EngineConfiguration';
-import { Activity, GitBranch, Stethoscope, Workflow } from 'lucide-react';
+import { Activity, GitBranch, Stethoscope, TerminalSquare, Workflow } from 'lucide-react';
 import { useLayoutEffect, useRef, type CSSProperties } from 'react';
 import { emptyGitReviewDraft, emptyWorkflowDraft, type PanelDrafts } from '../../shared/panel-drafts';
-import { inspectorPanelIds, inspectorWidthBounds, type InspectorPanelId } from '../layout-preferences';
+import { visibleInspectorPanelIds, inspectorWidthBounds, type InspectorPanelId } from '../layout-preferences';
 import { DiagnosticsPanel, GitPanel } from '../ProjectPanels';
 import { WorkflowPanel } from '../WorkflowPanel';
 import { InspectorPanel } from './InspectorPanel';
+import { NativeCommandInspector } from './NativeCommandInspector';
 import { SessionContextPanel, type SessionContextPanelProps } from './SessionContextPanel';
 import { useInspectorPanels } from './useInspectorPanels';
 
@@ -20,7 +21,7 @@ interface Props extends SessionContextPanelProps {
 
 const panels = {
   context: { title: '上下文', icon: Activity }, git: { title: '变更', icon: GitBranch },
-  workflows: { title: '工作流', icon: Workflow }, diagnostics: { title: '诊断', icon: Stethoscope },
+  workflows: { title: '工作流', icon: Workflow }, commands: { title: '后台命令', icon: TerminalSquare }, diagnostics: { title: '诊断', icon: Stethoscope },
 };
 
 const nativeRecoveryReadOnly = (session: Session) => session.execution.providerId === 'native' && !!session.error?.includes('此会话只读');
@@ -28,8 +29,11 @@ const nativeRecoveryReadOnly = (session: Session) => session.execution.providerI
 export function SessionInspector(props: Props) {
   const { active, report, appendReview, activePanels, updatePanel } = props;
   const layout = useInspectorPanels();
+  const panelIds = visibleInspectorPanelIds(active.execution.providerId === 'native' && active.execution.mode === 'structured');
+  // Hide unsupported panels without discarding the stored selection when switching engines.
+  const openPanels = layout.openPanels.filter(id => panelIds.includes(id));
   const openingPanel = useRef<InspectorPanelId | null>(null);
-  const empty = layout.openPanels.length === 0;
+  const empty = openPanels.length === 0;
   const resizing = useRef<{ x: number; width: number } | null>(null);
   useLayoutEffect(() => {
     const id = openingPanel.current;
@@ -47,11 +51,11 @@ export function SessionInspector(props: Props) {
     document.getElementById(`inspector-toggle-${id}`)?.focus();
   };
 
-  return <aside id="session-inspector" aria-label="会话详情" className="inspector" style={{ '--tool-panel-width': `${layout.width}px` } as CSSProperties} data-empty={empty} data-count={layout.openPanels.length} onKeyDown={event => {
+  return <aside id="session-inspector" aria-label="会话详情" className="inspector" style={{ '--tool-panel-width': `${layout.width}px` } as CSSProperties} data-empty={empty} data-count={openPanels.length} onKeyDown={event => {
     if (event.key !== 'Escape' || !event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.defaultPrevented || event.nativeEvent.isComposing) return;
     if (document.querySelector('[role="dialog"]') || !(event.target instanceof Element)) return;
     const focusedPanel = event.target.closest<HTMLElement>('.inspector-panel')?.dataset.panel;
-    const id = layout.openPanels.find(id => id === focusedPanel);
+    const id = openPanels.find(id => id === focusedPanel);
     if (!id) return;
     event.preventDefault(); event.stopPropagation(); close(id);
   }}>
@@ -62,7 +66,7 @@ export function SessionInspector(props: Props) {
       onPointerUp={() => { resizing.current = null; }} onLostPointerCapture={() => { resizing.current = null; }}
       onKeyDown={event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; event.preventDefault(); layout.resize(event.key === 'Home' ? inspectorWidthBounds.min : event.key === 'End' ? inspectorWidthBounds.max : layout.width + (event.key === 'ArrowLeft' ? 20 : -20)); }} />}
     <div className="inspector-dock" hidden={empty}>
-      {inspectorPanelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={layout.openPanels.includes(id)} onClose={() => close(id)}>
+      {panelIds.map(id => <InspectorPanel key={`${active.id}:${id}`} id={id} title={panels[id].title} open={openPanels.includes(id)} onClose={() => close(id)}>
         {id === 'context' && <SessionContextPanel {...props} />}
         {id === 'git' && <GitPanel session={active} visible={layout.openPanels.includes(id)} onError={report} onReview={appendReview} draft={activePanels.git ?? emptyGitReviewDraft()} onDraft={update => updatePanel(active.id, 'git', update)} />}
         {/* Saving a workflow draft does not require a live CLI or model credential. */}
@@ -72,12 +76,13 @@ export function SessionInspector(props: Props) {
           return !session || nativeRecoveryReadOnly(session) || !!executionUnavailable(descriptor, session) || !!props.connectionUnavailable?.(session);
         }} onError={report} onTemplate={appendReview} draft={activePanels.workflow ?? emptyWorkflowDraft()} onDraft={update => updatePanel(active.id, 'workflow', update)} />}
         {id === 'diagnostics' && (active.execution.providerId === 'claude' ? <DiagnosticsPanel key={active.id + active.cwd} sessionId={active.id} onError={report} /> : <div className="panel-content"><p className="panel-note">{props.unavailable ?? `${props.descriptor?.displayName ?? active.execution.providerId} 暂未提供连接诊断。`}</p></div>)}
+        {id === 'commands' && <NativeCommandInspector session={active} open={openPanels.includes('commands')} />}
       </InspectorPanel>)}
     </div>
     <div className="inspector-tools" role="group" aria-label="会话面板">
-      {inspectorPanelIds.map(id => {
+      {panelIds.map(id => {
         const { title, icon: Icon } = panels[id];
-        const open = layout.openPanels.includes(id);
+        const open = openPanels.includes(id);
         return <button key={id} id={`inspector-toggle-${id}`} aria-label={title} aria-pressed={open} aria-expanded={open} aria-controls={`inspector-${id}`} title={`${open ? '关闭' : '打开'}${title}面板`} onClick={() => toggle(id)}>
           <Icon size={18} /><span>{title}</span>
         </button>;

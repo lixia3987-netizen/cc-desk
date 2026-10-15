@@ -147,7 +147,7 @@ test('explicit IDE settings target renders the focusable path editor while engin
   assert.doesNotMatch(context, /从 Claude 默认配置导入/);
 });
 
-test('Native permission mode is exposed in both defaults and current-session settings', () => {
+test('permission settings contain defaults only even when opened with a current-session deep link', () => {
   const defaults = renderPanel({ page: 'sessions', initialGroup: 'permissions' });
   assert.match(defaults, /aria-label="默认权限模式"/);
   assert.doesNotMatch(defaults, /文件写入与命令执行始终逐次审批/);
@@ -156,6 +156,8 @@ test('Native permission mode is exposed in both defaults and current-session set
     engineConfig: { ...nativeConfig, options: { ...nativeConfig.options, permissionMode: 'acceptEdits' } },
     started: false, status: 'idle', archived: false, createdAt: '', updatedAt: '' };
   const current = renderPanel({ page: 'sessions', initialScope: 'session', initialGroup: 'permissions', activeSession: active });
-  assert.match(current, /aria-label="会话权限模式"[^>]*value="acceptEdits"/);
-  assert.match(current, /保存配置/);
+  assert.match(current, /aria-label="默认权限模式"/);
+  assert.match(current, /消息发送框旁切换权限/);
+  assert.match(current, /保存设置/);
+  assert.doesNotMatch(current, /aria-label="会话权限模式"|aria-label="设置作用范围"|保存配置/);
 });

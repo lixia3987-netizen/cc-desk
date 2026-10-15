@@ -1,11 +1,12 @@
 import { Copy, CornerDownLeft, TerminalSquare } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { isSessionBusy } from '../../shared/session-activity';
 import type { ThemeId } from '../../shared/theme';
 import type { ExecutionDescriptor } from '../../shared/execution';
 import { configurationSupported, executionUnavailable } from '../EngineConfiguration';
 import type { AppState, Session } from '../../shared/types';
 import { PromptEditor } from '../PromptEditor';
+import { ComposerPermissionMode } from '../ComposerPermissionMode';
 import { SubtaskPanel } from '../SubtaskPanel';
 import { TerminalPane, type TerminalHandle } from '../TerminalPane';
 import type { ReportError } from './types';
@@ -18,6 +19,9 @@ interface Props {
 
 export function SessionViewport({ state, active, executors, descriptor, disabled, readOnly, structured, themeId, composer, onDraft, onSent, report, onClearError, children }: Props) {
   const activeId = active.id;
+  const [permissionSaving,setPermissionSaving]=useState(false);
+  const permissionPending=useRef(false);
+  const permissionBusy=useCallback((value:boolean)=>{permissionPending.current=value;setPermissionSaving(value);},[]);
   const activeBusy = isSessionBusy(active);
   const latestState = useRef(state); latestState.current = state;
   const handles = useRef(new Map<string, TerminalHandle>());
@@ -34,7 +38,7 @@ export function SessionViewport({ state, active, executors, descriptor, disabled
     });
   }, [activeId, state?.sessions, executors]);
   const sendNative = async () => {
-    if (disabled || !active || !composer.trim() || active.archived || nativePending.current.has(active.id)) return;
+    if (disabled || permissionPending.current || !active || !composer.trim() || active.archived || nativePending.current.has(active.id)) return;
     const current = latestState.current.sessions.find(session => session.id === active.id);
     if (!current || current.status !== 'running') { report(new Error('请先启动或恢复当前终端。')); return; }
     if (current.terminalSync !== 'synced') { report(new Error('当前终端尚未同步任务状态，请使用“粘贴到终端”并在终端确认发送。')); return; }
@@ -63,8 +67,9 @@ export function SessionViewport({ state, active, executors, descriptor, disabled
       <SubtaskPanel key={active.id} session={active} />
       <div className="composer">
         <PromptEditor key={active.id} placeholder={active.terminalSync === 'synced' ? '描述任务… Enter 发送，Ctrl / ⌘ + Enter 换行' : '准备提示词… Ctrl / ⌘ + Enter 换行，或直接在终端输入'} value={composer} disabled={active.archived} onChange={onDraft} onSend={() => void sendNative()} />
+        <div className="chat-composer-permissions"><ComposerPermissionMode session={active} descriptor={descriptor} running={activeBusy||active.status==='running'} disabled={readOnly||nativeSending===active.id} onError={report} onBusyChange={permissionBusy} isBlocked={()=>nativePending.current.has(active.id)}/></div>
         <div>
-          <span title="Ctrl / ⌘ + Enter 或 Shift + Enter 换行">{active.terminalSync === 'synced' ? 'Enter 发送 · Ctrl / ⌘ + Enter 换行' : '状态未同步：粘贴后请在终端确认并按 Enter 发送。'}</span>{active.terminalSync === 'synced' ? <button className="primary compact" disabled={disabled || active.status !== 'running' || activeBusy || nativeSending === active.id || active.archived || !composer.trim()} onClick={() => void sendNative()}>
+          <span title="Ctrl / ⌘ + Enter 或 Shift + Enter 换行">{active.terminalSync === 'synced' ? 'Enter 发送 · Ctrl / ⌘ + Enter 换行' : '状态未同步：粘贴后请在终端确认并按 Enter 发送。'}</span>{active.terminalSync === 'synced' ? <button className="primary compact" disabled={disabled || permissionSaving || active.status !== 'running' || activeBusy || nativeSending === active.id || active.archived || !composer.trim()} onClick={() => void sendNative()}>
             <CornerDownLeft size={13} />发送任务</button> : <button className="secondary compact" disabled={disabled || active.status !== 'running' || active.archived || !composer.trim()} onClick={() => { if (composer.length > 60000) { report(new Error('单次提示词请控制在 60,000 个字符以内。')); return; } const handle = handles.current.get(active.id); if (!handle) { report(new Error('终端尚未就绪，请稍后再试。')); return; } handle.paste(composer); handle.focus(); onDraft(''); }}>
             <Copy size={13} />粘贴到终端</button>}</div>
       </div>
