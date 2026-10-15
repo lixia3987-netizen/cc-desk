@@ -286,6 +286,9 @@ button.primary:hover{background:var(--accent-hover);color:var(--on-accent)}
 .approval-card{border:1px solid var(--warning-border);background:var(--warning-bg);border-radius:9px;padding:15px;margin:17px 0}
 .approval-card>header{display:flex;gap:8px;align-items:center;color:var(--warning);font-size:calc(12px * var(--ui-font-scale));margin-bottom:12px}
 .approval-card>header strong{font-weight:500;overflow-wrap:anywhere}
+.approval-response{padding:11px 15px}
+.approval-response>header{margin-bottom:0}
+.approval-response>header span{margin-left:auto;color:var(--text-muted);overflow-wrap:anywhere}
 .approval-card input{font-size:calc(11px * var(--ui-font-scale));padding:9px;background:var(--input-bg)}
 .approval-card .tool-input{margin:10px 0;background:var(--code-bg)}
 .approval-actions{display:flex;justify-content:flex-end;gap:9px;margin-top:13px}

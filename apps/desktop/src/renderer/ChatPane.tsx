@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
 import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
@@ -37,8 +37,10 @@ export { MessageText } from './MessageText';
 export const taskLabels: Record<string,string> = { idle:'等待任务', starting:'正在启动', thinking:'正在思考', tool_running:'执行工具', waiting_approval:'等待审批', waiting_input:'等待回答', completed:'本轮完成', interrupted:'已中断', error:'执行失败' };
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
-function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage,isNative}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean;isNative:boolean}) {
-  const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId)),[busy,setBusy]=useState(false);
+function ApprovalCard({approval,sessionId,onError,onResponded,drafts,engineName,allowMessage,isNative}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;onResponded:()=>Promise<void>;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean;isNative:boolean}) {
+  const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId));
+  const response=useSyncExternalStore(drafts.subscribe,()=>drafts.response(sessionId,approval.requestId));
+  const busy=!!response;
   const changeSet=isNative&&approval.toolName==='apply_change_set';
   const question=approval.kind==='question'&&!changeSet;
   const changeSetPreview=approval.kind==='permission'?approval.nativeChangeSet:undefined;
@@ -47,12 +49,18 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
   const update=(patch:Partial<ApprovalDraft>)=>setValue(previous=>{const next={...previous,...patch};drafts.set(sessionId,approval.requestId,next);return next;});
   const setAnswers=(change:(answers:Record<string,string>)=>Record<string,string>)=>update({answers:change(answers)});
   const setReason=(reason:string)=>update({reason});
-  const respond=async(behavior:'allow'|'deny')=>{
+  const respond=(behavior:'allow'|'deny')=>{
     if(busy||behavior==='allow'&&invalidChangeSet)return;
-    setBusy(true);
-    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:question?answers:undefined});drafts.delete(sessionId,approval.requestId);}
-    catch(error){onError(error);} finally {setBusy(false);}
+    const submitted=drafts.submitResponse(sessionId,approval.requestId,behavior,()=>window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:question?answers:undefined}));
+    void submitted?.then(()=>{void onResponded();},error=>{onError(error);void onResponded();});
   };
+  if(response){
+    const submitting=response.status==='submitting';
+    const label=submitting?question?'正在提交回答…':'正在提交审批…':response.behavior==='deny'?'已拒绝本次':question?'回答已提交':'已允许本次';
+    return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card approval-response" aria-label={question?'等待回答':'工具审批'} aria-busy={submitting}>
+      <header>{submitting?<Loader2 className="spin" size={17}/>:response.behavior==='deny'?<X size={17}/>:<Check size={17}/>}<strong role="status">{label}</strong><span>{approval.toolName}</span></header>
+    </section>;
+  }
   const questions=approval.questions??[];
   return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={question?'等待回答':'工具审批'}>
     <header><ShieldCheck size={17}/><strong>{question?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
@@ -262,7 +270,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>)}
-      {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
+      {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} onResponded={load} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
