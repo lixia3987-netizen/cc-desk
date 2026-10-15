@@ -10,6 +10,7 @@ import { randomUUID } from 'node:crypto';
 import { desktopRoot, repositoryRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { cliUpdateFixture } from './fixtures/cli-updater';
+import type { IpcMainInvokeEvent } from 'electron';
 
 interface FixtureControls {
   available: boolean;
@@ -70,6 +71,116 @@ const active = async (page: Page) => JSON.parse(await page.evaluate(async () => 
   const { state } = await window.desktop.snapshot(); return JSON.stringify(state.sessions.find(item => item.id === state.selectedSessionId));
 }));
 const send = async (page: Page, text: string) => { await page.getByLabel('提示词编辑器', { exact: true }).fill(text); await page.getByLabel('提示词编辑器', { exact: true }).press('Enter'); };
+
+interface ApprovalGate {
+  count: number;
+  release(error?: string): void;
+  releaseSnapshots(): void;
+  dispose(): void;
+}
+type ApprovalFixtureGlobal = typeof globalThis & { approvalGate: ApprovalGate };
+
+/** Delay the real approval IPC and its subsequent reads independently of React. */
+async function gateApproval(app: ElectronApplication, sessionId: string) {
+  await app.evaluate(({ ipcMain }, id) => {
+    type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
+    const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
+    const respond = handlers?.get('chat:respond'), snapshot = handlers?.get('chat:snapshot');
+    if (!respond || !snapshot) throw new Error('Expected real approval and snapshot IPC handlers');
+    let resolve!: () => void, reject!: (error: Error) => void, gated = true, holdSnapshots = false;
+    const gate = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+    void gate.catch(() => {}); // Cleanup can precede the first intercepted request.
+    const reads = new Set<() => void>();
+    const controls: ApprovalGate = {
+      count: 0,
+      release(error) { gated = false; if (error) reject(new Error(error)); else resolve(); },
+      releaseSnapshots() { holdSnapshots = false; for (const release of reads) release(); reads.clear(); },
+      dispose() { controls.release('Approval fixture disposed'); controls.releaseSnapshots(); },
+    };
+    ipcMain.removeHandler('chat:respond');
+    ipcMain.handle('chat:respond', async (event, input: { id: string }) => {
+      if (input.id === id) {
+        controls.count++;
+        if (gated) { await gate; holdSnapshots = true; }
+      }
+      return respond(event, input);
+    });
+    ipcMain.removeHandler('chat:snapshot');
+    ipcMain.handle('chat:snapshot', async (event, input: string) => {
+      if (input === id && holdSnapshots) await new Promise<void>(release => reads.add(release));
+      return snapshot(event, input);
+    });
+    (globalThis as ApprovalFixtureGlobal).approvalGate = controls;
+  }, sessionId);
+}
+
+async function approvalChats(page: Page, projectId: string) {
+  await expect(page.getByRole('button', { name: '新建会话', exact: false }).first()).toBeVisible();
+  const sessions = await page.evaluate(async projectId => {
+    const sessions = [];
+    for (const title of ['审批响应会话 A', '审批响应会话 B']) sessions.push(await window.desktop.createSession({ projectId, title, kind: 'agent', providerId: 'test.native', mode: 'structured', isolated: false }));
+    await window.desktop.setSelection(sessions[0].id);
+    return sessions;
+  }, projectId);
+  await expect(page.getByRole('heading', { name: sessions[0].title, exact: true })).toBeVisible();
+  await send(page, 'approve');
+  await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeVisible();
+  return sessions;
+}
+
+for (const behavior of ['allow', 'deny'] as const) test(`approval UI acknowledges ${behavior} immediately and blocks duplicate decisions across tab switches and delayed snapshots`, async () => {
+  const f = await fixture(), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), [a, b] = await approvalChats(page, f.projectId);
+    await gateApproval(app, a.id);
+    const button = page.getByRole('button', { name: behavior === 'allow' ? '允许本次' : '拒绝', exact: true });
+    // Two DOM clicks in one JS task exercise the gap before React can render.
+    await button.evaluate(element => { (element as HTMLButtonElement).click(); (element as HTMLButtonElement).click(); });
+    await expect(page.getByRole('status').filter({ hasText: '正在提交审批…' })).toBeVisible();
+    await expect(page.locator('.approval-actions')).toHaveCount(0);
+    await expect.poll(() => app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.count)).toBe(1);
+    await sessionRow(page, b.title).click();
+    await expect(page.getByRole('heading', { name: b.title, exact: true })).toBeVisible();
+    await sessionRow(page, a.title).click();
+    await expect(page.getByRole('status').filter({ hasText: '正在提交审批…' })).toBeVisible();
+    await expect(page.locator('.approval-actions')).toHaveCount(0);
+    await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.release());
+    await expect(page.getByRole('status').filter({ hasText: behavior === 'allow' ? '已允许本次' : '已拒绝本次' })).toBeVisible();
+    await expect(page.locator('.approval-actions')).toHaveCount(0);
+    expect(await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.count)).toBe(1);
+    await expect(page.locator('.chat-message.assistant')).toHaveCount(0);
+    await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.releaseSnapshots());
+    await expect(page.locator('.chat-message.assistant').last()).toContainText(behavior === 'allow' ? '测试审批已完成' : '测试审批已拒绝');
+    await expect(page.locator('.approval-card')).toHaveCount(0);
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  } finally {
+    await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate?.dispose()).catch(() => {});
+    await stopAndClose(app); await f.dispose();
+  }
+});
+
+test('approval UI restores the original explanation after a failed submission and permits an explicit retry', async () => {
+  const f = await fixture(), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), [a] = await approvalChats(page, f.projectId);
+    await page.getByLabel('审批说明', { exact: true }).fill('仅批准这次操作，保留我的说明');
+    await gateApproval(app, a.id);
+    await page.getByRole('button', { name: '允许本次', exact: true }).click();
+    await expect(page.getByRole('status').filter({ hasText: '正在提交审批…' })).toBeVisible();
+    await expect.poll(() => app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.count)).toBe(1);
+    await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.release('审批提交暂时失败'));
+    await expect(page.locator('.error-banner')).toContainText('审批提交暂时失败');
+    await expect(page.getByLabel('审批说明', { exact: true })).toHaveValue('仅批准这次操作，保留我的说明');
+    await expect(page.getByRole('button', { name: '允许本次', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: '允许本次', exact: true }).click();
+    await expect(page.locator('.chat-message.assistant').last()).toContainText('测试审批已完成');
+    expect(await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate.count)).toBe(2);
+    await expect(page.locator('.approval-card')).toHaveCount(0);
+  } finally {
+    await app.evaluate(() => (globalThis as ApprovalFixtureGlobal).approvalGate?.dispose()).catch(() => {});
+    await stopAndClose(app); await f.dispose();
+  }
+});
 
 test('engine UI uses heterogeneous configuration, real service execution and refreshed capabilities without Claude', async () => {
   const f = await fixture(); let app = await f.launch();

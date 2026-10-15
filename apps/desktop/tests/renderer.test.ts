@@ -38,6 +38,44 @@ test('approval drafts isolate session and request keys and clean only resolved o
   drafts.delete('A','request');assert.equal(drafts.has('A'),false);drafts.retainSessions(['A']);assert.equal(drafts.has('B'),false);
 });
 
+test('approval submission immediately locks the request across subscribers until an authoritative snapshot removes it',async()=>{
+  const drafts=new ApprovalDrafts(),approval={requestId:'request',kind:'permission',toolName:'Bash',input:{},createdAt:''} as ChatApproval;
+  let sendCount=0,finish!:()=>void,notifications=0;
+  const unsubscribe=drafts.subscribe(()=>notifications++);
+  const pending=drafts.submitResponse('A','request','allow',()=>{sendCount++;return new Promise<void>(resolve=>{finish=resolve;});})!;
+  assert.deepEqual(drafts.response('A','request'),{behavior:'allow',status:'submitting'});
+  assert.equal(notifications,1);
+  assert.equal(drafts.submitResponse('A','request','deny',async()=>{sendCount++;}),undefined);
+  // Unmounting/remounting a card only changes its subscription, not its lock.
+  unsubscribe();const remount=drafts.subscribe(()=>notifications++);
+  drafts.reconcile('A',[approval]);
+  assert.equal(drafts.response('A','request')?.status,'submitting');
+  await Promise.resolve();assert.equal(sendCount,1);finish();await pending;
+  assert.equal(drafts.response('A','request')?.status,'accepted');
+  drafts.reconcile('A',[approval]);
+  assert.equal(drafts.submitResponse('A','request','allow',async()=>{sendCount++;}),undefined);
+  assert.equal(sendCount,1);assert.equal(drafts.has('A'),true);
+  // Request IDs are scoped to a session; another session remains usable.
+  await drafts.submitResponse('B','request','deny',async()=>{});
+  drafts.reconcile('A',[]);assert.equal(drafts.has('A'),false);assert.equal(drafts.has('B'),true);
+  drafts.retainSessions([]);assert.equal(drafts.has('B'),false);remount();
+});
+
+test('approval submission failures preserve answers for retry and late failures cannot revive resolved or removed requests',async()=>{
+  const drafts=new ApprovalDrafts(),draft={answers:{database:'SQLite'},reason:'Only this operation'};
+  drafts.set('A','request',draft);
+  await assert.rejects(drafts.submitResponse('A','request','allow',()=>{throw new Error('approval transport unavailable');})!,/transport unavailable/);
+  assert.equal(drafts.response('A','request'),undefined);assert.deepEqual(drafts.get('A','request'),draft);
+  await drafts.submitResponse('A','request','deny',async()=>{});
+  assert.equal(drafts.response('A','request')?.behavior,'deny');assert.equal(drafts.get('A','request').reason,'');
+  for(const remove of [()=>drafts.reconcile('A',[]),()=>drafts.retainSessions([])]){
+    let fail!:(error:Error)=>void;
+    const pending=drafts.submitResponse('A','late','allow',()=>new Promise<void>((_,reject)=>{fail=reject;}))!;
+    await Promise.resolve();remove();fail(new Error('expired response'));
+    await pending;assert.equal(drafts.response('A','late'),undefined);assert.equal(drafts.has('A'),false);
+  }
+});
+
 test('provider defaults materialize independent configs while unknown selected values remain visible',()=>{
   const descriptor:ExecutionDescriptor={providerId:'test.native',mode:'structured',displayName:'测试引擎',
     capabilities:{available:true,structured:true,terminal:false,approvals:false,resume:true,fork:false,commands:false,contextUsage:false,liveConfig:true,attachments:false},
