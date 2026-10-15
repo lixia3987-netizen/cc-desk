@@ -9,6 +9,7 @@ import { NativeImagePreview } from './NativeImagePreview';
 import { isNativeImagePreviewCurrent, nativeImagePreviewKey, type NativeImagePreviewSelection } from './native-image-preview-state';
 import { ChatSearch } from './ChatSearch';
 import { ApprovalDrafts, type ApprovalDraft } from './approval-drafts';
+import { ApprovalSubmission, paintApprovalFeedback, type ApprovalSubmissionState } from './approval-submission';
 import { useChatScroll, type ChatReadingPosition } from './chat-scroll';
 import { SubtaskPanel } from './SubtaskPanel';
 import { PromptEditor } from './PromptEditor';
@@ -38,7 +39,10 @@ export const taskLabels: Record<string,string> = { idle:'等待任务', starting
 const usageLabels:Record<string,string>={inputTokens:'输入',outputTokens:'输出',cacheReadTokens:'缓存读取',cacheCreationTokens:'缓存写入',costUSD:'估算费用 $',durationMs:'耗时 ms',turns:'轮次'};
 
 function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage,isNative}:{approval:ChatApproval;sessionId:string;onError:(error:unknown)=>void;drafts:ApprovalDrafts;engineName:string;allowMessage:boolean;isNative:boolean}) {
-  const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId)),[busy,setBusy]=useState(false);
+  const [value,setValue]=useState<ApprovalDraft>(()=>drafts.get(sessionId,approval.requestId));
+  const submission=useRef(new ApprovalSubmission());
+  const [submitted,setSubmitted]=useState<ApprovalSubmissionState>();
+  const busy=!!submitted;
   const changeSet=isNative&&approval.toolName==='apply_change_set';
   const question=approval.kind==='question'&&!changeSet;
   const changeSetPreview=approval.kind==='permission'?approval.nativeChangeSet:undefined;
@@ -48,11 +52,17 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
   const setAnswers=(change:(answers:Record<string,string>)=>Record<string,string>)=>update({answers:change(answers)});
   const setReason=(reason:string)=>update({reason});
   const respond=async(behavior:'allow'|'deny')=>{
-    if(busy||behavior==='allow'&&invalidChangeSet)return;
-    setBusy(true);
-    try {await window.desktop.respondChat(sessionId,approval.requestId,{behavior,message:allowMessage?reason||undefined:undefined,answers:question?answers:undefined});drafts.delete(sessionId,approval.requestId);}
-    catch(error){onError(error);} finally {setBusy(false);}
+    if(submission.current.state||behavior==='allow'&&invalidChangeSet)return;
+    const decision={behavior,message:allowMessage?reason||undefined:undefined,answers:question?{...answers}:undefined};
+    try {
+      const accepted=await submission.current.submit(behavior,
+        ()=>window.desktop.respondChat(sessionId,approval.requestId,decision),setSubmitted,paintApprovalFeedback);
+      if(accepted)drafts.delete(sessionId,approval.requestId);
+    } catch(error){onError(error);}
   };
+  if(submitted)return <section data-request-id={approval.requestId} className="approval-card" aria-label="审批处理状态">
+    <div role="status">{submitted.accepted?<Check size={14}/>:<Loader2 className="spin" size={14}/>} {submitted.accepted?(submitted.behavior==='deny'?'已拒绝':question?'回答已提交':'已允许本次'):'正在提交'+(question?'回答':'审批')+'…'}</div>
+  </section>;
   const questions=approval.questions??[];
   return <section data-request-id={approval.requestId} tabIndex={-1} className="approval-card" aria-label={question?'等待回答':'工具审批'}>
     <header><ShieldCheck size={17}/><strong>{question?engineName+' 需要你的回答':'批准工具：'+approval.toolName}</strong></header>
