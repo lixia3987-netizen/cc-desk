@@ -26,8 +26,7 @@ const input = 'Keep the original engineering goal intact; inspect the file and r
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
 const padding = 'ordinary historical observation '.repeat(730);
 // 指令变更只需一个真实文件批次：旧历史可摘要，最新读取仍须完整保留。
-const instructionChangeHistory = 'ordinary historical observation '.repeat(1250);
-const instructionChangeContent = 'instruction-change file observation\n'.repeat(600);
+const instructionChangeContent = 'instruction-change file observation\n'.repeat(200);
 const unknownCache = { cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null };
 const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
@@ -58,6 +57,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');
   let ordinary = 0, summaries = 0, retryFired = false, summaryEntered!: () => void;
+  let instructionChangeHistory = '';
   const summaryStarted = new Promise<void>(resolve => { summaryEntered = resolve; });
   const server = await (protocol === 'responses' ? startResponsesFixture : startChatCompletionsFixture)({ assertReplay: false,
     handler: ({ body }: { body: Body }) => {
@@ -73,6 +73,16 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       const items = body.input ?? body.messages!.filter(item => item.role !== 'system');
       requireCompleteContext({ protocol: { id: protocol === 'responses' ? 'openai-responses' : 'openai-chat-completions', version: 1 }, items });
       const index = ordinary++;
+      if (options.mode === 'instructions-changed' && index === 0) {
+        // 真实 Responses 请求正文与适配器的 UTF-8 估计使用相同 JSON.stringify。
+        // 为首个计划回执保留 3500 字节；下一次完整读取再越过原 90k 的 90% 阈值。
+        const initialPayloadBytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
+        const historyBytes = inputBudget * 0.9 - 3500 - initialPayloadBytes;
+        assert.ok(Number.isSafeInteger(historyBytes) && historyBytes > 0);
+        const observation = 'ordinary historical observation ';
+        instructionChangeHistory = observation.repeat(Math.ceil(historyBytes / observation.length)).slice(0, historyBytes);
+        assert.equal(Buffer.byteLength(instructionChangeHistory, 'utf8'), historyBytes);
+      }
       const call = (id: string, name: string, args: unknown, text = '') => protocol === 'responses'
         ? { output: [...(text ? [assistantMessage(`${id}-notes`, text, 'commentary')] : []), functionCall(id, name, args)] }
         : { message: { role: 'assistant', content: text || null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } };
@@ -116,7 +126,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
     return result;
   };
   let executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize();
-  return { id, project, server, summaryStarted, inputBudget, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
+  return { id, project, server, summaryStarted, inputBudget, get instructionChangeHistory() { return instructionChangeHistory; }, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
     contextPayloadBytes(context: ModelContext) {
       assert.ok(lastOrdinaryModel && lastOrdinaryOutputLimit);
       const estimate = createNativeModel(lastOrdinaryModel).estimateInputUsage?.(context, lastOrdinaryOutputLimit);
@@ -223,6 +233,14 @@ test('CLAUDE instruction changes during summary prevent committing or resuming t
     const originalInstructionHash = createHash('sha256').update(originalInstructions).digest('hex');
     const result = await f.send(); assert.equal(result.success, false); assert.deepEqual(f.server.errors, []);
     assert.equal(f.inputBudget, 90000); assert.equal(f.summaries, 1); assert.equal(f.ordinary, 2); assert.equal(f.server.requests.length, 3);
+    const ordinaryRequests = f.server.requests.filter((body: Body) => body.tools?.length);
+    assert.equal(ordinaryRequests.length, 2);
+    const initialPayloadBytes = Buffer.byteLength(JSON.stringify(ordinaryRequests[0]), 'utf8');
+    const beforeReadPayloadBytes = Buffer.byteLength(JSON.stringify(ordinaryRequests[1]), 'utf8');
+    const threshold = f.inputBudget * 0.9;
+    assert.equal(Buffer.byteLength(f.instructionChangeHistory, 'utf8'), threshold - 3500 - initialPayloadBytes);
+    assert.ok(beforeReadPayloadBytes >= threshold - 3500 && beforeReadPayloadBytes < threshold,
+      `真实读取前的请求 ${beforeReadPayloadBytes} 必须低于维护阈值 ${threshold}`);
     const ledger = await f.ledger(); assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
     const run = ledger.runs[0].result!;
     assert.equal(run.status, 'failed'); assert.equal(run.reason, 'context_maintenance_failed');
@@ -252,7 +270,11 @@ test('CLAUDE instruction changes during summary prevent committing or resuming t
     assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_failed').length, 1);
     assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compacted').length, 0);
     assert.equal(JSON.stringify(ledger.context).includes(summary), false);
-    assert.ok(JSON.stringify(ledger.context).includes(instructionChangeHistory), '失败摘要必须保留原始历史上下文');
+    assert.ok(JSON.stringify(ledger.context).includes(f.instructionChangeHistory), '失败摘要必须保留原始历史上下文');
+    requireCompleteContext(ledger.context!);
+    const afterReadPayloadBytes = f.contextPayloadBytes(ledger.context!);
+    assert.ok(afterReadPayloadBytes >= threshold && afterReadPayloadBytes <= f.inputBudget,
+      `真实读取后的适配器估计 ${afterReadPayloadBytes} 必须跨过维护阈值 ${threshold} 且不超过原输入预算`);
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'failed');
 
     // 同一提交重启后只重放失败回执，不发网，也不替换原上下文或运行结果。

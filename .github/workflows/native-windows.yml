@@ -237,6 +237,13 @@ jobs:
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
           exit 0
+      - name: 复验指令在摘要期间变化
+        if: ${{ !cancelled() && steps.prepare.outcome == 'success' }}
+        working-directory: apps/desktop
+        timeout-minutes: 2
+        run: |
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap --test-name-pattern="CLAUDE instruction changes during summary" tests/native-in-turn-compaction-executor.test.ts 2>&1 | Tee-Object -FilePath ../../test-results/windows-cim/summary.tap
+          exit $LASTEXITCODE
       - name: 保留独立 CIM 失败轨迹
         if: always()
         uses: actions/upload-artifact@v4
