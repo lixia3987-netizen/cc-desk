@@ -4,9 +4,9 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { canonicalJson, createModelRequestDiagnostic, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, createModelRequestDiagnostic, DEFAULT_RUN_BUDGET, ToolPreparationError, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
-import { MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
+import { checkedPreparationFailure, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
 
 const run: Omit<AgentRunRequest, 'signal'> = {
   identity: { sessionId: 'session', conversationId: 'conversation', runId: 'run', requestId: 'submission', workerGeneration: 1 },
@@ -118,6 +118,119 @@ async function prepare(worker: FakeWorker, context: ModelContext): Promise<Prepa
   return await worker.rpc('tools.prepare', { call: requestCall, context: executionContext() });
 }
 function executionContext() { return { identity: run.identity, policyRevision: run.policyRevision, maxOutputBytes: DEFAULT_RUN_BUDGET.maxToolOutputBytes }; }
+
+test('worker preparation replies contain only branded fixed feedback bound to the actual failed call', async () => {
+  let executions = 0;
+  const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await assert.rejects(prepare(worker, context), /Native host operation failed/);
+    const reply = worker.sent.find(message => message.type === 'reply' && message.preparationFailure)!;
+    assert.deepEqual(reply.preparationFailure, { callId: requestCall.id, feedback });
+    assert.equal(reply.error, 'Native host operation failed.');
+    assert.equal(Object.hasOwn(reply, 'value'), false);
+    const result: ToolResult = { status: 'failed', output: { ...feedback, executed: false } };
+    const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  });
+  h.options.tools.prepare = async () => {
+    const error = new ToolPreparationError(feedback);
+    error.message = 'secret-key-sentinel private-path'; error.stack = 'secret-key-sentinel private-stack';
+    throw error;
+  };
+  h.options.tools.execute = async () => { executions++; return { status: 'completed', output: {} }; };
+  assert.equal((await h.promise).status, 'completed');
+  assert.equal(executions, 0);
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_prepared'), false);
+  const replies = h.worker.sent.filter(message => message.type === 'reply');
+  assert.equal(JSON.stringify([replies, h.journal]).includes('secret-key-sentinel'), false);
+  assert.equal(JSON.stringify([replies, h.journal]).includes('private-path'), false);
+});
+
+test('worker cannot invent or alter preparation feedback without matching host failure evidence', async () => {
+  for (const fault of ['unbranded', 'changed', 'wrong_code']) {
+    const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+    const h = harness(async worker => {
+      const context = await begin(worker);
+      await assert.rejects(prepare(worker, context));
+      const reply = worker.sent.filter(message => message.type === 'reply').at(-1)!;
+      assert.equal(Boolean(reply.preparationFailure), fault !== 'unbranded');
+      const result = { status: 'failed', output: { ...feedback, error: fault === 'wrong_code' ? 'invalid_tool_input' : feedback.error, currentRevision: fault === 'changed' ? 8 : 7, executed: false } };
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result,
+        resultItems: [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }] } });
+    });
+    h.options.tools.prepare = async () => {
+      if (fault !== 'unbranded') throw new ToolPreparationError(feedback);
+      throw Object.assign(new Error('private failure'), { feedback });
+    };
+    await assert.rejects(h.promise, { code: 'protocol' });
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_completed'), false);
+  }
+});
+
+test('RPC cancellation takes priority over a late trusted preparation failure', async () => {
+  let entered!: () => void;
+  const preparing = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(async worker => {
+    const context = await begin(worker), operation = prepare(worker, context);
+    await preparing;
+    worker.send({ type: 'rpc_cancel', requestId: `run:${worker.sequence}` });
+    await assert.rejects(operation, /Native host operation failed/);
+    assert.equal(worker.sent.some(message => message.preparationFailure !== undefined), false);
+    worker.exit(1);
+  });
+  h.options.tools.prepare = async (_call, execution) => {
+    entered();
+    await new Promise<void>(resolve => execution.signal.addEventListener('abort', () => resolve(), { once: true }));
+    throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: 7, readTask: true });
+  };
+  await assert.rejects(h.promise, { code: 'crash' });
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_prepared'), false);
+});
+
+test('worker reply feedback rejects extra fields, wrong calls and invalid unions without reading getters', () => {
+  const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback }, 'call'), feedback);
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback: { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true } }, 'call'),
+    { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true });
+  for (const raw of [null, { callId: 'other', feedback }, { callId: 'call', feedback, message: 'private' },
+    { callId: 'call', feedback: { ...feedback, private: 'private' } }, { callId: 'call', feedback: { ...feedback, currentRevision: -1 } },
+    { callId: 'call', feedback: { error: 'unknown', readTask: true, currentRevision: 1 } }]) {
+    assert.throws(() => checkedPreparationFailure(raw, 'call'), /Invalid tool preparation reply/);
+  }
+  let accessed = false;
+  const accessor = Object.defineProperty({ callId: 'call' }, 'feedback', { enumerable: true, get: () => { accessed = true; return feedback; } });
+  assert.throws(() => checkedPreparationFailure(accessor, 'call'), /Invalid tool preparation reply/);
+  assert.equal(accessed, false);
+});
+
+test('execute-phase feedback stays bound to the actual host result and cannot be rewritten by the worker', async () => {
+  for (const changed of [false, true]) {
+    const actual: ToolResult = { status: 'not_executed', output: { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true, executed: false } };
+    const h = harness(async worker => {
+      const context = await begin(worker), prepared = await prepare(worker, context);
+      const approval = await worker.rpc('approval', approvalRequest(prepared));
+      await worker.rpc('tools.validate', { prepared, context: executionContext() });
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+      const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+      assert.deepEqual(result, actual);
+      const reported = changed ? { ...result, output: { error: 'code_location_line_range_invalid', lineCount: 3, readFile: true, executed: false } } : result;
+      const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(reported) }];
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result: reported, resultItems } });
+      context.items.push(...resultItems);
+      await worker.rpc('store.checkpoint', { identity: run.identity, context });
+      await finish(worker, context, { toolCalls: 1 });
+    });
+    h.options.tools.execute = async () => clone(actual);
+    if (changed) {
+      await assert.rejects(h.promise, { code: 'protocol' });
+      assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_completed'), false);
+    } else assert.equal((await h.promise).status, 'completed');
+  }
+});
 
 test('worker transports strict request diagnostics and cache counters without persisting instruction bodies', async () => {
   const cached = { inputTokens: 20, outputTokens: 3, totalTokens: 23, cacheReadInputTokens: 5, cacheCreationInputTokens: 2, nonCachedInputTokens: 13 };

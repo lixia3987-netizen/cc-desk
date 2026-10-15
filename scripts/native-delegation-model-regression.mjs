@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DEFAULT_REGRESSION_CASES, REGRESSION_CASES } from './native-delegation-model-regression-lib.mjs';
 import { cleanupNativeCredentialProfile, prepareNativeCredentialProfile, verifyNativeProfileSourceUnchanged } from './native-credential-profile.mjs';
+import { fingerprintRegressionBundleInputs, readRegressionCandidateBinding } from './native-regression-candidate.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 export function parseRegressionArguments(argv) {
@@ -22,6 +23,7 @@ export function parseRegressionArguments(argv) {
   if ((args['connection-id'] || args['native-session-id']) && !args['native-data-dir']) throw new Error('native_data_directory_required');
   if (args['native-profile-key'] !== undefined && args['native-profile-key'] !== 'true') throw new Error('invalid_native_profile_key_option');
   if (args['native-profile-key'] && !args['native-data-dir']) throw new Error('native_data_directory_required');
+  if (args['candidate-sha'] && !/^[a-f\d]{40}$/iu.test(args['candidate-sha'])) throw new Error('invalid_candidate_revision');
   for (const key of ['connection-id', 'native-session-id']) if (args[key] && !/^[a-zA-Z0-9_-]{1,100}$/.test(args[key])) throw new Error('invalid_native_selection');
   return { claudeConfig: path.resolve(args['claude-config'] ?? path.join(homedir(), '.claude', 'settings.json')), model: args.model,
     outputDirectory: path.resolve(args.out), attempts, cases, protocol, candidateSha: args['candidate-sha'],
@@ -31,12 +33,14 @@ export function parseRegressionArguments(argv) {
 /** 构建独立 Electron 主入口，运行器复用生产 StructuredExecutor 和真实 utilityProcess。 */
 export async function runDelegationModelRegression(options) {
   await mkdir(options.outputDirectory, { recursive: false });
+  const candidateBinding = await readRegressionCandidateBinding(root, options.candidateSha);
+  let buildProvenance;
   // 启动前只在内存检查连接是否存在，缺配置不依赖构建环境，也不泄露字段值。
   let configuration;
   if (!options.nativeDataDirectory) try { configuration = JSON.parse(await readFile(options.claudeConfig, 'utf8')); } catch { /* 统一记录 no_config。 */ }
   const environment = configuration?.env ?? {};
   if (!options.nativeDataDirectory && !(environment.ANTHROPIC_AUTH_TOKEN ?? environment.ANTHROPIC_API_KEY)) {
-    const reportFile = path.join(options.outputDirectory, 'report.json'), report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'no_config', cases: [] };
+    const reportFile = path.join(options.outputDirectory, 'report.json'), report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'no_config', candidateBinding, cases: [] };
     await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return { reportFile, report, exitCode: 1 };
   }
@@ -47,12 +51,13 @@ export async function runDelegationModelRegression(options) {
       credentialProfile = await prepareNativeCredentialProfile({ nativeDataDirectory: options.nativeDataDirectory });
       profileEvidence.created = true;
     }
-    const safeOptions = { ...options, ...(credentialProfile ? { credentialProfileDirectory: credentialProfile.directory } : {}) };
-    await writeFile(optionsPath, JSON.stringify(safeOptions), { flag: 'wx', mode: 0o600 });
     const { build } = await import('esbuild');
     const runtime = path.join(options.outputDirectory, 'runtime');
-    await build({ absWorkingDir: root, entryPoints: ['apps/desktop/scripts/native-delegation-runtime.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: path.join(runtime, 'main/regression.cjs'), external: ['electron', 'node-pty'], logLevel: 'silent' });
-    await build({ absWorkingDir: root, entryPoints: ['apps/desktop/src/main/engines/native/worker-entry.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: path.join(runtime, 'native/worker.cjs'), external: ['electron'], logLevel: 'silent' });
+    const mainBuild = await build({ absWorkingDir: root, entryPoints: ['apps/desktop/scripts/native-delegation-runtime.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: path.join(runtime, 'main/regression.cjs'), external: ['electron', 'node-pty'], logLevel: 'silent', metafile: true });
+    const workerBuild = await build({ absWorkingDir: root, entryPoints: ['apps/desktop/src/main/engines/native/worker-entry.ts'], bundle: true, platform: 'node', format: 'cjs', outfile: path.join(runtime, 'native/worker.cjs'), external: ['electron'], logLevel: 'silent', metafile: true });
+    buildProvenance = await fingerprintRegressionBundleInputs(root, [mainBuild.metafile, workerBuild.metafile]);
+    const safeOptions = { ...options, candidateBinding, buildProvenance, ...(credentialProfile ? { credentialProfileDirectory: credentialProfile.directory } : {}) };
+    await writeFile(optionsPath, JSON.stringify(safeOptions), { flag: 'wx', mode: 0o600 });
     const { default: electron } = await import('electron');
     const environment = { ...process.env }; delete environment.ELECTRON_RUN_AS_NODE;
     exitCode = await new Promise((resolve, reject) => {
@@ -76,11 +81,17 @@ export async function runDelegationModelRegression(options) {
     report = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', reason: 'runtime_report_unavailable', runtimeExitCode: exitCode, cases: [] };
     await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
   }
+  report.candidateBinding = candidateBinding;
+  const candidateBindingAfterRun = await readRegressionCandidateBinding(root, options.candidateSha);
+  report.candidateBindingAfterRun = candidateBindingAfterRun;
+  if (buildProvenance) report.buildProvenance = buildProvenance;
+  const candidateStable = candidateBinding.verified && candidateBindingAfterRun.verified && candidateBinding.actualHead === candidateBindingAfterRun.actualHead;
+  if (!candidateStable) { report.releaseGate = 'not_run'; report.releaseGateReason = !candidateBinding.verified ? candidateBinding.reason : candidateBindingAfterRun.reason; }
   if (profileEvidence) {
     report.credentialProfile = profileEvidence;
-    if (profileEvidence.created && (!profileEvidence.cleanupConfirmed || !profileEvidence.sourceFilesUnchanged)) { report.status = 'failed'; report.releaseGate = 'failed'; report.reason = !profileEvidence.cleanupConfirmed ? 'credential_profile_cleanup_unconfirmed' : 'native_profile_source_changed'; }
-    await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
+    if (profileEvidence.created && (!profileEvidence.cleanupConfirmed || !profileEvidence.sourceFilesUnchanged)) { report.status = 'failed'; report.releaseGate = candidateStable ? 'failed' : 'not_run'; report.reason = !profileEvidence.cleanupConfirmed ? 'credential_profile_cleanup_unconfirmed' : 'native_profile_source_changed'; }
   }
+  await writeFile(reportFile, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   return { reportFile, report, exitCode };
 }
 

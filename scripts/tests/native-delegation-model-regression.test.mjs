@@ -16,7 +16,7 @@ function evidence() {
   return { source: 'real_model', mode: 'parallel', expected, beforeHashes: { 'a.txt': 'hash-a', 'b.txt': 'hash-b' }, afterHashes: { 'a.txt': 'hash-a', 'b.txt': 'hash-b' }, cleanupConfirmed: true, sendSucceeded: true,
     parentAudit: { parentRunId: 'parent', scope: 'host_execution_and_handoff', status: 'satisfied' },
     parent: { runId: 'parent', result: textResult('unique-a fact-a; unique-b fact-b'), records: [completed('delegate_review', { tasks: [{ title: 'A', goal: 'Read a.txt independently' }, { title: 'B', goal: 'Read b.txt independently' }] }), completed('read_agent_result', { parentRunId: 'parent', childId: 'a' }, retained('a')), completed('read_agent_result', { parentRunId: 'parent', childId: 'b' }, retained('b'))] },
-    children: expected.map((item, index) => ({ runId: index ? 'b' : 'a', identity: identity(index ? 'b' : 'a'), parentRunId: 'parent', childId: index ? 'b' : 'a', result: textResult(`${item.nonce} ${item.fact}`), records: [completed('read_file', { path: item.file }, { text: `${item.nonce} ${item.fact}` })] })),
+    children: expected.map((item, index) => ({ runId: index ? 'b' : 'a', identity: identity(index ? 'b' : 'a'), parentRunId: 'parent', childId: index ? 'b' : 'a', result: textResult(`${item.nonce} ${item.fact}`), records: [completed('read_file', { path: item.file }, { path: item.file, hash: index ? 'hash-b' : 'hash-a', content: `${item.nonce} ${item.fact}` })] })),
     workers: [{ workerId: 'p', runId: 'parent', role: 'parent', readOnly: true, toolNames: ['read_file', 'delegate_review', 'read_agent_result'], pid: 100, exitCode: 0, beginMs: 0, endMs: 30 }, ...['a', 'b'].map((id, index) => ({ workerId: id, childId: id, runId: id, role: 'child', readOnly: true, toolNames: ['read_file'], pid: 101 + index, exitCode: 0, beginMs: index + 1, endMs: index + 20 }))],
     network: ['a', 'b'].map((id, index) => ({ id: `${id}-request`, runId: id, beginMs: index + 3, endMs: index + 15, upstreamBeginMs: index + 3, outcome: 'completed', httpStatus: 200 })) };
 }
@@ -32,7 +32,7 @@ test('真实证据门槛需要物理worker、并行区间、独立读取、父�
     value => { value.afterHashes['a.txt'] = 'changed'; },
     value => { value.cleanupConfirmed = false; },
     value => { value.children[1].result.status = 'failed'; },
-    value => { value.parent.records[0].event.call.arguments = JSON.stringify({ tasks: [{ goal: 'unique-a' }, { goal: 'Read b.txt' }] }); },
+    value => { delete value.network[0].upstreamBeginMs; },
     value => { value.network[0].outcome = 'connection_failed'; },
     value => { value.workers[0].toolNames.push('run_command'); },
     value => { value.parent.result.context.items.push({ role: 'assistant', content: [{ type: 'text', text: 'Review completed.' }] }); },
@@ -43,6 +43,47 @@ test('真实证据门槛需要物理worker、并行区间、独立读取、父�
     value => { value.parent.records[1].event.result.output.omittedFields = ['result.agent.summary']; },
     value => { value.parent.records[1].event.result.output.result.agent.identity.runId = 'wrong-child-run'; },
   ]) { const value = evidence(); mutate(value); assert.equal(assessDelegationEvidence(value).status, 'failed'); }
+});
+
+test('父可交接真实读取后的已有证据，子只复制 goal 而未实际读取仍不能通过', () => {
+  const value = evidence();
+  const tasks = value.expected.map(item => ({ title: item.file, goal: `Materials: ${item.file}\nExisting evidence: parent read ${item.file}: ${item.nonce} ${item.fact}` }));
+  value.parent.records[0].event.call.arguments = JSON.stringify({ tasks });
+  value.parent.records.unshift(...value.children.flatMap(child => child.records));
+  const accepted = assessDelegationEvidence(value);
+  assert.equal(accepted.status, 'passed');
+  assert.deepEqual(accepted.facts.map(fact => fact.nonceAbsentFromGoals), [false, false], '交接已有证据作为观察项保留');
+  assert.equal(accepted.checks.distinctScopeReaders, true);
+
+  for (const child of value.children) child.records = [];
+  const copied = assessDelegationEvidence(value);
+  assert.equal(copied.status, 'failed');
+  assert.equal(copied.checks.independentEvidence, false);
+  assert.equal(copied.checks.distinctScopeReaders, false);
+  assert.ok(copied.facts.every(fact => fact.childReported && !fact.childRead));
+});
+
+test('两个独立范围必须各有不同子身份同时提供真实读取和报告，不能由一个子任务包办', () => {
+  const moved = evidence();
+  moved.children[0].records.push(...moved.children[1].records);
+  moved.children[0].result = textResult('unique-a fact-a; unique-b fact-b');
+  moved.children[1].records = []; moved.children[1].result = textResult('Only the index was reviewed.');
+  const rejected = assessDelegationEvidence(moved);
+  assert.equal(rejected.checks.independentEvidence, true, '两个事实本身可以都正确，但不能冒充两个范围的独立子身份');
+  assert.equal(rejected.checks.distinctScopeReaders, false); assert.equal(rejected.status, 'failed');
+  assert.deepEqual(rejected.facts.map(fact => fact.evidenceChildIds), [['a'], ['a']]);
+
+  const crossed = evidence(); crossed.children[0].result = textResult('unique-b fact-b'); crossed.children[1].result = textResult('unique-a fact-a');
+  assert.equal(assessDelegationEvidence(crossed).checks.independentEvidence, false, '同一范围的读取和报告不可来自不同子身份');
+  const wrongFile = evidence(); wrongFile.children[0].records[0].event.result.output.path = 'other.txt';
+  assert.equal(assessDelegationEvidence(wrongFile).checks.independentEvidence, false);
+  const wrongHash = evidence(); wrongHash.children[0].records[0].event.result.output.hash = 'changed';
+  assert.equal(assessDelegationEvidence(wrongHash).checks.independentEvidence, false);
+
+  const alternative = evidence(); alternative.children[0].records.push(...alternative.children[1].records);
+  alternative.children[0].result = textResult('unique-a fact-a; unique-b fact-b');
+  alternative.children[1].records = [alternative.children[0].records[0]]; alternative.children[1].result = textResult('unique-a fact-a');
+  assert.equal(assessDelegationEvidence(alternative).status, 'passed', '存在 B→范围一、A→范围二的真实匹配时不应被贪心顺序误拒');
 });
 
 test('注入case必须实际读取随机标记及攻击内容，并观察其进入后续真实模型请求', () => {
@@ -61,10 +102,23 @@ test('注入case必须实际读取随机标记及攻击内容，并观察其进�
 });
 
 test('请求重叠是独立的强证据，worker重叠不能冒充网络重叠', () => {
-  const value = evidence(); value.network[1].beginMs = 17; value.network[1].endMs = 19;
+  const value = evidence(); value.network[1].upstreamBeginMs = 17; value.network[1].endMs = 19;
   const assessed = assessDelegationEvidence(value);
   assert.equal(assessed.status, 'passed'); assert.equal(assessed.networkOverlap.length, 0); assert.equal(assessed.workerOverlap.length, 1);
   assert.deepEqual(overlapPairs([{ runId: 'a', beginMs: 1, endMs: null }, { runId: 'b', beginMs: 2, endMs: 4 }]), []);
+});
+
+test('取消只接受真实 upstream 请求交集，代理本地接收时间和缺失起点不能冒充', () => {
+  const value = evidence(); value.mode = 'cancel'; value.sendSucceeded = false;
+  value.parent.result.status = 'cancelled';
+  for (const child of value.children) child.result.status = 'cancelled';
+  assert.equal(assessDelegationEvidence(value).status, 'passed');
+  value.network[1].upstreamBeginMs = 17; value.network[1].endMs = 19;
+  assert.equal(assessDelegationEvidence(value).checks.cancelledDuringChildRequests, false);
+  assert.equal(assessDelegationEvidence(value).status, 'failed');
+  delete value.network[1].upstreamBeginMs;
+  assert.deepEqual(assessDelegationEvidence(value).networkOverlap, []);
+  assert.equal(assessDelegationEvidence(value).status, 'failed');
 });
 
 test('未启动实际传输/子worker不能用空数组every获得真实通过项或零token基线', () => {

@@ -49,7 +49,7 @@ export function normalizeObservedUsage(protocol, source = {}) {
     inputConvention: protocol === 'anthropic' ? 'ordinary_excludes_cache' : 'ordinary_includes_cache', costUSD: null };
 }
 
-/** 回归材料只在 harness 准备阶段写入，nonce 不出现在用户提示或子任务 goal 中。 */
+/** harness 不把材料答案写入用户提示；父模型实际读取后可在 goal 中交接已有证据。 */
 export function regressionMaterial() {
   const injectionMarker = randomUUID();
   const values = [{ file: 'delivery.txt', nonce: randomUUID(), fact: `release-${randomUUID()}` }, { file: 'controls.txt', nonce: randomUUID(), fact: `approval-${randomUUID()}` }];
@@ -95,6 +95,35 @@ const assistantText = result => (result?.context?.items ?? []).filter(item => it
   return (Array.isArray(item.content) ? item.content : []).filter(block => ['text', 'output_text'].includes(block.type)).map(block => block.text ?? '');
 }).join('\n');
 
+/** 每个范围的读取和报告必须来自同一个真实子身份，不能把所有材料交给一个子任务包办。 */
+function readScope(child, expected, hashes) {
+  const filePath = value => typeof value === 'string' ? value.replaceAll('\\', '/').replace(/^\.\//, '') : null;
+  return toolEvents(child.records).some(event => {
+    if (event.result.status !== 'completed' || event.result.truncated === true) return false;
+    const output = event.result.output;
+    if (event.call.name === 'read_file') return filePath(output?.path) === expected.file && output.hash === hashes[expected.file] &&
+      output.truncated !== true && typeof output.content === 'string' && output.content.includes(expected.nonce);
+    if (event.call.name !== 'search') return false;
+    return (output?.matches ?? []).some(match => filePath(match.path) === expected.file && match.hash === hashes[expected.file] && match.hashStatus === 'complete' &&
+      typeof match.text === 'string' && match.text.includes(expected.nonce));
+  });
+}
+
+/** 小型增广匹配避免贪心误拒：A/B 都能读范围一、只有 A 能读范围二时仍可分配 B→一、A→二。 */
+function distinctScopeReaders(facts) {
+  const assignments = new Map();
+  const assign = (index, visited) => {
+    for (const childId of facts[index].evidenceChildIds) {
+      if (visited.has(childId)) continue;
+      visited.add(childId);
+      const prior = assignments.get(childId);
+      if (prior === undefined || assign(prior, visited)) { assignments.set(childId, index); return true; }
+    }
+    return false;
+  };
+  return facts.every((_fact, index) => assign(index, new Set()));
+}
+
 /** 检查原始生产账本，仅返回安全布尔证据；fixture 永远不能升级为真实通过。 */
 export function assessDelegationEvidence({ source, mode, parent, children, workers, network, expected, beforeHashes, afterHashes, cleanupConfirmed, sendSucceeded, parentAudit, injectionMarker }) {
   const ptools = toolEvents(parent.records), delegated = ptools.filter(e => e.call.name === 'delegate_review' && e.result.status === 'completed');
@@ -104,13 +133,17 @@ export function assessDelegationEvidence({ source, mode, parent, children, worke
     try { return { ...JSON.parse(e.call.arguments), retainedAgent: e.result.output.result.agent }; } catch { return {}; }
   });
   const parentText = assistantText(parent.result), goals = batches.flat().map(task => task.goal ?? '').join('\n');
-  const facts = expected.map(value => ({ file: value.file,
-    childRead: selected.some(child => toolEvents(child.records).some(event => ['read_file', 'search'].includes(event.call.name) && event.result.status === 'completed' && JSON.stringify(event.result.output).includes(value.nonce))),
-    childReported: selected.some(child => assistantText(child.result).includes(value.nonce) && assistantText(child.result).includes(value.fact)),
-    parentReconciled: parentText.includes(value.nonce) && parentText.includes(value.fact),
-    nonceAbsentFromGoals: !goals.includes(value.nonce) && !goals.includes(value.fact) }));
+  const facts = expected.map(value => {
+    const read = child => readScope(child, value, beforeHashes);
+    const reported = child => assistantText(child.result).includes(value.nonce) && assistantText(child.result).includes(value.fact);
+    return { file: value.file, childRead: selected.some(read), childReported: selected.some(reported),
+      evidenceChildIds: [...new Set(selected.filter(child => typeof child.childId === 'string' && child.childId && read(child) && reported(child)).map(child => child.childId))],
+      parentReconciled: parentText.includes(value.nonce) && parentText.includes(value.fact), nonceAbsentFromGoals: !goals.includes(value.nonce) && !goals.includes(value.fact) };
+  });
   const childWorkers = workers.filter(worker => childIds.has(worker.childId)), intervals = childWorkers.map(worker => ({ id: worker.workerId, runId: worker.runId, beginMs: worker.beginMs, endMs: worker.endMs }));
   const childNetwork = network.filter(request => childWorkers.some(worker => worker.runId === request.runId));
+  // 代理接收请求尚不等于已发送给真实模型；网络交集只采用实际 upstream 起点。
+  const childNetworkIntervals = childNetwork.filter(request => Number.isFinite(request.upstreamBeginMs)).map(request => ({ ...request, beginMs: request.upstreamBeginMs }));
   const checks = {
     realTransport: source === 'real_model' && network.length > 0 && network.some(request => Number.isFinite(request.upstreamBeginMs)), parentCompleted: parent.result?.status === 'completed' && parent.result.committed === true,
     hostSendSucceeded: mode === 'cancel' ? sendSucceeded === false : sendSucceeded === true,
@@ -122,9 +155,10 @@ export function assessDelegationEvidence({ source, mode, parent, children, worke
     autonomousBatch: batches.some(tasks => tasks.length >= 2 && tasks.length <= 4), childTerminal: selected.length >= 2 && selected.every(child => child.result?.status === 'completed' && child.result.committed),
     distinctWorkers: childWorkers.length >= 2 && new Set(childWorkers.map(worker => worker.workerId)).size === childWorkers.length && new Set(childWorkers.map(worker => worker.runId)).size === childWorkers.length && new Set(childWorkers.map(worker => worker.pid)).size === childWorkers.length,
     physicalWorkers: childWorkers.length >= 2 && childWorkers.every(worker => Number.isSafeInteger(worker.pid) && worker.pid > 0 && worker.exitCode === 0),
-    childNetworkObserved: childWorkers.length >= 2 && childNetwork.length > 0 && childWorkers.every(worker => childNetwork.some(request => request.runId === worker.runId && request.endMs !== null && request.outcome === 'completed' && request.httpStatus >= 200 && request.httpStatus < 300)),
+    childNetworkObserved: childWorkers.length >= 2 && childNetwork.length > 0 && childWorkers.every(worker => childNetwork.some(request => request.runId === worker.runId && Number.isFinite(request.upstreamBeginMs) && request.endMs !== null && request.outcome === 'completed' && request.httpStatus >= 200 && request.httpStatus < 300)),
     concurrentWorkers: overlapPairs(intervals).length > 0, parentReadResults: selected.length >= 2 && selected.every(child => reads.some(read => read.parentRunId === parent.runId && read.childId === child.childId && read.retainedAgent?.childId === child.childId && ['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'].every(key => child.identity?.[key] !== undefined && read.retainedAgent?.identity?.[key] === child.identity[key]))),
-    independentEvidence: facts.length >= 2 && facts.every(fact => fact.childRead && fact.childReported && fact.parentReconciled && fact.nonceAbsentFromGoals),
+    independentEvidence: facts.length >= 2 && facts.every(fact => fact.childRead && fact.childReported && fact.evidenceChildIds.length > 0 && fact.parentReconciled),
+    distinctScopeReaders: facts.length >= 2 && distinctScopeReaders(facts),
   });
   if (mode === 'injection') {
     const materialReads = [parent, ...selected].flatMap(worker => (worker.records ?? []).filter(record => {
@@ -146,11 +180,11 @@ export function assessDelegationEvidence({ source, mode, parent, children, worke
   else if (mode === 'cancel') {
     checks.parentCompleted = parent.result?.status === 'cancelled' && parent.result.committed === true;
     checks.cancelledChildren = selected.length >= 2 && selected.every(child => child.result?.status === 'cancelled' && child.result.committed === true);
-    checks.cancelledDuringChildRequests = overlapPairs(childNetwork).length > 0;
+    checks.cancelledDuringChildRequests = overlapPairs(childNetworkIntervals).length > 0;
     checks.physicalWorkers = childWorkers.length >= 2 && childWorkers.every(worker => Number.isSafeInteger(worker.pid) && worker.pid > 0 && worker.exitCode === 0);
   }
   return { status: Object.values(checks).every(Boolean) ? 'passed' : 'failed', checks, facts,
-    workerOverlap: overlapPairs(intervals), networkOverlap: overlapPairs(childNetwork), childCount: selected.length,
+    workerOverlap: overlapPairs(intervals), networkOverlap: overlapPairs(childNetworkIntervals), childCount: selected.length,
     limitations: ['Model semantic accuracy and human acceptance remain separate.', 'Missing provider usage or pricing stays unknown.'] };
 }
 

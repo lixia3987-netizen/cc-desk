@@ -8,6 +8,7 @@ import { validateModelFailureDiagnostic } from './recovery.js'
 import { validateUserImages } from './images.js'
 import { sumUsage, validateUsage } from './usage.js'
 import { createModelRequestDiagnostic, validateModelRequestDiagnostic } from './diagnostics.js'
+import { getToolPreparationFeedback } from './tool-preparation-error.js'
 
 export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxModelRequests: 30,
@@ -393,9 +394,10 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       if (!tools.definitions.some((definition) => definition.name === call.name)) throw new Error('Unknown tool')
       prepared = clone(await activeOperation((signal) => tools.prepare(clone(call), toolContext(signal))))
       await validatePrepared(prepared, call, input)
-    } catch {
+    } catch (error) {
       checkStopped()
-      await completeTool(call, { status: 'failed', output: { error: 'invalid_tool_input', executed: false } })
+      const feedback = getToolPreparationFeedback(error)
+      await completeTool(call, { status: 'failed', output: feedback ? { ...feedback, executed: false } : { error: 'invalid_tool_input', executed: false } })
       return
     }
     checkStopped()

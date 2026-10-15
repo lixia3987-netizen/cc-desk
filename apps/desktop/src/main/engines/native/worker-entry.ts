@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
-import { runAgent, type AgentEvent, type AgentPorts, type RunIdentity } from '@cc-desk/agent-core';
+import { runAgent, ToolPreparationError, type AgentEvent, type AgentPorts, type RunIdentity } from '@cc-desk/agent-core';
 import { createNativeModel } from '@cc-desk/agent-node/native-model';
-import { checkedMessage, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL, type WorkerReply, type WorkerStart } from './worker-protocol';
+import { checkedMessage, checkedPreparationFailure, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL, type WorkerReply, type WorkerStart } from './worker-protocol';
 import { NativeActiveClock } from './active-pause';
 
 const port = process.parentPort;
@@ -12,7 +12,7 @@ process.report.reportOnSignal = false;
 process.report.reportOnUncaughtException = false;
 const abort = new AbortController();
 const activeClock = new NativeActiveClock();
-const pending = new Map<string, { resolve(value: unknown): void; reject(error: Error): void; dispose(): void }>();
+const pending = new Map<string, { method: string; callId?: string; resolve(value: unknown): void; reject(error: Error): void; dispose(): void }>();
 let identity: RunIdentity | undefined, sequence = 0, replySequence = 0, started = false, completed = false;
 let eventChain: Promise<unknown> = Promise.resolve(), eventBytes = 0;
 function fail(error: unknown) {
@@ -31,7 +31,8 @@ function rpc<T>(method: string, args: unknown, signal?: AbortSignal): Promise<T>
   return new Promise<T>((resolve, reject) => {
     const cancel = () => port.postMessage({ type: 'rpc_cancel', version: WORKER_PROTOCOL, identity, seq: ++sequence, requestId });
     const dispose = () => signal?.removeEventListener('abort', cancel);
-    pending.set(requestId, { resolve: value => resolve(value as T), reject, dispose });
+    const callId = method === 'tools.prepare' ? (args as { call?: { id?: string } }).call?.id : undefined;
+    pending.set(requestId, { method, callId, resolve: value => resolve(value as T), reject, dispose });
     try {
       port.postMessage(message);
       signal?.addEventListener('abort', cancel, { once: true });
@@ -115,13 +116,21 @@ port.on('message', event => {
     if (message.type === 'finish' && completed) { process.exit(0); }
     if (message.type !== 'reply') throw new Error('Unexpected native worker message.');
     const reply = message as unknown as WorkerReply;
+    if (Object.keys(message).some(key => !['type', 'version', 'identity', 'seq', 'requestId', 'value', 'error', 'preparationFailure'].includes(key)) ||
+      (reply.error !== undefined && (reply.error !== 'Native host operation failed.' || Object.hasOwn(reply, 'value')))) throw new Error('Invalid native host reply.');
     if (!Number.isSafeInteger(reply.seq) || reply.seq <= replySequence) throw new Error('Stale native host reply.');
     replySequence = reply.seq;
     const item = pending.get(reply.requestId);
     if (!item) throw new Error('Unknown native worker reply.');
+    let preparationError: ToolPreparationError | undefined;
+    if (reply.preparationFailure !== undefined) {
+      if (item.method !== 'tools.prepare' || typeof item.callId !== 'string' || reply.error !== 'Native host operation failed.') throw new Error('Invalid tool preparation reply.');
+      preparationError = new ToolPreparationError(checkedPreparationFailure(reply.preparationFailure, item.callId));
+    }
     pending.delete(reply.requestId);
     item.dispose();
-    if (reply.error) item.reject(new Error(reply.error)); else item.resolve(reply.value);
+    if (preparationError) item.reject(preparationError);
+    else if (reply.error) item.reject(new Error('Native host operation failed.')); else item.resolve(reply.value);
   } catch (error) { fail(error); }
 });
 process.on('uncaughtException', fail);

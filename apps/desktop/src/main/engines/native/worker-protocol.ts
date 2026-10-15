@@ -1,4 +1,4 @@
-import type { AgentRunRequest, RunIdentity, ToolDefinition } from '@cc-desk/agent-core';
+import { validateToolPreparationFeedback, type AgentRunRequest, type RunIdentity, type ToolDefinition, type ToolPreparationFeedback } from '@cc-desk/agent-core';
 import type { NativeModelOptions } from '@cc-desk/agent-node/native-model';
 
 export const WORKER_PROTOCOL = 1;
@@ -16,7 +16,18 @@ export interface WorkerStart {
 export interface WorkerActivePause { type: 'active_pause'; version: 1; identity: RunIdentity; paused: boolean }
 export interface WorkerEnvelope { version: 1; identity: RunIdentity; seq: number }
 export interface WorkerRequest extends WorkerEnvelope { type: 'request'; requestId: string; method: string; args: unknown }
-export interface WorkerReply extends WorkerEnvelope { type: 'reply'; requestId: string; value?: unknown; error?: string }
+export interface WorkerPreparationFailure { callId: string; feedback: ToolPreparationFeedback }
+export interface WorkerReply extends WorkerEnvelope { type: 'reply'; requestId: string; value?: unknown; error?: string; preparationFailure?: WorkerPreparationFailure }
+/** RPC 不传 Error 实例或异常文本，只接收当前准备调用的严格固定反馈。 */
+export function checkedPreparationFailure(value: unknown, expectedCallId: string): ToolPreparationFeedback {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid tool preparation reply.');
+  const prototype = Object.getPrototypeOf(value), descriptors = Object.getOwnPropertyDescriptors(value), keys = Reflect.ownKeys(descriptors);
+  if ((prototype !== Object.prototype && prototype !== null) || keys.length !== 2 || keys.some(key => typeof key !== 'string' || !['callId', 'feedback'].includes(key) ||
+    !('value' in descriptors[key as string]) || !descriptors[key as string].enumerable) || descriptors.callId?.value !== expectedCallId ||
+    !validateToolPreparationFeedback(descriptors.feedback?.value)) throw new Error('Invalid tool preparation reply.');
+  // union 的所有字段都是原始值，校验后再复制，避免共享可变对象。
+  return { ...descriptors.feedback.value } as ToolPreparationFeedback;
+}
 export function sameRun(a: RunIdentity, b: RunIdentity) {
   return a.sessionId === b.sessionId && a.conversationId === b.conversationId && a.runId === b.runId && a.requestId === b.requestId && a.workerGeneration === b.workerGeneration;
 }

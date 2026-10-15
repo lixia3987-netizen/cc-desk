@@ -68,6 +68,48 @@ function gate() {
   return { promise, release };
 }
 
+test('native utilityProcess receives trusted stale-revision feedback and continues with a corrected new call', async () => {
+  const f = await workspace();
+  let observedRevision: number | undefined;
+  const plan = { goal: 'Observe revision feedback without modifying project files',
+    steps: [{ id: 'inspect', title: 'Inspect the task metadata', dependsOn: [], status: 'in_progress' }],
+    criteria: [{ id: 'review', description: 'Human review remains unverified', stepIds: ['inspect'], kind: 'manual' }] };
+  const fixture: Fixture = await startResponsesFixture({ handler: ({ body }: { body: { input: Array<Record<string, unknown>> } }) => {
+    const results = new Map(body.input.filter(item => item.type === 'function_call_output').map(item => [item.call_id, JSON.parse(String(item.output))]));
+    if (!results.has('revision-create')) return { output: [functionCall('revision-create', 'update_plan', { expectedRevision: 0, plan })] };
+    const created = results.get('revision-create');
+    expect(created.status).toBe('completed');
+    expect(Number.isSafeInteger(created.output.revision)).toBe(true);
+    observedRevision = created.output.revision;
+    if (!results.has('revision-stale')) return { output: [functionCall('revision-stale', 'update_plan', { expectedRevision: 0, plan })] };
+    const stale = results.get('revision-stale');
+    expect(stale).toEqual({ status: 'failed', output: { error: 'task_revision_changed', currentRevision: created.output.revision, readTask: true, executed: false } });
+    if (!results.has('revision-corrected')) return { output: [functionCall('revision-corrected', 'update_plan', { expectedRevision: stale.output.currentRevision, plan })] };
+    expect(results.get('revision-corrected').status).toBe('completed');
+    expect(results.get('revision-corrected').output.revision).toBeGreaterThan(stale.output.currentRevision);
+    return { output: [assistantMessage('revision-done', 'The corrected metadata call completed; acceptance remains unverified.')] };
+  } });
+  const app = await f.launch();
+  try {
+    const page = await readyWindow(app), configured = await connection(page, fixture.baseURL);
+    const session = await nativeSession(page, f.projectId, configured.id, '受信修订反馈');
+    const result = await page.evaluate(id => window.desktop.sendChat(id, '只维护当前任务元数据并观察修订反馈。不要修改项目文件。'), session.id);
+    expect(result.success).toBe(true);
+    expect(fixture.errors).toEqual([]);
+    expect(fixture.requests).toHaveLength(4);
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('before native\n');
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: session.execution.conversationId! });
+    try {
+      const saved = ledger.listRuns()[0], stale = saved.tools.find(tool => tool.call.id === 'revision-stale')!;
+      expect(saved.result?.status).toBe('completed');
+      expect(stale.prepared).toBeUndefined();
+      expect(stale.completed?.result).toEqual({ status: 'failed', output: { error: 'task_revision_changed', currentRevision: observedRevision, readTask: true, executed: false } });
+      expect(saved.tools.find(tool => tool.call.id === 'revision-corrected')?.completed?.result.status).toBe('completed');
+    } finally { await ledger.close(); }
+    await noSavedSecret(f.data);
+  } finally { try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); } }
+});
+
 test('native utilityProcess completes approved patch/command, persists selected project Skills, survives restart and deduplicates submission', async () => {
   const f = await workspace();
   const claudeRule = 'CLAUDE_NATIVE_RULE_V1: preserve the existing fixture workflow.';

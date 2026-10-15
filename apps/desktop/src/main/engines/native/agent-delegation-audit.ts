@@ -58,23 +58,43 @@ const normalizeMaterialPath = (value: unknown): string | undefined => {
   const normalized = path.posix.normalize(candidate);
   return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
 };
-/** 仅解析 Materials 标签内可辨认的项目文件，散文或目录无法精确核对时保持 unknown。 */
-export function nativeReviewMaterialPaths(goal: string): string[] {
+const extensionlessMaterialName = /^(?:README|AGENTS|CLAUDE|LICENSE|LICENCE|NOTICE|COPYING|Makefile|Dockerfile|Containerfile|Procfile|Justfile|Gemfile|Rakefile|Brewfile|Vagrantfile)$/iu;
+/** 无扩展名文件保留；不确定的名称必须由真实文件回执解析，不能把引号章节标题强行当路径。 */
+export function nativeReviewMaterialReferences(goal: string): { paths: string[]; uncertainPaths: string[] } {
   const material = nativeReviewGoalSections(goal).materials;
-  if (!material) return [];
-  const quoted = [...material.matchAll(/[`"']([^`"']+)[`"']/gu)].map(match => match[1]);
-  const bare = [...material.matchAll(/(?:^|[\s,;，；(（])((?:[^\s`"'<>()[\]{},;，；:：]+\/)*[^\s`"'<>()[\]{},;，；:：/]+\.[a-z\d]{1,10})(?=$|[\s,;，；)）#])/giu)].map(match => match[1]);
-  return [...new Set([...quoted, ...bare].map(value => normalizeMaterialPath(value.replace(/#L\d+(?:-L?\d+)?$/iu, ''))).filter((value): value is string => value !== undefined))];
+  if (!material) return { paths: [], uncertainPaths: [] };
+  const quotedPaths: string[] = [], uncertain: string[] = [];
+  for (const match of material.matchAll(/[`"']([^`"']+)[`"']/gu)) {
+    const candidate = normalizeMaterialPath(match[1].replace(/#L\d+(?:-L?\d+)?$/iu, ''));
+    if (!candidate) continue;
+    const prefix = material.slice(0, match.index).split(/[;,，；、]/u).at(-1) ?? '';
+    const cue = [...prefix.matchAll(/\b(section|sections|heading|headings|chapter|chapters|file|files|path|paths|document|documents|states?|says?|quotes?|quoted|quotation|excerpt)\b|章节|小节|标题|段落|文件|路径/giu)].at(-1)?.[0];
+    const heading = cue !== undefined && /^(?:sections?|headings?|chapters?|章节|小节|标题|段落)$/iu.test(cue);
+    const quotation = cue !== undefined && /^(?:states?|says?|quotes?|quoted|quotation|excerpt)$/iu.test(cue);
+    if (heading || quotation) continue;
+    const explicitFile = cue !== undefined && /^(?:files?|paths?|documents?|文件|路径)$/iu.test(cue);
+    if (explicitFile || candidate.includes('/') || /\.[a-z\d]{1,10}$/iu.test(candidate) || extensionlessMaterialName.test(candidate)) quotedPaths.push(candidate);
+    else uncertain.push(candidate);
+  }
+  // 引号内容单独按上下文处理，不能再把章节标题中的点号或词语当作裸文件。
+  const bareMaterial = material.replace(/[`"'][^`"']+[`"']/gu, ' ');
+  const bare = [...bareMaterial.matchAll(/(?:^|[\s,;，；、(（])((?:[^\s`"'<>()[\]{},;，；、:：]+\/)*[^\s`"'<>()[\]{},;，；、:：/]+\.[a-z\d]{1,10})(?=$|[\s,;，；、)）#])/giu)].map(match => match[1]);
+  const extensionless = [...bareMaterial.matchAll(/(?:^|[\s,;，；、(（])((?:[^\s`"'<>()[\]{},;，；、:：]+\/)*(?:README|AGENTS|CLAUDE|LICENSE|LICENCE|NOTICE|COPYING|Makefile|Dockerfile|Containerfile|Procfile|Justfile|Gemfile|Rakefile|Brewfile|Vagrantfile))(?=$|[\s,;，；、)）#])/giu)].map(match => match[1]);
+  const paths = [...new Set([...quotedPaths, ...bare, ...extensionless].map(value => normalizeMaterialPath(value.replace(/#L\d+(?:-L?\d+)?$/iu, ''))).filter((value): value is string => value !== undefined))];
+  return { paths, uncertainPaths: [...new Set(uncertain)].filter(candidate => !paths.includes(candidate)) };
+}
+export function nativeReviewMaterialPaths(goal: string): string[] {
+  return nativeReviewMaterialReferences(goal).paths;
 }
 export interface NativeMaterialReadEvidence { status: 'verified' | 'missing' | 'unknown'; materialPaths: string[]; observedPaths: string[] }
 /** 成功读 AGENTS、空搜索或只有文件名都不等于读过 goal 中的材料。 */
 export function nativeChildMaterialReadEvidence(goal: string, child: StoredRun): NativeMaterialReadEvidence {
-  const materialPaths = nativeReviewMaterialPaths(goal), observed = new Map<string, Set<string>>();
-  if (!materialPaths.length) return { status: 'unknown', materialPaths, observedPaths: [] };
+  const references = nativeReviewMaterialReferences(goal), candidates = [...references.paths, ...references.uncertainPaths], observed = new Map<string, Set<string>>();
+  if (!candidates.length) return { status: 'unknown', materialPaths: [], observedPaths: [] };
   let uncertainMatchingReceipt = false;
   const retain = (file: unknown, hash: unknown, complete: boolean) => {
     const filePath = normalizeMaterialPath(file);
-    if (!filePath || !materialPaths.includes(filePath)) return;
+    if (!filePath || !candidates.includes(filePath)) return;
     if (!complete || typeof hash !== 'string' || !/^[a-f\d]{64}$/iu.test(hash)) { uncertainMatchingReceipt = true; return; }
     const hashes = observed.get(filePath) ?? new Set<string>(); hashes.add(hash.toLowerCase()); observed.set(filePath, hashes);
   };
@@ -90,7 +110,9 @@ export function nativeChildMaterialReadEvidence(goal: string, child: StoredRun):
       }
     }
   }
+  const materialPaths = [...references.paths, ...references.uncertainPaths.filter(file => observed.has(file))];
   const observedPaths = [...observed.keys()];
+  if (references.uncertainPaths.some(file => !observed.has(file))) return { status: 'unknown', materialPaths, observedPaths };
   if (!materialPaths.every(file => observed.has(file))) return { status: uncertainMatchingReceipt ? 'unknown' : 'missing', materialPaths, observedPaths };
   // 单文件交接声明了一个确切版本时必须与真实读回的完整文件 hash 对上。
   const declaredHashes = [...(nativeReviewGoalSections(goal).version ?? '').matchAll(/\b[a-f\d]{64}\b/giu)].map(match => match[0].toLowerCase());

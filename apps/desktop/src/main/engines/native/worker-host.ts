@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult, type Usage } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, getToolPreparationFeedback, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolPreparationFeedback, type ToolResult, type Usage } from '@cc-desk/agent-core';
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
@@ -169,6 +169,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     const abort = new AbortController();
     const inFlight = new Map<string, { controller: AbortController; work: Promise<void> }>();
     const toolStates = new Map<string, ToolState>();
+    const preparationFailures = new Map<string, ToolPreparationFeedback>();
+    const preparingCalls = new Set<string>();
     const completedTools = new Map<string, ToolResult>();
     const calls = new Map<string, ToolCall>();
     const pendingCalls: string[] = [];
@@ -490,6 +492,12 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             // 不得虚构取消或失败结果并关闭账本。
             if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
             if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
+            const output = event.result.output;
+            if (!state?.result && isObject(output) && (['task_revision_changed', 'code_location_line_range_invalid'].includes(output.error as string) ||
+                ['currentRevision', 'lineCount', 'readTask', 'readFile'].some(key => Object.hasOwn(output, key)))) {
+              const feedback = preparationFailures.get(event.call.id);
+              if (state || !feedback || !equal(event.result, { status: 'failed', output: { ...feedback, executed: false } })) invalid();
+            }
             if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
           } else if (event.type === 'run_finished') {
             fields(event, ['type', 'result']);
@@ -528,7 +536,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             else delete savedContext!.continuation;
             for (const requested of response.toolCalls) { calls.set(requested.id, clone(requested)); pendingCalls.push(requested.id); }
           } else if (event.type === 'tool_prepared') state!.recorded = true;
-          else if (event.type === 'tool_completed') { toolBudgetReserved = false; savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
+          else if (event.type === 'tool_completed') { toolBudgetReserved = false; savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); preparationFailures.delete(event.call.id); pendingCalls.shift(); }
           else if (event.type === 'run_finished') committedResult = clone(event.result);
           return receipt;
         } finally { if (modelJournal) modelJournalInFlight = false; }
@@ -538,8 +546,20 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const requested = requireCall(item.call);
         if (options.consumeBudget && !toolBudgetReserved || !definitions.some(definition => definition.name === requested.name)) invalid();
         const bound = execution(item.context, signal);
-        if (signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
-        const prepared = await options.tools.prepare(clone(requested), bound);
+        if (signal.aborted || abort.signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
+        if (preparingCalls.has(requested.id) || preparationFailures.has(requested.id)) invalid();
+        preparingCalls.add(requested.id);
+        let prepared: PreparedTool;
+        try {
+          prepared = await options.tools.prepare(clone(requested), bound);
+          if (signal.aborted || abort.signal.aborted) throw new NativeWorkerError('cancelled');
+        } catch (error) {
+          // 取消优先；只记录真实宿主 prepare 抛出的品牌错误，不记录 message/stack。
+          if (signal.aborted || abort.signal.aborted) throw new NativeWorkerError('cancelled');
+          const feedback = getToolPreparationFeedback(error);
+          if (feedback) preparationFailures.set(requested.id, feedback);
+          throw error;
+        } finally { preparingCalls.delete(requested.id); }
         if (!equal(prepared.call, requested) || prepared.policyRevision !== run.policyRevision || !equal(prepared.definition, definitions.find(definition => definition.name === requested.name))) invalid();
         toolStates.set(requested.id, { prepared: clone(prepared), validated: false, recorded: false, executing: false, executed: false });
         return prepared;
@@ -699,7 +719,13 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, ...(value === undefined ? {} : { value }) });
         }, error => {
           if (error instanceof InvalidWorkerMessage || (error instanceof ResponsesModelError && error.code === 'credential_echo')) stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.'));
-          else if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, error: 'Native host operation failed.' });
+          else if (!exited && !failure) {
+            const feedback = message.method === 'tools.prepare' && !controller.signal.aborted && !abort.signal.aborted ? getToolPreparationFeedback(error) : null;
+            const callId = isObject(message.args) && isObject(message.args.call) ? message.args.call.id : undefined;
+            const actual = typeof callId === 'string' ? preparationFailures.get(callId) : undefined;
+            const preparationFailure = feedback && actual && equal(feedback, actual) ? { callId: callId as string, feedback } : undefined;
+            post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, error: 'Native host operation failed.', ...(preparationFailure ? { preparationFailure } : {}) });
+          }
         }).finally(() => { inFlight.delete(requestId); checkFinished(); });
       } catch { stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.')); }
     }

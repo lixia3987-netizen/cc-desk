@@ -677,7 +677,8 @@ test('journal disk failure during streamed output settles pending turn and termi
     history.append = () => { throw new Error('ENOSPC injected journal write failure'); };
     const result = await pending;
     assert.equal(result.success, false); assert.match(result.error!, /ENOSPC/);
-    await until(() => !s.runtime.has(s.session.id));
+    await released(s.runtime, s.session.id);
+    assert.equal(s.runtime.has(s.session.id), false);
   } finally { history.append = append; await s.cleanup(); }
 });
 

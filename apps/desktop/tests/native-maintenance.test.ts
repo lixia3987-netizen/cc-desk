@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { runAgent, type ApprovalDecision, type ToolExecutionContext } from '@cc-desk/agent-core';
-import { NativeRunStore } from '@cc-desk/agent-node/run-store';
+import { runAgent, validateModelRequestDiagnostic, type ApprovalDecision, type ModelRequestDiagnostic, type ToolExecutionContext, type Usage } from '@cc-desk/agent-core';
+import { NativeRunStore, type RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
 import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
@@ -22,6 +22,8 @@ type FixtureResponse = { output?: unknown[]; hang?: boolean; usage?: { input_tok
 type Handler = (request: { body: FixtureBody; index: number }) => FixtureResponse | Promise<FixtureResponse>;
 const secret = 'sk-native-maintenance-test-never-persist';
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
+const fixtureUsage: Usage = { inputTokens: 11, outputTokens: 7, totalTokens: 18,
+  cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null };
 const inlineWorker: Worker = options => runAgent({ ...options.request, signal: options.signal }, {
   model: new ResponsesModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
   host: { now: Date.now, digest, emit: options.onEvent,
@@ -92,6 +94,71 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
     },
     async dispose() { unsubscribe(); await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); },
   };
+}
+
+type LedgerSnapshot = Awaited<ReturnType<Awaited<ReturnType<typeof fixture>>['readLedger']>>;
+
+/** 失败只可追加这一次摘要请求的诊断；不能通过过滤事件掩盖压缩提交或工具副作用。 */
+function assertManualSummaryDiagnostics(before: readonly RunStoreRecord[], after: readonly RunStoreRecord[], sessionId: string, outcome: 'completed' | 'cancelled') {
+  assert.deepEqual(after.slice(0, before.length), before, 'every original journal record remains exact');
+  const appended = after.slice(before.length);
+  assert.equal(appended.length, 4, 'one real request appends exactly its four diagnostic stages');
+  const diagnostics = appended.map((record, index): ModelRequestDiagnostic => {
+    assert.equal(record.event.type, 'model_request_diagnostic', 'no summary commit, task turn, tool or approval event may be appended');
+    if (record.event.type !== 'model_request_diagnostic') assert.fail('expected the manual summary diagnostic');
+    assert.equal(record.seq, before.length + index + 1);
+    assert.equal(record.previousHash, index === 0 ? before.at(-1)!.hash : appended[index - 1].hash, 'diagnostics extend the existing hash chain');
+    assert.equal(validateModelRequestDiagnostic(record.event.diagnostic), true, 'persist only validated metadata without request or response text');
+    return record.event.diagnostic;
+  });
+  assert.deepEqual(diagnostics.map(item => item.phase), ['started', 'request', 'dispatched', 'finished']);
+  assert.deepEqual(diagnostics.map(item => item.requestSent), [false, false, true, true], 'ready and real transport dispatch remain distinct');
+  const identity = diagnostics[0].identity;
+  assert.equal(identity.sessionId, sessionId);
+  assert.equal(identity.conversationId, before[0].conversationId);
+  assert.equal(identity.requestId, `compact:${before.at(-1)!.hash}`);
+  assert.equal(before.some(record => record.identity?.runId === identity.runId), false, 'summary request has its own identity');
+  for (const diagnostic of diagnostics) {
+    assert.deepEqual(diagnostic.identity, identity);
+    assert.equal(diagnostic.requestKey, `${identity.runId}:${identity.requestId}:1`);
+    assert.equal(diagnostic.attempt, 1);
+    assert.equal(diagnostic.purpose, 'summary_manual');
+    assert.deepEqual(diagnostic.protocol, { id: 'openai-responses', version: 1 });
+    assert.equal(diagnostic.model, 'maintenance-fixture');
+    assert.equal(diagnostic.toolsetDigest, digest('[]'));
+    assert.equal(diagnostic.components.tools?.count, 0, 'summary request has no executable tool catalog');
+    assert.equal(diagnostic.contextDigest, diagnostics[0].contextDigest);
+  }
+  for (const diagnostic of diagnostics.slice(0, -1)) {
+    assert.equal(diagnostic.usage, null, 'usage stays unknown before the terminal provider result');
+    assert.equal(diagnostic.outcome, undefined);
+  }
+  const request = diagnostics[1], finished = diagnostics[3];
+  assert.ok(request.payloadBytes! > 0);
+  assert.match(request.payloadDigest!, /^[a-f0-9]{64}$/);
+  for (const diagnostic of diagnostics.slice(2)) {
+    assert.equal(diagnostic.payloadBytes, request.payloadBytes);
+    assert.equal(diagnostic.payloadDigest, request.payloadDigest);
+  }
+  assert.equal(finished.outcome, outcome);
+  assert.ok(finished.finishedAt! >= finished.startedAt);
+  assert.ok(finished.elapsedMs! >= 0);
+  if (outcome === 'cancelled') {
+    assert.equal(finished.usage, null, 'an interrupted response cannot invent zero or completed usage');
+    assert.equal(finished.providerUsage, null, 'the hanging provider returned no usage');
+    assert.ok(finished.failure, 'cancelled transport retains a safe failure classification');
+  } else {
+    assert.deepEqual(finished.usage, fixtureUsage, 'actual provider counts survive later summary validation failure; cache counts remain unknown');
+    assert.deepEqual(finished.providerUsage, { normalization: 'openai-inclusive-input', raw: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } });
+    assert.equal(finished.failure, undefined);
+  }
+  assert.equal(JSON.stringify(appended).includes(secret), false);
+}
+
+function assertCompactionStateUnchanged(before: LedgerSnapshot, after: LedgerSnapshot) {
+  assert.deepEqual(after.context, before.context, 'failed maintenance cannot replace or append context items');
+  assert.deepEqual(after.runs, before.runs, 'summary diagnostics cannot create task runs or tool receipts');
+  assert.deepEqual(after.compaction, before.compaction, 'failed maintenance cannot persist a compaction commit');
 }
 
 /** 使用宿主管理的持久化存储，模拟真实且已批准的文件系统副作用前后发生的工作进程丢失。 */
@@ -196,7 +263,9 @@ test('manual compaction makes one tool-free request and preserves raw history, f
     assert.deepEqual(after.context!.items.slice(-2), before.context!.items.slice(-2), 'latest complete user/assistant turn remains exact');
     assert.ok(JSON.stringify(after.context).includes(summary));
     assert.ok(after.compaction!.afterBytes < after.compaction!.beforeBytes);
-    assert.deepEqual(after.compaction!.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 }, 'summary actual usage is preserved separately from task runs');
+    assert.deepEqual(after.compaction!.usage, fixtureUsage, 'summary actual usage is preserved separately from task runs, with missing cache counts unknown');
+    assert.equal(after.records.at(-1)!.event.type, 'context_compacted');
+    assertManualSummaryDiagnostics(before.records, after.records.slice(0, -1), f.id, 'completed');
     const sentHistory = JSON.parse(String(f.server.requests[3].input[0].content)).history;
     assert.equal(JSON.stringify(sentHistory).includes('最新约束'), false, 'retained latest turn is excluded from billed summary input');
     const metrics = f.executor.snapshot(f.id).nativeContextMaintenance!.lastCompaction!;
@@ -219,15 +288,20 @@ test('manual compaction makes one tool-free request and preserves raw history, f
 });
 
 test('compaction cancellation retains resource locks through worker cleanup and leaves the original context untouched', async () => {
-  let entered!: () => void, released!: () => void;
+  let entered!: () => void, cleaning!: () => void, released!: () => void;
   const began = new Promise<void>(resolve => { entered = resolve; });
+  const cleanupBegan = new Promise<void>(resolve => { cleaning = resolve; });
   const cleanup = new Promise<void>(resolve => { released = resolve; });
   const worker: Worker = async options => {
     if (options.request.configuration.purpose !== 'context_summary') return inlineWorker(options);
-    const result = await inlineWorker(options);
-    entered(); await cleanup; return result;
+    try { return await inlineWorker(options); }
+    finally { cleaning(); await cleanup; }
   };
-  const f = await fixture({ worker });
+  const f = await fixture({ worker, handler: request => {
+    if (request.body.tools.length) return defaultHandler(request);
+    // 服务器收到真实 POST 后保持响应未完成，取消时不可能已经获得 usage。
+    entered(); return { hang: true };
+  } });
   try {
     await f.seed(); const before = await f.readLedger();
     const head = f.executor.snapshot(f.id).nativeContextMaintenance!.headHash;
@@ -235,7 +309,7 @@ test('compaction cancellation retains resource locks through worker cleanup and 
     const duplicate = f.executor.compactContext(f.id, head);
     assert.equal(duplicate, compact, 'same-head concurrent submissions share one operation');
     const settled = Promise.allSettled([compact, duplicate]);
-    await began;
+    await Promise.race([began, compact.then(() => assert.fail('summary must remain in flight until cancellation'))]);
     assert.equal(f.server.requests.length, 4); assert.equal(f.executor.has(f.id), true); assert.equal(f.executor.activeCount, 1);
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance?.compacting, true);
     assert.equal(f.executor.isConnectionActive(f.connectionId), true);
@@ -247,6 +321,7 @@ test('compaction cancellation retains resource locks through worker cleanup and 
     const connection = f.connections.list().connections.find(item => item.id === f.connectionId)!;
     assert.throws(() => f.connections.remove({ id: connection.id, revision: connection.revision }));
     f.executor.interrupt(f.id);
+    await cleanupBegan;
     assert.equal(f.executor.has(f.id), true, 'cancel intent cannot release a live worker');
     await assert.rejects(f.executor.updateConfig(f.id, config));
     await assert.rejects(f.executor.stopIdle(f.id));
@@ -255,9 +330,16 @@ test('compaction cancellation retains resource locks through worker cleanup and 
     assert.ok(results.every(result => result.status === 'rejected'));
     await f.executor.whenReleased(f.id);
     assert.equal(f.executor.has(f.id), false); assert.equal(f.executor.isConnectionActive(f.connectionId), false);
-    assert.deepEqual((await f.readLedger()).records, before.records);
-    assert.deepEqual((await f.readLedger()).context, before.context);
+    const after = await f.readLedger();
+    assertManualSummaryDiagnostics(before.records, after.records, f.id, 'cancelled');
+    assertCompactionStateUnchanged(before, after);
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original\n');
+    assert.deepEqual(f.server.errors, []);
     await f.executor.updateConfig(f.id, config); await f.executor.stopIdle(f.id);
+    await f.restart(false);
+    const restarted = await f.readLedger();
+    assert.deepEqual(restarted.records, after.records, 'restart retains the cancelled request evidence exactly once');
+    assertCompactionStateUnchanged(before, restarted);
   } finally { released(); await f.dispose(); }
 });
 
@@ -290,10 +372,17 @@ for (const mode of ['tool_call', 'oversized_summary'] as const) test(`invalid su
     await f.seed(); const before = await f.readLedger();
     await assert.rejects(f.executor.compactContext(f.id, f.executor.snapshot(f.id).nativeContextMaintenance!.headHash));
     assert.equal(f.server.requests.length, 4, 'failed summary is not retried');
-    assert.deepEqual((await f.readLedger()).records, before.records);
+    const after = await f.readLedger();
+    assertManualSummaryDiagnostics(before.records, after.records, f.id, 'completed');
+    assertCompactionStateUnchanged(before, after);
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original\n');
     assert.equal(f.executor.attention().length, 0);
     assert.equal(f.executor.has(f.id), false);
     assert.deepEqual(f.server.errors, []);
+    await f.restart(false);
+    const restarted = await f.readLedger();
+    assert.deepEqual(restarted.records, after.records, 'restart preserves paid diagnostic evidence without replay or summary commit');
+    assertCompactionStateUnchanged(before, restarted);
+    assert.equal(f.server.requests.length, 4);
   } finally { await f.dispose(); }
 });

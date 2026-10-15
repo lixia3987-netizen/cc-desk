@@ -4,7 +4,6 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { StateStore } from '../src/main/store';
 import { parseClaudeModelConfig } from '../src/main/claude-model-import';
 import { ExecutionEvents } from '../src/main/execution/events';
@@ -16,10 +15,14 @@ import { runNativeWorker } from '../src/main/engines/native/worker-host';
 import { nativeDelegationAuditPath } from '../src/main/engines/native/agent-delegation-audit';
 // @ts-expect-error 回归报告纯函数在 Node 与 Electron 之间共享，不进入产品包。
 import { assessDelegationEvidence, contextBaseline, hasThreeParallelVariants, monotonicMs, normalizeObservedUsage, regressionMaterial, regressionPrompt, safeRegressionFailureCode, sha256, workspaceHashes } from '../../../scripts/native-delegation-model-regression-lib.mjs';
+// @ts-expect-error 纯运行策略供 Node 与 Electron 回归共同使用。
+import { hasActiveChildTransportOverlap, REGRESSION_MAX_ACTIVE_MS } from '../../../scripts/native-regression-runtime-policy.mjs';
 
 type Worker = NonNullable<NativeExecutorOptions['worker']>;
 type SafeRequest = { id: string; runId: string; role: string; beginMs: number; upstreamBeginMs: number | null; endMs: number | null; outcome: string; requestBytes: number; requestDigest: string; components: Record<string, number>; usage: unknown; httpStatus: number | null; injectionMaterialObserved?: boolean };
-interface Options { outputDirectory: string; claudeConfig: string; model?: string; protocol: 'anthropic' | 'responses' | 'chat-completions'; attempts: number; cases: string[]; candidateSha?: string; nativeDataDirectory?: string; connectionId?: string; nativeSessionId?: string; nativeProfileKey?: boolean; credentialProfileDirectory?: string }
+interface Options { outputDirectory: string; claudeConfig: string; model?: string; protocol: 'anthropic' | 'responses' | 'chat-completions'; attempts: number; cases: string[]; candidateSha?: string; nativeDataDirectory?: string; connectionId?: string; nativeSessionId?: string; nativeProfileKey?: boolean; credentialProfileDirectory?: string;
+  candidateBinding?: { requestedCandidate: string | null; actualHead: string | null; gitAvailable: boolean; sourceStatusKnown: boolean; workingTreeClean: boolean; verified: boolean; reason: string };
+  buildProvenance?: { source: string; inputHashTiming: string; bundleInputsDigest: string; packageRuntimeDigest: string | null; bundleInputCount: number; packageRuntimeInputCount: number } }
 
 // 必须在 app.ready / OSCrypt 初始化前指定隔离目录；绝不把原用户目录交给可写 Electron profile。
 const bootstrapOptions = JSON.parse(readFileSync(process.argv[2], 'utf8')) as Options;
@@ -126,10 +129,11 @@ async function executeCase(options: Options, connection: { apiKey: string; model
   for (const [file, text] of Object.entries(material.files)) await fs.writeFile(path.join(cwd, file), text as string, { flag: 'wx' });
   const beforeHashes = await workspaceHashes(cwd), workers = new Map<string, any>(), network: SafeRequest[] = [];
   let executor: NativeStructuredExecutor | undefined, sessionId: string | undefined, cancelRequestedMs: number | null = null, cancellation: Promise<void> | undefined;
+  let cancelTrigger: 'overlap' | 'bounded_fallback' | null = null;
   const cancelIfOverlapping = () => {
     if (mode !== 'cancel' || cancellation || !executor || !sessionId) return;
-    if (new Set(network.filter(request => request.role === 'child' && request.endMs === null).map(request => request.runId)).size >= 2) {
-      cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId);
+    if (hasActiveChildTransportOverlap(network)) {
+      cancelTrigger = 'overlap'; cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId);
     }
   };
   const transport = await observedTransport(connection.endpoint, options.protocol, workers, network, cancelIfOverlapping, material.injectionMarker), store = new StateStore(data), connections = new ConnectionStore(data);
@@ -138,7 +142,7 @@ async function executeCase(options: Options, connection: { apiKey: string; model
   store.change(state => {
     state.projects.push({ id: projectId, path: cwd, name: 'Read-only regression materials', createdAt: now });
     state.sessions.push({ id: sessionId!, projectId, title: 'Real delegation regression', kind: 'agent', cwd, execution: { providerId: 'native', mode: 'structured', conversationId },
-      engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: created.id, maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: 240000, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', mcpConnections: [] } }),
+      engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: created.id, maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: REGRESSION_MAX_ACTIVE_MS, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', mcpConnections: [] } }),
       started: false, status: 'idle', archived: false, createdAt: now, updatedAt: now });
   });
   const worker: Worker = async supplied => {
@@ -178,7 +182,7 @@ async function executeCase(options: Options, connection: { apiKey: string; model
   try {
     await executor.initialize();
     executionPhase = 'send';
-    if (mode === 'cancel') timer = setTimeout(() => { if (!cancellation && executor && sessionId) { cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId); } }, 30000);
+    if (mode === 'cancel') timer = setTimeout(() => { if (!cancellation && executor && sessionId) { cancelTrigger = 'bounded_fallback'; cancelRequestedMs = monotonicMs(); cancellation = executor.stopAndWait(sessionId); } }, REGRESSION_MAX_ACTIVE_MS);
     const result = await executor.send(sessionId, regressionPrompt(mode, attempt), [], undefined, { requestId: randomUUID(), source: 'direct', nativeExecutionPolicy: { toolPolicy: 'read_only' } });
     sendSucceeded = result.success; sendResultObserved = true;
     if (!result.success) {
@@ -209,11 +213,12 @@ async function executeCase(options: Options, connection: { apiKey: string; model
   } catch { /* 缺失/不可确认的生产审计不能被 harness 推断为通过。 */ }
   if (!sendSucceeded && parent.result?.status === 'completed') sendFailureCode = ['unmet', 'unknown'].includes(parentAudit?.status) ? 'delegation_audit_unmet' : 'host_acceptance_failed';
   const evidence = assessDelegationEvidence({ source: 'real_model', mode, parent, children, workers: observations, network, expected: material.values, beforeHashes, afterHashes, cleanupConfirmed: physicalCleanup, sendSucceeded, parentAudit, injectionMarker: material.injectionMarker });
+  if (mode === 'cancel') { evidence.checks.cancelledByOverlap = cancelTrigger === 'overlap'; if (!evidence.checks.cancelledByOverlap) evidence.status = 'failed'; }
   if (observations.some(value => value.forcedToolChoiceObserved)) { evidence.checks.noForcedToolChoice = false; evidence.status = 'failed'; }
   const attempts = observations.flatMap(value => value.records.filter((record: any) => ['model_request_started', 'model_request_failed', 'model_response', 'model_request_diagnostic'].includes(record.event.type)).map((record: any) => ({ runId: value.runId, role: value.role, monotonicMs: record.monotonicMs,
     type: record.event.type, attempt: record.event.attempt ?? null, failure: record.event.failure ?? null, usage: record.event.response?.usage ?? null,
     ...(record.event.diagnostic ? { diagnostic: record.event.diagnostic } : {}) })));
-  return { caseId, mode, attempt, source: 'real_model', status: evidence.status, beganMs, endedMs: monotonicMs(), sendSucceeded, executionReason, cancelRequestedMs,
+  return { caseId, mode, attempt, source: 'real_model', status: evidence.status, beganMs, endedMs: monotonicMs(), sendSucceeded, executionReason, cancelRequestedMs, cancelTrigger,
     ...(mode === 'connection_probe' ? { connectionValidation: { authenticatedResponse: network.length > 0 && network.every(value => value.httpStatus !== null && value.httpStatus >= 200 && value.httpStatus < 300), modelCompleted: parent.result?.status === 'completed' && parent.result?.committed === true, probePassed: evidence.status === 'passed' } } : {}),
     execution: { phase: executionPhase, sendResultObserved, failureCode: sendFailureCode, shutdownFailureCode, hostErrors, workerInvocations: observations.length, physicalWorkersSpawned: observations.filter(value => value.lifecycle.spawned).length, modelRequestsStarted: attempts.filter(value => value.type === 'model_request_started').length, transportInvocations: network.filter(value => value.upstreamBeginMs !== null).length, hostRecoveryRequired },
     promptVariant: mode === 'parallel' ? (attempt - 1) % 3 + 1 : 1, inputDigest: sha256(regressionPrompt(mode, attempt)), materialHashes: beforeHashes, productionAudit: parentAudit, evidence, network, baseline: contextBaseline(network), attempts,
@@ -224,9 +229,9 @@ async function executeCase(options: Options, connection: { apiKey: string; model
 async function main() {
   const options = JSON.parse(await fs.readFile(process.argv[2], 'utf8')) as Options, reportFile = path.join(options.outputDirectory, 'report.json');
   const report: any = { version: 1, source: 'real_model', status: 'not_run', releaseGate: 'not_run', startedAt: new Date().toISOString(), cases: [], protocol: options.protocol,
-    candidateSha: options.candidateSha ?? null, limitations: ['Private production journals are retained locally; this report contains no document, model output, request headers or credential values.', 'Provider usage/pricing may be unavailable. Human acceptance is not implied.'] };
+    candidateSha: options.candidateSha ?? null, candidateBinding: options.candidateBinding ?? null, buildProvenance: options.buildProvenance ?? null,
+    limitations: ['Private production journals are retained locally; this report contains no document, model output, request headers or credential values.', 'Provider usage/pricing may be unavailable. Human acceptance is not implied.', 'Bundle input hashes identify the compiled runtime; they do not assert source-to-dist freshness.'] };
   try {
-    if (!report.candidateSha) { try { report.candidateSha = execFileSync('git', ['rev-parse', 'HEAD'], { windowsHide: true, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { report.candidateSha = null; } }
     const sourceFiles = {};
     for (const directory of ['packages/agent-core/src', 'packages/agent-node/src', 'apps/desktop/src', 'scripts']) Object.assign(sourceFiles, Object.fromEntries(Object.entries(await workspaceHashes(path.resolve(directory))).map(([file, hash]) => [`${directory}/${file}`, hash])));
     report.candidateSourceDigest = sha256(sourceFiles);
@@ -284,7 +289,7 @@ async function main() {
     if (!apiKey || !model || !baseURL) { report.reason = 'no_config'; return; }
     const endpoint = upstreamEndpoint(baseURL, options.protocol);
     report.model = model;
-    report.connectionOriginDigest = sha256(new URL(endpoint).origin); report.configuration = { maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: 240000, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', toolPolicy: 'read_only', mcpConnections: [] };
+    report.connectionOriginDigest = sha256(new URL(endpoint).origin); report.configuration = { maxModelRequests: 40, maxToolCalls: 80, maxActiveMs: REGRESSION_MAX_ACTIVE_MS, maxInputTokens: 128000, maxOutputTokens: 4096, autoCompact: 'off', modelRetry: 'off', toolPolicy: 'read_only', mcpConnections: [] };
     for (const mode of options.cases) for (let attempt = 1; attempt <= (mode === 'parallel' ? options.attempts : 1); attempt++) {
       try { report.cases.push(await executeCase(options, { apiKey, model, authHeader, endpoint }, mode, attempt)); }
       catch (error) { report.cases.push({ mode, attempt, source: 'real_model', status: 'failed', reason: 'runtime_case_failed', execution: { failureCode: safeRegressionFailureCode(error, 'case_setup_failed') } }); }
@@ -293,9 +298,11 @@ async function main() {
     }
     report.status = report.cases.length && report.cases.every((value: any) => value.status === 'passed') ? 'passed' : 'failed';
     report.parallelVariantsObserved = hasThreeParallelVariants(report.cases);
-    const complete = report.parallelVariantsObserved && /^[a-f0-9]{40}$/.test(report.candidateSha ?? '') && ['parallel', 'question', 'single', 'injection', 'missing', 'cancel'].every(mode => options.cases.includes(mode));
+    const complete = report.parallelVariantsObserved && options.candidateBinding?.verified === true && options.candidateBinding.requestedCandidate === options.candidateBinding.actualHead &&
+      /^[a-f0-9]{64}$/.test(options.buildProvenance?.bundleInputsDigest ?? '') && ['parallel', 'question', 'single', 'injection', 'missing', 'cancel'].every(mode => options.cases.includes(mode));
     report.releaseGate = complete ? report.status : 'not_run';
-    if (!report.candidateSha) report.reason = 'candidate_revision_unavailable';
+    if (!options.candidateBinding?.verified) { report.reason = options.candidateBinding?.reason ?? 'candidate_binding_unavailable'; report.releaseGateReason = report.reason; }
+    else if (!complete) report.releaseGateReason = 'complete_case_matrix_required';
     if (report.cases.some((value: any) => value.network?.some((request: any) => request.outcome === 'connection_failed'))) report.reason = 'connection_failed';
     report.baseline = contextBaseline(report.cases.flatMap((value: any) => value.network ?? []));
   } catch (error) { report.reason = 'runtime_unavailable'; report.failureCode = safeRegressionFailureCode(error, 'runtime_setup_failed'); }

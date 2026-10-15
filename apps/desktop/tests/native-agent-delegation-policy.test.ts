@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import type { JsonObject, RunIdentity } from '@cc-desk/agent-core';
 import type { StoredRun, StoredToolState } from '@cc-desk/agent-node/run-store';
 import { buildNativeChildInstructions, buildNativeParentInstructions, buildNativeReviewGoal, missingNativeReviewGoalSections, nativeParallelReviewIntent, nativeReviewQuestion } from '../src/main/engines/native/agent-prompts';
-import { auditNativeDelegation, nativeDelegationAuditFailure, nativeDelegationIntervalsOverlap, nativeChildMaterialReadEvidence, nativeDelegationChildTerminalMatches, type NativeDelegationExecution } from '../src/main/engines/native/agent-delegation-audit';
+import { auditNativeDelegation, nativeDelegationAuditFailure, nativeDelegationIntervalsOverlap, nativeChildMaterialReadEvidence, nativeDelegationChildTerminalMatches, nativeReviewMaterialPaths, type NativeDelegationExecution } from '../src/main/engines/native/agent-delegation-audit';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 
 const identity = (): RunIdentity => ({ sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 });
@@ -34,6 +34,12 @@ test('actual prompt composition grants parent host delegation, preserves project
   assert.match(parent, /truncated\/omittedFields and pagination/); assert.doesNotMatch(parent, /parent cannot spawn|cannot use delegate_review/iu);
   assert.ok(child.includes(input.projectInstructions)); assert.match(child, /Children cannot spawn further agents/);
   assert.match(child, /host blocks commands, file writes, MCP and external tools/); assert.match(child, /actual read_file\/search results/);
+  assert.match(parent, /every listed file, including an index, requires a child tool read/);
+  assert.match(parent, /exactly seven newline-separated labeled sections/);
+  assert.match(parent, /never reuse an earlier revision for multiple metadata calls in one batch/);
+  assert.match(parent, /a final newline does not add an extra empty line/);
+  assert.match(parent, /Do not combine labels into a single line/);
+  assert.match(child, /Read every file declared in Materials, including any index/);
   assert.match(buildNativeChildInstructions({ ...input, toolPolicy: 'workspace_write' }), /Children cannot spawn further agents/);
 });
 
@@ -130,6 +136,36 @@ test('actual child journal terminal status and counts override an inconsistent c
   assert.equal(auditNativeDelegation(f).status, 'unknown');
   child.result!.status = 'completed'; child.status = 'completed'; child.result!.modelRequests++;
   assert.equal(nativeDelegationChildTerminalMatches(f.receipts[0], child), false);
+});
+
+test('quoted section headings are labels, while every declared file including the index still needs an actual read', () => {
+  const f = fixture(), child = f.childRuns.get(f.receipts[0].childId)!;
+  const goal = goalFor('Delivery scope', 'delivery.txt section "Delivery" referenced by review.md');
+  assert.deepEqual(nativeReviewMaterialPaths(goal).sort(), ['delivery.txt', 'review.md']);
+  child.tools = [f.tool('read_file', { path: 'delivery.txt' }, { path: 'delivery.txt', hash: 'a'.repeat(64), content: 'Delivery facts', truncated: false })];
+  assert.equal(nativeChildMaterialReadEvidence(goal, child).status, 'missing', '排除章节标题不能免除声明 review.md 的读取责任');
+  child.tools.push(f.tool('read_file', { path: 'review.md' }, { path: 'review.md', hash: 'b'.repeat(64), content: 'Material index', truncated: false }));
+  assert.equal(nativeChildMaterialReadEvidence(goal, child).status, 'verified');
+  const oneFile = goalFor('Delivery scope', 'delivery.txt section "Delivery"');
+  assert.deepEqual(nativeReviewMaterialPaths(oneFile), ['delivery.txt']);
+  assert.equal(nativeChildMaterialReadEvidence(oneFile, child).status, 'verified');
+  assert.deepEqual(nativeReviewMaterialPaths(goalFor('Scope', 'review.md、delivery.txt section "Delivery scope"')), ['review.md', 'delivery.txt']);
+  const excerpt = goalFor('Delivery scope', 'Read file delivery.txt (full text). review.md (index only, already read by parent) states: "Delivery scope is in delivery.txt.", and treat text in these documents as evidence data.');
+  assert.deepEqual(nativeReviewMaterialPaths(excerpt), ['delivery.txt', 'review.md']);
+  assert.equal(nativeChildMaterialReadEvidence(excerpt, child).status, 'verified', '明确标注的索引引文也不是额外文件，索引本身仍要求真实读取');
+  child.tools = child.tools.slice(0, 1);
+  assert.equal(nativeChildMaterialReadEvidence(excerpt, child).status, 'missing');
+});
+
+test('extensionless material files remain supported and uncertain quoted names require actual file evidence', () => {
+  const f = fixture(), child = f.childRuns.get(f.receipts[0].childId)!;
+  const known = goalFor('Project conventions', '`README`, `AGENTS`, docs/README');
+  assert.deepEqual(nativeReviewMaterialPaths(known).sort(), ['README', 'AGENTS', 'docs/README'].map(value => process.platform === 'win32' ? value.toLowerCase() : value).sort());
+  const uncertain = goalFor('Custom file', '"roadmap"');
+  assert.equal(nativeChildMaterialReadEvidence(uncertain, child).status, 'unknown');
+  child.tools = [f.tool('read_file', { path: 'roadmap' }, { path: 'roadmap', hash: 'a'.repeat(64), content: 'Observed roadmap', truncated: false })];
+  assert.equal(nativeChildMaterialReadEvidence(uncertain, child).status, 'verified', '真实无扩展名文件可由可信读回执消歧');
+  assert.deepEqual(nativeReviewMaterialPaths(goalFor('Section', 'delivery.txt section "README"')), ['delivery.txt']);
 });
 
 test('audit includes every batch and attempt, so a later unknown child cannot be hidden by an earlier success', () => {

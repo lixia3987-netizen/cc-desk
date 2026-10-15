@@ -53,6 +53,8 @@ test('location tool survives the model/tool/task/snapshot round trip and restart
     const input = { expectedRevision: done.get('task-before').output.task.revision, path: sourcePath,
       expectedHash: done.get('read').output.hash, startLine: 2, endLine: 3, stepIds: ['inspect'], criterionIds: ['scope'] };
     if (!done.has('wrong-hash')) return call('wrong-hash', 'record_code_location', { ...input, expectedHash: '0'.repeat(64) });
+    if (!done.has('stale-location')) return call('stale-location', 'record_code_location', { ...input, expectedRevision: input.expectedRevision - 1 });
+    if (!done.has('past-eof')) return call('past-eof', 'record_code_location', { ...input, endLine: 4 });
     if (!done.has('location')) return call('location', 'record_code_location', input);
     if (!done.has('task-after')) return call('task-after', 'read_task', {});
     return { output: [assistantMessage('final', '模型宣称任务已完成并通过所有验收。')] };
@@ -89,6 +91,8 @@ test('location tool survives the model/tool/task/snapshot round trip and restart
     assert.equal(executor.snapshot(id).pending.length, 0);
     const recorded = outputs(server.requests.at(-1));
     assert.notEqual(recorded.get('wrong-hash').status, 'completed');
+    assert.deepEqual(recorded.get('stale-location'), { status: 'failed', output: { error: 'task_revision_changed', currentRevision: recorded.get('task-before').output.task.revision, readTask: true, executed: false } });
+    assert.deepEqual(recorded.get('past-eof'), { status: 'not_executed', output: { error: 'code_location_line_range_invalid', lineCount: 3, readFile: true, executed: false } });
     assert.equal(recorded.get('location').status, 'completed');
     const index = recorded.get('task-after').output.task.evidence[0];
     assert.equal(index.location.path, sourcePath); assert.equal(index.location.fileHash, sourceHash);
@@ -106,7 +110,7 @@ test('location tool survives the model/tool/task/snapshot round trip and restart
     const refreshed = executor.snapshot(id).nativeTask!;
     assert.equal(refreshed.evidence[0].stale, true); assert.equal(refreshed.verification, 'stale');
     assert.equal(refreshed.evidence[0].location!.excerpt, location.excerpt, 'stale receipts retain the exact historical source');
-    assert.equal(server.requests.length, 7, 'refresh and restart do not replay model calls');
+    assert.equal(server.requests.length, 9, 'refresh and restart do not replay model calls');
   } finally {
     await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true });
   }

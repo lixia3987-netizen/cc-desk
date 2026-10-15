@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { runAgent, canonicalJson, RunAlreadyActiveError, validateModelFailureDiagnostic } from '../dist/index.js'
+import { runAgent, canonicalJson, RunAlreadyActiveError, ToolPreparationError, validateModelFailureDiagnostic } from '../dist/index.js'
 
 const copy = (value) => JSON.parse(JSON.stringify(value))
 const digest = (value) => createHash('sha256').update(value).digest('hex')
@@ -165,6 +165,128 @@ test('invalid JSON, non-object arguments and unknown tools get truthful failed r
   assert.equal((await f.run()).status, 'completed')
   assert.equal(f.executions.length, 0)
   assert.equal(f.events.filter((e) => e.type === 'tool_completed' && e.result.status === 'failed').length, 3)
+})
+
+test('a multi-tool stale CAS receives safe revision feedback and succeeds only after reading the current task', async () => {
+  const f = fixture()
+  let revision = 1, round = 0
+  const continuation = { encrypted_state: 'keep-the-opaque-provider-state' }
+  f.hooks.generate = input => {
+    const outputs = input.context.items.filter(item => item.type === 'function_call_output')
+    const result = id => JSON.parse(outputs.find(item => item.call_id === id).output)
+    if (round++ === 0) return response([
+      call('first-update', 'write', { expectedRevision: 1 }),
+      call('stale-update', 'write', { expectedRevision: 1 }),
+    ], { continuation })
+    if (round === 2) {
+      assert.deepEqual(input.context.continuation, continuation)
+      assert.deepEqual(result('first-update'), { status: 'completed', output: { revision: 2 } })
+      assert.deepEqual(result('stale-update'), { status: 'failed', output: { error: 'task_revision_changed', currentRevision: 2, readTask: true, executed: false } })
+      return response([call('read-current-task', 'read', {})])
+    }
+    if (round === 3) {
+      const current = result('read-current-task')
+      assert.equal(current.status, 'completed')
+      return response([call('corrected-update', 'write', { expectedRevision: current.output.revision })])
+    }
+    assert.equal(round, 4, 'feedback must correct the next attempt rather than exhaust the model request budget')
+    assert.deepEqual(result('corrected-update'), { status: 'completed', output: { revision: 3 } })
+    return response()
+  }
+  f.hooks.prepare = tool => {
+    if (tool.name === 'write' && JSON.parse(tool.arguments).expectedRevision !== revision) {
+      throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: revision, readTask: true })
+    }
+  }
+  f.hooks.execute = prepared => {
+    if (prepared.call.name === 'write') {
+      assert.equal(prepared.input.expectedRevision, revision, 'only a current CAS may execute')
+      revision++
+    }
+    return { status: 'completed', output: { revision } }
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.committed, true)
+  assert.equal(result.modelRequests, 4)
+  assert.equal(result.toolCalls, 4)
+  assert.equal(revision, 3)
+  assert.deepEqual(f.executions, ['first-update', 'read-current-task', 'corrected-update'])
+  assert.deepEqual(f.approvals.map(item => item.binding.toolCallId), ['first-update', 'corrected-update'])
+  assert.equal(f.order.includes('validate:stale-update'), false)
+  assert.equal(f.events.some(event => event.type === 'tool_prepared' && event.prepared.call.id === 'stale-update'), false)
+  assert.deepEqual(f.events.filter(event => event.type === 'tool_completed').map(event => event.result.status), ['completed', 'failed', 'completed', 'completed'])
+})
+
+test('trusted empty-file line feedback is returned without preparing, approving or executing the rejected tool', async () => {
+  const f = fixture([response([call('outside-file', 'write')]), response()])
+  f.hooks.prepare = () => { throw new ToolPreparationError({ error: 'code_location_line_range_invalid', lineCount: 0, readFile: true }) }
+  assert.equal((await f.run()).status, 'completed')
+  assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result,
+    { status: 'failed', output: { error: 'code_location_line_range_invalid', lineCount: 0, readFile: true, executed: false } })
+  assert.deepEqual(f.executions, [])
+  assert.deepEqual(f.approvals, [])
+  assert.equal(f.events.some(event => event.type === 'tool_prepared'), false)
+})
+
+test('arbitrary and tampered preparation errors cannot disclose text or smuggle extra feedback fields', async t => {
+  const secret = 'sk-preparation-secret-must-not-enter-history'
+  const valid = { error: 'task_revision_changed', currentRevision: 2, readTask: true }
+  const tampered = new ToolPreparationError(valid)
+  tampered.feedback = { ...valid, detail: secret }
+  const accessor = new ToolPreparationError(valid)
+  let reads = 0
+  Object.defineProperty(accessor, 'feedback', { get() { reads++; throw new Error(secret) } })
+  const forged = Object.assign(Object.create(ToolPreparationError.prototype), { feedback: valid, message: secret })
+  for (const [name, error] of [
+    ['ordinary message', new Error(secret)],
+    ['lookalike object', { name: 'ToolPreparationError', feedback: valid, message: secret }],
+    ['forged prototype', forged],
+    ['mutated trusted feedback', tampered],
+    ['hostile feedback accessor', accessor],
+  ]) await t.test(name, async () => {
+    const f = fixture([response([call('rejected', 'write')]), response()])
+    f.hooks.prepare = () => { throw error }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result,
+      { status: 'failed', output: { error: 'invalid_tool_input', executed: false } })
+    assert.deepEqual(f.executions, [])
+    assert.deepEqual(f.approvals, [])
+    assert.equal(JSON.stringify({ events: f.events, modelInputs: f.modelInputs, emitted: f.emitted }).includes(secret), false)
+  })
+  assert.equal(reads, 0, 'core must not invoke an exception feedback getter')
+  await t.test('even a trusted exception message is ignored', async () => {
+    const f = fixture([response([call('stale', 'write')]), response()])
+    const trusted = new ToolPreparationError(valid)
+    trusted.message = secret
+    trusted.stack = secret
+    f.hooks.prepare = () => { throw trusted }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result.output, { ...valid, executed: false })
+    assert.equal(JSON.stringify({ events: f.events, modelInputs: f.modelInputs, emitted: f.emitted }).includes(secret), false)
+  })
+})
+
+test('cancellation and active-budget exhaustion take precedence over trusted preparation feedback', async t => {
+  for (const stopped of ['cancelled', 'budget_exhausted']) await t.test(stopped, async () => {
+    const f = fixture([response([call('stopped', 'write'), call('not-started', 'write')])])
+    f.request.budget = { maxActiveMs: 10 }
+    f.hooks.prepare = () => {
+      if (stopped === 'cancelled') f.controller.abort()
+      else f.setNow(10)
+      throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: 2, readTask: true })
+    }
+    const result = await f.run()
+    assert.equal(result.status, stopped)
+    assert.equal(result.modelRequests, 1)
+    assert.deepEqual(f.executions, [])
+    assert.deepEqual(f.approvals, [])
+    assert.equal(f.order.includes('prepare:not-started'), false)
+    const completed = f.events.filter(event => event.type === 'tool_completed')
+    assert.equal(completed.length, 2)
+    assert.ok(completed.every(event => event.result.status === (stopped === 'cancelled' ? 'cancelled' : 'not_executed')))
+    assert.equal(JSON.stringify(completed).includes('task_revision_changed'), false)
+  })
 })
 
 for (const mutation of ['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration', 'toolCallId', 'inputDigest', 'policyRevision']) {
