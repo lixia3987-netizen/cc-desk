@@ -25,12 +25,10 @@ import { sessionReadLifecycle } from './session-read-lifecycle';
 import { isMissingTranscriptError } from '../shared/session-recovery';
 import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
 import { NativeTaskPanel } from './NativeTaskPanel';
-import { NativeCommandPanel } from './NativeCommandPanel';
 import { NativeAgentPanel } from './NativeAgentPanel';
 import { appendNativeAgentReviewDraft } from './native-agent-review';
 import { NativeChildApprovalContext } from './NativeChildApprovalContext';
 import './native-agent.css';
-import './native-command.css';
 import { NativeChangeSetPreview, NativeChangeSetResult, nativeChangeSetCanApprove, nativeChangeSetResultLabel } from './NativeChangeSetPreview';
 import './native-task.css';
 import './native-change-set.css';
@@ -110,7 +108,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const snapshotSync=useRef<ChatSnapshotSync | undefined>(undefined);
   const [continuationTaskId,setContinuationTaskId]=useState<string>();
   const [reviewingTask,setReviewingTask]=useState(false);
-  const [assistance,setAssistance]=useState<'agents'|'commands'|'task'|null>(null);
+  const [assistance,setAssistance]=useState<'agents'|'task'|null>(null);
   const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
   const [confirmingNativeRecovery,setConfirmingNativeRecovery]=useState(false);
   const [compactingNativeContext,setCompactingNativeContext]=useState(false),[nativeNotice,setNativeNotice]=useState('');
@@ -290,7 +288,6 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {session.execution.providerId==='native' && <div className="native-assistance">
       <div className="native-assistance-tabs" role="group" aria-label="执行辅助详情">
         {!!snapshot?.nativeAgents?.items.length && <button className="text-button" aria-pressed={assistance==='agents'} aria-expanded={assistance==='agents'} aria-controls="native-assistance-agents" onClick={()=>setAssistance(value=>value==='agents'?null:'agents')}>子 Agent · {snapshot.nativeAgents.items.length}{syncState.error?' · 状态未知':snapshot.nativeAgents.items.some(item=>['prepared','running'].includes(item.status))?' · 运行中':''}</button>}
-        {!!snapshot?.nativeCommands?.items.length && <button className="text-button" aria-pressed={assistance==='commands'} aria-expanded={assistance==='commands'} aria-controls="native-assistance-commands" onClick={()=>setAssistance(value=>value==='commands'?null:'commands')}>长命令 · {snapshot.nativeCommands.items.length}{syncState.error?' · 状态未知':snapshot.nativeCommands.items.some(item=>['prepared','running'].includes(item.status))?' · 运行中':''}</button>}
         {(snapshot?.nativeTask||syncState.error||snapshot?.nativeTaskError) && <button className="text-button" aria-pressed={assistance==='task'} aria-expanded={assistance==='task'} aria-controls="native-assistance-task" onClick={()=>setAssistance(value=>value==='task'?null:'task')}>任务与验收 · {syncState.error||snapshot?.nativeTaskError?'状态未知':snapshot?.nativeTask?.verification==='passed'?'验收通过':'待核查'}</button>}
       </div>
       <div id="native-assistance-agents" className="native-assistance-body" hidden={assistance!=='agents'}><NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} loadError={syncState.error}
@@ -299,7 +296,6 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
         if(!mounted.current||readOnly||session.archived||archive||composerDisabled||submitting||descriptor?.maintenance)throw new Error('当前会话仅供查看，不能追加审阅交接。');
         const next=appendNativeAgentReviewDraft(reviewDraft.current,text);onDraft(next);reviewDraft.current=next;setContinuationTaskId(parentTaskId);
       }}/></div>
-      <div id="native-assistance-commands" className="native-assistance-body" hidden={assistance!=='commands'}><NativeCommandPanel commands={snapshot?.nativeCommands} currentRunId={snapshot?.nativeRun?.runId} loadError={syncState.error}/></div>
       <div id="native-assistance-task" className="native-assistance-body" hidden={assistance!=='task'}><NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}
       disabled={readOnly||composerDisabled||running||submitting||!!descriptor?.maintenance} busy={reviewingTask}

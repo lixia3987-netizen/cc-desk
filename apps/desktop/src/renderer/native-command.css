@@ -11,3 +11,5 @@
 .native-command-panel code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
 .native-command-output pre{max-height:160px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;background:var(--input-bg);border:1px solid var(--border);padding:8px;border-radius:4px;font-size:calc(10px * var(--ui-font-scale))}
 @media(max-width:650px){.native-command-panel{margin:8px;max-height:28vh}}
+
+.native-command-inspector .native-command-panel{margin:0;max-height:none}

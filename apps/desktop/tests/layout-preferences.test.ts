@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readInspectorOpenPanels, saveInspectorOpenPanels, readInspectorWidth, saveInspectorWidth } from '../src/renderer/layout-preferences';
+import { readInspectorOpenPanels, saveInspectorOpenPanels, readInspectorWidth, saveInspectorWidth, visibleInspectorPanelIds } from '../src/renderer/layout-preferences';
 
 const selectedKey = 'cc-desk.inspector-selected-panel', openKey = 'cc-desk.inspector-open-panels', activeKey = 'cc-desk.inspector-active-panel';
 const legacyOpen = 'cc-desk.inspector-open', legacyPanels = 'cc-desk.inspector-panels';
@@ -71,6 +71,27 @@ test('corrupt preferences fall back to valid older layouts or the default contex
 test('storage failures do not prevent tool windows from opening and closing', () => {
   assert.deepEqual(readInspectorOpenPanels({ getItem() { throw new Error('Storage unavailable'); } }), ['context']);
   assert.doesNotThrow(() => saveInspectorOpenPanels([], { setItem() { throw new Error('Quota exceeded'); } }));
+});
+
+test('background commands start closed and retain their explicit selection', () => {
+  const value = storage();
+  assert.deepEqual(readInspectorOpenPanels(value), ['context']);
+  saveInspectorOpenPanels(['commands'], value);
+  assert.deepEqual(readInspectorOpenPanels(value), ['commands']);
+  saveInspectorOpenPanels([], value);
+  assert.deepEqual(readInspectorOpenPanels(value), []);
+});
+
+test('unsupported command panels do not expand the inspector or erase Native preferences', () => {
+  const value = storage({ [selectedKey]: '"commands"' });
+  const selected = readInspectorOpenPanels(value);
+  const regular = ['context', 'git', 'workflows', 'diagnostics'];
+  assert.deepEqual(visibleInspectorPanelIds(false), regular);
+  assert.deepEqual(selected.filter(id => visibleInspectorPanelIds(false).includes(id)), []);
+  assert.deepEqual(visibleInspectorPanelIds(true), ['context', 'git', 'workflows', 'commands', 'diagnostics']);
+  assert.deepEqual(selected.filter(id => visibleInspectorPanelIds(true).includes(id)), ['commands']);
+  assert.equal(value.getItem(selectedKey), '"commands"');
+  assert.deepEqual(readInspectorOpenPanels(value), ['commands']);
 });
 
 
