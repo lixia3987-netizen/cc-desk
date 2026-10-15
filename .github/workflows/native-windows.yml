@@ -145,11 +145,11 @@ jobs:
         run: |
           node --test --test-concurrency=1 --test-reporter=tap packages/engine-claude/tests/connection-windows.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/engine-claude.tap
           exit $LASTEXITCODE
-      - name: 验证补丁约束、真实 PTY 释放与运行时
+      - name: 验证全部桌面单元测试与真实 PTY 运行时
         if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
-        timeout-minutes: 8
+        timeout-minutes: 20
         run: |
-          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/desktop/tests/native-build.test.ts apps/desktop/tests/windows-pty-resources.test.ts apps/desktop/tests/runtime.test.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/desktop-runtime.tap
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap apps/desktop/tests/*.test.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/desktop-runtime.tap
           exit $LASTEXITCODE
       - name: 构建生产桌面入口
         id: production
