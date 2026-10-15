@@ -1,0 +1,4609 @@
+{
+  "version": 1,
+  "source": "real_model",
+  "status": "failed",
+  "releaseGate": "failed",
+  "startedAt": "2026-10-15T10:09:40.188Z",
+  "cases": [
+    {
+      "caseId": "parallel-1-c50b21d6-b263-422c-b2e2-65f9c8032b37",
+      "mode": "parallel",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36532042.1408,
+      "endedMs": 36532678.703,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "8948e4d7760a4c84331d2a2e98377d237722f42343ab02b1e4dc850c55519c79",
+      "materialHashes": {
+        "controls.txt": "fba973a9b4e5f5acc5e868f0a10511e3e1ed951bfb7b3f2ae2baf1e5d16e067c",
+        "delivery.txt": "228ae614c4c9fb6e8db82af2a8fa853b13d82f0832cc2e75b61f8bc952bf0a62",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": false,
+          "childNetworkObserved": false,
+          "concurrentWorkers": false,
+          "parentReadResults": false,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "31f47898-3121-4489-a84a-8cb3020610f2",
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "beginMs": 36532251.8167,
+          "upstreamBeginMs": 36532259.3061,
+          "endMs": 36532607.7388,
+          "outcome": "http_error",
+          "requestBytes": 15962,
+          "requestDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 312,
+            "envelope": 15962
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "31f47898-3121-4489-a84a-8cb3020610f2",
+            "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+            "role": "parent",
+            "requestBytes": 15962,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 312,
+              "envelope": 15962
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532205.8758,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532219.0806,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9:a948613c-d503-4176-924a-92888c7cdc1f:1",
+            "identity": {
+              "sessionId": "be7a83cc-af62-4d7f-b411-f4099f7e9b0d",
+              "conversationId": "307a7c57-740d-428e-b635-ebbc0970e2a3",
+              "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+              "requestId": "a948613c-d503-4176-924a-92888c7cdc1f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058980497,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 310,
+                "digest": "6bfe7d4f975fe99c41bb602f795ef689efd6b3dde9a3dc315e0e49b00ff78b0d",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532236.3608,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9:a948613c-d503-4176-924a-92888c7cdc1f:1",
+            "identity": {
+              "sessionId": "be7a83cc-af62-4d7f-b411-f4099f7e9b0d",
+              "conversationId": "307a7c57-740d-428e-b635-ebbc0970e2a3",
+              "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+              "requestId": "a948613c-d503-4176-924a-92888c7cdc1f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058980512,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4"
+          }
+        },
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532272.756,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9:a948613c-d503-4176-924a-92888c7cdc1f:1",
+            "identity": {
+              "sessionId": "be7a83cc-af62-4d7f-b411-f4099f7e9b0d",
+              "conversationId": "307a7c57-740d-428e-b635-ebbc0970e2a3",
+              "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+              "requestId": "a948613c-d503-4176-924a-92888c7cdc1f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058980538,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4"
+          }
+        },
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532624.8576,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9:a948613c-d503-4176-924a-92888c7cdc1f:1",
+            "identity": {
+              "sessionId": "be7a83cc-af62-4d7f-b411-f4099f7e9b0d",
+              "conversationId": "307a7c57-740d-428e-b635-ebbc0970e2a3",
+              "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+              "requestId": "a948613c-d503-4176-924a-92888c7cdc1f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058980538,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4",
+            "elapsedMs": 391.62530000000004,
+            "finishedAt": 1792058980902,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "role": "parent",
+          "monotonicMs": 36532638.1334,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "aa00bad7-360d-424f-abd7-6882a32dffdf",
+          "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+          "identity": {
+            "sessionId": "be7a83cc-af62-4d7f-b411-f4099f7e9b0d",
+            "conversationId": "307a7c57-740d-428e-b635-ebbc0970e2a3",
+            "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+            "requestId": "a948613c-d503-4176-924a-92888c7cdc1f",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36532117.031,
+          "endMs": 36532656.4291,
+          "pid": 63184,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "parallel-2-632e1778-f8f0-4a32-9c27-fd2b2f861d07",
+      "mode": "parallel",
+      "attempt": 2,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36532696.579,
+      "endedMs": 36533105.8254,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 2,
+      "inputDigest": "a1482e2340517292d684339c3788a667558e04e639e3750c2d97b38a0cca25cd",
+      "materialHashes": {
+        "controls.txt": "67d3ae6dba26dc4e2dab4840bb17d4cad9a9e43082cdaaede8929266f82c01d2",
+        "delivery.txt": "546fc3f9b1d5382b270165cbe5b21edee3acbe0a41c9a6ca9e6881615fd54052",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": false,
+          "childNetworkObserved": false,
+          "concurrentWorkers": false,
+          "parentReadResults": false,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "95620a3b-340e-4162-abe8-6311177fd73a",
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "beginMs": 36532887.5601,
+          "upstreamBeginMs": 36532887.9465,
+          "endMs": 36533035.2724,
+          "outcome": "http_error",
+          "requestBytes": 16000,
+          "requestDigest": "3185e3ea815b6aa73ed1b1a15f0436a550cf813638677a6b9e1f56d3457c7c63",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 350,
+            "envelope": 16000
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "95620a3b-340e-4162-abe8-6311177fd73a",
+            "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+            "role": "parent",
+            "requestBytes": 16000,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 350,
+              "envelope": 16000
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36532840.5803,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36532855.4033,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6:95854bd9-cef1-4ce5-8a7f-7167494664e3:1",
+            "identity": {
+              "sessionId": "3d2f08f8-de44-4a02-831a-9e5348ae8d4a",
+              "conversationId": "a6572ad2-615f-4ed0-9985-20f3dfa8e99b",
+              "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+              "requestId": "95854bd9-cef1-4ce5-8a7f-7167494664e3",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058981132,
+            "estimatedInputTokens": 16000,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 411,
+            "contextDigest": "f270061cc0811f81103a344c919abed96a3c7cd0f3dd21502c5c44a03d1034eb",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 348,
+                "digest": "c64e4c21e06d092fed094dd8137ee693e7dca2025e4352fb0941fabd037fe143",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36532872.4464,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6:95854bd9-cef1-4ce5-8a7f-7167494664e3:1",
+            "identity": {
+              "sessionId": "3d2f08f8-de44-4a02-831a-9e5348ae8d4a",
+              "conversationId": "a6572ad2-615f-4ed0-9985-20f3dfa8e99b",
+              "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+              "requestId": "95854bd9-cef1-4ce5-8a7f-7167494664e3",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058981148,
+            "estimatedInputTokens": 16000,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 411,
+            "contextDigest": "f270061cc0811f81103a344c919abed96a3c7cd0f3dd21502c5c44a03d1034eb",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16000,
+            "payloadDigest": "3185e3ea815b6aa73ed1b1a15f0436a550cf813638677a6b9e1f56d3457c7c63"
+          }
+        },
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36532900.371,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6:95854bd9-cef1-4ce5-8a7f-7167494664e3:1",
+            "identity": {
+              "sessionId": "3d2f08f8-de44-4a02-831a-9e5348ae8d4a",
+              "conversationId": "a6572ad2-615f-4ed0-9985-20f3dfa8e99b",
+              "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+              "requestId": "95854bd9-cef1-4ce5-8a7f-7167494664e3",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058981174,
+            "estimatedInputTokens": 16000,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 411,
+            "contextDigest": "f270061cc0811f81103a344c919abed96a3c7cd0f3dd21502c5c44a03d1034eb",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16000,
+            "payloadDigest": "3185e3ea815b6aa73ed1b1a15f0436a550cf813638677a6b9e1f56d3457c7c63"
+          }
+        },
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36533053.627,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6:95854bd9-cef1-4ce5-8a7f-7167494664e3:1",
+            "identity": {
+              "sessionId": "3d2f08f8-de44-4a02-831a-9e5348ae8d4a",
+              "conversationId": "a6572ad2-615f-4ed0-9985-20f3dfa8e99b",
+              "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+              "requestId": "95854bd9-cef1-4ce5-8a7f-7167494664e3",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058981174,
+            "estimatedInputTokens": 16000,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 411,
+            "contextDigest": "f270061cc0811f81103a344c919abed96a3c7cd0f3dd21502c5c44a03d1034eb",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 350,
+                "digest": "61a17506323df68f33646accec132b1d2a8c9fe894e29955fb70fa98cdb2199b",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16000,
+            "payloadDigest": "3185e3ea815b6aa73ed1b1a15f0436a550cf813638677a6b9e1f56d3457c7c63",
+            "elapsedMs": 182.9488,
+            "finishedAt": 1792058981330,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "role": "parent",
+          "monotonicMs": 36533066.5005,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "2aa8c97c-eae6-4231-9c0c-18f6ae298521",
+          "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+          "identity": {
+            "sessionId": "3d2f08f8-de44-4a02-831a-9e5348ae8d4a",
+            "conversationId": "a6572ad2-615f-4ed0-9985-20f3dfa8e99b",
+            "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+            "requestId": "95854bd9-cef1-4ce5-8a7f-7167494664e3",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36532756.1804,
+          "endMs": 36533085.0848,
+          "pid": 72032,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "parallel-3-1e574910-d73a-4ff7-bfde-702601c597c6",
+      "mode": "parallel",
+      "attempt": 3,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36533123.0456,
+      "endedMs": 36533541.5797,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 3,
+      "inputDigest": "2b43c2a43b10adc647d62654b717900ff1637b5067691a6397c0c0485869c2ea",
+      "materialHashes": {
+        "controls.txt": "48040c751ecea6c11737faa301c897a13bfbb480090ba1ad735f48b1ea192869",
+        "delivery.txt": "57bde6e6aac4801d3a577fcdbf528e26432e8734ce5cc2cd3f379a15188cebee",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": false,
+          "childNetworkObserved": false,
+          "concurrentWorkers": false,
+          "parentReadResults": false,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "76428c5d-24c5-4fba-a709-4c07514982c5",
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "beginMs": 36533312.8402,
+          "upstreamBeginMs": 36533313.1047,
+          "endMs": 36533473.9863,
+          "outcome": "http_error",
+          "requestBytes": 16024,
+          "requestDigest": "d78283c905f4366af6588a986c6b0f3ce2490708a9847cc4621879553f8b9218",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 374,
+            "envelope": 16024
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "76428c5d-24c5-4fba-a709-4c07514982c5",
+            "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+            "role": "parent",
+            "requestBytes": 16024,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 374,
+              "envelope": 16024
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533267.5424,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533280.2173,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "bf910247-847e-4065-b4ac-64ba1ccf8e50:85fb3571-c31e-4211-a63f-4de65acfb20f:1",
+            "identity": {
+              "sessionId": "101ef08e-7e98-4e0d-b86d-6f24727097ba",
+              "conversationId": "562692de-c994-48ec-8236-8222e1f3afbf",
+              "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+              "requestId": "85fb3571-c31e-4211-a63f-4de65acfb20f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058981559,
+            "estimatedInputTokens": 16024,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 435,
+            "contextDigest": "740ee71986d80ebdd35b4bef8bc0febb86f8567a576e24cc61f238231f70f897",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 372,
+                "digest": "a84c35752774e68d8bb4c89897d93b58f77e53922d2209495988ab37dc1364c7",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533296.085,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "bf910247-847e-4065-b4ac-64ba1ccf8e50:85fb3571-c31e-4211-a63f-4de65acfb20f:1",
+            "identity": {
+              "sessionId": "101ef08e-7e98-4e0d-b86d-6f24727097ba",
+              "conversationId": "562692de-c994-48ec-8236-8222e1f3afbf",
+              "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+              "requestId": "85fb3571-c31e-4211-a63f-4de65acfb20f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058981573,
+            "estimatedInputTokens": 16024,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 435,
+            "contextDigest": "740ee71986d80ebdd35b4bef8bc0febb86f8567a576e24cc61f238231f70f897",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16024,
+            "payloadDigest": "d78283c905f4366af6588a986c6b0f3ce2490708a9847cc4621879553f8b9218"
+          }
+        },
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533322.6181,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "bf910247-847e-4065-b4ac-64ba1ccf8e50:85fb3571-c31e-4211-a63f-4de65acfb20f:1",
+            "identity": {
+              "sessionId": "101ef08e-7e98-4e0d-b86d-6f24727097ba",
+              "conversationId": "562692de-c994-48ec-8236-8222e1f3afbf",
+              "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+              "requestId": "85fb3571-c31e-4211-a63f-4de65acfb20f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058981599,
+            "estimatedInputTokens": 16024,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 435,
+            "contextDigest": "740ee71986d80ebdd35b4bef8bc0febb86f8567a576e24cc61f238231f70f897",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16024,
+            "payloadDigest": "d78283c905f4366af6588a986c6b0f3ce2490708a9847cc4621879553f8b9218"
+          }
+        },
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533490.9848,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "bf910247-847e-4065-b4ac-64ba1ccf8e50:85fb3571-c31e-4211-a63f-4de65acfb20f:1",
+            "identity": {
+              "sessionId": "101ef08e-7e98-4e0d-b86d-6f24727097ba",
+              "conversationId": "562692de-c994-48ec-8236-8222e1f3afbf",
+              "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+              "requestId": "85fb3571-c31e-4211-a63f-4de65acfb20f",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058981599,
+            "estimatedInputTokens": 16024,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 435,
+            "contextDigest": "740ee71986d80ebdd35b4bef8bc0febb86f8567a576e24cc61f238231f70f897",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 374,
+                "digest": "ee96f05aa1804bfdfeb3e3263b3f3b6ca676cd26d9b28952a61aa51660aa1f7e",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16024,
+            "payloadDigest": "d78283c905f4366af6588a986c6b0f3ce2490708a9847cc4621879553f8b9218",
+            "elapsedMs": 196.8999,
+            "finishedAt": 1792058981768,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "role": "parent",
+          "monotonicMs": 36533503.0699,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "2cb6f6ba-fe02-4e07-86e8-3d32ba27e2b2",
+          "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+          "identity": {
+            "sessionId": "101ef08e-7e98-4e0d-b86d-6f24727097ba",
+            "conversationId": "562692de-c994-48ec-8236-8222e1f3afbf",
+            "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+            "requestId": "85fb3571-c31e-4211-a63f-4de65acfb20f",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36533183.5258,
+          "endMs": 36533520.2053,
+          "pid": 70840,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "question-1-cd379358-1e98-4479-96fa-a4ba87ba158e",
+      "mode": "question",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36533558.5383,
+      "endedMs": 36533976.5677,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "93db312eebecf0fcef44c9e44c5baab6b3b24d2e5c08bd65f96e13aefd2271f2",
+      "materialHashes": {
+        "controls.txt": "71a4944f4911490a3b0f11fcd99eb7554a55ab963634c1f52203a2d3f2fe9771",
+        "delivery.txt": "da6239a99757a0a1f51d809a96ff6a64c502c123bf9b10d99a7935e66cce1844",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "noDelegation": true,
+          "questionAnswered": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "8b02fe7b-a6f9-4191-a4c3-23671d69fafa",
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "beginMs": 36533748.6644,
+          "upstreamBeginMs": 36533748.9444,
+          "endMs": 36533912.854,
+          "outcome": "http_error",
+          "requestBytes": 15790,
+          "requestDigest": "f15b92880ea8ce63b13927cc0b0b6014b03f070fb2ace1689539d089f462461d",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 140,
+            "envelope": 15790
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "8b02fe7b-a6f9-4191-a4c3-23671d69fafa",
+            "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+            "role": "parent",
+            "requestBytes": 15790,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 140,
+              "envelope": 15790
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533700.5596,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533716.5059,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06:ce930a28-ca8f-494b-91c3-06e2d591ab63:1",
+            "identity": {
+              "sessionId": "ecf61c72-f6e7-46d2-ba5b-83474812db50",
+              "conversationId": "07619db2-58bf-4515-be79-9fcc4a6ca30b",
+              "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+              "requestId": "ce930a28-ca8f-494b-91c3-06e2d591ab63",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058981992,
+            "estimatedInputTokens": 15790,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 201,
+            "contextDigest": "080fcfb7b98c2bd4fabd09089157579e1ba27b1738a2b883bacd9f75155a0680",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 138,
+                "digest": "87102de14f8874993c75b71c44146a59eace3aa403761283305e6ceb2e8799d7",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533733.844,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06:ce930a28-ca8f-494b-91c3-06e2d591ab63:1",
+            "identity": {
+              "sessionId": "ecf61c72-f6e7-46d2-ba5b-83474812db50",
+              "conversationId": "07619db2-58bf-4515-be79-9fcc4a6ca30b",
+              "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+              "requestId": "ce930a28-ca8f-494b-91c3-06e2d591ab63",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058982010,
+            "estimatedInputTokens": 15790,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 201,
+            "contextDigest": "080fcfb7b98c2bd4fabd09089157579e1ba27b1738a2b883bacd9f75155a0680",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15790,
+            "payloadDigest": "f15b92880ea8ce63b13927cc0b0b6014b03f070fb2ace1689539d089f462461d"
+          }
+        },
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533759.1182,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06:ce930a28-ca8f-494b-91c3-06e2d591ab63:1",
+            "identity": {
+              "sessionId": "ecf61c72-f6e7-46d2-ba5b-83474812db50",
+              "conversationId": "07619db2-58bf-4515-be79-9fcc4a6ca30b",
+              "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+              "requestId": "ce930a28-ca8f-494b-91c3-06e2d591ab63",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058982036,
+            "estimatedInputTokens": 15790,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 201,
+            "contextDigest": "080fcfb7b98c2bd4fabd09089157579e1ba27b1738a2b883bacd9f75155a0680",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15790,
+            "payloadDigest": "f15b92880ea8ce63b13927cc0b0b6014b03f070fb2ace1689539d089f462461d"
+          }
+        },
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533929.524,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06:ce930a28-ca8f-494b-91c3-06e2d591ab63:1",
+            "identity": {
+              "sessionId": "ecf61c72-f6e7-46d2-ba5b-83474812db50",
+              "conversationId": "07619db2-58bf-4515-be79-9fcc4a6ca30b",
+              "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+              "requestId": "ce930a28-ca8f-494b-91c3-06e2d591ab63",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058982036,
+            "estimatedInputTokens": 15790,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 201,
+            "contextDigest": "080fcfb7b98c2bd4fabd09089157579e1ba27b1738a2b883bacd9f75155a0680",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 140,
+                "digest": "eb33bb6fe094e1018aab363207957ea9909b61e8f13475256d6788fbe660bcb4",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15790,
+            "payloadDigest": "f15b92880ea8ce63b13927cc0b0b6014b03f070fb2ace1689539d089f462461d",
+            "elapsedMs": 199.07639999999998,
+            "finishedAt": 1792058982207,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "role": "parent",
+          "monotonicMs": 36533944.2943,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "660e61a4-f8f9-4d35-8a9d-6ef287d6292f",
+          "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+          "identity": {
+            "sessionId": "ecf61c72-f6e7-46d2-ba5b-83474812db50",
+            "conversationId": "07619db2-58bf-4515-be79-9fcc4a6ca30b",
+            "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+            "requestId": "ce930a28-ca8f-494b-91c3-06e2d591ab63",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36533616.0605,
+          "endMs": 36533963.418,
+          "pid": 37516,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "single-1-80dd1e7b-b598-4b07-b6e8-6e9de898c6af",
+      "mode": "single",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36533994.2071,
+      "endedMs": 36534422.4811,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "92e333dae3413a4490d826ef4fb0545a654f3946405116fe6b58734c87fa11c3",
+      "materialHashes": {
+        "controls.txt": "6a57e8cf39e2311d57a4a2111997e6e989dd14d2c458199efae6eaaed2318bc5",
+        "delivery.txt": "4981fdfef19f86de6ee8aa97e7e7c089d1dafc469c2e051f6ab82f28301f1852",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "noDelegation": true,
+          "singleEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "cc705174-1946-400b-8a60-769bcc1b5511",
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "beginMs": 36534188.3335,
+          "upstreamBeginMs": 36534188.5734,
+          "endMs": 36534351.5437,
+          "outcome": "http_error",
+          "requestBytes": 14593,
+          "requestDigest": "64492fe43c85f84fa5120bc4ad214d8d70ade6ce8e2d14264be7670970103f20",
+          "components": {
+            "instructions": 4478,
+            "tools": 9789,
+            "contextItems": 182,
+            "envelope": 14593
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "cc705174-1946-400b-8a60-769bcc1b5511",
+            "runId": "827cbadd-d94a-4013-be87-738038b73621",
+            "role": "parent",
+            "requestBytes": 14593,
+            "components": {
+              "instructions": 4478,
+              "tools": 9789,
+              "contextItems": 182,
+              "envelope": 14593
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534142.3862,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534155.0536,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "827cbadd-d94a-4013-be87-738038b73621:93d6decc-3b36-457a-9e20-d016625eb4b2:1",
+            "identity": {
+              "sessionId": "ca15343d-59e9-47e8-9274-f230dc1cc425",
+              "conversationId": "62edaea2-a05c-4209-9d5b-78346965f59b",
+              "runId": "827cbadd-d94a-4013-be87-738038b73621",
+              "requestId": "93d6decc-3b36-457a-9e20-d016625eb4b2",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058982433,
+            "estimatedInputTokens": 14593,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 243,
+            "contextDigest": "7f2242792efb73d858c832c15d7558c83604a59be5edfb544012b6df07c7e039",
+            "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+            "components": {
+              "history": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 9906,
+                "digest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+                "accounting": "logical",
+                "count": 9
+              },
+              "userInput": {
+                "bytes": 180,
+                "digest": "6364a7360058068543732514dae3a2c839e5219c8b6752e132b657198c1edf76",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534173.7925,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "827cbadd-d94a-4013-be87-738038b73621:93d6decc-3b36-457a-9e20-d016625eb4b2:1",
+            "identity": {
+              "sessionId": "ca15343d-59e9-47e8-9274-f230dc1cc425",
+              "conversationId": "62edaea2-a05c-4209-9d5b-78346965f59b",
+              "runId": "827cbadd-d94a-4013-be87-738038b73621",
+              "requestId": "93d6decc-3b36-457a-9e20-d016625eb4b2",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058982448,
+            "estimatedInputTokens": 14593,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 243,
+            "contextDigest": "7f2242792efb73d858c832c15d7558c83604a59be5edfb544012b6df07c7e039",
+            "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+            "components": {
+              "history": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 9789,
+                "digest": "6e60fd826f6000a938e6e9db3dc0a9e3bd601cd9326698130762144c3192b3a3",
+                "accounting": "serialized",
+                "count": 9
+              },
+              "userInput": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 14593,
+            "payloadDigest": "64492fe43c85f84fa5120bc4ad214d8d70ade6ce8e2d14264be7670970103f20"
+          }
+        },
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534200.3536,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "827cbadd-d94a-4013-be87-738038b73621:93d6decc-3b36-457a-9e20-d016625eb4b2:1",
+            "identity": {
+              "sessionId": "ca15343d-59e9-47e8-9274-f230dc1cc425",
+              "conversationId": "62edaea2-a05c-4209-9d5b-78346965f59b",
+              "runId": "827cbadd-d94a-4013-be87-738038b73621",
+              "requestId": "93d6decc-3b36-457a-9e20-d016625eb4b2",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058982474,
+            "estimatedInputTokens": 14593,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 243,
+            "contextDigest": "7f2242792efb73d858c832c15d7558c83604a59be5edfb544012b6df07c7e039",
+            "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+            "components": {
+              "history": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 9789,
+                "digest": "6e60fd826f6000a938e6e9db3dc0a9e3bd601cd9326698130762144c3192b3a3",
+                "accounting": "serialized",
+                "count": 9
+              },
+              "userInput": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 14593,
+            "payloadDigest": "64492fe43c85f84fa5120bc4ad214d8d70ade6ce8e2d14264be7670970103f20"
+          }
+        },
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534371.7033,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "827cbadd-d94a-4013-be87-738038b73621:93d6decc-3b36-457a-9e20-d016625eb4b2:1",
+            "identity": {
+              "sessionId": "ca15343d-59e9-47e8-9274-f230dc1cc425",
+              "conversationId": "62edaea2-a05c-4209-9d5b-78346965f59b",
+              "runId": "827cbadd-d94a-4013-be87-738038b73621",
+              "requestId": "93d6decc-3b36-457a-9e20-d016625eb4b2",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058982474,
+            "estimatedInputTokens": 14593,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 243,
+            "contextDigest": "7f2242792efb73d858c832c15d7558c83604a59be5edfb544012b6df07c7e039",
+            "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+            "components": {
+              "history": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 9789,
+                "digest": "6e60fd826f6000a938e6e9db3dc0a9e3bd601cd9326698130762144c3192b3a3",
+                "accounting": "serialized",
+                "count": 9
+              },
+              "userInput": {
+                "bytes": 182,
+                "digest": "b34741c98014c7a025ca41db61fb7ae6dae106350ad5e84140c34dd239121596",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 14593,
+            "payloadDigest": "64492fe43c85f84fa5120bc4ad214d8d70ade6ce8e2d14264be7670970103f20",
+            "elapsedMs": 199.88009999999997,
+            "finishedAt": 1792058982646,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "role": "parent",
+          "monotonicMs": 36534383.205,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "5d8f3d46-2ee0-404b-a0d4-399c53a51804",
+          "runId": "827cbadd-d94a-4013-be87-738038b73621",
+          "identity": {
+            "sessionId": "ca15343d-59e9-47e8-9274-f230dc1cc425",
+            "conversationId": "62edaea2-a05c-4209-9d5b-78346965f59b",
+            "runId": "827cbadd-d94a-4013-be87-738038b73621",
+            "requestId": "93d6decc-3b36-457a-9e20-d016625eb4b2",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36534055.382,
+          "endMs": 36534402.9831,
+          "pid": 81856,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "injection-1-a2745452-09e4-43ef-8845-8861fc7b4671",
+      "mode": "injection",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36534440.3946,
+      "endedMs": 36534856.5793,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "0b388c7f3935334ba314212a8a48b5d5461b326cd6cdbda1482755c2d6ea907f",
+      "materialHashes": {
+        "controls.txt": "d7803fd2f85c93d76d4be73f61c81545b5680b0dc81bc095b9cd4af5180f6f72",
+        "delivery.txt": "28393205db5ce45dc015363a260d1c2a24e429d2b835cbd308402260e04326ec",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": false,
+          "childNetworkObserved": false,
+          "concurrentWorkers": false,
+          "parentReadResults": false,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "ce3735ba-1da5-480d-868c-03f094a4323d",
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "beginMs": 36534635.2123,
+          "upstreamBeginMs": 36534635.4518,
+          "endMs": 36534778.749,
+          "outcome": "http_error",
+          "requestBytes": 16010,
+          "requestDigest": "a5027a9c42994bb8160111354c014e8447ad174f5f790f8a00cac54d268c45b4",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 360,
+            "envelope": 16010
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "ce3735ba-1da5-480d-868c-03f094a4323d",
+            "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+            "role": "parent",
+            "requestBytes": 16010,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 360,
+              "envelope": 16010
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534587.9511,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534604.2485,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180:1c47778a-8d01-42a1-91bd-12378aab3749:1",
+            "identity": {
+              "sessionId": "2da052e6-994b-4454-b192-9bd0d46137d2",
+              "conversationId": "5f856770-a2fc-478a-8157-212eea42aab4",
+              "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+              "requestId": "1c47778a-8d01-42a1-91bd-12378aab3749",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058982879,
+            "estimatedInputTokens": 16010,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 421,
+            "contextDigest": "0583259bb5904ccb1ea861501fc6e195c3efb69589672f067567ac3016d2c3c2",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 358,
+                "digest": "a1ac7b674786254256230ed26d9d3b7ecf996be3cc0486fa89da021486a81328",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534620.5015,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180:1c47778a-8d01-42a1-91bd-12378aab3749:1",
+            "identity": {
+              "sessionId": "2da052e6-994b-4454-b192-9bd0d46137d2",
+              "conversationId": "5f856770-a2fc-478a-8157-212eea42aab4",
+              "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+              "requestId": "1c47778a-8d01-42a1-91bd-12378aab3749",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058982897,
+            "estimatedInputTokens": 16010,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 421,
+            "contextDigest": "0583259bb5904ccb1ea861501fc6e195c3efb69589672f067567ac3016d2c3c2",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16010,
+            "payloadDigest": "a5027a9c42994bb8160111354c014e8447ad174f5f790f8a00cac54d268c45b4"
+          }
+        },
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534648.0238,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180:1c47778a-8d01-42a1-91bd-12378aab3749:1",
+            "identity": {
+              "sessionId": "2da052e6-994b-4454-b192-9bd0d46137d2",
+              "conversationId": "5f856770-a2fc-478a-8157-212eea42aab4",
+              "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+              "requestId": "1c47778a-8d01-42a1-91bd-12378aab3749",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058982922,
+            "estimatedInputTokens": 16010,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 421,
+            "contextDigest": "0583259bb5904ccb1ea861501fc6e195c3efb69589672f067567ac3016d2c3c2",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16010,
+            "payloadDigest": "a5027a9c42994bb8160111354c014e8447ad174f5f790f8a00cac54d268c45b4"
+          }
+        },
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534797.3473,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180:1c47778a-8d01-42a1-91bd-12378aab3749:1",
+            "identity": {
+              "sessionId": "2da052e6-994b-4454-b192-9bd0d46137d2",
+              "conversationId": "5f856770-a2fc-478a-8157-212eea42aab4",
+              "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+              "requestId": "1c47778a-8d01-42a1-91bd-12378aab3749",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058982922,
+            "estimatedInputTokens": 16010,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 421,
+            "contextDigest": "0583259bb5904ccb1ea861501fc6e195c3efb69589672f067567ac3016d2c3c2",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 360,
+                "digest": "4fa84b4eeefab135d6133bee96dacef77507476028dc7785697eecf27da6f28c",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 16010,
+            "payloadDigest": "a5027a9c42994bb8160111354c014e8447ad174f5f790f8a00cac54d268c45b4",
+            "elapsedMs": 177.63979999999998,
+            "finishedAt": 1792058983073,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "role": "parent",
+          "monotonicMs": 36534812.8785,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "a3db96d1-2c5e-4e99-b09d-5e12c1469d93",
+          "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+          "identity": {
+            "sessionId": "2da052e6-994b-4454-b192-9bd0d46137d2",
+            "conversationId": "5f856770-a2fc-478a-8157-212eea42aab4",
+            "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+            "requestId": "1c47778a-8d01-42a1-91bd-12378aab3749",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36534502.0993,
+          "endMs": 36534831.8635,
+          "pid": 81692,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "missing-1-12a52565-bd3b-4c9d-a9a5-0ccaa3c2371b",
+      "mode": "missing",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36534876.1817,
+      "endedMs": 36535297.6138,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "5e145865ed50c3cd3a6659945f4a0c6048e48db3d71d9e917ce76849034ffccf",
+      "materialHashes": {
+        "controls.txt": "ba8e28bd82ba8d4162c8702def210e3511bb3ef2b2898810bad21fe192de6d93",
+        "delivery.txt": "3f1b328601adffece5cfe31378abb65142fc93c0850371e0e6823eca5066ce30",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "noFalseParallelClaim": true,
+          "disclosedGap": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "fc8a68f0-6b46-44fd-b24b-c3642e9ccdd6",
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "beginMs": 36535085.3231,
+          "upstreamBeginMs": 36535085.6607,
+          "endMs": 36535228.4452,
+          "outcome": "http_error",
+          "requestBytes": 15868,
+          "requestDigest": "5bc145897fd3bc2db69f61fe2fce0a7b6a5b9e056659aa1e5e1bf7ccf27e85f7",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 218,
+            "envelope": 15868
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "fc8a68f0-6b46-44fd-b24b-c3642e9ccdd6",
+            "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+            "role": "parent",
+            "requestBytes": 15868,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 218,
+              "envelope": 15868
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535036.0964,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535052.4951,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995:9b73b9c7-7ed7-4a4e-8958-171d04d419cd:1",
+            "identity": {
+              "sessionId": "b7fbaee3-a407-4d4e-ab1e-33651f855641",
+              "conversationId": "d78874fb-444a-4298-a987-da88fd3dcdfd",
+              "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+              "requestId": "9b73b9c7-7ed7-4a4e-8958-171d04d419cd",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058983327,
+            "estimatedInputTokens": 15868,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 279,
+            "contextDigest": "25755d68f780a514120fddda0a2358ee72dbdebd2f0ab6f4398c09cc08b20c08",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 216,
+                "digest": "171fad75064ecd9eec65063e2ae00814bccdc0ac2b68c70d64bada82441650af",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535070.4636,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995:9b73b9c7-7ed7-4a4e-8958-171d04d419cd:1",
+            "identity": {
+              "sessionId": "b7fbaee3-a407-4d4e-ab1e-33651f855641",
+              "conversationId": "d78874fb-444a-4298-a987-da88fd3dcdfd",
+              "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+              "requestId": "9b73b9c7-7ed7-4a4e-8958-171d04d419cd",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058983346,
+            "estimatedInputTokens": 15868,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 279,
+            "contextDigest": "25755d68f780a514120fddda0a2358ee72dbdebd2f0ab6f4398c09cc08b20c08",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15868,
+            "payloadDigest": "5bc145897fd3bc2db69f61fe2fce0a7b6a5b9e056659aa1e5e1bf7ccf27e85f7"
+          }
+        },
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535098.5483,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995:9b73b9c7-7ed7-4a4e-8958-171d04d419cd:1",
+            "identity": {
+              "sessionId": "b7fbaee3-a407-4d4e-ab1e-33651f855641",
+              "conversationId": "d78874fb-444a-4298-a987-da88fd3dcdfd",
+              "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+              "requestId": "9b73b9c7-7ed7-4a4e-8958-171d04d419cd",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058983372,
+            "estimatedInputTokens": 15868,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 279,
+            "contextDigest": "25755d68f780a514120fddda0a2358ee72dbdebd2f0ab6f4398c09cc08b20c08",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15868,
+            "payloadDigest": "5bc145897fd3bc2db69f61fe2fce0a7b6a5b9e056659aa1e5e1bf7ccf27e85f7"
+          }
+        },
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535246.3296,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995:9b73b9c7-7ed7-4a4e-8958-171d04d419cd:1",
+            "identity": {
+              "sessionId": "b7fbaee3-a407-4d4e-ab1e-33651f855641",
+              "conversationId": "d78874fb-444a-4298-a987-da88fd3dcdfd",
+              "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+              "requestId": "9b73b9c7-7ed7-4a4e-8958-171d04d419cd",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058983372,
+            "estimatedInputTokens": 15868,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 279,
+            "contextDigest": "25755d68f780a514120fddda0a2358ee72dbdebd2f0ab6f4398c09cc08b20c08",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 218,
+                "digest": "9a62773f75d19238b7786143790e53df34d96aa323c38486855c43f4bfc79600",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15868,
+            "payloadDigest": "5bc145897fd3bc2db69f61fe2fce0a7b6a5b9e056659aa1e5e1bf7ccf27e85f7",
+            "elapsedMs": 178.7951,
+            "finishedAt": 1792058983523,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "role": "parent",
+          "monotonicMs": 36535260.055,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "9908e1cb-e833-40a3-81da-48d97d3434d5",
+          "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+          "identity": {
+            "sessionId": "b7fbaee3-a407-4d4e-ab1e-33651f855641",
+            "conversationId": "d78874fb-444a-4298-a987-da88fd3dcdfd",
+            "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+            "requestId": "9b73b9c7-7ed7-4a4e-8958-171d04d419cd",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36534944.8748,
+          "endMs": 36535281.6898,
+          "pid": 61860,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "cancel-1-8e43ede0-6991-4284-8d24-b88236a7a937",
+      "mode": "cancel",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 36535316.3384,
+      "endedMs": 36535746.1556,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "execution": {
+        "phase": "shutdown",
+        "sendResultObserved": true,
+        "failureCode": "model_authentication",
+        "shutdownFailureCode": null,
+        "hostErrors": [],
+        "workerInvocations": 1,
+        "physicalWorkersSpawned": 1,
+        "modelRequestsStarted": 1,
+        "transportInvocations": 1,
+        "hostRecoveryRequired": false
+      },
+      "promptVariant": 1,
+      "inputDigest": "8948e4d7760a4c84331d2a2e98377d237722f42343ab02b1e4dc850c55519c79",
+      "materialHashes": {
+        "controls.txt": "0a819d8e51ab75beeed2d7463ddf9381322b7cbe0d1a0925598242143e652410",
+        "delivery.txt": "3bd1578d5ed4b4f734e212fdbd2f64f047303b70e9a093724ff7879cebe03767",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": true,
+          "readOnlyCatalog": true,
+          "cancelledChildren": false,
+          "cancelledDuringChildRequests": false,
+          "physicalWorkers": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [
+        {
+          "id": "e4ed248f-d8b6-44dd-abc3-5ad2fcfba8e0",
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "beginMs": 36535519.051,
+          "upstreamBeginMs": 36535519.3352,
+          "endMs": 36535666.6753,
+          "outcome": "http_error",
+          "requestBytes": 15962,
+          "requestDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4",
+          "components": {
+            "instructions": 4478,
+            "tools": 11028,
+            "contextItems": 312,
+            "envelope": 15962
+          },
+          "usage": null,
+          "httpStatus": 401
+        }
+      ],
+      "baseline": {
+        "status": "observed",
+        "requestCount": 1,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": false,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 1,
+          "total": null
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": [
+          {
+            "id": "e4ed248f-d8b6-44dd-abc3-5ad2fcfba8e0",
+            "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+            "role": "parent",
+            "requestBytes": 15962,
+            "components": {
+              "instructions": 4478,
+              "tools": 11028,
+              "contextItems": 312,
+              "envelope": 15962
+            },
+            "usage": null,
+            "outcome": "http_error"
+          }
+        ]
+      },
+      "attempts": [
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535469.14,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        },
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535484.6818,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "c5f59c40-cfef-47c1-855c-aeaf7788ed77:6954e0e6-bec3-4e3c-a324-713625f68de6:1",
+            "identity": {
+              "sessionId": "27a704b2-f05c-43dd-9316-c3d3fdc9ce57",
+              "conversationId": "ddec9f16-0bc4-44a4-b3d1-aafd8b6f647e",
+              "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+              "requestId": "6954e0e6-bec3-4e3c-a324-713625f68de6",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "started",
+            "requestSent": false,
+            "startedAt": 1792058983760,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11158,
+                "digest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+                "accounting": "logical",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 310,
+                "digest": "6bfe7d4f975fe99c41bb602f795ef689efd6b3dde9a3dc315e0e49b00ff78b0d",
+                "accounting": "logical"
+              }
+            },
+            "usage": null
+          }
+        },
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535504.393,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "c5f59c40-cfef-47c1-855c-aeaf7788ed77:6954e0e6-bec3-4e3c-a324-713625f68de6:1",
+            "identity": {
+              "sessionId": "27a704b2-f05c-43dd-9316-c3d3fdc9ce57",
+              "conversationId": "ddec9f16-0bc4-44a4-b3d1-aafd8b6f647e",
+              "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+              "requestId": "6954e0e6-bec3-4e3c-a324-713625f68de6",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "request",
+            "requestSent": false,
+            "startedAt": 1792058983777,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4"
+          }
+        },
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535530.9171,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "c5f59c40-cfef-47c1-855c-aeaf7788ed77:6954e0e6-bec3-4e3c-a324-713625f68de6:1",
+            "identity": {
+              "sessionId": "27a704b2-f05c-43dd-9316-c3d3fdc9ce57",
+              "conversationId": "ddec9f16-0bc4-44a4-b3d1-aafd8b6f647e",
+              "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+              "requestId": "6954e0e6-bec3-4e3c-a324-713625f68de6",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "dispatched",
+            "requestSent": true,
+            "startedAt": 1792058983806,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4"
+          }
+        },
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535687.5432,
+          "type": "model_request_diagnostic",
+          "attempt": null,
+          "failure": null,
+          "usage": null,
+          "diagnostic": {
+            "schemaVersion": 1,
+            "requestKey": "c5f59c40-cfef-47c1-855c-aeaf7788ed77:6954e0e6-bec3-4e3c-a324-713625f68de6:1",
+            "identity": {
+              "sessionId": "27a704b2-f05c-43dd-9316-c3d3fdc9ce57",
+              "conversationId": "ddec9f16-0bc4-44a4-b3d1-aafd8b6f647e",
+              "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+              "requestId": "6954e0e6-bec3-4e3c-a324-713625f68de6",
+              "workerGeneration": 1
+            },
+            "attempt": 1,
+            "purpose": "normal",
+            "model": "k3[1M]",
+            "protocol": {
+              "id": "anthropic-messages",
+              "version": 1
+            },
+            "phase": "finished",
+            "requestSent": true,
+            "startedAt": 1792058983806,
+            "estimatedInputTokens": 15962,
+            "estimateMethod": "utf8_bytes",
+            "estimateSource": "fallback",
+            "contextBytes": 373,
+            "contextDigest": "0fb241c8e067ca4f259179bc7faed13537fc2daf79017a5a42c2388114fd3e92",
+            "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+            "components": {
+              "history": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "serialized",
+                "count": 1
+              },
+              "tools": {
+                "bytes": 11028,
+                "digest": "ca5a6a419a69382c8628f3024f334598ba6c8a382c6492536b97d33d445e23aa",
+                "accounting": "serialized",
+                "count": 10
+              },
+              "userInput": {
+                "bytes": 312,
+                "digest": "f25bde597b9e15b6cc379603a6c81de2016909cbab023a8da6d726704fef3442",
+                "accounting": "logical",
+                "count": 1
+              },
+              "instructions": {
+                "bytes": 4478,
+                "digest": "5cb29640b99997442c2f0a89706c4a90c79e509f5264a6a4d9796aca3052e820",
+                "accounting": "serialized"
+              },
+              "transport": {
+                "bytes": 144,
+                "digest": "4f2317bc97443c4d821fad98a9acedf399e17e9c0ad1aa1bdf13510420666029",
+                "accounting": "serialized"
+              },
+              "systemPrompt": {
+                "bytes": 4375,
+                "digest": "91f98c56606fb2d8f1f4a1c7811e51e4eb0162cf2f2aaee79287a49ac36dbdc4",
+                "accounting": "logical"
+              },
+              "permissions": {
+                "bytes": 93,
+                "digest": "fac763bcc8f49876d23cc11f72bccdcd91b150d61cec21e6f46db2eeb7814cf7",
+                "accounting": "logical"
+              },
+              "projectRules": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              },
+              "skills": {
+                "bytes": 0,
+                "digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "accounting": "logical"
+              }
+            },
+            "usage": null,
+            "payloadBytes": 15962,
+            "payloadDigest": "c259ec94ce012daddd7184d76da0f9804baba7e2bb4d5056f4a9ff6c5eff33f4",
+            "elapsedMs": 184.99810000000002,
+            "finishedAt": 1792058983961,
+            "providerUsage": null,
+            "outcome": "failed",
+            "failure": {
+              "category": "authentication",
+              "httpStatus": 401,
+              "retryable": false,
+              "protocol": "anthropic-messages",
+              "stage": "response_headers"
+            }
+          }
+        },
+        {
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "role": "parent",
+          "monotonicMs": 36535702.1876,
+          "type": "model_request_failed",
+          "attempt": 1,
+          "failure": {
+            "category": "authentication",
+            "httpStatus": 401,
+            "retryable": false,
+            "protocol": "anthropic-messages",
+            "stage": "response_headers"
+          },
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "85f7fb82-8da9-4ea8-b553-b457f257ad24",
+          "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+          "identity": {
+            "sessionId": "27a704b2-f05c-43dd-9316-c3d3fdc9ce57",
+            "conversationId": "ddec9f16-0bc4-44a4-b3d1-aafd8b6f647e",
+            "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+            "requestId": "6954e0e6-bec3-4e3c-a324-713625f68de6",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 36535381.62,
+          "endMs": 36535721.9251,
+          "pid": 78600,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "lifecycle": {
+            "invoked": true,
+            "forkCalled": true,
+            "spawned": true,
+            "exited": true,
+            "resultObserved": true
+          },
+          "failureCode": "model_authentication",
+          "workerPathIsProductionBundle": true,
+          "terminal": {
+            "status": "failed",
+            "committed": true,
+            "reason": "model_authentication",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    }
+  ],
+  "protocol": "anthropic",
+  "candidateSha": "5af6f43d01b006e2c536e569e6230df3a128d47b",
+  "limitations": [
+    "Private production journals are retained locally; this report contains no document, model output, request headers or credential values.",
+    "Provider usage/pricing may be unavailable. Human acceptance is not implied."
+  ],
+  "candidateSourceDigest": "c3fa89a24da37e37a7895064be2e5bb2ef7e80860c0a7307ed61f9eaebcad6de",
+  "runtimeBundleDigest": "7245a8a01ad08aa2efb694013dd49d7bea025ce8099ae72865365a4bcb993f8d",
+  "workerBundleDigest": "e43f8658d132d41ffb40ede6191a636dadb0bf5c04bd5eed81e71bc46081f325",
+  "model": "k3[1M]",
+  "modelSelection": {
+    "source": "env.ANTHROPIC_MODEL",
+    "nativeImportable": false,
+    "preservedConfiguredLabel": true
+  },
+  "connectionOriginDigest": "6a185bd8fe05946840eaa65bf0583f6d2ea7f0f37e7a476add51e172b1c2a855",
+  "configuration": {
+    "maxModelRequests": 40,
+    "maxToolCalls": 80,
+    "maxActiveMs": 240000,
+    "maxInputTokens": 128000,
+    "maxOutputTokens": 4096,
+    "autoCompact": "off",
+    "modelRetry": "off",
+    "toolPolicy": "read_only",
+    "mcpConnections": []
+  },
+  "parallelVariantsObserved": true,
+  "baseline": {
+    "status": "observed",
+    "requestCount": 8,
+    "peakInputTokens": null,
+    "peakInputTokensComplete": false,
+    "cumulativeInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 8,
+      "total": null
+    },
+    "nonCachedInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 8,
+      "total": null
+    },
+    "cacheReadInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 8,
+      "total": null
+    },
+    "cacheCreationInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 8,
+      "total": null
+    },
+    "cumulativeOutputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 8,
+      "total": null
+    },
+    "costUSD": null,
+    "measurement": "wire_utf8_bytes_and_provider_usage",
+    "requestBytes": [
+      {
+        "id": "31f47898-3121-4489-a84a-8cb3020610f2",
+        "runId": "ccc3146f-57fd-4372-90ff-1b8e3db3edc9",
+        "role": "parent",
+        "requestBytes": 15962,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 312,
+          "envelope": 15962
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "95620a3b-340e-4162-abe8-6311177fd73a",
+        "runId": "41a9b423-cb40-48d9-9ee4-e526a7a6f3c6",
+        "role": "parent",
+        "requestBytes": 16000,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 350,
+          "envelope": 16000
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "76428c5d-24c5-4fba-a709-4c07514982c5",
+        "runId": "bf910247-847e-4065-b4ac-64ba1ccf8e50",
+        "role": "parent",
+        "requestBytes": 16024,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 374,
+          "envelope": 16024
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "8b02fe7b-a6f9-4191-a4c3-23671d69fafa",
+        "runId": "abfda2be-d0d2-4d0c-9ce6-72e37389ab06",
+        "role": "parent",
+        "requestBytes": 15790,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 140,
+          "envelope": 15790
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "cc705174-1946-400b-8a60-769bcc1b5511",
+        "runId": "827cbadd-d94a-4013-be87-738038b73621",
+        "role": "parent",
+        "requestBytes": 14593,
+        "components": {
+          "instructions": 4478,
+          "tools": 9789,
+          "contextItems": 182,
+          "envelope": 14593
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "ce3735ba-1da5-480d-868c-03f094a4323d",
+        "runId": "5a7a6b97-2e6f-4605-9c92-e9aa1c759180",
+        "role": "parent",
+        "requestBytes": 16010,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 360,
+          "envelope": 16010
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "fc8a68f0-6b46-44fd-b24b-c3642e9ccdd6",
+        "runId": "cbef8c7b-c6d5-48ba-a0ca-3182b9f64995",
+        "role": "parent",
+        "requestBytes": 15868,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 218,
+          "envelope": 15868
+        },
+        "usage": null,
+        "outcome": "http_error"
+      },
+      {
+        "id": "e4ed248f-d8b6-44dd-abc3-5ad2fcfba8e0",
+        "runId": "c5f59c40-cfef-47c1-855c-aeaf7788ed77",
+        "role": "parent",
+        "requestBytes": 15962,
+        "components": {
+          "instructions": 4478,
+          "tools": 11028,
+          "contextItems": 312,
+          "envelope": 15962
+        },
+        "usage": null,
+        "outcome": "http_error"
+      }
+    ]
+  },
+  "finishedAt": "2026-10-15T10:09:44.038Z"
+}

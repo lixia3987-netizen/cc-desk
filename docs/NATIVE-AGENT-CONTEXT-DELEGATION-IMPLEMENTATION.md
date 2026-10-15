@@ -52,4 +52,30 @@ npm run native:context:baseline:matrix -- --manifest <矩阵manifest.json> --out
 
 ## 本候选验证
 
-验证报告在最终检查后补充。开发过程出现的环境限制、错误配置启动与后续复验不会被删除；以最终候选的正式配置检查为准。正式验收状态仍为 pending。
+实现候选依次为 `64362676be270dd86039b0f38e15d4f17d130a8e`、`5af6f43d01b006e2c536e569e6230df3a128d47b`。后续文档和边界 fixture 提交不改变第二候选的生产实现。开发过程出现的环境限制、错误配置启动与后续复验分别保存，不能把不同候选或配置的计数混成一次通过。
+
+| 检查 | 实际结果 |
+| --- | --- |
+| 四个工作区包构建、desktop 类型检查、最终 Vite/main/preload/worker 生产构建 | 通过 |
+| 最终 core 全套及本次新增回归/矩阵脚本 | core 184/184、脚本 20/20 通过 |
+| 核心、三协议 adapter、诊断、用量和账本定向检查 | 572 通过、1 平台条件跳过；新增模型标签链路定向 70/70 通过 |
+| 手动压缩幂等、图像后缀、重启兼容及委派审计 | 最终定向 62/62 通过 |
+| 摘要与回合内压缩、取消及完整工具配对 | 最终 31/31 通过；真实 payload 预算边界另 3/3 通过 |
+| 本次 Native 完整定向回归 | 305 通过、1 失败；失败为既有真实命令的 Windows Job 编译 helper 无法启动 |
+| Electron 生产 utilityProcess 委派 | 4 通过、1 失败；审阅并行、共享预算、取消及无实际委派的伪报拒绝通过，实现子任务的真实命令用例受同一 Windows helper 限制 |
+| 正式 cwd 的 desktop 全套单元检查 | 1507 通过、37 失败、2 取消、31 跳过，随后修复并定向复验其中旧摘要幂等与预算 fixture；全套不能登记为通过。剩余命令/stdio/PTY 检查受运行环境或未准备的本地原生二进制影响 |
+| 完整 core/node 单元检查首次执行 | 964 通过、33 失败、12 跳过；两处图像旧 usage 断言已修复并定向通过，其他失败涉及未修改的 Windows 命令/stdio 约束，不把定向通过当作整个包全绿 |
+| 脚本完整检查 | 新回归与矩阵检查通过；既有工程评估脚本因冻结 v1 测试集 digest 与当前基线不符而失败。没有改写冻结套件或历史验收记录掩盖问题 |
+
+全部检查摘要及失败测试名称保存在 [checks.json](validation/native-context-delegation/checks.json)。未修改的 Windows 命令约束探针失败为 `windows_job / helper_exit / compile`，helper 退出码 `4294901760`，没有执行被约束命令。工程 v1 套件实际 digest 为 `58ec2e1356c5701df023572e98db5072490e4081f5e2a00a83cbf1f3470e71ea`，原固定 digest 为 `7ac65759b84e3946f632a931ff7bece2e50051fc25b2ee9a5e0c23bd2cbfba8a`；工程套件与相关 Windows 监督器源码在本次改动中未修改。
+
+初始 shell 的 `realpath`/loopback/Electron 限制另有失败记录；使用可用运行器后成功执行生产构建与真实 utilityProcess。初次从根目录启动 TSX 测试未使用 desktop 配置，出现 `React is not defined`，已按正式工作区 cwd 重跑，不作为最终产品回归结论。完整检查仍有失败，PR 保持草稿，未合入 main。
+
+### 真实模型全部尝试
+
+1. [第一次完整报告](validation/native-context-delegation/6436267-attempt-1.json)：三个不同并行措辞及五个负向/取消场景，共八项失败。诊断错误把模型标签 `k3[1M]` 当作运行 ID 拒绝；真实父 worker 已启动，未调用上游。模型标签现使用独立有界校验，运行 ID 规则保持严格，三协议及 worker/store 回归已通过。
+2. [第二次完整报告](validation/native-context-delegation/5af6f43-attempt-2.json)：八项均通过生产 worker 发出实际上游请求，上游返回 HTTP 401，分类为 `model_authentication`；终态已持久化且 worker 清理已确认。内存复核确认凭据、认证头、端点拼接、模型标签与生产配置一致，没有打印凭据、修改用户配置或猜测替代模型。具体认证拒绝原因仍未知。
+
+第二次报告只证明生产路径和失败边界可观察，不能证明真实模型选择了 `delegate_review`、完成材料分析或满足并行要求。报告保留所有失败、实际请求身份和三个不同措辞，不保留凭据或上游错误正文。没有在相同认证条件下不断重发。
+
+九场景真实费用矩阵、主用模型的自然委派通过门槛、真实校准误差与质量收益继续 pending。正式 RA-34/RA-35 未改为通过。
