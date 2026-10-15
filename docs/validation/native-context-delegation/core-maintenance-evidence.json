@@ -1,0 +1,201 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-10-15T11:32:41.9163231Z",
+  "reranTestsForArchive": false,
+  "pathBase": "project scratch root",
+  "sourceBoundary": {
+    "kind": "archive-time frozen source and tests snapshot",
+    "invocationTimeSourceHashesCaptured": false,
+    "candidateCommit": null,
+    "note": "No source hash was captured at the 220-test invocation. These hashes identify the files read during archiving and must not be represented as an invocation-time candidate hash. The owner made no core source edits after the successful build and 220-test run; parent declared source freeze before this archive.",
+    "repository": "cc-desk-development",
+    "treeHashAlgorithm": "sha256 of sorted UTF-8 relativePath + NUL + lowercase file sha256 + LF records",
+    "treeSha256": "c110cf99c49580d2907227b0a9fa99517f03279cff3ee343ecf38599c656dc34",
+    "files": [
+      {
+        "path": "packages/agent-core/src/context.ts",
+        "sha256": "d30c49fe4999caa6281978a48c6c69ccd52b3e5c4e2f9ef4a72cb1220484958e",
+        "bytes": 8710,
+        "lastWriteTimeUtc": "2026-10-15T09:37:05.3359466Z"
+      },
+      {
+        "path": "packages/agent-core/src/diagnostics.ts",
+        "sha256": "577df0b5268caebb9f3a4193792b5082ca3faf7cc7a8c92adb8a20dbe83864b7",
+        "bytes": 8005,
+        "lastWriteTimeUtc": "2026-10-15T10:07:06.3219435Z"
+      },
+      {
+        "path": "packages/agent-core/src/images.ts",
+        "sha256": "b4fabc029730f48c7041c16f18d89c63d55a644a803b5c49dff0b25e58dcbaf5",
+        "bytes": 1943,
+        "lastWriteTimeUtc": "2026-10-15T08:39:08.8595904Z"
+      },
+      {
+        "path": "packages/agent-core/src/index.ts",
+        "sha256": "9d1f40adb4cded6062e275cc455858ef69ec09059629e8cf7d0ce46227236c30",
+        "bytes": 269,
+        "lastWriteTimeUtc": "2026-10-15T11:08:26.7924196Z"
+      },
+      {
+        "path": "packages/agent-core/src/recovery.ts",
+        "sha256": "c1a049b6463fd4a01a49aa7cd8ac8a2024f022a077a94ba27079f28551e5c913",
+        "bytes": 2400,
+        "lastWriteTimeUtc": "2026-10-15T08:39:08.8601068Z"
+      },
+      {
+        "path": "packages/agent-core/src/run.ts",
+        "sha256": "14fe662fc3292187f16e80be638eddfacdfc60ba149050120736961b557fdea2",
+        "bytes": 28954,
+        "lastWriteTimeUtc": "2026-10-15T11:08:28.8948788Z"
+      },
+      {
+        "path": "packages/agent-core/src/task.ts",
+        "sha256": "757f1edb8b6680d7a830ea0cb096001ddbb3a6fde4e7a60a41c46b6cbdf34137",
+        "bytes": 26614,
+        "lastWriteTimeUtc": "2026-10-15T08:39:08.8616536Z"
+      },
+      {
+        "path": "packages/agent-core/src/tool-preparation-error.ts",
+        "sha256": "5678302104ef7972b233703aab9fc2d43f298206fc4a78a26fb1bbe19d368908",
+        "bytes": 3236,
+        "lastWriteTimeUtc": "2026-10-15T11:08:24.8733188Z"
+      },
+      {
+        "path": "packages/agent-core/src/types.ts",
+        "sha256": "c18088f406bce6aaabcec06ef97bc101ba6798acb1912beaeebcb64ea53b99d9",
+        "bytes": 13592,
+        "lastWriteTimeUtc": "2026-10-15T09:41:26.7409830Z"
+      },
+      {
+        "path": "packages/agent-core/src/usage.ts",
+        "sha256": "f62e15d015291f4e9b05c757bdee47e68e76756c4c6061af46575871654de1fb",
+        "bytes": 3430,
+        "lastWriteTimeUtc": "2026-10-15T09:45:50.3709513Z"
+      },
+      {
+        "path": "packages/agent-core/tests/context.test.mjs",
+        "sha256": "b46fff36ad6677bbd10de62a5cb433dce0a3678720cb06ff2148080f61de850a",
+        "bytes": 8436,
+        "lastWriteTimeUtc": "2026-10-15T09:37:07.5664943Z"
+      },
+      {
+        "path": "packages/agent-core/tests/core.test.mjs",
+        "sha256": "cd3a8f0332837370122e19c3f6399bfd124b09b2c13d20381afd46127e6bcc31",
+        "bytes": 59237,
+        "lastWriteTimeUtc": "2026-10-15T11:09:58.4969173Z"
+      },
+      {
+        "path": "packages/agent-core/tests/fixtures/consumer.mts",
+        "sha256": "ece6d3243f4e859eb71d4227bb7d735cbeb1c869243cd937382d440ecab1d1e8",
+        "bytes": 326,
+        "lastWriteTimeUtc": "2026-10-15T11:10:25.6674476Z"
+      },
+      {
+        "path": "packages/agent-core/tests/images.test.mjs",
+        "sha256": "7f6acae19d9d43692ed8607dec032c543c23c2f65b98e865c51fb3d28a81e958",
+        "bytes": 3520,
+        "lastWriteTimeUtc": "2026-10-15T08:36:38.4909094Z"
+      },
+      {
+        "path": "packages/agent-core/tests/public-exports.test.mjs",
+        "sha256": "86b9b7e8b78e03ba2dce29f59ac1fe49b47bb64251af9bc670ebe6bc9ca5f007",
+        "bytes": 3726,
+        "lastWriteTimeUtc": "2026-10-15T08:36:38.4924855Z"
+      },
+      {
+        "path": "packages/agent-core/tests/task.test.mjs",
+        "sha256": "1f1f0d2ae2671d9b05fa05b1675716e2dcf0a2b0ea84f7d30a85359546bf509e",
+        "bytes": 18080,
+        "lastWriteTimeUtc": "2026-10-15T08:36:40.7118715Z"
+      },
+      {
+        "path": "packages/agent-core/tests/tool-preparation-error.test.mjs",
+        "sha256": "9ec186124d3f8ace0916473737fd40835b8003c2d032c0ffed663a6a4bfa4337",
+        "bytes": 3781,
+        "lastWriteTimeUtc": "2026-10-15T11:10:23.8713704Z"
+      },
+      {
+        "path": "packages/agent-core/tests/usage-diagnostics.test.mjs",
+        "sha256": "f1e5839e360a79048251af9639cf84ed2c6e85f29eac8b13aae4870c0e573e98",
+        "bytes": 5272,
+        "lastWriteTimeUtc": "2026-10-15T10:07:08.1142693Z"
+      }
+    ],
+    "maintenanceTest": {
+      "path": "apps/desktop/tests/native-maintenance.test.ts",
+      "sha256": "c5ad21e9a603c1f1ae2950d48c6fc6196ab22fc7d7714eba699f7c6c0882afc8"
+    }
+  },
+  "checks": [
+    {
+      "name": "agent-core-all-after-tool-preparation-feedback",
+      "evidenceKind": "owner-observed tool output; not a root raw log",
+      "owner": "impl_usage_diagnostics",
+      "workingDirectory": "cc-desk-development",
+      "exactExecutedCommand": "node --test packages/agent-core/tests/*.test.mjs",
+      "exitCode": 0,
+      "counts": {
+        "tests": 220,
+        "suites": 0,
+        "pass": 220,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "durationMs": 951.3138,
+      "rawLog": null,
+      "rawLogSha256": null,
+      "rawLogNote": "The original complete output was returned in two tool response chunks and was not saved as a file. This archive is an observation summary, not a reconstructed raw log.",
+      "toolEvidence": {
+        "sessionId": 44390,
+        "initialChunkId": "9849a3",
+        "finalChunkId": "15750d",
+        "finalExitCode": 0
+      },
+      "build": {
+        "command": "node ..\\build-local-packages.mjs",
+        "exitCode": 0,
+        "packagesBuiltAndCopied": [
+          "contracts",
+          "engine-claude",
+          "agent-core",
+          "agent-node"
+        ],
+        "helperSha256AtArchive": "18a47e1275c0658d5327cf24b535e66333b920d75a1fe0b0253c49f6422109bb"
+      }
+    },
+    {
+      "name": "manual-compaction-fixed",
+      "evidenceKind": "existing root raw log inspected; root reported successful legal runner execution",
+      "workingDirectory": "cc-desk-development",
+      "ownerRequestedCommand": "node --import tsx --test --test-concurrency=1 apps/desktop/tests/native-maintenance.test.ts",
+      "exactExecutedCommand": null,
+      "executedCommandNote": "The owner provided the above exact command, but the raw log does not record actual runner cwd or argv. Await root confirmation rather than infer these from the test names.",
+      "exitCode": 0,
+      "counts": {
+        "tests": 7,
+        "suites": 0,
+        "pass": 7,
+        "fail": 0,
+        "cancelled": 0,
+        "skipped": 0,
+        "todo": 0
+      },
+      "durationMs": 10643.2984,
+      "rawLog": "followup-manual-compaction-fixed.log",
+      "rawLogSha256": "a8e765d6387d3157a736deede2a30bf6d16d0e5504ecdfc5561d0ce0bb864c01",
+      "rawLogBytes": 969,
+      "rawLogLastWriteTimeUtc": "2026-10-15T11:04:25.3938321Z",
+      "priorFailureRetained": {
+        "rawLog": "followup-manual-compaction-retry.log",
+        "rawLogSha256": "8fe35af34f633036621ea50265f6cc9acc0217453825123857d669eb3b65c431",
+        "counts": {
+          "tests": 7,
+          "pass": 3,
+          "fail": 4
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "artifact": "worker_rpc_followup_owner_evidence",
+  "owner": "impl_real_regression",
+  "sourceRoot": "cc-desk-development",
+  "sourceFrozen": true,
+  "evidencePolicy": {
+    "repeatedChecksForArchive": false,
+    "rawErrorsOrCredentialsIncluded": false,
+    "absoluteMachinePathsIncluded": false,
+    "missingLogsAreNotReconstructed": true
+  },
+  "checks": [
+    {
+      "id": "worker_host_rpc_suite",
+      "kind": "deterministic_fixture",
+      "command": "node --import tsx --test apps/desktop/tests/native-worker-host.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "counts": {
+        "tests": 92,
+        "passed": 92,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "evidence": {
+        "provenance": "owner-observed",
+        "logPath": null,
+        "logSha256": null,
+        "toolOutputReference": "75f864",
+        "reason": "Tool output was observed; no persistent log file was written."
+      },
+      "sourceAtExecution": {
+        "hashesCaptured": false,
+        "exactExecutionTimestampCaptured": false
+      },
+      "boundary": "After this full-suite run, only the EOF negative-test result construction changed to explicit fixed fields. The targeted test below passed after that test-only edit; production RPC sources did not change afterward."
+    },
+    {
+      "id": "execute_feedback_final_test_literal",
+      "kind": "deterministic_fixture",
+      "command": "node --import tsx --test --test-name-pattern 'execute-phase feedback' apps/desktop/tests/native-worker-host.test.ts",
+      "status": "passed",
+      "exitCode": 0,
+      "counts": {
+        "tests": 1,
+        "passed": 1,
+        "failed": 0,
+        "skipped": 0,
+        "cancelled": 0
+      },
+      "evidence": {
+        "provenance": "owner-observed",
+        "logPath": null,
+        "logSha256": null,
+        "toolOutputReference": "ae193d",
+        "reason": "Final targeted tool output was observed; no persistent log file was written."
+      },
+      "sourceAtExecution": {
+        "hashesCaptured": false,
+        "exactExecutionTimestampCaptured": false
+      }
+    },
+    {
+      "id": "desktop_typescript",
+      "kind": "typecheck",
+      "command": "node node_modules/typescript/lib/tsc.js --noEmit --project apps/desktop/tsconfig.json",
+      "status": "passed",
+      "exitCode": 0,
+      "evidence": {
+        "provenance": "owner-observed",
+        "logPath": null,
+        "logSha256": null,
+        "toolOutputReference": "1ecd05",
+        "reason": "Successful completion with no diagnostics was observed; no persistent log file was written."
+      },
+      "sourceAtExecution": {
+        "hashesCaptured": false,
+        "exactExecutionTimestampCaptured": false
+      },
+      "boundary": "Observed after the physical fixture JsonValue type fix. A final test-only literal adjustment followed; no hash-bound claim for the later snapshot is made."
+    },
+    {
+      "id": "worker_entry_and_physical_fixture_bundle_compile",
+      "kind": "bundle_compile",
+      "command": "node --input-type=module -e 'import {build} from \"esbuild\"; for(const file of [\"apps/desktop/src/main/engines/native/worker-entry.ts\",\"apps/desktop/tests/native-agent.spec.ts\"]) await build({entryPoints:[file],bundle:true,platform:\"node\",format:\"cjs\",outfile:\"../native-worker-feedback-bundle-probe/check.cjs\",external:[\"electron\",\"node-pty\",\"@playwright/test\"],write:false,logLevel:\"silent\"}); console.log(\"worker_entry_and_physical_fixture_compile_passed\");'",
+      "status": "passed",
+      "exitCode": 0,
+      "counts": {
+        "entryPoints": 2,
+        "completed": 2,
+        "failed": 0
+      },
+      "evidence": {
+        "provenance": "owner-observed",
+        "logPath": null,
+        "logSha256": null,
+        "toolOutputReference": "b2e30a",
+        "reason": "Both in-memory bundle builds completed; write:false produced no bundle artifact or persistent log."
+      },
+      "sourceAtExecution": {
+        "hashesCaptured": false,
+        "exactExecutionTimestampCaptured": false
+      },
+      "boundary": "This compile preceded the final physical-fixture revision-variable adjustment and final host hint-field hardening. worker-entry itself did not change afterward; this is not an exact-hash compile claim for the final fixture snapshot."
+    },
+    {
+      "id": "physical_electron_stale_revision_recovery",
+      "kind": "electron_utility_process_fixture",
+      "command": "node apps/desktop/scripts/run-desktop-tests.mjs native-agent.spec.ts --grep 'receives trusted stale-revision feedback' --workers 1",
+      "status": "not_run",
+      "reason": "production_build_realpath_eperm",
+      "counts": {
+        "testsExecutedByOwner": 0,
+        "passed": 0,
+        "failed": 0
+      },
+      "evidence": {
+        "provenance": "owner-observed",
+        "logPath": "followup-final-electron-feedback.log",
+        "logSha256": "a2d8bdd32e783c9218ffa092bdf94a5505eb344dab1062c6488d73404944e97c",
+        "reason": "A fresh production build failed before the Electron fixture could execute. Machine root paths in the captured build log are redacted. The old bundle was not used."
+      },
+      "previousAttempts": [
+        {
+          "status": "not_run",
+          "reason": "Transport closed",
+          "testsExecutedByOwner": 0
+        }
+      ],
+      "attemptStatus": "failed-before-test",
+      "prerequisite": {
+        "command": "node scripts/build.mjs",
+        "workingDirectory": "apps/desktop",
+        "exitCode": 1,
+        "errorCode": "EPERM",
+        "plugin": "vite:build-html",
+        "operation": "realpath",
+        "source": "src/renderer/main.tsx",
+        "oldBundleUsed": false,
+        "retries": 0
+      }
+    }
+  ],
+  "sourceSnapshot": {
+    "measurementStartedAtUtc": "2026-10-15T11:32:29.5920807Z",
+    "measurementFinishedAtUtc": "2026-10-15T11:32:29.8185505Z",
+    "relationToChecks": "Measured for this archive after the observed checks. These hashes were not captured at test execution time and must not be backdated.",
+    "files": [
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-protocol.ts",
+        "sha256": "e4c8b4910959e765b77c4a6f380a6d4498c732e782e9658e21c1d17969b78891",
+        "bytes": 2902,
+        "lastModifiedUtc": "2026-10-15T11:11:01.9600049Z"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-host.ts",
+        "sha256": "4d4b6a18fbbc8e762dd2e755ed3ae56c88d567a1e7dcdf8d51b451e78de7bbcd",
+        "bytes": 48815,
+        "lastModifiedUtc": "2026-10-15T11:17:22.761472Z"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-entry.ts",
+        "sha256": "d7f0d4fd12d40ebb3e7afc84440e34b8be391ecbf7cd2eea30939ea25dd97c9f",
+        "bytes": 9117,
+        "lastModifiedUtc": "2026-10-15T11:11:03.7623674Z"
+      },
+      {
+        "path": "apps/desktop/tests/native-worker-host.test.ts",
+        "sha256": "83a623defb7becc21cfecea2f6af632073a6b9ec0daa26db41f5f0f2e7a21d07",
+        "bytes": 80496,
+        "lastModifiedUtc": "2026-10-15T11:18:14.938345Z"
+      },
+      {
+        "path": "apps/desktop/tests/native-agent.spec.ts",
+        "sha256": "5b6e3cbc2c7c8289b8c982106dcb0e5f46e6cd4a9feb9c7593afc8c30d8dced0",
+        "bytes": 32511,
+        "lastModifiedUtc": "2026-10-15T11:17:20.7964182Z"
+      }
+    ]
+  },
+  "subsequentRootObservations": [
+    {
+      "owner": "root",
+      "check": "final_desktop_tsc",
+      "status": "passed",
+      "exitCode": 0,
+      "provenance": "root-observed",
+      "toolOutputReferences": [
+        "fcb0cd",
+        "e84091",
+        "fe903a"
+      ],
+      "logPath": null,
+      "logSha256": null
+    },
+    {
+      "owner": "root",
+      "check": "final_worker_entry_and_physical_fixture_esbuild_write_false",
+      "status": "passed",
+      "exitCode": 0,
+      "entryPoints": 2,
+      "provenance": "root-observed",
+      "toolOutputReferences": [
+        "3fe16d"
+      ],
+      "logPath": null,
+      "logSha256": null
+    },
+    {
+      "owner": "root",
+      "check": "published_source_git_object_comparison",
+      "status": "matched",
+      "files": 30,
+      "candidatePrefix": "ef28",
+      "provenance": "root-observed",
+      "executionStartHashesCaptured": false,
+      "note": "Root reported the source comparison after compilation. This does not backdate the owner source snapshot to either compile start."
+    }
+  ]
+}
