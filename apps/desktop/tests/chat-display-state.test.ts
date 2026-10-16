@@ -53,6 +53,19 @@ test('canonical completion retires the precise temporary stream ID while retaini
   assert.ok(mergeDisplaySnapshot(ordinary, [message('user'), message('result')]).messages.some(item => item.id === 'other:stream:1'));
 });
 
+test('normal authority updates retain a display receipt bridge only for the same canonical user submission', () => {
+  const user: ChatMessage = { ...message('canonical'), role: 'user', submissionId: 'durable-item', clientRequestId: 'client-request' };
+  const current = page([], { messages: [user] });
+  const authoritative = { ...user, text: 'updated user content', clientRequestId: undefined };
+  const next = mergeDisplaySnapshot(current, [authoritative]);
+  assert.equal(next.messages[0].clientRequestId, 'client-request');
+  assert.equal(authoritative.clientRequestId, undefined, 'the authoritative object is never annotated or mutated');
+  assert.equal(mergeDisplayPage(current, page([], { messages: [authoritative] })).messages[0].clientRequestId, 'client-request');
+  for (const replacement of [{ ...authoritative, role: 'assistant' as const }, { ...authoritative, submissionId: 'different-item' }, { ...authoritative, submissionId: undefined }]) {
+    assert.equal(mergeDisplaySnapshot(current, [replacement]).messages[0].clientRequestId, undefined);
+  }
+});
+
 test('active history is bounded and drops the opposite edge with a continuation cursor', () => {
   const current = page(Array.from({ length: 990 }, (_, index) => `new-${index}`));
   const next = mergeDisplayPage(current, page(Array.from({ length: 50 }, (_, index) => `old-${index}`)), 'before');

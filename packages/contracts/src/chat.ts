@@ -32,6 +32,8 @@ export interface ChatMessage {
   id: string; turnId: string; role: 'user' | 'assistant' | 'tool' | 'system';
   /** 宿主执行提交标识；队列发送时等于队列消息 id，与 CLI 消息 id 独立。 */
   submissionId?: string;
+  /** 只读展示中由宿主以持久接收记录补充的精确关联；不表示执行或状态同步。 */
+  clientRequestId?: string;
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;

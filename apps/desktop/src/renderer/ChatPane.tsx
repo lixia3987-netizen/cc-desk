@@ -22,6 +22,7 @@ import { ChatQueue, PendingChatMessages, startingQueueMessages } from './ChatQue
 import { chatActionHasFreshSnapshot, chatActionState } from './chat-action-state';
 import { paintActionFeedback } from './action-feedback';
 import { useChatSubmission } from './useChatSubmission';
+import { visibleChatSubmissions } from './chat-submission-state';
 import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
 import { sessionReadLifecycle } from './session-read-lifecycle';
@@ -317,6 +318,9 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const {submitting,submissions,isSubmitting,submit:send}=useChatSubmission({sessionId:session.id,conversationId:session.execution.conversationId,snapshot,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:()=>isAttachmentImporting()||permissionPending.current,
     onSubmitting:jumpToLatest,
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
+  // Display pages may arrive ahead of authority. They can replace a visual card,
+  // while acceptance, draft cleanup and operation gates still use the snapshot/ACK.
+  const displaySubmissions=visibleChatSubmissions(submissions,undefined,visible.messages);
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const expandedTools=useRef(new Map<string,boolean>());
   useEffect(()=>{const ids=new Set(visible.messages.map(message=>message.id));for(const id of expandedTools.current.keys())if(!ids.has(id))expandedTools.current.delete(id);},[visible.messages]);
@@ -358,14 +362,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
       <VirtualChatMessages ref={messageList} items={visible.messages} renderMessage={renderMessage} scrollRef={scroll} initialAnchorId={initialReading.current?.follow?undefined:initialReading.current?.messageId} initialFollow={initialReading.current?.follow}/>
-      {!archive&&<PendingChatMessages submissions={submissions}/>}
+      {!archive&&<PendingChatMessages submissions={displaySubmissions}/>}
       {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!nativeAction||!!syncState.error||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
       {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&(running||interruptAction)&&!syncState.error&&<div className="thinking-indicator" role="status"><Loader2 size={13} className="spin"/>{interruptAction?.kind==='compaction'?'正在停止压缩…':taskLabel}</div>}
-      {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
+      {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} displayMessages={visible.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}

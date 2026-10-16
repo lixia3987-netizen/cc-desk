@@ -51,6 +51,12 @@ export class ChatQueue {
     const { items, paused, error, receipts } = this.state(id);
     return structuredClone({ items, paused, error, receipts: receipts.map(({ requestId, messageId }) => ({ requestId, messageId })) });
   }
+  /** 仅用于展示去重；不载入、修复队列，也不复制排队正文或返回执行状态。 */
+  submissionRequests(id: string, messageIds: readonly string[]): Map<string, string> {
+    const ids = new Set(messageIds);
+    return new Map((this.states.get(id)?.receipts ?? []).filter(receipt => ids.has(receipt.messageId))
+      .map(receipt => [receipt.messageId, receipt.requestId]));
+  }
   private commit(id: string, mutate: (next: StoredChatQueue) => void) {
     const next = structuredClone(this.state(id)); mutate(next);
     this.storage.save(id, next); this.states.set(id, next); this.notify(id);

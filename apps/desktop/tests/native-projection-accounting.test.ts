@@ -37,6 +37,7 @@ test('accounting projection counts ordinary and in-turn summary once across repe
   ];
   const records = events.map((event, index) => ({ event, identity, seq: index + 1, hash: String(index + 1), committedAt: '2026-10-15T00:00:00.000Z' })) as unknown as RunStoreRecord[];
   const store = { conversationId: identity.conversationId, usage: { records: records.length },
+    head: { seq: records.at(-1)!.seq, hash: records.at(-1)!.hash },
     replay: (after: number, limit: number) => records.slice(after, after + limit), loadContext: () => context, listRuns: () => [] } as unknown as NativeRunStore;
   const errors: Error[] = [];
   const create = () => new NativeProjection(directory, new ExecutionEvents(), () => session, () => false, (_id, error) => errors.push(error));

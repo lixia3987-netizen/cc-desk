@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { chatActionHasFreshSnapshot, ChatActionState } from '../src/renderer/chat-action-state';
 import { queueActionConfirmed, queueFeedbackVersion, startingQueueMessages } from '../src/renderer/chat-queue-feedback';
-import { ChatSubmissionState } from '../src/renderer/chat-submission-state';
+import { ChatSubmissionState, visibleChatSubmissions } from '../src/renderer/chat-submission-state';
 import { runChatSubmission } from '../src/renderer/chat-submission-runner';
 import type { ChatMessage, ChatQueueSnapshot, ChatSnapshotVersion } from '../src/shared/chat';
 
@@ -19,6 +19,41 @@ test('sending queue entries stay visible until an exact authoritative user submi
   assert.deepEqual(startingQueueMessages(queue, [{ ...sameText, submissionId: item.id }], 'observed-context'), []);
   assert.deepEqual(startingQueueMessages(queue, [], 'observed-context'), [], 'an already presented user message leaving the bounded snapshot must not resurrect a startup card');
   assert.deepEqual(startingQueueMessages(queue, [], 'other-context'), [item]);
+});
+
+test('read-only canonical display replaces a card before or after ACK without accepting the request or releasing its gate', () => {
+  const state = new ChatSubmissionState(), scope = 'display-only-context';
+  const submission = state.begin(scope, 'same prompt', [])!;
+  const canonical: ChatMessage = { id: 'canonical-user', turnId: 'run', role: 'user', text: submission.text, createdAt: '',
+    submissionId: item.id, clientRequestId: submission.requestId };
+  const records = state.getSnapshot(scope);
+  assert.equal(submission.messageId, undefined);
+  assert.deepEqual(visibleChatSubmissions(records, undefined, [canonical]), []);
+  assert.equal(state.getSnapshot(scope), records, 'display deduplication cannot mutate the submission state');
+  assert.equal(state.hasInFlight(scope), true); assert.equal(state.isObserved(scope, submission.requestId), false);
+  assert.equal(state.begin(scope, submission.draft, []), undefined, 'a displayed canonical row cannot permit repeated submission before ACK');
+  assert.deepEqual(visibleChatSubmissions(records, undefined, [{ ...canonical, clientRequestId: 'other-request', submissionId: 'other-message' }]), records);
+  assert.deepEqual(visibleChatSubmissions(records, undefined, [{ ...canonical, role: 'assistant' }]), records, 'only exact user identity can take over');
+  state.accepted(scope, submission.requestId, item.id);
+  const accepted = state.getSnapshot(scope);
+  assert.deepEqual(visibleChatSubmissions(accepted, undefined, [{ ...canonical, clientRequestId: undefined }]), [], 'after ACK, exact message identity also works with older display providers');
+  assert.equal(state.isObserved(scope, submission.requestId), false, 'read-only filtering never becomes durable acceptance proof');
+  assert.equal(state.getSnapshot(scope), accepted);
+});
+
+test('display-only startup deduplication has a separate identity cache and cannot settle queue or stop actions', () => {
+  const canonical: ChatMessage = { id: 'canonical-display', turnId: 'run', role: 'user', text: item.text, createdAt: '', submissionId: item.id };
+  const sending: ChatQueueSnapshot = { items: [item], paused: false };
+  const authorityScope = 'display-authority-isolation', displayScope = 'display-authority-isolation/queue-display';
+  assert.deepEqual(startingQueueMessages(sending, [canonical], displayScope), []);
+  assert.deepEqual(startingQueueMessages(sending, [], displayScope), [], 'visual takeover survives the row leaving the displayed window');
+  assert.deepEqual(startingQueueMessages(sending, [], authorityScope), [item], 'the task label cannot borrow the read-only display identity cache');
+  const actions = new ChatActionState(), now = actions.begin('queue', 'now', item.id)!;
+  actions.accepted('queue', now.token); actions.synchronized('queue', now.token, version(5));
+  assert.equal(queueActionConfirmed(actions.getSnapshot('queue')!, { items: [{ ...item, status: 'queued' }], paused: false }, [], version(5)), false,
+    'queue operation settlement still sees only the authoritative message set');
+  const stop = actions.begin('stop', 'stop')!; actions.accepted('stop', stop.token);
+  assert.equal(chatActionHasFreshSnapshot(actions.getSnapshot('stop')!, version(5)), false, 'display takeover cannot supply a post-ACK stop confirmation');
 });
 
 test('queue feedback requires an explicit post-ACK fresh snapshot and settles fast failures without observing intermediate states', () => {

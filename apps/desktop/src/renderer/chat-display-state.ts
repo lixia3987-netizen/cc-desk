@@ -26,10 +26,19 @@ export function sameChatMessage(left: ChatMessage, right: ChatMessage): boolean 
   });
 }
 
+function keepDisplayIdentity(previous: ChatMessage | undefined, incoming: ChatMessage): ChatMessage {
+  // Only the display projection carries this receipt bridge. A normal authority
+  // update may omit it, but cannot change the exact canonical submission identity.
+  return previous?.role === 'user' && incoming.role === 'user' && previous.clientRequestId && incoming.clientRequestId === undefined
+    && !!incoming.submissionId && incoming.submissionId === previous.submissionId
+    ? { ...incoming, clientRequestId: previous.clientRequestId } : incoming;
+}
+
 export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming: ChatDisplayPage, direction: 'replace' | 'before' | 'after' = 'replace'): ChatDisplayPage {
   const previous = new Map(current?.messages.map(message => [message.id, message]));
-  const fresh = incoming.messages.map(message => {
-    const old = previous.get(message.id); return old && sameChatMessage(old, message) ? old : message;
+  const fresh = incoming.messages.map(value => {
+    const old = previous.get(value.id), message = keepDisplayIdentity(old, value);
+    return old && sameChatMessage(old, message) ? old : message;
   });
   const values = direction === 'before' ? [...fresh, ...(current?.messages ?? [])]
     : direction === 'after' ? [...(current?.messages ?? []), ...fresh] : fresh;
@@ -72,7 +81,8 @@ export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly C
   }
   const changed = new Map(messages.map(message => [message.id, message]));
   const updated = retained.map(message => {
-    const next = changed.get(message.id); return next && !sameChatMessage(message, next) ? next : message;
+    const value = changed.get(message.id), next = value && keepDisplayIdentity(message, value);
+    return next && !sameChatMessage(message, next) ? next : message;
   });
   const newer = lastOverlap < 0 || lastOverlap < messages.length - 1;
   if (page.after === null && !protectHistory && lastOverlap >= 0) updated.push(...messages.slice(lastOverlap + 1));

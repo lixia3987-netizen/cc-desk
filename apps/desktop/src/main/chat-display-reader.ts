@@ -52,7 +52,8 @@ export function displayPage(messages: readonly ChatMessage[], before = false, in
       Object.assign(message, { id, turnId, role, text, createdAt, submissionId, sourceId, toolName, toolUseId, parentToolUseId, isError, truncated: true });
       size = Buffer.byteLength(JSON.stringify(message));
     }
-    if (bytes + size > PAGE_BYTES - 4096 || size > PAGE_BYTES - 4096) { omitted = true; break; }
+    // Leave room for scoped IPC identity and at most 50 host-proven client request IDs.
+    if (bytes + size > PAGE_BYTES - 16 * 1024 || size > PAGE_BYTES - 16 * 1024) { omitted = true; break; }
     result.unshift(message); bytes += size;
   }
   return { messages: result, before: (before || omitted) && result.length ? result[0].id : null, after: null, incomplete };

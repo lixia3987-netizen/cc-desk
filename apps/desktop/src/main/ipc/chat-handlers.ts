@@ -101,7 +101,15 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     const current = ports.structured(id);
     if (current.execution.providerId !== identity.providerId || current.execution.mode !== identity.mode ||
       current.execution.conversationId !== identity.conversationId) throw new Error('会话上下文已改变，请重新读取记录。');
-    return { ...page, sessionId: id, conversationId: identity.conversationId };
+    const submittedIds = page.messages.flatMap(message => message.role === 'user' && message.submissionId ? [message.submissionId] : []);
+    const requests = submittedIds.length ? ports.queue.submissionRequests(id, submittedIds) : new Map<string, string>();
+    const messages = page.messages.map(message => {
+      // 关联只来自当前宿主持有的持久接收证明，不能相信显示文件中的自报字段。
+      const { clientRequestId: _untrusted, ...saved } = message;
+      const clientRequestId = message.role === 'user' && message.submissionId ? requests.get(message.submissionId) : undefined;
+      return clientRequestId ? { ...saved, clientRequestId } : saved;
+    });
+    return { ...page, messages, sessionId: id, conversationId: identity.conversationId };
   }));
   handle('chat:commands', idSchema, async id => {
     const checkAdmission = ports.captureAdmission(id);

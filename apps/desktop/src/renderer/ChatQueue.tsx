@@ -20,8 +20,9 @@ export function PendingChatMessages({ submissions }: { submissions: readonly Pen
   </li>)}</ol></section>;
 }
 
-export function ChatQueue({ sessionId, conversationId, queue, version, messages = [], disabled, onError, refresh, refreshFresh }: {
+export function ChatQueue({ sessionId, conversationId, queue, version, messages = [], displayMessages = [], disabled, onError, refresh, refreshFresh }: {
   sessionId: string; conversationId?: string; queue: ChatSnapshot['queue']; version?: ChatSnapshotVersion; messages?: readonly ChatMessage[]; disabled: boolean;
+  displayMessages?: readonly ChatMessage[];
   onError: (error: unknown) => void; refresh: () => Promise<void>;
   refreshFresh: () => Promise<ChatSnapshot | undefined>;
 }) {
@@ -62,7 +63,7 @@ export function ChatQueue({ sessionId, conversationId, queue, version, messages 
   };
   if (!queue) return null;
   const waiting = queue.items.filter(item => item.status === 'queued');
-  const starting = startingQueueMessages(queue, messages, JSON.stringify([sessionId, conversationId ?? '']));
+  const starting = startingQueueMessages(queue, [...messages, ...displayMessages], JSON.stringify([sessionId, conversationId ?? '', 'queue-display']));
   const displayed = [...starting, ...waiting];
   if (!displayed.length && !queue.error && !pending) return null;
   const unavailable = disabled || !!pending;

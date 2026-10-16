@@ -93,6 +93,20 @@ test('explicit native continuation survives queue persistence and participates i
   }
 });
 
+test('display submission identities use only host-held receipts without loading or repairing a queue', async () => {
+  const f = fixture({ blocked: () => true }), id = randomUUID();
+  try {
+    const receipt = await f.queue.submit(id, 'accepted content', [], 'client-one');
+    const before = new ChatQueueStorage(f.directory).load(id);
+    assert.deepEqual([...f.queue.submissionRequests(id, [receipt.messageId, 'unknown'])], [[receipt.messageId, 'client-one']]);
+    const copy = f.queue.submissionRequests(id, [receipt.messageId]); copy.set(receipt.messageId, 'forged');
+    assert.equal(f.queue.submissionRequests(id, [receipt.messageId]).get(receipt.messageId), 'client-one');
+    const cold = fixture({ blocked: () => true }, f.directory);
+    assert.deepEqual([...cold.queue.submissionRequests(id, [receipt.messageId])], []);
+    assert.deepEqual(new ChatQueueStorage(f.directory).load(id), before);
+  } finally { await f.close(); }
+});
+
 test('client request identity is visible before submission ACK and survives persistence without merging equal text', async () => {
   const committed = deferred<void>(), releaseAck = deferred<void>();
   const sessionId = randomUUID(), firstRequest = randomUUID(), secondRequest = randomUUID();

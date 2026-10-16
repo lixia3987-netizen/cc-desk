@@ -50,10 +50,13 @@ function samePayload(record: PendingChatSubmission, draft: string, files: readon
 export function visibleChatSubmissions(
   records: readonly PendingChatSubmission[], queue?: ChatQueueSnapshot, messages?: readonly ChatMessage[],
 ): readonly PendingChatSubmission[] {
-  const canonicalIds = new Set(messages?.filter(message => message.role === 'user').map(message => message.submissionId));
+  const users = messages?.filter(message => message.role === 'user') ?? [];
+  const canonicalIds = new Set(users.map(message => message.submissionId));
+  const canonicalRequests = new Set(users.map(message => message.clientRequestId));
   const visible = records.filter(record => !record.observed
     && !queue?.items.some(item => item.clientRequestId === record.requestId || (record.messageId !== undefined && item.id === record.messageId))
     && !queue?.receipts?.some(receipt => receipt.requestId === record.requestId || (record.messageId !== undefined && receipt.messageId === record.messageId))
+    && !canonicalRequests.has(record.requestId)
     && !(record.messageId !== undefined && canonicalIds.has(record.messageId)));
   return visible.length === records.length ? records : visible;
 }
