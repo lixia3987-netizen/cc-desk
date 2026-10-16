@@ -34,7 +34,8 @@ async function fixture(t: TestContext, handler: (body: Body) => unknown, overrid
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
   await fs.writeFile(path.join(project, 'one.txt'), 'first evidence\n'); await fs.writeFile(path.join(project, 'two.txt'), 'second evidence\n');
   const git = (...args: string[]) => promisify(execFile)('git', ['-C', project, ...args]);
-  await git('init', '-b', 'main'); await git('config', 'user.name', 'Budget fixture'); await git('config', 'user.email', 'fixture@localhost');
+  await git('init', '-b', 'main'); await git('config', 'core.autocrlf', 'false');
+  await git('config', 'user.name', 'Budget fixture'); await git('config', 'user.email', 'fixture@localhost');
   await git('add', '.'); await git('commit', '-m', 'Initial evidence');
   const server = await startResponsesFixture({ assertReplay: false, handler: ({ body }: { body: Body }) => handler(body) });
   const store = new StateStore(data), connections = new ConnectionStore(data), events = new ExecutionEvents();
@@ -47,7 +48,7 @@ async function fixture(t: TestContext, handler: (body: Body) => unknown, overrid
     state.sessions.push({ id, projectId, title: 'independent budgets', kind: 'agent', cwd: project,
       execution: { providerId: 'native', mode: 'structured', conversationId: randomUUID() },
       engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id,
-        maxModelRequests: 2, maxToolCalls: 2, maxActiveMs: 1000, maxSubagents: 2, ...overrides } }),
+        maxModelRequests: 2, maxToolCalls: 2, maxActiveMs: 60_000, maxSubagents: 2, ...overrides } }),
       started: false, archived: false, status: 'idle', createdAt: now, updatedAt: now });
   });
   const dispatched: Parameters<NonNullable<NativeExecutorOptions['worker']>>[0][] = [];
@@ -75,7 +76,7 @@ test('main exceeds configured child request/tool/time limits and old workflow ca
     clock += 2000;
     return { output: ++step === 1 ? [functionCall('first', 'read_file', { path: 'one.txt' }), functionCall('second', 'read_file', { path: 'two.txt' })]
       : [assistantMessage('done', 'Both actual files were read.')] };
-  }, { maxModelRequests: 1, maxToolCalls: 1 });
+  }, { maxModelRequests: 1, maxToolCalls: 1, maxActiveMs: 1000 });
   t.mock.method(performance, 'now', () => clock);
   const result = await f.executor.send(f.id, 'Inspect the two local files.', [], undefined, { requestId: 'unlimited-parent', source: 'workflow',
     nativeExecutionPolicy: { toolPolicy: 'standard', budget: { maxModelRequests: 1, maxToolCalls: 1, maxActiveMs: 1 } } });
@@ -106,7 +107,7 @@ test('implementation recovery preserves applied work and starts automatically wh
     if (parentStep === 3) return { output: [functionCall('recover-implementation', 'recover_agent', { childId: initial.children[0].childId })] };
     const recovered = output(body, 'recover_agent'); assert.equal(recovered.children[0].status, 'completed'); assert.equal(recovered.children[0].cwd, retainedCwd);
     return { output: [assistantMessage('finished', 'The child continued in its preserved workspace.')] };
-  }, { maxActiveMs: 5000 });
+  });
   const approvals: string[] = [], seen = new Set<string>();
   const off = f.events.subscribe(event => {
     if (event.type !== 'conversation.changed') return;
