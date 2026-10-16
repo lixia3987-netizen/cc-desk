@@ -142,13 +142,13 @@ test('dirty listeners survive component subscriptions and stop after unsubscribi
   assert.equal(store.getRevision(), 3);
 });
 
-test('session policy source explains that all four policy sections change together', () => {
+test('session policy source explains that context, recovery and independent subagent settings change together', () => {
   const session = { id: 'one', title: '会话', status: 'stopped', engineConfig: initial(), execution: { providerId: 'native', mode: 'structured' } } as Session;
   const descriptor: ExecutionDescriptor = { providerId: 'native', mode: 'structured', displayName: 'Native', configuration: { schemaVersion: 1, defaults: initial(), fields: [] },
     capabilities: { available: true, structured: true, terminal: false, approvals: true, resume: true, fork: false, commands: false, contextUsage: true, liveConfig: true, attachments: true } };
   const html = renderToStaticMarkup(createElement(SessionConfig, { session, descriptor, onError: () => {} }));
   assert.match(html, /会话运行策略来源/);
-  assert.match(html, /上下文预算、自动压缩、失败重试和运行限制/);
-  assert.match(html, /切换来源会同时影响以上四项/);
+  assert.match(html, /上下文预算、自动压缩、失败重试及子 Agent 预算与并发上限/);
+  assert.match(html, /切换来源会同时影响以上配置/);
   assert.doesNotMatch(html, /切换页面或关闭设置会放弃/);
 });

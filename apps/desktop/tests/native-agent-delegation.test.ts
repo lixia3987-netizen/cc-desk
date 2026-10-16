@@ -8,7 +8,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ApprovalDecision, ToolExecutionContext } from '@cc-desk/agent-core';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeDelegationBudget, type NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
-import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline } from '../src/main/engines/native/agent-worktrees';
+import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline, verifyAgentWorkspace } from '../src/main/engines/native/agent-worktrees';
 import { ensureWorktreeParent } from '../src/main/worktree-paths';
 import { nativeDelegationExecutionPath, nativeDelegationIntervalsOverlap } from '../src/main/engines/native/agent-delegation-audit';
 
@@ -89,6 +89,27 @@ test('canonical temporary roots support Git worktrees while unnormalized symboli
   assert.equal(worktree.path, await fs.realpath(worktree.path));
   assert.equal(await fs.readFile(path.join(worktree.cwd, 'file.txt'), 'utf8'), 'initial\n');
   assert.equal((await git(repo.cwd, 'rev-parse', 'HEAD')).trim(), baseline.parentHead);
+});
+
+test('retained workspace verification canonicalizes real Git roots and still rejects changed branches, escaped cwd and links', async t => {
+  const repo = await repository(t), root = path.join(repo.directory, 'retained 空格'), baseline = await prepareAgentBaseline(repo.cwd, 'head');
+  const worktree = await createAgentWorktree(baseline, root, baseline.parentHead, randomUUID());
+  const reported = (await git(worktree.path, 'rev-parse', '--show-toplevel')).trim();
+  assert.equal(await fs.realpath(reported), worktree.path);
+  if (process.platform === 'win32') {
+    assert.ok(reported.includes('/'), 'real Git on Windows reports a slash-form path');
+    assert.ok(worktree.path.includes('\\'), 'the retained host path uses Windows separators');
+    assert.notEqual(reported, worktree.path, 'equivalent Git and host paths require filesystem canonicalization');
+  }
+  await verifyAgentWorkspace(worktree, root);
+  await assert.rejects(verifyAgentWorkspace({ ...worktree, cwd: repo.cwd }, root), { code: 'worktree_identity_changed' });
+  const alias = path.join(root, 'linked-workspace');
+  await fs.symlink(worktree.path, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(verifyAgentWorkspace({ ...worktree, path: alias, cwd: alias }, root), { code: 'worktree_identity_changed' });
+  await git(worktree.path, 'checkout', '-b', 'changed-retained-branch');
+  await assert.rejects(verifyAgentWorkspace(worktree, root), { code: 'worktree_identity_changed' });
+  assert.equal(await fs.readFile(path.join(worktree.cwd, 'file.txt'), 'utf8'), 'initial\n');
+  assert.equal((await git(repo.cwd, 'symbolic-ref', '--short', 'HEAD')).trim(), 'main');
 });
 
 test('read-only parents cannot register or invoke implementation and forged bindings are rejected', async t => {

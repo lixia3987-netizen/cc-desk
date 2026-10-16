@@ -167,7 +167,7 @@ export async function verifyAgentWorkspace(worktree: NativeAgentWorktree, root: 
   const canonicalRoot = await fs.realpath(root), stat = await fs.lstat(worktree.path);
   if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(worktree.path) !== worktree.path ||
       !containsPath(canonicalRoot, worktree.path) || canonicalRoot === worktree.path || !containsPath(worktree.path, await fs.realpath(worktree.cwd)) ||
-      (await git(worktree.path, ['rev-parse', '--show-toplevel'])).trim() !== worktree.path ||
+      await fs.realpath((await git(worktree.path, ['rev-parse', '--show-toplevel'])).trim()) !== worktree.path ||
       (await git(worktree.path, ['symbolic-ref', '--short', 'HEAD'])).trim() !== worktree.branch) {
     throw new NativeAgentWorktreeError('worktree_identity_changed', '保留的子 Agent 工作区归属已改变。');
   }
