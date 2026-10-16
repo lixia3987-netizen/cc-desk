@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import type { ChatMessage } from '@cc-desk/contracts/chat';
 import type { ClaudeSessions, ClaudeHistory as ChatHistory } from './host.js';
-import { findClaudeTranscript } from './history.js';
+import { findClaudeTranscriptSource, transcriptSourceVersion } from './history.js';
 import { readTranscriptPreview } from './chat-import.js';
 
 /** 仅在本地投影保持空闲且未变更时，导入稳定的对话记录后缀。 */
@@ -25,18 +25,22 @@ export class TranscriptHydrator {
     const operation = (async () => {
       const sourceId = session.execution.forkFrom && !session.started ? session.execution.forkFrom : session.execution.conversationId;
       if (!sourceId) return;
+      const inheritedSourceIds = session.started && session.execution.forkFrom ? [session.execution.forkFrom] : [];
+      const identity = JSON.stringify([session.cwd, session.projectPath, session.execution.conversationId, session.execution.forkFrom, session.started]);
       const projectPath = session.projectPath;
-      const source = await findClaudeTranscript(session.cwd, sourceId) ?? (projectPath && projectPath !== session.cwd ? await findClaudeTranscript(projectPath, sourceId) : undefined);
+      const source = await findClaudeTranscriptSource(session.cwd, sourceId, inheritedSourceIds) ?? (projectPath && projectPath !== session.cwd ? await findClaudeTranscriptSource(projectPath, sourceId, inheritedSourceIds) : undefined);
       if (!source) return;
-      const before = await fs.promises.stat(source);
-      const version = [source, before.dev, before.ino, before.size, before.mtimeMs].join(':');
+      const before = await fs.promises.stat(source.file);
+      if (source.version !== transcriptSourceVersion(before)) return;
+      const version = [identity, source.file, source.version].join(':');
       if (this.transcriptVersions.get(id) === version) return;
-      const preview = await readTranscriptPreview(source);
-      const after = await fs.promises.stat(source);
+      const preview = await readTranscriptPreview(source.file, [sourceId, ...inheritedSourceIds]);
+      const after = await fs.promises.stat(source.file);
       // 仅将稳定的对话记录合并到空闲且未变更的投影。
       // 本运行时持有活跃 CLI 进程期间，以日志为准。
-      if (before.ino !== after.ino || before.size !== after.size || before.mtimeMs !== after.mtimeMs) return;
-      if (!this.sessions.get(id) || this.isActive(id)) return;
+      if (source.version !== transcriptSourceVersion(after)) return;
+      const current = this.sessions.get(id);
+      if (!current || this.isActive(id) || identity !== JSON.stringify([current.cwd, current.projectPath, current.execution.conversationId, current.execution.forkFrom, current.started])) return;
       const snapshot = this.history.get(id);
       if (snapshot.messages !== original || snapshot.messages.length !== length || snapshot.messages.at(-1) !== last) return;
       this.transcriptVersions.set(id, version);

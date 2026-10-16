@@ -15,6 +15,7 @@ import { getSessionIdentity } from '../../../shared/execution';
 import type { Session } from '../../../shared/types';
 import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
+import { ChatDisplayReader, displayPage, writeDisplaySidecar } from '../../chat-display-reader';
 import type { ExecutionEvents } from '../../execution/events';
 import { parseNativeConfig } from './config';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
@@ -22,8 +23,21 @@ import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 import { loadNativeAgents, nativeAgentReceiptDirectory, NativeAgentProjection } from './agent-projection';
 import type { NativeDelegationReceipt } from './agent-delegation';
+import { reportNativeDiagnostic, type NativeDiagnosticStage } from './diagnostic';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
+
+/** Windows 扫描器可短暂占用目标；始终保留旧文件，重试耗尽仍返回原始发布错误。 */
+export async function renameNativeProjection(source: string, target: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  const delays = [10, 25, 50];
+  for (let attempt = 0; ; attempt++) {
+    try { await fsp.rename(source, target); return; }
+    catch (error) {
+      if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException)?.code ?? '') || attempt >= delays.length) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, delays[attempt]));
+    }
+  }
+}
 
 const MAX_TEXT = 256 * 1024;
 const MAX_INPUT = 64 * 1024;
@@ -65,6 +79,8 @@ interface ProjectionEntry {
   agents?: NativeAgentProjection;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string; requestId?: string };
+  missingSource?: string;
+  projectionFailed?: boolean;
 }
 
 /** 可重建的界面投影；原生账本是模型上下文的唯一来源。 */
@@ -73,6 +89,7 @@ export class NativeProjection {
   private serial = new Map<string, Promise<void>>();
   private missingContext = new Set<string>();
   private archive: ChatArchive;
+  private display: ChatDisplayReader;
   private directory: string;
   constructor(
     private dataDirectory: string,
@@ -85,6 +102,7 @@ export class NativeProjection {
     this.directory = path.join(dataDirectory, 'chat');
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     this.archive = new ChatArchive(this.directory);
+    this.display = new ChatDisplayReader(this.directory);
   }
   private validId(id: string): void { if (!/^[a-z0-9-]{1,100}$/i.test(id)) throw new Error('无效会话 ID。'); }
   private history(): ChatHistory { return new ChatHistory(this.dataDirectory, this.isActive, this.onError, true); }
@@ -103,7 +121,10 @@ export class NativeProjection {
   hydrate(id: string, store: NativeRunStore): Promise<void> {
     this.validId(id);
     const previous = this.serial.get(id) ?? Promise.resolve();
-    const pending = previous.catch(() => {}).then(() => this.rebuild(id, store)).catch(error => {
+    const pending = previous.catch(() => {}).then(() => this.rebuild(id, store)).then(() => {
+      this.entry(id).projectionFailed = false;
+    }).catch(error => {
+      this.entry(id).projectionFailed = true;
       const failure = error instanceof Error ? error : new Error(String(error));
       this.onError(id, failure); throw failure;
     });
@@ -113,22 +134,22 @@ export class NativeProjection {
   }
   private async rebuild(id: string, store: NativeRunStore): Promise<void> {
     const old = this.entry(id);
+    const count = store.usage.records;
+    const latest = store.head;
+    // 空账本不能抹除既有显示记录。这可能意味着
+    // 权威模型账本丢失，而非这是新聊天。
+    if ((!latest || count === 1) && await this.preserveMissingContext(id, old, store.conversationId)) return;
+    if (!latest || old.conversationId === store.conversationId && old.seq === latest.seq && old.hash === latest.hash) return;
     for (const name of await fsp.readdir(this.directory)) {
       if (name.startsWith(`${id}.native-`) && /^[a-z0-9-]+\.native-[0-9a-f-]{36}\.tmp$/i.test(name)) await fsp.rm(path.join(this.directory, name), { force: true });
     }
-    const count = store.usage.records;
-    const latest = store.replay(Math.max(0, count - 1), 1)[0];
-    // 空账本不能抹除既有显示记录。这可能意味着
-    // 权威模型账本丢失，而非这是新聊天。
-    if ((!latest || count === 1 && latest.event.type === 'conversation_created') && await this.preserveMissingContext(id, old)) return;
-    if (!latest || old.conversationId === store.conversationId && old.seq === latest.seq && old.hash === latest.hash) return;
     const records: RunStoreRecord[] = [];
     for (let cursor = 0; cursor < latest.seq;) {
       const page = store.replay(cursor, 1000).filter(record => record.seq <= latest.seq);
       if (!page.length) throw new Error('Native 记录投影序列不完整。');
       records.push(...page); cursor = page.at(-1)!.seq;
     }
-    if (!records.some(record => record.event.type === 'run_started') && await this.preserveMissingContext(id, old)) return;
+    if (!records.some(record => record.event.type === 'run_started') && await this.preserveMissingContext(id, old, store.conversationId)) return;
     const session = this.getSession(id);
     const modelCounts = new Map<string, number>();
     const summaryCounts = new Map<string, number>();
@@ -357,29 +378,47 @@ export class NativeProjection {
     const temporary = path.join(this.directory, `${id}.native-${randomUUID()}.tmp`);
     const file = path.join(this.directory, `${id}.jsonl`);
     let bytes = 0;
+    let diagnosticStage: NativeDiagnosticStage = 'write';
     try {
       const handle = await fsp.open(temporary, 'wx', 0o600);
       try {
         for (const { seq, event } of projected) {
-          const line = JSON.stringify({ nativeSchemaVersion: 1, nativeSeq: seq, ...event }) + '\n';
+          const line = JSON.stringify({ nativeSchemaVersion: 1, conversationId: store.conversationId, nativeSeq: seq, ...event }) + '\n';
           bytes += Buffer.byteLength(line);
           if (bytes > MAX_PROJECTION) throw new Error('Native 展示记录超过磁盘预算。');
           await handle.writeFile(line);
         }
+        diagnosticStage = 'sync';
         await handle.sync();
-      } finally { await handle.close(); }
+      } finally {
+        try { await handle.close(); }
+        catch (error) { diagnosticStage = 'other'; throw error; }
+      }
+      diagnosticStage = 'other';
       old.history.flush();
       // 此投影绝不写入有界快照。在发布原子日志前移除旧缓存，
       // 可使两种崩溃结果都能通过重放恢复。
       await fsp.rm(path.join(this.directory, `${id}.json`), { force: true });
-      await fsp.rename(temporary, file);
+      diagnosticStage = 'rename';
+      await renameNativeProjection(temporary, file);
       if (process.platform !== 'win32') {
+        diagnosticStage = 'sync';
         const directoryHandle = await fsp.open(this.directory, 'r');
-        try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+        try { await directoryHandle.sync(); } finally {
+          try { await directoryHandle.close(); }
+          catch (error) { diagnosticStage = 'other'; throw error; }
+        }
       }
-    } finally { await fsp.rm(temporary, { force: true }); }
+    } catch (error) { reportNativeDiagnostic(diagnosticStage, error); throw error; }
+    finally {
+      try { await fsp.rm(temporary, { force: true }); }
+      catch (error) { reportNativeDiagnostic('other', error); throw error; }
+    }
     const history = this.history();
     const snapshot = history.get(id);
+    // 派生尾页仅改善展示；失配或缺失时读侧退回有界日志尾部，不影响权威投影。
+    try { await writeDisplaySidecar(this.directory, id, store.conversationId, displayPage(snapshot.messages, !!snapshot.truncated, !!snapshot.sourceIncomplete)); }
+    catch { /* 缓存发布失败不能改变已提交的展示日志或执行回执。 */ }
     // ChatHistory 会正确地把恢复出的运行中状态视为已中断。当前
     // 宿主仍拥有活动运行，因此使用内存中当前已提交的状态。
     if (this.isActive(id)) snapshot.taskState = finalState;
@@ -414,18 +453,36 @@ export class NativeProjection {
     this.changed(id);
   }
 
-  private async preserveMissingContext(id: string, entry: ProjectionEntry): Promise<boolean> {
+  private async preserveMissingContext(id: string, entry: ProjectionEntry, conversationId: string): Promise<boolean> {
     const snapshot = entry.history.get(id);
     let hasLog = false;
-    try { const stat = await fsp.lstat(path.join(this.directory, `${id}.jsonl`)); hasLog = stat.isFile() && stat.size > 0; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    let sourceVersion = conversationId, hasSource = false, knownSource = true;
+    for (const suffix of ['.jsonl', '.json']) {
+      try {
+        const stat = await fsp.lstat(path.join(this.directory, id + suffix), { bigint: true });
+        if (!stat.isFile()) knownSource = false;
+        else {
+          hasSource = true;
+          if (suffix === '.jsonl') hasLog = stat.size > 0n;
+          sourceVersion += `:${suffix}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; sourceVersion += `:${suffix}:missing`; }
+    }
     if (!this.missingContext.has(id) && !snapshot.messages.length && !hasLog) return false;
+    const alreadyPreserved = this.missingContext.has(id) && knownSource && hasSource && entry.missingSource === sourceVersion &&
+      entry.override?.taskState === 'error' && entry.override.error === MISSING_NATIVE_CONTEXT_MESSAGE && !entry.override.requestId &&
+      entry.currentTerminal === true && entry.pending.length === 0 && !entry.stream;
     this.missingContext.add(id);
     snapshot.sourceIncomplete = true;
     entry.override = { taskState: 'error', error: MISSING_NATIVE_CONTEXT_MESSAGE };
     entry.currentTerminal = true;
     entry.pending = [];
     entry.stream = undefined;
+    if (alreadyPreserved) return true;
+    entry.missingSource = knownSource && hasSource ? sourceVersion : undefined;
+    // 权威核查已经判定旧展示应保留；只发布不完整的显示绑定，不授权任何执行或恢复。
+    try { await writeDisplaySidecar(this.directory, id, conversationId, displayPage(snapshot.messages, !!snapshot.truncated, true)); }
+    catch { /* 旧显示与原始记录保留，派生缓存失败不改变恢复隔离。 */ }
     this.changed(id);
     return true;
   }
@@ -443,6 +500,7 @@ export class NativeProjection {
   snapshot(id: string): ChatSnapshot {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
+    if (entry.projectionFailed) snapshot.sourceIncomplete = true;
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
     // 活动条目可能仅因清理未确认或日志失败而保留，
     // 以便隔离其目录；这并不能证明工作仍在运行。
@@ -458,7 +516,16 @@ export class NativeProjection {
     if (entry.stream?.text) snapshot.messages.push({ id: `${entry.stream.identity.runId}:stream:${entry.stream.responseNumber}`, turnId: entry.stream.identity.runId, role: 'assistant', text: entry.stream.text, createdAt: entry.stream.createdAt });
     return snapshot;
   }
-  page(id: string, options?: ChatPageOptions) { return this.archive.page(id, clone(this.entry(id).history.get(id)), options); }
+  page(id: string, options?: ChatPageOptions) {
+    const entry = this.entry(id), snapshot = clone(entry.history.get(id));
+    if (entry.projectionFailed) snapshot.sourceIncomplete = true;
+    return this.archive.page(id, snapshot, options);
+  }
+  async readDisplay(id: string, options?: ChatPageOptions) {
+    this.validId(id);
+    const page = await this.display.page(id, options, { conversationId: this.getSession(id).execution.conversationId, requireConversationMatch: true });
+    return this.entries.get(id)?.projectionFailed ? { ...page, incomplete: true } : page;
+  }
   search(id: string, query: string, before?: string) { return this.archive.search(id, clone(this.entry(id).history.get(id)), query, before); }
   event(id: string, event: AgentEvent): void {
     const entry = this.entry(id);
@@ -476,10 +543,12 @@ export class NativeProjection {
     this.changed(id);
   }
   state(id: string, taskState: TaskState, error?: string, requestId?: string): void {
-    this.entry(id).override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
+    const entry = this.entry(id), previous = entry.override;
+    if (previous?.taskState === taskState && previous.error === (error || undefined) && previous.requestId === (requestId || undefined)) return;
+    entry.override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
     this.journal(id, { type: 'state', taskState, ...(error ? { error } : {}) }); this.changed(id);
   }
   flush(): void { for (const entry of this.entries.values()) entry.history.flush(); }
-  forget(id: string): void { this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); }
+  forget(id: string): void { this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); this.display.forget(id); }
   exportPath(id: string): string { this.validId(id); this.flush(); return path.join(this.directory, `${id}.jsonl`); }
 }

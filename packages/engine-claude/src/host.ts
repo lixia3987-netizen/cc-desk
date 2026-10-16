@@ -21,6 +21,8 @@ export interface ClaudeHistory {
   exportPath(id: string): string;
 }
 export interface ClaudeArchive {
+  /** 只读当前本地显示记录；不能等待导入、写入归属或恢复。 */
+  readDisplay?(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   page(id: string, snapshot: ChatSnapshot, options?: ChatPageOptions): Promise<ChatPage>;
   search(id: string, snapshot: ChatSnapshot, query: string, before?: string): Promise<ChatSearchPage>;
   forget(id: string): void;

@@ -32,6 +32,8 @@ export interface ChatMessage {
   id: string; turnId: string; role: 'user' | 'assistant' | 'tool' | 'system';
   /** 宿主执行提交标识；队列发送时等于队列消息 id，与 CLI 消息 id 独立。 */
   submissionId?: string;
+  /** 只读展示中由宿主以持久接收记录补充的精确关联；不表示执行或状态同步。 */
+  clientRequestId?: string;
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
@@ -188,6 +190,11 @@ export interface ChatPage {
   messages: ChatMessage[]; before: string | null; after: string | null;
   /** 部分来源内容不可用，或超出了安全读取上限。 */
   incomplete: boolean;
+}
+/** 只读展示页不携带运行、审批或恢复结论；这些状态必须读取权威快照。 */
+export interface ChatDisplayPage extends ChatPage {
+  sessionId: string;
+  conversationId?: string;
 }
 export interface ChatSearchHit { id: string; role: ChatMessage['role']; toolName?: string; excerpt: string; createdAt: string }
 export interface ChatSearchPage { hits: ChatSearchHit[]; nextBefore: string | null; incomplete: boolean }

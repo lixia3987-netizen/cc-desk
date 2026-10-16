@@ -1,14 +1,11 @@
 import { Activity } from 'lucide-react';
 import { NATIVE_PERMISSION_LABELS, type NativePermissionMode } from '../../shared/native-permissions';
-import { useEffect, useState } from 'react';
 import type { AppState, Session, Settings } from '../../shared/types';
-import type { ChatSnapshot } from '../../shared/chat';
 import type { ExecutionCapabilities, ExecutionDescriptor } from '../../shared/execution';
 import { resolveNativeRuntimeConfig } from '../../shared/native-runtime-policy';
 import { engineDefaults } from '../EngineConfiguration';
 import { ModelCapabilityInfo } from '../components/ModelCapabilityInfo';
-import { ChatSnapshotSync } from '../chat-snapshot-sync';
-import { sessionReadLifecycle } from '../session-read-lifecycle';
+import { useSharedChatSnapshot } from '../useSharedChatSnapshot';
 import { time } from './presentation';
 import type { OpenNew, Perform, ReportError } from './types';
 
@@ -23,23 +20,7 @@ export interface SessionContextPanelProps {
 }
 
 export function SessionContextPanel({ active, project, structured, descriptor, readOnly, settings, onOpenSessionSettings }: SessionContextPanelProps) {
-  const [snapshot, setSnapshot] = useState<ChatSnapshot>();
-  const [loadError, setLoadError] = useState<string>();
-  useEffect(() => {
-    setSnapshot(undefined); setLoadError(undefined);
-    if (!structured || active.kind !== 'agent' || !descriptor?.capabilities.contextUsage) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const sync = new ChatSnapshotSync(active.id, {
-      read: () => sessionReadLifecycle.read(active.id, () => window.desktop.chatSnapshot(active.id)),
-      apply: setSnapshot, state: state => setLoadError(state.error),
-    });
-    const resume = sessionReadLifecycle.subscribe(active.id, () => { void sync.refresh(); });
-    const off = window.desktop.onChat((id, _task, version) => {
-      if (id === active.id && sync.notify(version) && sync.canAutoRefresh && !timer) timer = setTimeout(() => { timer = undefined; if (sync.canAutoRefresh) void sync.refresh(); }, 80);
-    });
-    void sync.refresh();
-    return () => { clearTimeout(timer); off(); resume(); sync.dispose(); };
-  }, [active.id, active.kind, structured, descriptor?.capabilities.contextUsage]);
+  const {snapshot,state:{error:loadError}}=useSharedChatSnapshot(active.id,active.execution.conversationId,structured&&active.kind==='agent'&&!!descriptor?.capabilities.contextUsage);
   const native = active.execution.providerId === 'native';
   const policy = native ? resolveNativeRuntimeConfig(active.engineConfig, engineDefaults(descriptor, settings)) : active.engineConfig;
   const budget = snapshot?.context?.budget;

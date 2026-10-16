@@ -26,7 +26,7 @@ const inlineWorker: NonNullable<NativeExecutorOptions['worker']> = options => ru
     deadline: (timeout, parent) => { const controller = new AbortController(); const abort = () => controller.abort(); const timer = setTimeout(abort, timeout); parent.addEventListener('abort', abort, { once: true }); if (parent.aborted) abort(); return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent.removeEventListener('abort', abort); } }; },
   },
 });
-async function fixture(worker = inlineWorker) {
+async function fixture(worker = inlineWorker, options: Omit<NativeExecutorOptions, 'worker'> = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-executor-'));
   const data = path.join(directory, 'data'), project = path.join(directory, 'project');
   await fs.mkdir(project); await fs.writeFile(path.join(project, 'fixture.txt'), 'original\n');
@@ -39,7 +39,7 @@ async function fixture(worker = inlineWorker) {
   const id = randomUUID(), conversationId = randomUUID(), projectId = randomUUID();
   store.change(state => { state.projects.push({ id: projectId, path: project, name: 'project', createdAt: new Date().toISOString() }); state.sessions.push({ id, projectId, title: 'native', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId }, engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id } }), started: false, status: 'idle', archived: false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }); });
   const events = new ExecutionEvents();
-  let executor = new NativeStructuredExecutor(store, connections, events, { worker });
+  let executor = new NativeStructuredExecutor(store, connections, events, { ...options, worker });
   await executor.initialize();
   const approvalIds = new Set<string>();
   const approve = (behavior: 'allow' | 'deny' = 'allow') => events.subscribe(event => {
@@ -51,7 +51,7 @@ async function fixture(worker = inlineWorker) {
   });
   return { directory, data, project, server, store, connections, connection, id, conversationId, events, approve,
     get executor() { return executor; },
-    restart: async (next = new ConnectionStore(data)) => { await executor.shutdown(); executor = new NativeStructuredExecutor(store, next, events, { worker }); await executor.initialize(); return next; },
+    restart: async (next = new ConnectionStore(data)) => { await executor.shutdown(); executor = new NativeStructuredExecutor(store, next, events, { ...options, worker }); await executor.initialize(); return next; },
     dispose: async () => { await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); },
   };
 }
@@ -76,6 +76,111 @@ test('native executor runs real local tools, durable projection and full-context
     assert.equal(continued.success, true, JSON.stringify(continued)); assert.match(continued.summary, /完整上下文/); assert.equal(f.server.requests.length, 5); assert.deepEqual(f.server.errors, []);
     assert.equal(JSON.stringify(f.store.state).includes(sentinel), false); assert.equal(JSON.stringify(f.executor.snapshot(f.id)).includes(sentinel), false);
   } finally { unsubscribe(); await f.dispose(); }
+});
+
+test('opt-in executor diagnostics preserve failure handling without exposing worker errors or credentials', async t => {
+  const privateError = 'private-worker-error-never-log';
+  const f = await fixture(async () => { throw Object.assign(new Error(privateError), { code: 'protocol' }); });
+  const previous = process.env.CC_DESK_CHAT_PERF;
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { lines.push(line); });
+  process.env.CC_DESK_CHAT_PERF = '1';
+  try {
+    const result = await f.executor.send(f.id, 'diagnostic failure');
+    assert.equal(result.success, false);
+    assert.deepEqual(lines, ['[cc-desk:native-diagnostic]{"stage":"execute","code":"protocol"}']);
+    assert.equal(lines.join('').includes(privateError), false);
+    assert.equal(lines.join('').includes(sentinel), false);
+    assert.equal(f.executor.has(f.id), false, 'the original execution cleanup still runs');
+  } finally {
+    if (previous === undefined) delete process.env.CC_DESK_CHAT_PERF; else process.env.CC_DESK_CHAT_PERF = previous;
+    await f.dispose();
+  }
+});
+
+for (const failure of ['first-response-once', 'first-response-persistent', 'begin-run-persistent'] as const) test(`committed execution survives ${failure} projection rename EPERM and repairs without replay`, async t => {
+  const errors: Error[] = [];
+  const f = await fixture(inlineWorker, { onError: error => { errors.push(error); } });
+  const unsubscribe = f.approve();
+  const error = Object.assign(new Error('private projection publication failure'), { code: 'EPERM' });
+  let blockDisplay = false, rejectedRenames = 0;
+  const append = NativeRunStore.prototype.append, beginRun = NativeRunStore.prototype.beginRun, rename = fs.rename;
+  t.mock.method(NativeRunStore.prototype, 'beginRun', async function (this: NativeRunStore, ...args: Parameters<typeof beginRun>) {
+    const accepted = await beginRun.apply(this, args);
+    if (failure === 'begin-run-persistent' && accepted.kind === 'accepted') blockDisplay = true;
+    return accepted;
+  });
+  t.mock.method(NativeRunStore.prototype, 'append', async function (this: NativeRunStore, ...args: Parameters<typeof append>) {
+    const accepted = await append.apply(this, args);
+    if (failure !== 'begin-run-persistent' && args[1].type === 'model_response' && !rejectedRenames) blockDisplay = true;
+    return accepted;
+  });
+  t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+    if (blockDisplay && args[1] === path.join(f.data, 'chat', f.id + '.jsonl')) {
+      rejectedRenames++;
+      if (failure === 'first-response-once') blockDisplay = false;
+      throw error;
+    }
+    return rename(...args);
+  });
+  try {
+    const result = await f.executor.send(f.id, '修改并验证', [], undefined, { requestId: 'projection-publish-once' });
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(f.executor.has(f.id), false, 'derived display failure never retains the writer or cleanup barrier');
+    assert.equal(f.executor.recoveryRequired(f.id), false);
+    assert.equal(f.server.requests.length, 4);
+    assert.deepEqual(f.server.errors, []);
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'edited\n');
+    assert.ok(rejectedRenames > 0);
+    assert.ok(errors.includes(error) || process.platform === 'win32' && failure === 'first-response-once', 'persistent publish failures reach the original observer; a successful short retry needs none');
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try {
+      const [run] = ledger.listRuns();
+      assert.equal(run.result?.committed, true);
+      assert.equal(run.result?.status, 'completed');
+      assert.equal(run.tools.length, 3);
+      assert.equal(ledger.replay().filter(record => record.event.type === 'model_response').length, 4);
+      assert.equal(ledger.replay().filter(record => record.event.type === 'tool_completed').length, 3, 'each real tool effect has exactly one committed receipt');
+    } finally { await ledger.close(); }
+    if (failure !== 'first-response-once') {
+      assert.equal(f.executor.snapshot(f.id).sourceIncomplete, true);
+      assert.equal((await f.executor.readDisplay(f.id)).incomplete, true, 'the old source is never presented as the latest complete display');
+    }
+    blockDisplay = false;
+    await f.executor.hydrate(f.id);
+    const repaired = f.executor.snapshot(f.id);
+    assert.equal(!!repaired.sourceIncomplete, false);
+    assert.equal(repaired.messages.filter(message => message.role === 'user').length, 1);
+    assert.equal(repaired.messages.filter(message => message.role === 'tool').length, 3);
+    assert.equal(repaired.messages.filter(message => message.role === 'assistant').at(-1)?.text, result.summary);
+    assert.equal((await f.executor.readDisplay(f.id)).incomplete, false);
+    const duplicate = await f.executor.send(f.id, '修改并验证', [], undefined, { requestId: 'projection-publish-once' });
+    assert.equal(duplicate.success, true);
+    assert.equal(f.server.requests.length, 4, 'reading or retrying the committed submission never repeats model or tool work');
+  } finally { blockDisplay = false; unsubscribe(); await f.dispose(); }
+});
+
+test('a real model-response ledger rejection still returns an uncommitted recovery result and executes no tool', async t => {
+  const f = await fixture();
+  const append = NativeRunStore.prototype.append;
+  t.mock.method(NativeRunStore.prototype, 'append', async function (this: NativeRunStore, ...args: Parameters<typeof append>) {
+    if (args[1].type === 'model_response') throw Object.assign(new Error('real ledger rejection'), { code: 'EIO' });
+    return append.apply(this, args);
+  });
+  try {
+    const result = await f.executor.send(f.id, '修改并验证', [], undefined, { requestId: 'actual-ledger-failure' });
+    assert.equal(result.success, false);
+    assert.equal(f.executor.recoveryRequired(f.id), true);
+    assert.equal(f.server.requests.length, 1);
+    assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original\n');
+    const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    try {
+      assert.equal(ledger.listRuns()[0].result?.committed, undefined);
+      assert.equal(ledger.replay().filter(record => record.event.type === 'model_response').length, 0);
+      assert.equal(ledger.replay().filter(record => record.event.type === 'tool_prepared').length, 0);
+      assert.equal(ledger.recoveryRequired, true);
+    } finally { await ledger.close(); }
+  } finally { await f.dispose(); }
 });
 
 test('denied write is a persisted tool result with no filesystem mutation', async () => {

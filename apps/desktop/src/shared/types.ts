@@ -1,4 +1,4 @@
-import type { ChatSnapshot, ChatSnapshotVersion, ChatSendOptions, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
+import type { ChatSnapshot, ChatSnapshotVersion, ChatSendOptions, ChatDecision, ChatTurnResult, ChatSubmission, TaskState, ChatPage, ChatDisplayPage, ChatPageOptions, ChatSearchPage, ChatAttention } from './chat';
 import type { NativeTaskView } from '@cc-desk/contracts/native-task';
 import type { NativeTaskReviewInput } from './native-task';
 import type { NativeAgentResultRequest, NativeAgentResult } from './chat';
@@ -74,6 +74,7 @@ export interface DesktopAPI {
   setSelection(id: string): Promise<void>;
   deleteSession(id: string, options?: { preserveWorktree: true } | { forceWorktree: true; worktreePath: string }): Promise<void>;
   chatSnapshot(id: string): Promise<ChatSnapshot>;
+  chatDisplay(id: string, options?: ChatPageOptions): Promise<ChatDisplayPage>;
   prepareChatCommands(id: string): Promise<ChatSnapshot>;
   recoverChatContext(id: string): Promise<void>;
   chatPage(id: string, options?: ChatPageOptions): Promise<ChatPage>;

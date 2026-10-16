@@ -716,6 +716,58 @@ test('unknown methods, wrong identity, stale sequence, oversized messages, and p
   }
 });
 
+test('opt-in worker rejection diagnostics classify only fixed protocol boundaries and retain fail-closed cleanup', async t => {
+  const previous = process.env.CC_DESK_CHAT_PERF;
+  t.after(() => { if (previous === undefined) delete process.env.CC_DESK_CHAT_PERF; else process.env.CC_DESK_CHAT_PERF = previous; });
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { lines.push(line); });
+  process.env.CC_DESK_CHAT_PERF = '1';
+  const privateText = 'private-worker-body-path-never-log';
+  for (const kind of ['model_request_diagnostic', 'model_request_started', 'model_request_failed', 'model_response', 'run_finished', 'other', 'event', 'method', 'envelope']) {
+    lines.length = 0;
+    const h = harness(async worker => {
+      await begin(worker);
+      if (kind === 'envelope') worker.send({ type: 'fatal', identity: { ...run.identity, sessionId: privateText }, message: privateText });
+      else if (kind === 'event') await worker.rpc('event', { type: 'text_delta', identity: run.identity, text: privateText });
+      else if (kind === 'method') await worker.rpc(privateText, { body: privateText });
+      else await worker.rpc('store.append', { identity: run.identity, event: { type: kind === 'other' ? privateText : kind, privateText } });
+    });
+    await assert.rejects(h.promise, { code: 'protocol' });
+    const code = kind === 'envelope' ? 'protocol_envelope' : kind === 'event' ? 'protocol_event' : kind === 'method' ? 'protocol_other' : kind === 'other' ? 'protocol_store_other' : `protocol_${kind}`;
+    assert.deepEqual(lines, ['[cc-desk:native-diagnostic]' + JSON.stringify({ stage: 'other', code })], kind);
+    assert.equal(lines.join('').includes(privateText), false);
+    assert.equal(lines.join('').includes('secret-key-sentinel'), false);
+    assert.deepEqual(h.journal, [], 'invalid worker data never mutates the authoritative journal');
+    assert.equal(h.worker.closed, true);
+  }
+});
+
+test('opt-in trusted store rejection diagnostics retain only whitelisted codes while worker replies remain generic', async t => {
+  const previous = process.env.CC_DESK_CHAT_PERF;
+  t.after(() => { if (previous === undefined) delete process.env.CC_DESK_CHAT_PERF; else process.env.CC_DESK_CHAT_PERF = previous; });
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { lines.push(line); });
+  process.env.CC_DESK_CHAT_PERF = '1';
+  const privateText = 'private-store-body-path-never-log';
+  for (const [method, code] of [['beginRun', 'EPERM'], ['append', 'writer_lost'], ['checkpoint', privateText], ['ensureCapacity', 'ENOSPC']] as const) {
+    lines.length = 0;
+    const h = harness(async worker => {
+      const operation = method === 'beginRun' || method === 'checkpoint' ? begin(worker) : (async () => {
+        await begin(worker);
+        if (method === 'append') await startAttempt(worker);
+        else await worker.rpc('store.ensureCapacity', { identity: run.identity, bytes: 1 });
+      })();
+      await assert.rejects(operation, /Native host operation failed/);
+      worker.exit(1);
+    });
+    h.options.store[method] = async () => { throw Object.assign(new Error(privateText), { code, path: privateText }); };
+    await assert.rejects(h.promise, { code: 'crash' });
+    assert.deepEqual(lines, ['[cc-desk:native-diagnostic]' + JSON.stringify({ stage: 'other', code: code === privateText ? 'unknown' : code })]);
+    assert.equal(lines.join('').includes(privateText), false);
+    assert.equal(JSON.stringify(h.worker.sent).includes(privateText), false);
+  }
+});
+
 test('event callbacks must drain before successful release and diagnostic strings never escape', async () => {
   let release!: () => void, entered!: () => void;
   const projecting = new Promise<void>(resolve => { entered = resolve; });

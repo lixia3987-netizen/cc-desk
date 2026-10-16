@@ -29,6 +29,12 @@ interface ChatFeedbackFixture {
   holdSubmission(): void;
   submissionEntered(): boolean;
   releaseSubmission(error?: string): void;
+  holdAcknowledgement(): void;
+  acknowledgementEntered(): boolean;
+  releaseAcknowledgement(): void;
+  holdSnapshot(): void;
+  snapshotReadsEntered(): number;
+  releaseSnapshot(): void;
   holdProjection(): void;
   releaseProjection(): void;
   holdInterrupt(): void;
@@ -37,6 +43,7 @@ interface ChatFeedbackFixture {
   refresh(): void;
   records(): {
     submissions: { id: string; text: string; requestId?: string }[];
+    acknowledgements: { requestId?: string; messageId: string }[];
     submissionFeedback: { text: string; draft: string; visible: boolean }[];
     interrupts: number; interruptFeedback: { text: string; disabled: boolean }[]; reads: number;
   };
@@ -49,13 +56,16 @@ async function installChatFeedbackFixture(app: ElectronApplication, sessionId: s
   await app.evaluate(({ ipcMain, BrowserWindow }, sessionId) => {
     type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
     type Gate = { entered: boolean; resolve?: () => void; reject?: (error: Error) => void };
+    type SnapshotGate = { entered: number; promise: Promise<void>; resolve: () => void };
     const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
     if (!(handlers instanceof Map)) throw new Error('Electron IPC invoke handler interception is unavailable');
     const submitHandler = handlers.get('chat:submit'), snapshotHandler = handlers.get('chat:snapshot'), interruptHandler = handlers.get('session:interrupt');
     if (!submitHandler || !snapshotHandler || !interruptHandler) throw new Error('Expected real chat submission, snapshot and interrupt handlers');
-    let submissionGate: Gate | undefined, interruptGate: Gate | undefined;
+    let submissionGate: Gate | undefined, acknowledgementGate: Gate | undefined, interruptGate: Gate | undefined;
+    let snapshotGate: SnapshotGate | undefined;
     let projectionHeld = false, reads = 0, interrupts = 0;
     const submissions: { id: string; text: string; requestId?: string }[] = [];
+    const acknowledgements: { requestId?: string; messageId: string }[] = [];
     const submissionFeedback: { text: string; draft: string; visible: boolean }[] = [];
     const interruptFeedback: { text: string; disabled: boolean }[] = [];
     const refresh = () => { for (const window of BrowserWindow.getAllWindows()) window.webContents.send('chat:changed', sessionId); };
@@ -73,10 +83,19 @@ async function installChatFeedbackFixture(app: ElectronApplication, sessionId: s
         gate.entered = true;
         await new Promise<void>((resolve, reject) => { gate.resolve = resolve; gate.reject = reject; });
       }
-      return submitHandler(event, input);
+      const receipt = await submitHandler(event, input) as { messageId: string };
+      acknowledgements.push({ requestId: input.requestId, messageId: receipt.messageId });
+      const acknowledgement = acknowledgementGate;
+      if (acknowledgement) {
+        acknowledgement.entered = true;
+        await new Promise<void>((resolve, reject) => { acknowledgement.resolve = resolve; acknowledgement.reject = reject; });
+      }
+      return receipt;
     });
     ipcMain.removeHandler('chat:snapshot');
     ipcMain.handle('chat:snapshot', async (event, id: string) => {
+      const gate = id === sessionId ? snapshotGate : undefined;
+      if (gate) { gate.entered++; await gate.promise; }
       const value = await snapshotHandler(event, id) as ChatSnapshot;
       if (id !== sessionId) return value;
       reads++;
@@ -107,6 +126,25 @@ async function installChatFeedbackFixture(app: ElectronApplication, sessionId: s
         if (!gate?.resolve) throw new Error('No pending submission reached the gate');
         if (error) gate.reject!(new Error(error)); else gate.resolve();
       },
+      holdAcknowledgement: () => { if (acknowledgementGate) throw new Error('Acknowledgement gate already armed'); acknowledgementGate = { entered: false }; },
+      acknowledgementEntered: () => acknowledgementGate?.entered === true,
+      releaseAcknowledgement: () => {
+        const gate = acknowledgementGate; acknowledgementGate = undefined;
+        if (!gate?.resolve) throw new Error('No real submission acknowledgement reached the gate');
+        gate.resolve();
+      },
+      holdSnapshot: () => {
+        if (snapshotGate) throw new Error('Snapshot gate already armed');
+        let resolve!: () => void;
+        const promise = new Promise<void>(done => { resolve = done; });
+        snapshotGate = { entered: 0, promise, resolve };
+      },
+      snapshotReadsEntered: () => snapshotGate?.entered ?? 0,
+      releaseSnapshot: () => {
+        const gate = snapshotGate; snapshotGate = undefined;
+        if (!gate) throw new Error('No snapshot gate armed');
+        gate.resolve();
+      },
       holdProjection: () => { projectionHeld = true; },
       releaseProjection: () => { projectionHeld = false; refresh(); },
       holdInterrupt: () => { if (interruptGate) throw new Error('Interrupt gate already armed'); interruptGate = { entered: false }; },
@@ -117,9 +155,11 @@ async function installChatFeedbackFixture(app: ElectronApplication, sessionId: s
         gate.resolve();
       },
       refresh,
-      records: () => ({ submissions, submissionFeedback, interrupts, interruptFeedback, reads }),
+      records: () => ({ submissions, acknowledgements, submissionFeedback, interrupts, interruptFeedback, reads }),
       dispose: () => {
         submissionGate?.reject?.(new Error('Feedback fixture disposed'));
+        acknowledgementGate?.reject?.(new Error('Feedback fixture disposed'));
+        const gate = snapshotGate; snapshotGate = undefined; gate?.resolve();
         interruptGate?.reject?.(new Error('Feedback fixture disposed'));
       },
     };
@@ -187,6 +227,114 @@ test('chat queue feedback: delayed acceptance and canonical projection keep the 
     await f.signal(a, 'complete'); await expect.poll(() => f.prompts(a)).toEqual([text, '第二条排队任务']);
     await f.signal(a, 'complete');
     await expect.poll(async () => (await snapshot(page, a.id)).queue?.items ?? []).toEqual([]);
+    expect((await f.records()).filter(record => record.event === 'violation')).toEqual([]);
+  } finally {
+    await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture?.dispose()).catch(() => {});
+    await closeQueueApp(app); await f.dispose();
+  }
+});
+
+test('chat queue feedback: raw display takes over an exact persisted submission before ACK and snapshot delivery without duplicating its prompt', async () => {
+  const f = await chatQueueWorkspace(), app = await f.launch();
+  try {
+    const page = await app.firstWindow(), [a, b] = f.sessions;
+    await expect(page.getByRole('heading', { name: a.title, exact: true })).toBeVisible();
+    await expect(page.locator('.chat-empty')).toBeVisible();
+    await snapshot(page, a.id);
+    await installChatFeedbackFixture(app, a.id);
+    await app.evaluate(() => {
+      const fixture = (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture;
+      fixture.holdAcknowledgement(); fixture.holdSnapshot(); fixture.holdProjection();
+    });
+    const text = '这条已持久接收但确认尚未返回的完整任务只能显示一次。请检查原始操作、修复问题并执行验证，切换会话后也要保留最后这句话。';
+    await editor(page).fill(text); await editor(page).press('Enter');
+    const pending = page.getByLabel('消息提交状态', { exact: true });
+    await expect(pending.locator('.queued-chat-text')).toHaveText(text);
+    await expect.poll(() => app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.acknowledgementEntered())).toBe(true);
+    await expect.poll(() => app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.snapshotReadsEntered())).toBeGreaterThan(0);
+    await expect.poll(() => f.prompts(a)).toEqual([text]);
+    const received = await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.records());
+    expect(received.submissions).toHaveLength(1);
+    expect(received.acknowledgements).toHaveLength(1);
+    const requestId = received.submissions[0].requestId!, messageId = received.acknowledgements[0].messageId;
+    expect(requestId).toBeTruthy(); expect(messageId).toBeTruthy();
+    expect(received.acknowledgements[0].requestId).toBe(requestId);
+    // This is the untouched real display handler. Its canonical identity is joined
+    // to the request using the host's durable queue receipt, not prompt text.
+    await expect.poll(async () => (await page.evaluate(id => window.desktop.chatDisplay(id), a.id)).messages
+      .filter(message => message.role === 'user' && message.text === text)
+      .map(message => ({ submissionId: message.submissionId, clientRequestId: message.clientRequestId })))
+      .toEqual([{ submissionId: messageId, clientRequestId: requestId }]);
+    await expect(editor(page)).toHaveValue(text);
+
+    await select(page, b.title); await editor(page).fill('B 保留独立原稿');
+    await expect(pending).toHaveCount(0);
+    await select(page, a.title);
+    const canonical = page.locator('.chat-message.user').filter({ hasText: text });
+    const startup = page.getByLabel('正在启动的消息', { exact: true });
+    const onlyPrompt = page.locator('.chat-scroll').getByText(text, { exact: true });
+    await expect(canonical).toHaveCount(1);
+    await expect(onlyPrompt).toHaveCount(1);
+    await expect(pending).toHaveCount(0);
+    await expect(startup).toHaveCount(0);
+    await expect(editor(page)).toHaveValue(text);
+    await editor(page).dispatchEvent('keydown', { key: 'Enter', code: 'Enter', repeat: true });
+
+    // All blocked authority reads share one release, including reads issued by
+    // the remounted pane. The user projection remains held while its real
+    // sending queue and receipt reach the renderer.
+    await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.releaseSnapshot());
+    await expect.poll(async () => (await snapshot(page, a.id)).queue?.items
+      .filter(item => item.clientRequestId === requestId)
+      .map(item => ({ id: item.id, status: item.status })))
+      .toEqual([{ id: messageId, status: 'sending' }]);
+    expect((await snapshot(page, a.id)).messages.filter(message => message.role === 'user')).toEqual([]);
+    await expect(canonical).toHaveCount(1);
+    await expect(onlyPrompt).toHaveCount(1);
+    await expect(pending).toHaveCount(0);
+    await expect(startup).toHaveCount(0);
+    await expect(editor(page)).toHaveValue(text);
+
+    await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.releaseAcknowledgement());
+    await expect(editor(page)).toHaveValue('');
+    await expect(canonical).toHaveCount(1);
+    await expect(onlyPrompt).toHaveCount(1);
+    await expect(pending).toHaveCount(0); await expect(startup).toHaveCount(0);
+    await select(page, b.title); await expect(editor(page)).toHaveValue('B 保留独立原稿');
+    await select(page, a.title); await expect(editor(page)).toHaveValue('');
+    await expect(canonical).toHaveCount(1); await expect(onlyPrompt).toHaveCount(1);
+    // A display row proves presentation identity, never the result of stopping.
+    // Keep the real post-ACK authority read behind a separate shared gate.
+    await app.evaluate(() => {
+      const fixture = (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture;
+      fixture.holdSnapshot(); fixture.holdInterrupt();
+    });
+    await page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true }).click();
+    const stopping = page.locator('.chat-composer').getByRole('button', { name: '正在停止…', exact: true });
+    await expect(stopping).toBeDisabled();
+    await expect.poll(() => app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.interruptEntered())).toBe(true);
+    await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.releaseInterrupt());
+    await expect.poll(async () => (await f.records()).filter(record => record.event === 'interrupt').length).toBe(1);
+    await expect.poll(() => app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.snapshotReadsEntered())).toBeGreaterThan(0);
+    expect((await page.evaluate(id => window.desktop.chatDisplay(id), a.id)).messages.filter(message => message.role === 'user' && message.clientRequestId === requestId)).toHaveLength(1);
+    await expect(canonical).toHaveCount(1); await expect(stopping).toBeDisabled();
+    await stopping.dispatchEvent('click');
+    await f.signal(a, 'release-interrupt');
+    await expect(stopping).toBeDisabled();
+    expect((await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.records())).interrupts).toBe(1);
+    await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.releaseSnapshot());
+    await expect(stopping).toHaveCount(0);
+    // An interrupted turn retains the exact accepted message for deliberate
+    // recovery. Its presence is not a second submission or automatic retry.
+    await expect.poll(async () => {
+      const queue = (await snapshot(page, a.id)).queue;
+      return { paused: queue?.paused, items: queue?.items.map(item => ({
+        id: item.id, clientRequestId: item.clientRequestId, text: item.text, status: item.status,
+      })) };
+    }).toEqual({ paused: true, items: [{ id: messageId, clientRequestId: requestId, text, status: 'queued' }] });
+    expect((await snapshot(page, a.id)).queue?.error).toContain('消息已保留');
+    expect((await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.records())).submissions).toHaveLength(1);
+    expect(await f.prompts(a)).toEqual([text]);
     expect((await f.records()).filter(record => record.event === 'violation')).toEqual([]);
   } finally {
     await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture?.dispose()).catch(() => {});

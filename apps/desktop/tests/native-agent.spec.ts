@@ -6,7 +6,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
-import { closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
+import { captureNativeDiagnostics, closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
 import type { NativeConnectionView } from '../src/shared/native-connections';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 // @ts-expect-error 与 agent-node 测试共享同一个可执行 JS HTTP 测试装置。
@@ -26,7 +26,7 @@ async function workspace() {
     { id: projectId, name: '真实 native 项目', path: cwd, createdAt: new Date().toISOString() },
   ], sessions: [], settings: { claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {} } }));
   return { directory, data, cwd, projectId,
-    launch: () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data, OPENAI_API_KEY: sentinel } }),
+    launch: async () => captureNativeDiagnostics(await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', CC_DESK_CHAT_PERF: '1', WORKBENCH_DATA_DIR: data, OPENAI_API_KEY: sentinel } })),
     dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
   };
 }
@@ -188,6 +188,9 @@ test('native utilityProcess receives trusted stale-revision feedback and continu
     expect(fixture.errors).toEqual([]);
     expect(fixture.requests).toHaveLength(4);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('before native\n');
+    // The running UI may hydrate again after the turn settles. Close its host
+    // writer before this independent offline ledger verification.
+    await cleanupApp(app);
     const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: session.execution.conversationId! });
     try {
       const saved = ledger.listRuns()[0], stale = saved.tools.find(tool => tool.call.id === 'revision-stale')!;
@@ -433,7 +436,13 @@ test('native queue executes two accepted messages in order with distinct durable
     expect(fixture.requests).toHaveLength(1);
     expect(await page.evaluate(async id => (await window.desktop.chatSnapshot(id)).queue?.items.filter(item => item.status === 'queued').map(item => item.text), session.id)).toEqual(['第二个顺序消息']);
     firstResponse.release();
-    await expect.poll(() => fixture.requests.length).toBe(2);
+    try { await expect.poll(() => fixture.requests.length).toBe(2); }
+    catch (error) {
+      const saved = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id).catch(problem => ({ error: String(problem) }));
+      const diagnostic = JSON.stringify({ snapshot: saved, fixtureErrors: fixture.errors.map(String), requests: fixture.requests }, null, 2).replaceAll(sentinel, '[redacted]');
+      await test.info().attach('native-queue-next-request-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
+      throw error;
+    }
     await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).queue?.items ?? [], session.id)).toEqual([]);
     await expect(page.locator('.chat-message.assistant').last()).toContainText('队列完成 2');
     const firstUsers = (fixture.requests[0].input as Array<{ role?: string; content?: unknown }>).filter(item => item.role === 'user');

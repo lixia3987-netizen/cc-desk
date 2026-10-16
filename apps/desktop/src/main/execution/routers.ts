@@ -21,6 +21,11 @@ export class StructuredExecutions {
     if (reason && this.offline) return this.offline.snapshot(id, reason);
     return this.get(id).snapshot(id);
   }
+  readDisplay(id: string, options?: ChatPageOptions) {
+    if (this.unavailable(id) && this.offline) return this.offline.readDisplay(id, options);
+    const executor = this.get(id);
+    return executor.readDisplay ? executor.readDisplay(id, options) : executor.page(id, options);
+  }
   page(id: string, options?: ChatPageOptions) {
     const reason = this.unavailable(id);
     if (reason && this.offline) return this.offline.page(id, reason, options);

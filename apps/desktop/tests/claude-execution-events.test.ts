@@ -116,6 +116,29 @@ test('Claude public executor preserves local identity and rejects sessions owned
   } finally { await executor.shutdown(); await s.cleanup(); }
 });
 
+test('Claude display reads saved local messages without hydrating, loading execution history or writing records', async t => {
+  const s = setup();
+  const executor = new ClaudeStructuredExecutor(s.store, () => capabilities, new ExecutionEvents());
+  const journal = path.join(s.directory, 'chat', s.session.id + '.jsonl');
+  const content = Array.from({ length: 80 }, (_, index) => JSON.stringify({ type: 'message', message: {
+    id: 'saved-' + index, turnId: 'old', role: 'user', text: 'local display ' + index, createdAt: '',
+  } })).join('\n') + '\n';
+  fs.writeFileSync(journal, content);
+  const workspace = fs.readFileSync(path.join(s.directory, 'workspace.json'), 'utf8');
+  const files = fs.readdirSync(path.dirname(journal)).sort();
+  const forbidden = t.mock.method(ChatHistory.prototype, 'get', () => { throw new Error('display must not load or hydrate the execution projection'); });
+  try {
+    const page = await executor.readDisplay(s.session.id);
+    assert.equal(page.messages.length, 50);
+    assert.equal(page.messages.at(-1)?.text, 'local display 79');
+    assert.equal(page.before, 'saved-30');
+    assert.equal(executor.activeCount, 0);
+    assert.equal(fs.readFileSync(journal, 'utf8'), content);
+    assert.equal(fs.readFileSync(path.join(s.directory, 'workspace.json'), 'utf8'), workspace);
+    assert.deepEqual(fs.readdirSync(path.dirname(journal)).sort(), files);
+  } finally { forbidden.mock.restore(); await executor.shutdown(); await s.cleanup(); }
+});
+
 test('Claude executor persists host submission IDs independently from wire IDs and identical message text', async () => {
   const s = setup(), events = new ExecutionEvents(), submissionIds = [randomUUID(), randomUUID()];
   const executor = new ClaudeStructuredExecutor(s.store, () => capabilities, events, {

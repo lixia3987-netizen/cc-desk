@@ -38,6 +38,7 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   hydrate(id: string) { return this.runtime.hydrate(id); }
   snapshot(id: string) { return this.runtime.snapshot(id); }
   page(id: string, options?: ChatPageOptions) { return this.runtime.page(id, options); }
+  readDisplay(id: string, options?: ChatPageOptions) { return this.runtime.readDisplay(id, options); }
   search(id: string, query: string, before?: string) { return this.runtime.search(id, query, before); }
   attention() { return this.runtime.attention(); }
   send(id: string, text: string, attachments?: string[], titlePrompt?: string, submission?: ExecutionSubmission) {

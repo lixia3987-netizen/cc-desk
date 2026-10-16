@@ -1,6 +1,11 @@
 import type { ChatSnapshot, ChatSnapshotVersion } from '../shared/chat';
 
 export interface ChatSyncState { loading: boolean; failures: number; error?: string }
+export interface ChatSnapshotSyncPorts {
+  read(): Promise<ChatSnapshot | undefined>;
+  apply(snapshot: ChatSnapshot): void;
+  state(state: ChatSyncState): void;
+}
 interface ChatReadOutcome { snapshot?: ChatSnapshot; error?: unknown }
 
 /** 完整快照是权威状态，通知仅标记其需要更新。 */
@@ -16,14 +21,21 @@ export class ChatSnapshotSync {
   private deferred?: ReturnType<typeof setTimeout>;
   private failures = 0;
   private lastError?: string;
-  constructor(private sessionId: string, private ports: {
-    read(): Promise<ChatSnapshot | undefined>;
-    apply(snapshot: ChatSnapshot): void;
-    state(state: ChatSyncState): void;
-  }) {}
+  constructor(private sessionId: string, private ports: ChatSnapshotSyncPorts) {}
   get snapshot(): ChatSnapshot | undefined { return this.current; }
   get error(): string | undefined { return this.lastError; }
   get canAutoRefresh(): boolean { return !this.disposed && this.failures < 2; }
+  /** 继承权威屏障，但不继承可能永不返回的 IPC 或旧批次排程。 */
+  fork(ports: ChatSnapshotSyncPorts = this.ports): ChatSnapshotSync {
+    const next = new ChatSnapshotSync(this.sessionId, ports);
+    next.current = this.current;
+    next.expected = this.expected ? { ...this.expected } : undefined;
+    next.notificationGeneration = this.notificationGeneration;
+    next.retiredEpochs = new Set(this.retiredEpochs);
+    next.failures = this.failures;
+    next.lastError = this.lastError;
+    return next;
+  }
   /** 重复或迟到的事件不触发读取；序号缺口仍需读取完整快照。 */
   notify(version?: ChatSnapshotVersion): boolean {
     if (this.disposed) return false;

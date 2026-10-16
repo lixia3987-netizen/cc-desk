@@ -61,6 +61,8 @@ export interface StructuredExecutor extends ExecutionLifecycle {
   taskState(id: string): TaskState;
   hydrate(id: string): Promise<void>;
   snapshot(id: string): ChatSnapshot;
+  /** 被动显示历史，不恢复执行器、不取得写入锁，也不执行工作区核查。 */
+  readDisplay?(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   page(id: string, options?: ChatPageOptions): Promise<ChatPage>;
   search(id: string, query: string, before?: string): Promise<ChatSearchPage>;
   attention(): ChatAttention[];

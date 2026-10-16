@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision, ModelRequestDiagnostic } from '@cc-desk/agent-core';
 import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
-import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from '../src/main/engines/native/projection';
+import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE, renameNativeProjection } from '../src/main/engines/native/projection';
 import { ExecutionEvents } from '../src/main/execution/events';
 import type { Session } from '../src/shared/types';
 
@@ -22,12 +22,64 @@ async function fixture() {
   const create = () => new NativeProjection(directory, events, () => session, () => active, (_id, error) => errors.push(error));
   const projection = create();
   const req: BeginRunRequest = { identity: { sessionId: id, conversationId, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 }, input: 'Please fix searchneedle', inputDigest: 'digest', userItems: [{ role: 'user', content: 'Please fix searchneedle' }], protocol: { id: 'openai-responses', version: 1 }, configuration: { model: 'fixture-model' }, policyRevision: 'alpha-1' };
-  return { directory, id, conversationId, session, errors, projection, create, req, get store() { return store; }, setActive(value: boolean) { active = value; }, reopen: async () => { await store.close(); store = await NativeRunStore.open({ rootDirectory: path.join(directory, 'native'), conversationId }); }, finish: async (status: RunResult['status'] = 'completed') => {
+  return { directory, id, conversationId, session, events, errors, projection, create, req, get store() { return store; }, setActive(value: boolean) { active = value; }, reopen: async () => { await store.close(); store = await NativeRunStore.open({ rootDirectory: path.join(directory, 'native'), conversationId }); }, finish: async (status: RunResult['status'] = 'completed') => {
     const result: RunResult = { identity: req.identity, status, reason: status, modelRequests: 1, toolCalls: 0, usage: { inputTokens: 10, outputTokens: 5 }, context: store.loadContext()!, committed: true };
     await store.append(req.identity, { type: 'run_finished', result });
   }, dispose: async () => { projection.flush(); await store.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+
+test('Windows display rename retries a transient sharing error and bounds persistent failures without removing the old target', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-rename-'));
+  const source = path.join(directory, 'next.jsonl'), target = path.join(directory, 'current.jsonl');
+  const rename = fs.rename;
+  let calls = 0, blocked = true;
+  const error = Object.assign(new Error('sharing failure'), { code: 'EPERM' });
+  t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+    calls++;
+    if (blocked || calls === 1) throw error;
+    return rename(...args);
+  });
+  try {
+    await fs.writeFile(source, 'new'); await fs.writeFile(target, 'old');
+    await assert.rejects(renameNativeProjection(source, target, 'win32'), problem => problem === error);
+    assert.equal(calls, 4);
+    assert.equal(await fs.readFile(target, 'utf8'), 'old');
+    assert.equal(await fs.readFile(source, 'utf8'), 'new');
+    calls = 0; blocked = false;
+    await renameNativeProjection(source, target, 'win32');
+    assert.equal(calls, 2);
+    assert.equal(await fs.readFile(target, 'utf8'), 'new');
+    calls = 0; blocked = true;
+    await assert.rejects(renameNativeProjection(source, target, 'linux'), problem => problem === error);
+    assert.equal(calls, 1, 'non-Windows failures retain their original immediate rejection');
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
+
+test('repeated identical host state emits once while changed status, error or request identity still publishes', async () => {
+  const f = await fixture();
+  const events = new ExecutionEvents(), emitted: unknown[] = [];
+  events.subscribe(event => { emitted.push(event); });
+  const projection = new NativeProjection(f.directory, events, () => f.session, () => false, () => {});
+  try {
+    projection.state(f.id, 'error', 'Recovery required');
+    const initial = emitted.length;
+    assert.equal(initial, 2, 'the first state publishes its journal event and conversation notification');
+    for (let index = 0; index < 10; index++) projection.state(f.id, 'error', 'Recovery required');
+    assert.equal(emitted.length, initial, 're-reading unchanged recovery state cannot schedule another hydration');
+    projection.state(f.id, 'error', 'Different recovery error');
+    assert.equal(emitted.length, initial + 2);
+    projection.state(f.id, 'starting', undefined, 'request-one');
+    assert.equal(emitted.length, initial + 4);
+    projection.state(f.id, 'starting', undefined, 'request-one');
+    assert.equal(emitted.length, initial + 4);
+    projection.state(f.id, 'starting', undefined, 'request-two');
+    assert.equal(emitted.length, initial + 6, 'an identical status for a new submission is a new host fact');
+    projection.state(f.id, 'completed', undefined, 'request-two');
+    assert.equal(emitted.length, initial + 8);
+    assert.equal(projection.snapshot(f.id).taskState, 'completed');
+  } finally { projection.flush(); await f.dispose(); }
+});
 
 test('Native user messages retain the host submission identity across identical text, paging and cold replay', async () => {
   const f = await fixture();
@@ -271,6 +323,8 @@ test('projection disk failure is reported and retry repairs it from committed le
 
 for (const source of ['snapshot', 'journal', 'nonmessage-journal'] as const) test(`empty native ledger preserves existing ${source} evidence and keeps history read-only`, async () => {
   const f = await fixture();
+  let changes = 0;
+  f.events.subscribe(event => { if (event.type === 'conversation.changed') changes++; });
   try {
     const message = { id: 'prior-native-message', turnId: 'prior-turn', role: 'assistant', text: '仍可阅读的历史 searchneedle', createdAt: f.session.createdAt };
     const file = path.join(f.directory, 'chat', f.id + (source === 'snapshot' ? '.json' : '.jsonl'));
@@ -291,7 +345,19 @@ for (const source of ['snapshot', 'journal', 'nonmessage-journal'] as const) tes
     }
     assert.equal(f.store.loadContext(), null, 'display history is never promoted to model context');
     assert.equal(f.store.usage.records, 1);
+    const initialChanges = changes;
+    assert.equal(initialChanges, 1);
+    const sidecar = path.join(f.directory, 'chat', f.id + '.display.json');
+    const published = (await fs.stat(sidecar, { bigint: true })).mtimeNs;
+    for (let index = 0; index < 3; index++) await f.projection.hydrate(f.id, f.store);
+    assert.equal(changes, initialChanges, 'unchanged read-only recovery state cannot schedule another hydration');
+    assert.equal((await fs.stat(sidecar, { bigint: true })).mtimeNs, published, 'an identical source does not republish its derived cache');
+    const changedTime = new Date(Date.now() + 5_000);
+    await fs.utimes(file, changedTime, changedTime);
     await f.projection.hydrate(f.id, f.store);
+    assert.equal(changes, initialChanges + 1, 'changed display source metadata invalidates the preservation publication');
+    await f.projection.hydrate(f.id, f.store);
+    assert.equal(changes, initialChanges + 1);
     f.projection.flush();
     assert.equal(await fs.readFile(file, 'utf8'), original);
     const restarted = f.create(); await restarted.hydrate(f.id, f.store);

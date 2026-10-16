@@ -13,6 +13,7 @@ on:
       - 'packages/agent-core/src/**'
       - 'packages/contracts/src/**'
       - 'packages/agent-node/src/process-supervisor.ts'
+      - 'packages/agent-node/src/run-store.ts'
       - 'packages/agent-node/src/windows-*.ts'
       - 'packages/agent-node/tests/process-supervisor.test.mjs'
       - 'packages/agent-node/tests/process-windows-*.test.mjs'
@@ -22,6 +23,10 @@ on:
       - 'packages/engine-claude/src/connection.ts'
       - 'packages/engine-claude/src/terminal-launcher.ts'
       - 'packages/engine-claude/src/runtime.ts'
+      - 'packages/engine-claude/src/history.ts'
+      - 'packages/engine-claude/src/chat-import.ts'
+      - 'packages/engine-claude/src/transcript-hydrator.ts'
+      - 'packages/engine-claude/src/host.ts'
       - 'packages/engine-claude/tests/connection-windows.test.mjs'
       - 'apps/desktop/package.json'
       - 'apps/desktop/tsconfig.json'
@@ -31,8 +36,14 @@ on:
       - 'apps/desktop/scripts/build.mjs'
       - 'apps/desktop/scripts/run-desktop-tests.mjs'
       - 'apps/desktop/src/main/runtime.ts'
+      - 'apps/desktop/src/main/chat-*.ts'
+      - 'apps/desktop/src/main/ipc/chat-handlers.ts'
       - 'apps/desktop/src/main/execution/**'
+      - 'apps/desktop/src/main/engines/claude/**'
       - 'apps/desktop/src/main/engines/native/**'
+      - 'apps/desktop/src/preload/**'
+      - 'apps/desktop/src/shared/chat.ts'
+      - 'apps/desktop/src/shared/types.ts'
       - 'apps/desktop/tests/native-build.test.ts'
       - 'apps/desktop/tests/runtime.test.ts'
       - 'apps/desktop/tests/windows-pty-resources.test.ts'
@@ -41,6 +52,9 @@ on:
       - 'apps/desktop/src/renderer/**'
       - 'apps/desktop/tests/chat-queue.spec.ts'
       - 'apps/desktop/tests/new-session-flow.spec.ts'
+      - 'apps/desktop/tests/session-loading.spec.ts'
+      - 'apps/desktop/tests/chat-snapshot-lifecycle.spec.ts'
+      - 'apps/desktop/tests/chat-display-*.test.ts'
       - 'apps/desktop/tests/helpers/**'
   workflow_dispatch:
 
@@ -153,7 +167,14 @@ jobs:
         if: ${{ !cancelled() && steps.production.outcome == 'success' }}
         timeout-minutes: 8
         run: |
-          npm run test:e2e -- tests/new-session-flow.spec.ts tests/chat-queue.spec.ts --grep "feedback" 2>&1 | Tee-Object -FilePath test-results/windows-native/immediate-feedback.log
+          npm run test:e2e -- tests/new-session-flow.spec.ts tests/chat-queue.spec.ts --grep "feedback" --output ../../test-results/desktop-feedback 2>&1 | Tee-Object -FilePath test-results/windows-native/immediate-feedback.log
+          exit $LASTEXITCODE
+      - name: 验证会话首屏加载、缓存与有界历史渲染
+        id: session_loading
+        if: ${{ !cancelled() && steps.production.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          npm run test:e2e -- tests/session-loading.spec.ts --output ../../test-results/desktop-loading 2>&1 | Tee-Object -FilePath test-results/windows-native/session-loading.log
           exit $LASTEXITCODE
       - name: 验证完成校验和持久化回放
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
@@ -173,19 +194,20 @@ jobs:
         run: |
           node --test --test-concurrency=1 --test-reporter=tap packages/engine-claude/tests/connection-windows.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/engine-claude.tap
           exit $LASTEXITCODE
-      - name: 验证全部桌面单元测试与真实 PTY 运行时
-        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' && steps.immediate_feedback.outcome != 'failure' }}
-        working-directory: apps/desktop
-        timeout-minutes: 30
-        run: |
-          node --import tsx --test --test-concurrency=1 --test-reporter=tap tests/*.test.ts 2>&1 | Tee-Object -FilePath ../../test-results/windows-native/desktop-runtime.tap
-          exit $LASTEXITCODE
       - name: 验证物理 Electron Worker、委派、取消与命令审批
+        id: native_e2e
         if: ${{ !cancelled() && steps.production.outcome == 'success' }}
         timeout-minutes: 10
         # 使用本地 HTTP 测试服务和临时凭据，覆盖物理进程链路；不冒充真实模型回归。
         run: |
           npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
+          exit $LASTEXITCODE
+      - name: 验证全部桌面单元测试与真实 PTY 运行时
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' && steps.immediate_feedback.outcome != 'failure' && steps.session_loading.outcome != 'failure' && steps.native_e2e.outcome != 'failure' }}
+        working-directory: apps/desktop
+        timeout-minutes: 30
+        run: |
+          node --import tsx --test --test-concurrency=1 --test-reporter=tap tests/*.test.ts 2>&1 | Tee-Object -FilePath ../../test-results/windows-native/desktop-runtime.tap
           exit $LASTEXITCODE
       - name: 保留原生验证日志和失败轨迹
         uses: actions/upload-artifact@v4
@@ -197,6 +219,8 @@ jobs:
           path: |
             test-results/windows-native/**
             test-results/desktop/**
+            test-results/desktop-feedback/**
+            test-results/desktop-loading/**
       - name: 保留已验证的真实 Windows 原生构建产物
         uses: actions/upload-artifact@v4
         if: ${{ always() && steps.native.outcome == 'success' && steps.native_artifacts.outcome == 'success' }}

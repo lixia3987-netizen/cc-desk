@@ -9,6 +9,7 @@ import { verifyNativeImageAttachments } from '../../native-image-attachments';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 import type { NativeActivePauseSource } from './active-pause';
 import { completionFeedbackText, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision, type CompletionValidationDecision, type CompletionValidationPort } from '@cc-desk/agent-core';
+import { reportNativeDiagnostic } from './diagnostic';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
   destroyed?: boolean;
@@ -758,8 +759,20 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         }).then(value => {
           if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, ...(value === undefined ? {} : { value }) });
         }, error => {
-          if (error instanceof InvalidWorkerMessage || (error instanceof ResponsesModelError && error.code === 'credential_echo')) stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.'));
+          if (error instanceof InvalidWorkerMessage || (error instanceof ResponsesModelError && error.code === 'credential_echo')) {
+            const kind = message.method === 'store.append' && isObject(message.args) && isObject(message.args.event) ? message.args.event.type : undefined;
+            const code = message.method === 'store.append' ?
+              kind === 'model_request_diagnostic' ? 'protocol_model_request_diagnostic' :
+              kind === 'model_request_started' ? 'protocol_model_request_started' :
+              kind === 'model_request_failed' ? 'protocol_model_request_failed' :
+              kind === 'model_response' ? 'protocol_model_response' :
+              kind === 'run_finished' ? 'protocol_run_finished' : 'protocol_store_other' :
+              message.method === 'event' ? 'protocol_event' : 'protocol_other';
+            reportNativeDiagnostic('other', { code });
+            stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.'));
+          }
           else if (!exited && !failure) {
+            if (['store.append', 'store.beginRun', 'store.checkpoint', 'store.ensureCapacity'].includes(message.method as string)) reportNativeDiagnostic('other', error);
             const feedback = message.method === 'tools.prepare' && !controller.signal.aborted && !abort.signal.aborted ? getToolPreparationFeedback(error) : null;
             const callId = isObject(message.args) && isObject(message.args.call) ? message.args.call.id : undefined;
             const actual = typeof callId === 'string' ? preparationFailures.get(callId) : undefined;
@@ -767,7 +780,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, error: 'Native host operation failed.', ...(preparationFailure ? { preparationFailure } : {}) });
           }
         }).finally(() => { inFlight.delete(requestId); checkFinished(); });
-      } catch { stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.')); }
+      } catch { reportNativeDiagnostic('other', { code: 'protocol_envelope' }); stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.')); }
     }
     notifyPause = paused => { if (started && !failure && !done) post({ type: 'active_pause', version: WORKER_PROTOCOL, identity: runIdentity, paused }); };
     child.on('message', onMessage);

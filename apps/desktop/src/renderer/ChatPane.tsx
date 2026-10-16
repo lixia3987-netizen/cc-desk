@@ -1,8 +1,8 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
 import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
-import type { ChatApproval, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot, NativeImageAttachment } from '../shared/chat';
+import type { ChatApproval, ChatMessage, ChatPageOptions, NativeImageAttachment } from '../shared/chat';
 import { chatUsageLabel } from '../shared/chat';
 import { MessageText } from './MessageText';
 import { ChatAttachmentChips, NativeImageAttachments } from './NativeImageAttachments';
@@ -22,11 +22,17 @@ import { ChatQueue, PendingChatMessages, startingQueueMessages } from './ChatQue
 import { chatActionHasFreshSnapshot, chatActionState } from './chat-action-state';
 import { paintActionFeedback } from './action-feedback';
 import { useChatSubmission } from './useChatSubmission';
+import { visibleChatSubmissions } from './chat-submission-state';
 import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
 import { sessionReadLifecycle } from './session-read-lifecycle';
 import { isMissingTranscriptError } from '../shared/session-recovery';
-import { ChatSnapshotSync, type ChatSyncState } from './chat-snapshot-sync';
+import { sharedChatSnapshots } from './shared-chat-snapshot';
+import { useSharedChatSnapshot } from './useSharedChatSnapshot';
+import { useChatDisplay } from './useChatDisplay';
+import { sameChatMessage } from './chat-display-state';
+import { VirtualChatMessages, type VirtualChatMessagesHandle } from './VirtualChatMessages';
+import { runConfirmedChatAction } from './confirmed-chat-action';
 import { NativeTaskPanel } from './NativeTaskPanel';
 import { NativeAgentPanel } from './NativeAgentPanel';
 import { appendNativeAgentReviewDraft } from './native-agent-review';
@@ -80,15 +86,17 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
   </section>;
 }
 
-function sameMessage(left:ChatMessage,right:ChatMessage) {
-  return left.id===right.id&&left.text===right.text&&left.role===right.role&&left.toolName===right.toolName&&left.isError===right.isError&&left.parentToolUseId===right.parentToolUseId&&left.truncated===right.truncated&&JSON.stringify(left.input)===JSON.stringify(right.input)&&left.nativeChangeSetState===right.nativeChangeSetState&&JSON.stringify(left.nativeChangeSetResult)===JSON.stringify(right.nativeChangeSetResult)&&JSON.stringify(left.nativeImageAttachments)===JSON.stringify(right.nativeImageAttachments);
+function ToolMessageBody({message,children}:{message:ChatMessage;children:ReactNode}) {
+  return <>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{children}</>;
 }
-const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative,onImagePreview}:{message:ChatMessage;engineName:string;isNative:boolean;onImagePreview?:(runId:string,index:number,image:NativeImageAttachment)=>void}) {
+const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative,onImagePreview,expandedTools}:{message:ChatMessage;engineName:string;isNative:boolean;expandedTools:Map<string,boolean>;onImagePreview?:(runId:string,index:number,image:NativeImageAttachment)=>void}) {
+  const [expanded,setExpanded]=useState(expandedTools.get(message.id)??false);
+  const [opened,setOpened]=useState(expandedTools.has(message.id));
   const changeSet=isNative&&message.role==='tool'&&message.toolName==='apply_change_set';
   const content=<><MessageText text={message.text}/>{isNative&&message.role==='user'&&message.nativeImageAttachments&&<NativeImageAttachments images={message.nativeImageAttachments} onPreview={onImagePreview?(index,image)=>onImagePreview(message.turnId,index,image):undefined}/>} {message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
   const changeSetContent=<><NativeChangeSetResult result={message.nativeChangeSetResult} state={message.nativeChangeSetState}/>{message.nativeChangeSetState==='not_executed'&&<><pre className="tool-input" aria-label="工具未执行原因">{message.text}</pre>{message.truncated&&<p className="panel-note message-truncated">未执行原因过长，展示内容已截断。可导出会话查看完整记录。</p>}</>}</>;
-  return message.role==='tool'?<details data-message-id={message.id} className={'tool-card '+(message.isError?'has-error':'')}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{changeSet?changeSetContent:<>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{content}</>}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
-},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&previous.onImagePreview===next.onImagePreview&&sameMessage(previous.message,next.message));
+  return message.role==='tool'?<details data-message-id={message.id} open={expanded} className={'tool-card '+(message.isError?'has-error':'')} onToggle={event=>{const open=event.currentTarget.open;expandedTools.set(message.id,open);setExpanded(open);if(open)setOpened(true);}}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{opened&&(changeSet?changeSetContent:<ToolMessageBody message={message}>{content}</ToolMessageBody>)}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
+},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&previous.onImagePreview===next.onImagePreview&&sameChatMessage(previous.message,next.message));
 
 export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onPasteImages,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,descriptor,readOnly=false,disabled=false,unavailable}:{
   descriptor?:ExecutionDescriptor;readOnly?:boolean;session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;unavailable?:string;
@@ -102,45 +110,63 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const permissionPending=useRef(false);
   const [permissionSaving,setPermissionSaving]=useState(false);
   const permissionBusy=useCallback((value:boolean)=>{permissionPending.current=value;setPermissionSaving(value);},[]);
-  const [snapshot,setSnapshot]=useState<ChatSnapshot>();
+  const {snapshot,state:syncState}=useSharedChatSnapshot(session.id,session.execution.conversationId);
   const [imagePreview,setImagePreview]=useState<NativeImagePreviewSelection>();
   const previewHistoryImage=useCallback((runId:string,index:number,image:NativeImageAttachment)=>{
     if(session.execution.providerId!=='native'||!session.execution.conversationId)return;
     setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId,source:{kind:'history',runId,index,sha256:image.sha256}},expected:{...image}});
   },[session.id,session.execution.providerId,session.execution.conversationId]);
-  const [syncState,setSyncState]=useState<ChatSyncState>({loading:true,failures:0});
-  const snapshotSync=useRef<ChatSnapshotSync | undefined>(undefined);
   const [continuationTaskId,setContinuationTaskId]=useState<string>();
-  const [reviewingTask,setReviewingTask]=useState(false);
   const [assistance,setAssistance]=useState<'agents'|'task'|null>(null);
+  const [visitedAssistance,setVisitedAssistance]=useState({agents:false,task:false});
+  const toggleAssistance=(tab:'agents'|'task')=>{
+    setVisitedAssistance(previous=>previous[tab]?previous:{...previous,[tab]:true});
+    setAssistance(value=>value===tab?null:tab);
+  };
   const [confirmRecovery,setConfirmRecovery]=useState(false);
   const interruptKey=JSON.stringify([session.id,session.execution.conversationId??'','interrupt']);
   const recoveryKey=JSON.stringify([session.id,'recover-context']);
+  const nativeActionKey=JSON.stringify([session.id,session.execution.conversationId??'','native-operation']);
   const readInterrupt=useCallback(()=>chatActionState.getSnapshot(interruptKey),[interruptKey]);
   const readRecovery=useCallback(()=>chatActionState.getSnapshot(recoveryKey),[recoveryKey]);
+  const readNativeAction=useCallback(()=>chatActionState.getSnapshot(nativeActionKey),[nativeActionKey]);
   const interruptAction=useSyncExternalStore(chatActionState.subscribe,readInterrupt,readInterrupt);
   const recoveryAction=useSyncExternalStore(chatActionState.subscribe,readRecovery,readRecovery);
+  const nativeAction=useSyncExternalStore(chatActionState.subscribe,readNativeAction,readNativeAction);
   const recovering=!!recoveryAction;
-  const [confirmingNativeRecovery,setConfirmingNativeRecovery]=useState(false);
-  const [compactingNativeContext,setCompactingNativeContext]=useState(false),[nativeNotice,setNativeNotice]=useState('');
-  const nativeOperation=useRef(false);
-  const mounted=useRef(true),pageRequest=useRef(0),restored=useRef(false);
+  const confirmingNativeRecovery=nativeAction?.kind==='recover';
+  const compactingNativeContext=nativeAction?.kind==='compact',reviewingTask=nativeAction?.kind==='review';
+  const [nativeNotice,setNativeNotice]=useState('');
+  const mounted=useRef(true),pageRequest=useRef(0);
   useLayoutEffect(()=>{
     mounted.current=true;
-    return()=>{mounted.current=false;pageRequest.current++;snapshotSync.current?.dispose();};
+    return()=>{mounted.current=false;pageRequest.current++;};
   },[session.id]);
   const commandsLoading=useRef<Promise<void> | undefined>(undefined);
   // 在实时快照渲染前捕获锚点，首次布局无法解析归档消息中的锚点。
   const initialReading=useRef(readingPositions.get(session.id));
-  const [archive,setArchive]=useState<ChatPage>(),[paging,setPaging]=useState(false),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
+  const display=useChatDisplay(session.id,session.execution.conversationId,snapshot,initialReading.current,readingPositions.get(session.id)?.follow===false);
+  const [readingArchive,setReadingArchive]=useState(!!initialReading.current&&!initialReading.current.follow),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
+  const archive=readingArchive?display.page:undefined,paging=display.paging;
+  const displayRetryScope=JSON.stringify([session.id,sourceConversation]);
+  const displayRetryGate=useRef<{scope:string} | undefined>(undefined);
+  const [displayRetry,setDisplayRetry]=useState<{scope:string}>();
+  const retryingDisplay=displayRetry?.scope===displayRetryScope;
   const [historyNotice,setHistoryNotice]=useState(''),[exhaustedBefore,setExhaustedBefore]=useState('');
-  const visible=useMemo(()=>snapshot&&archive?{...snapshot,messages:archive.messages,pending:[]}:snapshot,[snapshot,archive]);
-  const {scroll,content,follow,onScroll,jumpToLatest:scrollLatest,jumpToItem}=useChatScroll(session.id,visible,readingPositions);
-  const jumpToLatest=()=>{pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setHistoryNotice('');scrollLatest();};
+  const visible=useMemo(()=>({sessionId:session.id,taskState:snapshot?.taskState??'idle',...snapshot,messages:display.page?.messages??[],pending:archive?[]:snapshot?.pending??[]}),[session.id,snapshot,display.page,archive]);
+  const messageList=useRef<VirtualChatMessagesHandle>(null);
+  const ensureMessage=useCallback((id:string)=>messageList.current?.ensureMessage(id)??Promise.resolve(false),[]);
+  const {scroll,content,follow,onScroll,jumpToLatest:scrollLatest,jumpToItem,remember:rememberReading}=useChatScroll(session.id,display.page?visible:undefined,readingPositions,ensureMessage);
+  const jumpToLatest=useCallback(()=>{
+    pageRequest.current++;setReadingArchive(false);setHighlight('');setHistoryNotice('');
+    if(display.page?.after){void display.read().then(page=>{if(page?.messages.length)void ensureMessage(page.messages.at(-1)!.id).then(()=>scrollLatest());});}
+    else {const id=display.page?.messages.at(-1)?.id;if(id)void ensureMessage(id).then(()=>scrollLatest());else scrollLatest();}
+  },[display.page,display.read,ensureMessage,scrollLatest]);
   const openPage=useCallback(async(options:ChatPageOptions,saved?:ChatReadingPosition)=>{
-    const seq=++pageRequest.current;setPaging(true);
+    const seq=++pageRequest.current;
     try{
-      const page=await sessionReadLifecycle.read(session.id,()=>window.desktop.chatPage(session.id,options));
+      if(options.before)rememberReading();
+      const page=await display.read(options,options.before?'before':'replace');
       if(!page||!mounted.current||seq!==pageRequest.current)return;
       if(!page.messages.length){
         if(options.before)setExhaustedBefore(options.before);
@@ -148,22 +174,48 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
         return;
       }
       setHistoryNotice('');
-      setArchive(page);setHighlight(options.around??'');
-      if(page.messages.length)jumpToItem(options.around??page.messages[0].id,'message',saved?.offset??8);
+      if(!options.before){
+        setReadingArchive(true);setHighlight(options.around??'');
+        if(page.messages.length)jumpToItem(options.around??page.messages[0].id,'message',saved?.offset??8);
+      }
     }catch(error){if(mounted.current&&seq===pageRequest.current)throw error;}
-    finally{if(mounted.current&&seq===pageRequest.current)setPaging(false);}
-  },[session.id,jumpToItem]);
-  useEffect(()=>{
-    if(!snapshot||restored.current)return;restored.current=true;
-    const saved=initialReading.current;
-    if(saved&&!saved.follow&&saved.messageId&&!snapshot.messages.some(message=>message.id===saved.messageId))void openPage({around:saved.messageId},saved).catch(onError);
-  },[snapshot,openPage,onError]);
+  },[display.read,jumpToItem,rememberReading]);
   useEffect(()=>{
     const key=(event:KeyboardEvent)=>{if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='f'&&!event.isComposing&&!document.querySelector('[role=dialog]')){event.preventDefault();setShowSearch(true);}};
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
-  const load=useCallback(async()=>{await snapshotSync.current?.refresh();},[]);
-  const loadFresh=useCallback(async()=>await snapshotSync.current?.refreshFresh(),[]);
+  const load=useCallback(async()=>{await sharedChatSnapshots.refresh(session.id);},[session.id]);
+  const loadFresh=useCallback(async()=>{
+    if(!mounted.current||currentConversation.current!==sourceConversation)return undefined;
+    const fresh=await sharedChatSnapshots.refreshFresh(session.id);
+    return mounted.current&&currentConversation.current===sourceConversation?fresh:undefined;
+  },[session.id,sourceConversation]);
+  const retryDisplay=async()=>{
+    if(displayRetryGate.current?.scope===displayRetryScope)return;
+    const operation={scope:displayRetryScope};displayRetryGate.current=operation;setDisplayRetry(operation);
+    const current=()=>mounted.current&&currentConversation.current===sourceConversation&&displayRetryGate.current===operation;
+    const saved=readingPositions.get(session.id),anchor=saved?.messageId??visible.messages[0]?.id;
+    try{
+      await paintActionFeedback();if(!current())return;
+      const fresh=await loadFresh();if(!current())return;
+      if(!fresh)throw new Error('尚未读取到最新会话状态，请稍后重试。');
+      // The authoritative read rebuilds derived files. Let its completeness flag
+      // reach React before reading the newly published, read-only display page.
+      await paintActionFeedback();if(!current())return;
+      if(archive&&anchor)await openPage({around:anchor},saved?.messageId?saved:undefined);
+      else await display.read();
+    }catch(error){if(current())onError(error);}
+    finally{
+      if(displayRetryGate.current===operation){displayRetryGate.current=undefined;if(mounted.current&&currentConversation.current===sourceConversation)setDisplayRetry(value=>value===operation?undefined:value);}
+    }
+  };
+  useEffect(()=>{if(snapshot)approvalDrafts.reconcile(session.id,snapshot.pending);},[snapshot,session.id,approvalDrafts]);
+  useEffect(()=>{
+    if(!display.page||snapshot)return;
+    let cancelled=false;
+    void paintActionFeedback().then(()=>{if(!cancelled&&mounted.current)void load();});
+    return()=>{cancelled=true;};
+  },[display.page,snapshot,load]);
   const synchronizeAction=async(key:string,token:number)=>{
     if(!chatActionState.beginSync(key,token))return;
     try{
@@ -182,24 +234,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     return pending;
   },[session.id,load,disabled,readOnly,descriptor?.capabilities.commands]);
   useEffect(()=>{
-    let timer:ReturnType<typeof setTimeout>|undefined;
-    const sync=new ChatSnapshotSync(session.id,{
-      read:()=>sessionReadLifecycle.read(session.id,()=>window.desktop.chatSnapshot(session.id)),
-      apply:value=>{approvalDrafts.reconcile(session.id,value.pending);setSnapshot(value);},
-      state:setSyncState,
-    });
-    snapshotSync.current=sync;
-    const resume=sessionReadLifecycle.subscribe(session.id,()=>{if(mounted.current)void sync.refresh();});
-    // 在首次读取前订阅事件；每个事件只请求主进程状态，
-    // 迟到的任务标签或流式文本都不能判定工程任务完成。
-    const off=window.desktop.onChat((id,_state,version)=>{
-      if(id===session.id&&sync.notify(version)&&sync.canAutoRefresh&&!timer)timer=setTimeout(()=>{timer=undefined;if(sync.canAutoRefresh)void sync.refresh();},80);
-    });
-    const recover=()=>{if(document.visibilityState!=='hidden')void sync.refresh();};
+    const recover=()=>{if(document.visibilityState!=='hidden')void load();};
     window.addEventListener('focus',recover);window.addEventListener('online',recover);document.addEventListener('visibilitychange',recover);
-    void sync.refresh();
-    return ()=>{mounted.current=false;pageRequest.current++;clearTimeout(timer);sync.dispose();if(snapshotSync.current===sync)snapshotSync.current=undefined;off();resume();window.removeEventListener('focus',recover);window.removeEventListener('online',recover);document.removeEventListener('visibilitychange',recover);};
-  },[approvalDrafts,session.id]);
+    return ()=>{window.removeEventListener('focus',recover);window.removeEventListener('online',recover);document.removeEventListener('visibilitychange',recover);};
+  },[load]);
   const handled=useRef(onAttentionHandled);handled.current=onAttentionHandled;
   const [focusRequest,setFocusRequest]=useState('');
   useEffect(()=>{
@@ -207,10 +245,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(readOnly||descriptor?.maintenance){handled.current();return;}
     let cancelled=false;
     // 先获取新快照，再判断导航目标是否已过期。
-    pageRequest.current++;setPaging(false);setArchive(undefined);setHighlight('');setShowSearch(false);
-    void sessionReadLifecycle.read(session.id,async()=>{await load();return snapshotSync.current?.snapshot;}).then(value=>{
+    pageRequest.current++;setReadingArchive(false);setHighlight('');setShowSearch(false);
+    void sessionReadLifecycle.read(session.id,async()=>{await load();return sharedChatSnapshots.get(session.id).snapshot;}).then(value=>{
       if(!value||cancelled||!mounted.current)return;
-      if(snapshotSync.current?.error)throw new Error('状态读取失败，请重新同步后查看待处理请求。');
+      if(sharedChatSnapshots.get(session.id).state.error)throw new Error('状态读取失败，请重新同步后查看待处理请求。');
       if(value?.pending.some(item=>item.requestId===attentionTarget.requestId)){
         jumpToItem(attentionTarget.requestId,'request');setFocusRequest(attentionTarget.requestId);
       }else onError(new Error('这项请求已处理或已失效。'));
@@ -224,11 +262,17 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(card){card.focus({preventScroll:true});setFocusRequest('');}
   },[focusRequest,archive,snapshot,content]);
   useLayoutEffect(()=>{
-    for(const row of content.current?.querySelectorAll<HTMLElement>('[data-message-id]')??[]){
-      const selected=row.dataset.messageId===highlight;row.classList.toggle('search-target',selected);
-      if(selected&&row instanceof HTMLDetailsElement)row.open=true;
-    }
-  },[highlight,visible,content]);
+    let cancelled=false;
+    const apply=()=>{
+      if(cancelled)return;
+      for(const row of content.current?.querySelectorAll<HTMLElement>('[data-message-id]')??[]){
+        const selected=row.dataset.messageId===highlight;row.classList.toggle('search-target',selected);
+        if(selected&&row instanceof HTMLDetailsElement)row.open=true;
+      }
+    };
+    apply();if(highlight)void ensureMessage(highlight).then(found=>{if(found)apply();});
+    return()=>{cancelled=true;};
+  },[highlight,visible,content,ensureMessage]);
   const nativeRecovery=session.execution.providerId==='native'?snapshot?.nativeRecovery:undefined;
   const nativeMaintenance=session.execution.providerId==='native'?snapshot?.nativeContextMaintenance:undefined;
   const compacting=compactingNativeContext||!!nativeMaintenance?.compacting;
@@ -239,7 +283,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const stopping=!!interruptAction||sessionStatus==='stopping';
   const starting=startingQueueMessages(snapshot?.queue,snapshot?.messages,JSON.stringify([session.id,session.execution.conversationId??''])).length>0;
   const taskLabel=stopping?'正在停止':syncState.error?'状态未知':starting&&!isTaskBusy(task)?'正在启动':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
-  const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||recovering||!!syncState.error;
+  const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||!!nativeAction||recovering||!!syncState.error;
+  useEffect(()=>{
+    if(nativeAction&&chatActionHasFreshSnapshot(nativeAction,snapshot?.version))chatActionState.clear(nativeActionKey,nativeAction.token);
+  },[nativeAction,nativeActionKey,snapshot?.version]);
   useEffect(()=>{
     if(interruptAction&&chatActionHasFreshSnapshot(interruptAction,snapshot?.version)&&snapshot&&(!running||sessionStatus==='stopping'))chatActionState.clear(interruptKey,interruptAction.token);
   },[interruptAction,interruptKey,snapshot,running,sessionStatus]);
@@ -264,23 +311,20 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     return()=>clearInterval(timer);
   },[running,syncState.error,syncState.failures,load]);
   const recoverNative=async(resume:boolean)=>{
-    if(nativeOperation.current||running||readOnly||session.archived||!nativeRecovery||descriptor?.maintenance)return;
-    nativeOperation.current=true;setConfirmingNativeRecovery(true);setNativeNotice('');
-    try {
-      await paintActionFeedback();
-      if(resume)await window.desktop.resumeNativeRecovery(session.id,nativeRecovery.headHash);
-      else await window.desktop.confirmNativeRecovery(session.id);
-      if(mounted.current){await load();if(resume&&mounted.current)setNativeNotice('记录已恢复；请发送新指令继续。已完成工具不会重放，排队消息保持暂停。');}
-    }
-    catch(error){onError(error);if(mounted.current)await load().catch(onError);}
-    finally{nativeOperation.current=false;if(mounted.current)setConfirmingNativeRecovery(false);}
+    if(nativeAction||running||readOnly||session.archived||!nativeRecovery||descriptor?.maintenance)return;
+    setNativeNotice('');
+    const accepted=await runConfirmedChatAction({state:chatActionState,key:nativeActionKey,kind:'recover',paint:paintActionFeedback,
+      isCurrent:()=>mounted.current&&currentConversation.current===sourceConversation,onError,refreshFresh:loadFresh,
+      execute:()=>resume?window.desktop.resumeNativeRecovery(session.id,nativeRecovery.headHash):window.desktop.confirmNativeRecovery(session.id)});
+    const pending=chatActionState.getSnapshot(nativeActionKey);
+    if(resume&&accepted&&(!pending||pending.synchronized)&&mounted.current&&currentConversation.current===sourceConversation)setNativeNotice('记录已恢复；请发送新指令继续。已完成工具不会重放，排队消息保持暂停。');
   };
   const compactNative=async()=>{
-    if(nativeOperation.current||running||composerDisabled||readOnly||!nativeMaintenance?.canCompact||descriptor?.maintenance||snapshot?.queue?.items.length)return;
-    nativeOperation.current=true;setCompactingNativeContext(true);setNativeNotice('');
-    try { await paintActionFeedback();await window.desktop.compactNativeContext(session.id,nativeMaintenance.headHash);if(mounted.current)await load(); }
-    catch(error){onError(error);if(mounted.current)await load().catch(onError);}
-    finally{nativeOperation.current=false;if(mounted.current)setCompactingNativeContext(false);}
+    if(nativeAction||running||composerDisabled||readOnly||!nativeMaintenance?.canCompact||descriptor?.maintenance||snapshot?.queue?.items.length)return;
+    setNativeNotice('');
+    await runConfirmedChatAction({state:chatActionState,key:nativeActionKey,kind:'compact',paint:paintActionFeedback,
+      isCurrent:()=>mounted.current&&currentConversation.current===sourceConversation,onError,refreshFresh:loadFresh,
+      execute:()=>window.desktop.compactNativeContext(session.id,nativeMaintenance.headHash)});
   };
   const recoveryAvailable=!!descriptor?.capabilities.recoverContext&&!readOnly&&session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
   const recoverContext=async()=>{
@@ -297,53 +341,80 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const {submitting,submissions,isSubmitting,submit:send}=useChatSubmission({sessionId:session.id,conversationId:session.execution.conversationId,snapshot,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:()=>isAttachmentImporting()||permissionPending.current,
     onSubmitting:jumpToLatest,
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
+  // Display pages may arrive ahead of authority. They can replace a visual card,
+  // while acceptance, draft cleanup and operation gates still use the snapshot/ACK.
+  const displaySubmissions=visibleChatSubmissions(submissions,undefined,visible.messages);
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
+  const expandedTools=useRef(new Map<string,boolean>());
+  useEffect(()=>{const ids=new Set(visible.messages.map(message=>message.id));for(const id of expandedTools.current.keys())if(!ids.has(id))expandedTools.current.delete(id);},[visible.messages]);
+  const renderMessage=useCallback((message:ChatMessage)=><ChatMessageRow message={message} engineName={engineName} isNative={session.execution.providerId==='native'} expandedTools={expandedTools.current} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>,[engineName,session.execution.providerId,session.execution.conversationId,previewHistoryImage]);
+  const loadEarlier=useCallback(async()=>{
+    if(display.paging||!display.page?.before)return;
+    rememberReading();await display.earlier();
+  },[display.paging,display.page?.before,display.earlier,rememberReading]);
+  const earlierFrame=useRef(0);
+  useEffect(()=>()=>cancelAnimationFrame(earlierFrame.current),[]);
+  const handleScroll=()=>{
+    onScroll();
+    if(scroll.current&&scroll.current.scrollTop<180&&!display.loading&&!display.error&&!earlierFrame.current){
+      // A large scroll can initially land in a virtual spacer. Capture the anchor
+      // after the new viewport rows have committed, before prepending older data.
+      earlierFrame.current=requestAnimationFrame(()=>{earlierFrame.current=requestAnimationFrame(()=>{
+        earlierFrame.current=0;if(mounted.current&&scroll.current&&scroll.current.scrollTop<180)void loadEarlier();
+      });});
+    }
+  };
   const pasteAvailable=useRef(false);
   // 导入自身的等待状态不能取消导入；离开此面板、
   // 恢复会话或压缩上下文则会取消仍在读取剪贴板字节的粘贴。
   pasteAvailable.current=session.execution.providerId==='native'&&!readOnly&&!composerDisabled&&!attachmentDisabled&&!!descriptor?.capabilities.attachments&&!descriptor.maintenance;
   const {dragging,handlers:dropHandlers}=useChatFileDrop(attachmentsBlocked,onDropFiles);
-  return <div className={'chat-pane'+(dragging?' file-drag-active':'')} {...dropHandlers}>
+  return <div className={'chat-pane'+(dragging?' file-drag-active':'')} data-session-id={session.id} {...dropHandlers}>
     {currentImagePreview&&<NativeImagePreview key={nativeImagePreviewKey(currentImagePreview)} selection={currentImagePreview} onClose={()=>setImagePreview(undefined)}/>}
     {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给当前引擎。</span></div>}
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
     {syncState.error&&<div className="chat-error" role="alert"><strong>状态未知，显示的是上次读取的记录。</strong><p>{syncState.error}</p><button className="secondary compact" disabled={syncState.loading} onClick={()=>void load()}>{syncState.loading?'正在重试…':'重新同步状态'}</button></div>}
-      {(snapshot?.truncated||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={paging||!!archive&&!archive.before||!visible?.messages.length||exhaustedBefore===visible?.messages[0]?.id} onClick={()=>void openPage({before:archive?.before??visible?.messages[0]?.id}).catch(onError)}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>本页 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
+    {nativeAction&&<div className="chat-operation-feedback" role="status"><Loader2 size={14} className="spin"/>{nativeAction.accepted?'操作已受理，等待同步确认…':'正在提交操作…'}{nativeAction.accepted&&!nativeAction.synchronized&&<button className="secondary compact" disabled={nativeAction.synchronizing} onClick={()=>void synchronizeAction(nativeActionKey,nativeAction.token)}>{nativeAction.synchronizing?'正在核实…':'核实操作结果'}</button>}</div>}
+      {(display.page?.before||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={display.loading||paging||!display.page?.before||!visible.messages.length||exhaustedBefore===visible.messages[0]?.id} onClick={()=>void loadEarlier()}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>已载入 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
-    {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setPaging(false);setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
-    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={onScroll}><div className="chat-scroll-content" ref={content}>
-      {!visible?.messages.length&&!snapshot?.queue?.items.length&&!submissions.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
-      {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
+    {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
+    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={handleScroll}><div className="chat-scroll-content" ref={content}>
+      {display.loading&&!visible.messages.length&&!submissions.length&&<p className="panel-note chat-history-loading" role="status"><Loader2 size={14} className="spin"/>正在读取会话记录…</p>}
+      {display.error&&<div className="chat-error" role="alert"><p>{display.error}</p><button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button></div>}
+      {!display.loading&&!display.error&&!visible.messages.length&&!snapshot?.queue?.items.length&&!submissions.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
+      {(display.page?.incomplete||snapshot?.sourceIncomplete)&&<div className="panel-note" role="status"><p>部分会话记录暂时无法完整显示，可重试读取或导出原始记录。</p>{!display.error&&<button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button>}</div>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
-      {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>)}
-      {!archive&&<PendingChatMessages submissions={submissions}/>}
+      <VirtualChatMessages ref={messageList} items={visible.messages} renderMessage={renderMessage} scrollRef={scroll} initialAnchorId={initialReading.current?.follow?undefined:initialReading.current?.messageId} initialFollow={initialReading.current?.follow}/>
+      {!archive&&<PendingChatMessages submissions={displaySubmissions}/>}
       {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
-      {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
+      {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!nativeAction||!!syncState.error||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
       {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
       {!archive&&(running||interruptAction)&&!syncState.error&&<div className="thinking-indicator" role="status"><Loader2 size={13} className="spin"/>{interruptAction?.kind==='compaction'?'正在停止压缩…':taskLabel}</div>}
-      {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
+      {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} displayMessages={visible.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}
     {session.execution.providerId==='native' && <div className="native-assistance">
       <div className="native-assistance-tabs" role="group" aria-label="执行辅助详情">
-        {!!snapshot?.nativeAgents?.items.length && <button className="text-button" aria-pressed={assistance==='agents'} aria-expanded={assistance==='agents'} aria-controls="native-assistance-agents" onClick={()=>setAssistance(value=>value==='agents'?null:'agents')}>子 Agent · {snapshot.nativeAgents.items.length}{syncState.error?' · 状态未知':snapshot.nativeAgents.items.some(item=>['prepared','running'].includes(item.status))?' · 运行中':''}</button>}
-        {(snapshot?.nativeTask||syncState.error||snapshot?.nativeTaskError) && <button className="text-button" aria-pressed={assistance==='task'} aria-expanded={assistance==='task'} aria-controls="native-assistance-task" onClick={()=>setAssistance(value=>value==='task'?null:'task')}>任务与验收 · {syncState.error||snapshot?.nativeTaskError?'状态未知':snapshot?.nativeTask?.verification==='passed'?'验收通过':'待核查'}</button>}
+        {!!snapshot?.nativeAgents?.items.length && <button className="text-button" aria-pressed={assistance==='agents'} aria-expanded={assistance==='agents'} aria-controls="native-assistance-agents" onClick={()=>toggleAssistance('agents')}>子 Agent · {snapshot.nativeAgents.items.length}{syncState.error?' · 状态未知':snapshot.nativeAgents.items.some(item=>['prepared','running'].includes(item.status))?' · 运行中':''}</button>}
+        {(snapshot?.nativeTask||syncState.error||snapshot?.nativeTaskError) && <button className="text-button" aria-pressed={assistance==='task'} aria-expanded={assistance==='task'} aria-controls="native-assistance-task" onClick={()=>toggleAssistance('task')}>任务与验收 · {syncState.error||snapshot?.nativeTaskError?'状态未知':snapshot?.nativeTask?.verification==='passed'?'验收通过':'待核查'}</button>}
       </div>
-      <div id="native-assistance-agents" className="native-assistance-body" hidden={assistance!=='agents'}><NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} loadError={syncState.error}
+      <div id="native-assistance-agents" className="native-assistance-body" hidden={assistance!=='agents'}>{visitedAssistance.agents&&<NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} loadError={syncState.error}
       readOnly={readOnly||session.archived||!!archive||composerDisabled||submitting||!!descriptor?.maintenance}
       onReviewPrompt={(text,parentTaskId)=>{
         if(!mounted.current||readOnly||session.archived||archive||composerDisabled||submitting||descriptor?.maintenance)throw new Error('当前会话仅供查看，不能追加审阅交接。');
         const next=appendNativeAgentReviewDraft(reviewDraft.current,text);onDraft(next);reviewDraft.current=next;setContinuationTaskId(parentTaskId);
-      }}/></div>
-      <div id="native-assistance-task" className="native-assistance-body" hidden={assistance!=='task'}><NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
+      }}/>}</div>
+      <div id="native-assistance-task" className="native-assistance-body" hidden={assistance!=='task'}>{visitedAssistance.task&&<NativeTaskPanel task={snapshot?.nativeTask??null} loading={syncState.loading} loadError={syncState.error??snapshot?.nativeTaskError}
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}
       disabled={readOnly||composerDisabled||running||submitting||!!descriptor?.maintenance} busy={reviewingTask}
       onRefresh={()=>void load()} onContinue={setContinuationTaskId}
-      onReview={async input=>{setReviewingTask(true);try{await paintActionFeedback();await window.desktop.nativeTaskReview(session.id,input);await load();}finally{if(mounted.current)setReviewingTask(false);}}}/></div>
+      onReview={async input=>{await runConfirmedChatAction({state:chatActionState,key:nativeActionKey,kind:'review',paint:paintActionFeedback,
+        isCurrent:()=>mounted.current&&currentConversation.current===sourceConversation,onError,refreshFresh:loadFresh,
+        execute:()=>window.desktop.nativeTaskReview(session.id,input)});}}/>}</div>
     </div>}
     {continuationTaskId&&<div className="panel-note" role="status">下一条消息将继续任务 {continuationTaskId}。<button className="text-button" disabled={submitting} onClick={()=>setContinuationTaskId(undefined)}>取消关联</button></div>}
     <div className="chat-meta"><span className={'dot '+(syncState.error||task==='error'?'error':running?'running':'idle')}/>{!syncState.error&&sessionStatus==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'当前父回合的累计用量，包含回合内摘要；子代理、发送前及手动摘要另计。输入总量已含缓存分项，不能重复相加。估价按本回合保存的用户费率，未知计数或费率不作为零，实际账单为准。':'引擎实际返回的用量与费用估算'}>{chatUsageLabel(snapshot.usage, session.execution.providerId==='native')}</span>}</div>
@@ -368,7 +439,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={session.execution.providerId==='native'&&session.execution.conversationId?file=>setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId!,source:{kind:'draft',path:file.path}},expected:{name:file.name,bytes:file.bytes}}):undefined}/>
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
       <PromptEditor placeholder={readOnly?'可保存草稿；此引擎目前无法执行':disabled?'可继续编辑草稿，待引擎就绪后发送':queued?'继续输入，发送后加入队列…':descriptor?.capabilities.commands?'描述任务，或输入 / 选择命令与 Skills…':'描述任务…'} value={draft} disabled={session.archived} onChange={onDraft} onSend={()=>void send()}
-        onPasteFiles={pasteAvailable.current&&!attachmentsBlocked&&onPasteImages?files=>onPasteImages(files,()=>mounted.current&&!nativeOperation.current&&pasteAvailable.current):undefined}
+        onPasteFiles={pasteAvailable.current&&!attachmentsBlocked&&onPasteImages?files=>onPasteImages(files,()=>mounted.current&&!chatActionState.getSnapshot(nativeActionKey)&&pasteAvailable.current):undefined}
         commands={descriptor?.capabilities.commands?snapshot?.commands:undefined} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
       {descriptor?.configuration?.fields.some(field=>field.key==='permissionMode'&&field.type==='select')&&<div className="chat-composer-permissions"><ComposerPermissionMode session={session} descriptor={descriptor} running={running} disabled={readOnly||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error||!!descriptor?.maintenance||reviewingTask||submitting} onError={onError} onBusyChange={permissionBusy} isBlocked={isSubmitting}/></div>}
       <div className="chat-composer-actions">{descriptor?.capabilities.attachments&&<button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button>}<button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title={'Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；'+(descriptor?.capabilities.attachments?'文件可拖入聊天区成为待发送附件；':'')+'草稿自动保存'}>Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{visibleAttachments.length>0&&' · '+visibleAttachments.length+' 个附件 · '+(visibleAttachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{(running||interruptAction)&&<button className="secondary compact" title="停止当前回合，保留已有消息与操作记录" disabled={readOnly||session.archived||stopping} onClick={()=>void interruptCurrent('turn')}><Square size={12}/>{stopping?'正在停止…':'停止本轮'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!visibleAttachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>

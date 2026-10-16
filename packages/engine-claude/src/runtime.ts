@@ -6,7 +6,7 @@ import { ClaudeEvents } from './events.js';
 import type { Entry } from './entry.js';
 import type { ChatJournalEvent } from '@cc-desk/contracts/execution-events';
 import type { ClaudeCapabilities as Capabilities, Effort, PermissionMode, ClaudeSession as Session, ClaudeSessionPatch } from './types.js';
-import type { ChatAttention, ChatDecision, ChatMessage, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '@cc-desk/contracts/chat';
+import type { ChatAttention, ChatDecision, ChatMessage, ChatPage, ChatPageOptions, ChatSnapshot, ChatTurnResult, TaskState } from '@cc-desk/contracts/chat';
 import { transcriptExists } from './history.js';
 import { TranscriptHydrator } from './transcript-hydrator.js';
 import type { ClaudeHost, ClaudeHistory, ClaudeArchive, ClaudeSubtasks } from './host.js';
@@ -247,6 +247,12 @@ export class ClaudeRuntime {
   async page(id:string,options:ChatPageOptions={}) {
     this.session(id);await this.hydrate(id);
     return this.archive.page(id,this.snapshot(id),options);
+  }
+  async readDisplay(id:string,options:ChatPageOptions={}):Promise<ChatPage> {
+    this.session(id);
+    if (this.archive.readDisplay) return this.archive.readDisplay(id,options);
+    // 旧宿主没有独立显示端口时，不能为首屏调用可能重放日志的 history.get。
+    return {messages:[],before:null,after:null,incomplete:true};
   }
   async search(id:string,query:string,before?:string) {
     this.session(id);await this.hydrate(id);

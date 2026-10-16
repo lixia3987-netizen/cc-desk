@@ -8,11 +8,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
-import { closeNativeApp } from './helpers/native-app-cleanup';
+import { captureNativeDiagnostics, closeNativeApp } from './helpers/native-app-cleanup';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
-import type { NativeAgentResult } from '../src/shared/chat';
+import type { ChatTurnResult, NativeAgentResult } from '../src/shared/chat';
 import { buildNativeReviewGoal } from '../src/main/engines/native/agent-prompts';
 import { nativeDelegationAuditPath, nativeDelegationExecutionPath, nativeDelegationIntervalsOverlap } from '../src/main/engines/native/agent-delegation-audit';
 // @ts-expect-error 与 agent-node 回归测试共享这个可执行 HTTP 测试装置。
@@ -48,7 +48,7 @@ async function workspace() {
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3, projects: [{ id: projectId, name: 'Native 多 Agent 项目', path: cwd, createdAt: new Date().toISOString() }],
     sessions: [], settings: { claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000, engineDefaults: {} } }));
   return { directory, data, cwd, projectId,
-    launch: () => electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: data } }),
+    launch: async () => captureNativeDiagnostics(await electron.launch({ args: electronLaunchArgs(), cwd: desktopRoot, env: { ...process.env, WORKBENCH_TEST_MODE: '1', CC_DESK_CHAT_PERF: '1', WORKBENCH_DATA_DIR: data } })),
     dispose: () => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }),
   };
 }
@@ -79,12 +79,21 @@ async function receipts(directory: string): Promise<NativeDelegationReceipt[]> {
 async function childrenMetrics(app: ElectronApplication) {
   return app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent').length);
 }
-async function waitForChildren(started: Set<string>, page: Page, sessionId: string, fixture: Fixture, dataDirectory: string) {
-  try { await expect.poll(() => started.size, { timeout: 15000 }).toBe(2); }
+async function waitForChildren(started: Set<string>, page: Page, sessionId: string, fixture: Fixture, dataDirectory: string, pending?: Promise<ChatTurnResult>) {
+  let parentCompletion: { settled: boolean; result?: ChatTurnResult; error?: string } = { settled: false };
+  // Observe settlement without ever waiting for a still-running parent in the failure path.
+  void pending?.then(result => { parentCompletion = { settled: true, result }; }, error => { parentCompletion = { settled: true, error: String(error) }; });
+  try {
+    await expect.poll(() => {
+      if (started.size < 2 && parentCompletion.settled) throw new Error(('Parent turn settled before both children started: ' +
+        JSON.stringify({ parentCompletion, fixtureErrors: fixture.errors.map(String) })).replaceAll(secret, '[redacted]'));
+      return started.size;
+    }, { timeout: 15000 }).toBe(2);
+  }
   catch (error) {
-    const saved = await snapshot(page, sessionId);
-    const childReceipts = await receipts(dataDirectory);
-    const diagnostic = JSON.stringify({ requests: fixture.requests.length, fixtureErrors: fixture.errors.map(String), snapshot: saved, receipts: childReceipts }, null, 2).replaceAll(secret, '[redacted]');
+    const saved = await snapshot(page, sessionId).catch(error => ({ error: String(error) }));
+    const childReceipts = await receipts(dataDirectory).catch(error => ({ error: String(error) }));
+    const diagnostic = JSON.stringify({ parentCompletion, requests: fixture.requests.length, fixtureErrors: fixture.errors.map(String), snapshot: saved, receipts: childReceipts }, null, 2).replaceAll(secret, '[redacted]');
     await test.info().attach('native-child-launch-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
     throw error;
   }
@@ -148,7 +157,7 @@ test('native utilityProcess requires missing declared materials before accepting
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '请并行分析 fixture.txt 的内容和换行格式，并读取 review.md。', [], 'completion-correction-review'), session.id);
-    await waitForChildren(started, page, session.id, fixture, f.data); barrier.release();
+    await waitForChildren(started, page, session.id, fixture, f.data, pending); barrier.release();
     const result = await pending;
     expect(result.success).toBe(true); expect(corrected.size).toBe(2); expect(fixture.errors).toEqual([]);
     expect(fixture.requests).toHaveLength(13); expect(result.nativeReceipt?.usage.modelRequests).toBe(13);
@@ -212,7 +221,7 @@ test('production Native utilityProcesses review concurrently with independent co
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '委派两个独立只读审阅', [], 'multi-review-request'), session.id);
-    await waitForChildren(started, page, session.id, fixture, f.data);
+    await waitForChildren(started, page, session.id, fixture, f.data, pending);
     expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     await expect.poll(async () => (await snapshot(page, session.id)).nativeAgents?.items.filter(child => child.status === 'running').length).toBe(2);
     await expect(page.getByRole('region', { name: 'Native Agent 协作', exact: true })).toBeHidden();
@@ -271,7 +280,7 @@ test('physical children have independent request allowances while one exhausted 
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL, 2);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '委派两个独立只读审阅，每个子 Agent 独立限制请求次数，失败后继续主任务。', [], 'multi-budget-request'), session.id);
-    await waitForChildren(started, page, session.id, fixture, f.data); barrier.release();
+    await waitForChildren(started, page, session.id, fixture, f.data, pending); barrier.release();
     const result = await pending;
     expect(result.success).toBe(true); expect(fixture.requests).toHaveLength(9); expect(fixture.errors).toEqual([]);
     const saved = await receipts(f.data); expect(saved).toHaveLength(2);
@@ -303,7 +312,7 @@ test('stopping the parent aborts both physical child requests and retains their 
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '委派并等待两个只读审阅', [], 'multi-cancel-request'), session.id);
-    await waitForChildren(started, page, session.id, fixture, f.data); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
+    await waitForChildren(started, page, session.id, fixture, f.data, pending); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     await page.evaluate(id => window.desktop.stopSession(id), session.id);
     expect((await pending).success).toBe(false);
     await expect.poll(() => childrenMetrics(app)).toBe(0);
@@ -366,7 +375,7 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => item.toolName === 'delegate_implement')?.requestId).toBeTruthy();
     await expect(page.getByRole('region', { name: '工具审批' })).toContainText('snapshot');
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
-    await waitForChildren(started, page, session.id, fixture, f.data); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
+    await waitForChildren(started, page, session.id, fixture, f.data, pending); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n'); barrier.release();
     const approvals: string[] = [], approvedRequests = new Set<string>();
     for (let i = 0; i < 4; i++) {
