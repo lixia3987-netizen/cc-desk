@@ -1,9 +1,57 @@
 import { test, expect, type ElectronApplication } from '@playwright/test';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import fs from 'node:fs/promises';
+import { NATIVE_DIAGNOSTIC_CODES } from '../../src/main/engines/native/diagnostic';
 
 const execFileAsync = promisify(execFile);
 const cleanups = new WeakMap<ElectronApplication, Promise<void>>();
+interface NativeDiagnostic { stage: string; code: string }
+interface NativeDiagnostics { records: NativeDiagnostic[]; dropped: number; attached: boolean; finish(): void }
+const diagnostics = new WeakMap<ElectronApplication, NativeDiagnostics>();
+const diagnosticPrefix = '[cc-desk:native-diagnostic]';
+const diagnosticCodes = new Set<string>(NATIVE_DIAGNOSTIC_CODES);
+
+/** Test-only capture: retain only bounded, structured native failure identifiers. */
+export function captureNativeDiagnostics(app: ElectronApplication): ElectronApplication {
+  if (diagnostics.has(app)) return app;
+  const stderr = app.process().stderr;
+  let line = '', discarded = false;
+  const state: NativeDiagnostics = { records: [], dropped: 0, attached: false, finish: () => {} };
+  const consumeLine = () => {
+    if (!discarded && line.startsWith(diagnosticPrefix)) {
+      try {
+        const value: unknown = JSON.parse(line.slice(diagnosticPrefix.length));
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const { stage, code } = value as Record<string, unknown>;
+          if (typeof stage === 'string' && /^(write|sync|rename|other|execute)$/.test(stage)
+            && typeof code === 'string' && diagnosticCodes.has(code)) {
+            if (state.records.length < 64) state.records.push({ stage, code }); else state.dropped++;
+          }
+        }
+      } catch { /* Invalid or oversized diagnostic lines are never retained. */ }
+    }
+    line = ''; discarded = false;
+  };
+  const onData = (chunk: Buffer | string) => {
+    const pieces = chunk.toString().split('\n');
+    for (const [index, piece] of pieces.entries()) {
+      if (!discarded) {
+        if (line.length + piece.length > 4096) { line = ''; discarded = true; }
+        else {
+          line += piece;
+          // Do not buffer unrelated stderr, including partial lines.
+          if (!line.startsWith(diagnosticPrefix) && !diagnosticPrefix.startsWith(line)) { line = ''; discarded = true; }
+        }
+      }
+      if (index < pieces.length - 1) consumeLine();
+    }
+  };
+  state.finish = () => { consumeLine(); stderr?.off('data', onData); stderr?.off('end', consumeLine); };
+  stderr?.on('data', onData); stderr?.on('end', consumeLine);
+  diagnostics.set(app, state);
+  return app;
+}
 
 async function within<T>(work: Promise<T>, milliseconds: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -23,6 +71,7 @@ export function closeNativeApp(app: ElectronApplication): Promise<void> {
   const child = app.process();
   const exited = () => child.exitCode !== null || child.signalCode !== null;
   const cleanup = (async () => {
+    let cleanupFailed = false;
     try {
       if (!exited()) {
         await within((async () => {
@@ -39,6 +88,7 @@ export function closeNativeApp(app: ElectronApplication): Promise<void> {
       expect(child.exitCode, 'Native test application must exit normally').toBe(0);
       expect(child.signalCode).toBeNull();
     } catch (error) {
+      cleanupFailed = true;
       const diagnostic: Record<string, unknown> = {
         error: String(error), pid: child.pid, exitCode: child.exitCode, signalCode: child.signalCode,
       };
@@ -66,6 +116,17 @@ export function closeNativeApp(app: ElectronApplication): Promise<void> {
       diagnostic.finalSignalCode = child.signalCode;
       await test.info().attach('native-shutdown.json', { body: Buffer.from(JSON.stringify(diagnostic, null, 2)), contentType: 'application/json' });
       throw error;
+    } finally {
+      const captured = diagnostics.get(app);
+      captured?.finish();
+      if (captured?.records.length && !captured.attached) {
+        captured.attached = true;
+        try {
+          const name = `native-diagnostics-${child.pid ?? 'unknown'}.json`, file = test.info().outputPath(name);
+          await fs.writeFile(file, JSON.stringify({ pid: child.pid, diagnostics: captured.records, dropped: captured.dropped }, null, 2));
+          await test.info().attach(name, { path: file, contentType: 'application/json' });
+        } catch (error) { if (!cleanupFailed) throw error; }
+      }
     }
   })();
   cleanups.set(app, cleanup);

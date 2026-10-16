@@ -58,6 +58,7 @@ import { createAgentResultTools } from './agent-result-tool';
 import type { NativeAgentResultRequest, NativeAgentResult } from '../../../shared/chat';
 import { buildNativeParentInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativeParallelReviewIntent, nativePromptInstructionSections } from './agent-prompts';
 import { nativeDelegationAuditFailure, saveNativeDelegationAudit } from './agent-delegation-audit';
+import { reportNativeDiagnostic } from './diagnostic';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -774,6 +775,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           toolCalls: Math.max(parentCounts.toolCalls, run.toolCalls) + childCounts.toolCalls });
       }
     } catch (error) {
+      reportNativeDiagnostic('execute', error);
       failure = error;
       if (error && typeof error === 'object' && 'cleanupUnconfirmed' in error && error.cleanupUnconfirmed) active.cleanupUnconfirmed = true;
       result = { success: false, summary: '', error: active.abort.signal.aborted ? '执行已取消。' : this.safeError(error), interrupted: active.abort.signal.aborted };

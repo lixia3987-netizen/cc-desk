@@ -78,6 +78,26 @@ test('native executor runs real local tools, durable projection and full-context
   } finally { unsubscribe(); await f.dispose(); }
 });
 
+test('opt-in executor diagnostics preserve failure handling without exposing worker errors or credentials', async t => {
+  const privateError = 'private-worker-error-never-log';
+  const f = await fixture(async () => { throw Object.assign(new Error(privateError), { code: 'protocol' }); });
+  const previous = process.env.CC_DESK_CHAT_PERF;
+  const lines: string[] = [];
+  t.mock.method(console, 'error', (line: string) => { lines.push(line); });
+  process.env.CC_DESK_CHAT_PERF = '1';
+  try {
+    const result = await f.executor.send(f.id, 'diagnostic failure');
+    assert.equal(result.success, false);
+    assert.deepEqual(lines, ['[cc-desk:native-diagnostic]{"stage":"execute","code":"protocol"}']);
+    assert.equal(lines.join('').includes(privateError), false);
+    assert.equal(lines.join('').includes(sentinel), false);
+    assert.equal(f.executor.has(f.id), false, 'the original execution cleanup still runs');
+  } finally {
+    if (previous === undefined) delete process.env.CC_DESK_CHAT_PERF; else process.env.CC_DESK_CHAT_PERF = previous;
+    await f.dispose();
+  }
+});
+
 test('denied write is a persisted tool result with no filesystem mutation', async () => {
   const f = await fixture(); const unsubscribe = f.approve('deny');
   try {

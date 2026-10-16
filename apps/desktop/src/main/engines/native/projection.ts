@@ -23,6 +23,7 @@ import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 import { loadNativeAgents, nativeAgentReceiptDirectory, NativeAgentProjection } from './agent-projection';
 import type { NativeDelegationReceipt } from './agent-delegation';
+import { reportNativeDiagnostic, type NativeDiagnosticStage } from './diagnostic';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
 
@@ -66,6 +67,7 @@ interface ProjectionEntry {
   agents?: NativeAgentProjection;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string; requestId?: string };
+  missingSource?: string;
 }
 
 /** 可重建的界面投影；原生账本是模型上下文的唯一来源。 */
@@ -360,6 +362,7 @@ export class NativeProjection {
     const temporary = path.join(this.directory, `${id}.native-${randomUUID()}.tmp`);
     const file = path.join(this.directory, `${id}.jsonl`);
     let bytes = 0;
+    let diagnosticStage: NativeDiagnosticStage = 'write';
     try {
       const handle = await fsp.open(temporary, 'wx', 0o600);
       try {
@@ -369,18 +372,32 @@ export class NativeProjection {
           if (bytes > MAX_PROJECTION) throw new Error('Native 展示记录超过磁盘预算。');
           await handle.writeFile(line);
         }
+        diagnosticStage = 'sync';
         await handle.sync();
-      } finally { await handle.close(); }
+      } finally {
+        try { await handle.close(); }
+        catch (error) { diagnosticStage = 'other'; throw error; }
+      }
+      diagnosticStage = 'other';
       old.history.flush();
       // 此投影绝不写入有界快照。在发布原子日志前移除旧缓存，
       // 可使两种崩溃结果都能通过重放恢复。
       await fsp.rm(path.join(this.directory, `${id}.json`), { force: true });
+      diagnosticStage = 'rename';
       await fsp.rename(temporary, file);
       if (process.platform !== 'win32') {
+        diagnosticStage = 'sync';
         const directoryHandle = await fsp.open(this.directory, 'r');
-        try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+        try { await directoryHandle.sync(); } finally {
+          try { await directoryHandle.close(); }
+          catch (error) { diagnosticStage = 'other'; throw error; }
+        }
       }
-    } finally { await fsp.rm(temporary, { force: true }); }
+    } catch (error) { reportNativeDiagnostic(diagnosticStage, error); throw error; }
+    finally {
+      try { await fsp.rm(temporary, { force: true }); }
+      catch (error) { reportNativeDiagnostic('other', error); throw error; }
+    }
     const history = this.history();
     const snapshot = history.get(id);
     // 派生尾页仅改善展示；失配或缺失时读侧退回有界日志尾部，不影响权威投影。
@@ -423,15 +440,30 @@ export class NativeProjection {
   private async preserveMissingContext(id: string, entry: ProjectionEntry, conversationId: string): Promise<boolean> {
     const snapshot = entry.history.get(id);
     let hasLog = false;
-    try { const stat = await fsp.lstat(path.join(this.directory, `${id}.jsonl`)); hasLog = stat.isFile() && stat.size > 0; }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    let sourceVersion = conversationId, hasSource = false, knownSource = true;
+    for (const suffix of ['.jsonl', '.json']) {
+      try {
+        const stat = await fsp.lstat(path.join(this.directory, id + suffix), { bigint: true });
+        if (!stat.isFile()) knownSource = false;
+        else {
+          hasSource = true;
+          if (suffix === '.jsonl') hasLog = stat.size > 0n;
+          sourceVersion += `:${suffix}:${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+        }
+      } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; sourceVersion += `:${suffix}:missing`; }
+    }
     if (!this.missingContext.has(id) && !snapshot.messages.length && !hasLog) return false;
+    const alreadyPreserved = this.missingContext.has(id) && knownSource && hasSource && entry.missingSource === sourceVersion &&
+      entry.override?.taskState === 'error' && entry.override.error === MISSING_NATIVE_CONTEXT_MESSAGE && !entry.override.requestId &&
+      entry.currentTerminal === true && entry.pending.length === 0 && !entry.stream;
     this.missingContext.add(id);
     snapshot.sourceIncomplete = true;
     entry.override = { taskState: 'error', error: MISSING_NATIVE_CONTEXT_MESSAGE };
     entry.currentTerminal = true;
     entry.pending = [];
     entry.stream = undefined;
+    if (alreadyPreserved) return true;
+    entry.missingSource = knownSource && hasSource ? sourceVersion : undefined;
     // 权威核查已经判定旧展示应保留；只发布不完整的显示绑定，不授权任何执行或恢复。
     try { await writeDisplaySidecar(this.directory, id, conversationId, displayPage(snapshot.messages, !!snapshot.truncated, true)); }
     catch { /* 旧显示与原始记录保留，派生缓存失败不改变恢复隔离。 */ }
@@ -489,7 +521,9 @@ export class NativeProjection {
     this.changed(id);
   }
   state(id: string, taskState: TaskState, error?: string, requestId?: string): void {
-    this.entry(id).override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
+    const entry = this.entry(id), previous = entry.override;
+    if (previous?.taskState === taskState && previous.error === (error || undefined) && previous.requestId === (requestId || undefined)) return;
+    entry.override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
     this.journal(id, { type: 'state', taskState, ...(error ? { error } : {}) }); this.changed(id);
   }
   flush(): void { for (const entry of this.entries.values()) entry.history.flush(); }

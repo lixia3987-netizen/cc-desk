@@ -184,7 +184,9 @@ async function attachMetrics(app: ElectronApplication, page: Page, sourceBytes: 
   const ipc = await app.evaluate(() => (globalThis as FixtureGlobal).sessionLoadingFixture.records());
   const dom = await page.evaluate(() => ({ mountedMessageRows: document.querySelectorAll('.chat-pane [data-message-id]').length,
     markdownBodies: document.querySelectorAll('.chat-pane .message-markdown').length, toolBodies: document.querySelectorAll('.chat-pane details .message-markdown').length }));
-  await test.info().attach('session-loading-metrics.json', { body: Buffer.from(JSON.stringify({ sourceJournalBytes: sourceBytes, ipc, dom }, null, 2)), contentType: 'application/json' });
+  const file = test.info().outputPath('session-loading-metrics.json');
+  await fs.writeFile(file, JSON.stringify({ sourceJournalBytes: sourceBytes, ipc, dom }, null, 2));
+  await test.info().attach('session-loading-metrics.json', { path: file, contentType: 'application/json' });
 }
 
 test('session loading: persisted display precedes held hydrate, loading never flashes empty and payload and DOM stay bounded', async () => {
