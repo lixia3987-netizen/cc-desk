@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalJson, type JsonObject, type PreparedTool, type RunIdentity, type ToolDefinition, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, getToolPreparationFeedback, ToolPreparationError, type JsonObject, type PreparedTool, type RunIdentity, type ToolDefinition, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { loadProjectInstructions, type ProjectInstructions } from '@cc-desk/agent-node/project-instructions';
 import { isSensitivePath, normalizeProjectPath, ProjectFiles } from '@cc-desk/agent-node/tools';
@@ -18,7 +18,7 @@ const schema = z.object({
 const idSchema = { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$' };
 const definition: ToolDefinition = {
   name: 'record_code_location', risk: 'read',
-  description: 'Explicitly attach one host-read file/line snapshot to the current task steps and optionally criteria. First obtain the complete file hash from read_file/search and current expectedRevision from read_task. Select 1–80 actual lines, at most 8192 UTF-8 bytes. The host reads the file, preserves original line endings and saves unverified historical evidence; this never verifies acceptance or changes step status. A changed workspace is refreshed separately and returns task_revision_changed: read_task, reread changed files and retry with a new call ID. Applicable AGENTS.md/CLAUDE.md/selected skill instructions accompany success; use read_file/list_directory before later writes to satisfy their existing scope checks.',
+  description: 'Explicitly attach one host-read file/line snapshot to the current task steps and optionally criteria. First obtain the complete file hash from read_file/search and current expectedRevision from read_task. Each successful metadata write advances the revision: use the returned revision for the next call, never reuse it for multiple calls in one batch. Select 1–80 actual lines shown by read_file, at most 8192 UTF-8 bytes. A final newline does not add an extra empty line; if code_location_line_range_invalid returns lineCount, reread and explicitly choose a valid range. The host reads the file, preserves original line endings and saves unverified historical evidence; this never verifies acceptance or changes step status. A changed workspace is refreshed separately and returns task_revision_changed: read_task, reread changed files and retry with a new call ID. Applicable AGENTS.md/CLAUDE.md/selected skill instructions accompany success; use read_file/list_directory before later writes to satisfy their existing scope checks.',
   inputSchema: { type: 'object', additionalProperties: false,
     required: ['expectedRevision', 'path', 'expectedHash', 'startLine', 'endLine', 'stepIds', 'criterionIds'], properties: {
       expectedRevision: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER }, path: { type: 'string', minLength: 1, maxLength: 4096 },
@@ -65,7 +65,7 @@ export function createCodeLocationTool(options: CodeLocationToolOptions): ToolPo
   const taskFor = (input: CodeLocationInput) => {
     const task = options.session.store.read(taskId);
     if (!task || task.execution !== 'active' || encode(task.identity) !== identityKey) throw new Error('请先建立当前任务计划。');
-    if (task.revision !== input.expectedRevision) throw new Error('任务修订已改变，请先 read_task。');
+    if (task.revision !== input.expectedRevision) throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: task.revision, readTask: true });
     if (new Set(input.stepIds).size !== input.stepIds.length || new Set(input.criterionIds).size !== input.criterionIds.length ||
         input.stepIds.some(id => !task.steps.some(step => step.id === id)) || input.criterionIds.some(id => !task.criteria.some(criterion => criterion.id === id))) throw new Error('步骤或条件不属于当前任务。');
     return task;
@@ -144,6 +144,9 @@ export function createCodeLocationTool(options: CodeLocationToolOptions): ToolPo
           if (Buffer.byteLength(encode(output)) > context.maxOutputBytes) throw new TaskLocationCommitError('位置记录回执超过预算。');
           return { status: 'completed', output: output as unknown as JsonObject };
         } catch (error) {
+          // 仅转发受信固定字段；不复制文件路径、正文或任意异常消息。
+          const feedback = getToolPreparationFeedback(error);
+          if (feedback) return { status: 'not_executed', output: { ...feedback, executed: false } };
           if (error instanceof TaskLocationCapacityError) return { status: 'failed', output: { error: 'task_capacity_exceeded' } };
           return error instanceof TaskLocationCommitError
             ? { status: 'unknown', output: { error: 'code_location_commit_unconfirmed' } }

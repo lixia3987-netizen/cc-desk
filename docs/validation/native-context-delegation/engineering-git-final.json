@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "native-engineering-git-followup",
+  "candidate": {
+    "head": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+    "tree": "0d67031cadb414a977b03f44a3b472772da86496",
+    "clean": true
+  },
+  "after": {
+    "head": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+    "tree": "0d67031cadb414a977b03f44a3b472772da86496",
+    "clean": true
+  },
+  "command": "node --test scripts/tests/native-engineering-integration.test.mjs",
+  "startedAt": "2026-10-15T11:31:59.215658+00:00",
+  "finishedAt": "2026-10-15T11:32:00.173541+00:00",
+  "exitCode": 1,
+  "timedOut": false,
+  "counts": {
+    "tests": 2,
+    "suites": 0,
+    "pass": 1,
+    "fail": 1,
+    "cancelled": 0,
+    "skipped": 0,
+    "todo": 0
+  },
+  "failureNames": [
+    "engineering verification preserves failed and successful attempts and refuses false completion"
+  ],
+  "permissionBlock": {
+    "codes": [
+      "EPERM"
+    ],
+    "operations": [
+      "symlink"
+    ]
+  },
+  "log": {
+    "file": "followup-final-engineering-git.log",
+    "bytes": 2094,
+    "sha256": "10c68958d2d90e0d1c4c4dbff09264fa7816aa3c0f6200db07acd3f4c6b974f7"
+  },
+  "outcome": "blocked_by_environment",
+  "blockedStage": "fixture_dependency_junction_before_nested_verification"
+}

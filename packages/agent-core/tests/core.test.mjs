@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { runAgent, canonicalJson, RunAlreadyActiveError, validateModelFailureDiagnostic } from '../dist/index.js'
+import { runAgent, canonicalJson, RunAlreadyActiveError, ToolPreparationError, validateModelFailureDiagnostic } from '../dist/index.js'
 
 const copy = (value) => JSON.parse(JSON.stringify(value))
 const digest = (value) => createHash('sha256').update(value).digest('hex')
@@ -60,6 +60,7 @@ function fixture(responses = [response()]) {
           else delete current.continuation
         }
         if (event.type === 'tool_completed') current.items.push(...copy(event.resultItems))
+        if (event.type === 'completion_rejected') current.items.push(...copy(event.feedbackItems))
         if (event.type === 'run_finished') storedResult = copy(event.result)
         return { seq: events.length }
       },
@@ -115,6 +116,83 @@ function fixture(responses = [response()]) {
     get storedResult() { return storedResult }, get context() { return copy(current) } }
 }
 
+test('completion validation retains rejected responses and continues the same run only after feedback', async () => {
+  const first = response([], { continuation: { opaque: 'preserved' } })
+  const f = fixture([first, response([call('material-read')]), response()])
+  const seen = []
+  f.ports.completionValidation = { validate: async request => {
+    seen.push(copy({ identity: request.identity, attempt: request.attempt, context: request.context }))
+    assert.equal(f.events.at(-1).type, 'model_response')
+    assert.equal(request.signal.aborted, false)
+    return f.executions.length ? { kind: 'accept' } : { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }
+  } }
+  const result = await f.run()
+  assert.equal(result.status, 'completed'); assert.equal(result.modelRequests, 3); assert.equal(result.toolCalls, 1)
+  assert.deepEqual(f.executions, ['material-read'])
+  assert.deepEqual(seen.map(item => item.attempt), [1, 3])
+  assert.ok(seen.every(item => JSON.stringify(item.identity) === JSON.stringify(f.request.identity)))
+  const rejection = f.events.find(item => item.type === 'completion_rejected')
+  assert.equal(rejection.attempt, 1); assert.match(rejection.feedbackItems[0].content, /review\.md/)
+  assert.deepEqual(f.modelInputs[1].context.items.slice(0, -1), [f.context.items[0], ...first.outputItems])
+  assert.deepEqual(f.modelInputs[1].context.continuation, first.continuation)
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 6, totalTokens: 36 })
+  assert.equal(f.events.filter(item => item.type === 'model_response').length, 3)
+})
+
+test('completion correction is bounded to two continuations and original model/shared budgets remain tighter', async () => {
+  const reject = async () => ({ kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] })
+  const f = fixture([response(), response(), response(), response()])
+  f.ports.completionValidation = { validate: reject }
+  const result = await f.run()
+  assert.equal(result.status, 'failed'); assert.equal(result.reason, 'completion_validation_limit'); assert.equal(result.modelRequests, 3)
+  assert.equal(f.events.filter(item => item.type === 'completion_rejected').length, 3)
+  for (const mode of ['model', 'shared']) {
+    const limited = fixture([response(), response()])
+    limited.ports.completionValidation = { validate: reject }
+    if (mode === 'model') limited.request.budget = { maxModelRequests: 1 }
+    else { let consumed = 0; limited.ports.host.consumeBudget = async kind => kind !== 'model' || ++consumed < 2 }
+    const stopped = await limited.run()
+    assert.equal(stopped.status, 'budget_exhausted'); assert.equal(stopped.reason, mode === 'model' ? 'model_request_budget' : 'shared_model_budget')
+    assert.equal(stopped.modelRequests, 1); assert.equal(limited.executions.length, 0)
+  }
+})
+
+test('completion validation cancellation and active deadlines take priority before and after host checks', async () => {
+  for (const mode of ['before', 'after', 'deadline']) {
+    const f = fixture(); let checks = 0
+    if (mode === 'before') f.hooks.append = event => { if (event.type === 'model_response') f.controller.abort() }
+    f.ports.completionValidation = { validate: async () => {
+      checks++
+      if (mode === 'deadline') f.setNow(600001); else f.controller.abort()
+      return { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }
+    } }
+    const result = await f.run()
+    assert.equal(result.status, mode === 'deadline' ? 'budget_exhausted' : 'cancelled')
+    assert.equal(checks, mode === 'before' ? 0 : 1)
+    assert.equal(f.events.some(item => item.type === 'completion_rejected'), false)
+  }
+})
+
+test('untrusted or failed completion validation cannot complete or leak error text', async () => {
+  for (const invalid of [{ kind: 'accept', extra: 'secret' }, { kind: 'continue', code: 'declared_material_reads_missing', paths: ['../escape'] }, 'throw']) {
+    const f = fixture()
+    f.ports.completionValidation = { validate: async () => { if (invalid === 'throw') throw new Error('secret failure'); return invalid } }
+    const result = await f.run()
+    assert.equal(result.status, 'failed'); assert.equal(result.reason, 'completion_validation_failed')
+    assert.equal(JSON.stringify(f.events).includes('secret'), false)
+  }
+})
+
+test('completion feedback persistence failure retains recovery state and sends no extra model request', async () => {
+  const f = fixture()
+  f.ports.completionValidation = { validate: async () => ({ kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] }) }
+  f.hooks.append = event => { if (event.type === 'completion_rejected') throw new Error('disk failure') }
+  const result = await f.run()
+  assert.equal(result.status, 'recovery_required'); assert.equal(result.committed, false); assert.equal(result.modelRequests, 1)
+  assert.equal(f.events.some(item => item.type === 'model_response'), true)
+  assert.equal(f.events.some(item => item.type === 'run_finished'), false)
+})
+
 test('whole response is committed before ordered tools, and full opaque context survives normal continuation', async () => {
   const first = response([call('a'), call('b', 'write')], { continuation: { encrypted_state: 'preserved' } })
   const f = fixture([first, response()])
@@ -165,6 +243,128 @@ test('invalid JSON, non-object arguments and unknown tools get truthful failed r
   assert.equal((await f.run()).status, 'completed')
   assert.equal(f.executions.length, 0)
   assert.equal(f.events.filter((e) => e.type === 'tool_completed' && e.result.status === 'failed').length, 3)
+})
+
+test('a multi-tool stale CAS receives safe revision feedback and succeeds only after reading the current task', async () => {
+  const f = fixture()
+  let revision = 1, round = 0
+  const continuation = { encrypted_state: 'keep-the-opaque-provider-state' }
+  f.hooks.generate = input => {
+    const outputs = input.context.items.filter(item => item.type === 'function_call_output')
+    const result = id => JSON.parse(outputs.find(item => item.call_id === id).output)
+    if (round++ === 0) return response([
+      call('first-update', 'write', { expectedRevision: 1 }),
+      call('stale-update', 'write', { expectedRevision: 1 }),
+    ], { continuation })
+    if (round === 2) {
+      assert.deepEqual(input.context.continuation, continuation)
+      assert.deepEqual(result('first-update'), { status: 'completed', output: { revision: 2 } })
+      assert.deepEqual(result('stale-update'), { status: 'failed', output: { error: 'task_revision_changed', currentRevision: 2, readTask: true, executed: false } })
+      return response([call('read-current-task', 'read', {})])
+    }
+    if (round === 3) {
+      const current = result('read-current-task')
+      assert.equal(current.status, 'completed')
+      return response([call('corrected-update', 'write', { expectedRevision: current.output.revision })])
+    }
+    assert.equal(round, 4, 'feedback must correct the next attempt rather than exhaust the model request budget')
+    assert.deepEqual(result('corrected-update'), { status: 'completed', output: { revision: 3 } })
+    return response()
+  }
+  f.hooks.prepare = tool => {
+    if (tool.name === 'write' && JSON.parse(tool.arguments).expectedRevision !== revision) {
+      throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: revision, readTask: true })
+    }
+  }
+  f.hooks.execute = prepared => {
+    if (prepared.call.name === 'write') {
+      assert.equal(prepared.input.expectedRevision, revision, 'only a current CAS may execute')
+      revision++
+    }
+    return { status: 'completed', output: { revision } }
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.committed, true)
+  assert.equal(result.modelRequests, 4)
+  assert.equal(result.toolCalls, 4)
+  assert.equal(revision, 3)
+  assert.deepEqual(f.executions, ['first-update', 'read-current-task', 'corrected-update'])
+  assert.deepEqual(f.approvals.map(item => item.binding.toolCallId), ['first-update', 'corrected-update'])
+  assert.equal(f.order.includes('validate:stale-update'), false)
+  assert.equal(f.events.some(event => event.type === 'tool_prepared' && event.prepared.call.id === 'stale-update'), false)
+  assert.deepEqual(f.events.filter(event => event.type === 'tool_completed').map(event => event.result.status), ['completed', 'failed', 'completed', 'completed'])
+})
+
+test('trusted empty-file line feedback is returned without preparing, approving or executing the rejected tool', async () => {
+  const f = fixture([response([call('outside-file', 'write')]), response()])
+  f.hooks.prepare = () => { throw new ToolPreparationError({ error: 'code_location_line_range_invalid', lineCount: 0, readFile: true }) }
+  assert.equal((await f.run()).status, 'completed')
+  assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result,
+    { status: 'failed', output: { error: 'code_location_line_range_invalid', lineCount: 0, readFile: true, executed: false } })
+  assert.deepEqual(f.executions, [])
+  assert.deepEqual(f.approvals, [])
+  assert.equal(f.events.some(event => event.type === 'tool_prepared'), false)
+})
+
+test('arbitrary and tampered preparation errors cannot disclose text or smuggle extra feedback fields', async t => {
+  const secret = 'sk-preparation-secret-must-not-enter-history'
+  const valid = { error: 'task_revision_changed', currentRevision: 2, readTask: true }
+  const tampered = new ToolPreparationError(valid)
+  tampered.feedback = { ...valid, detail: secret }
+  const accessor = new ToolPreparationError(valid)
+  let reads = 0
+  Object.defineProperty(accessor, 'feedback', { get() { reads++; throw new Error(secret) } })
+  const forged = Object.assign(Object.create(ToolPreparationError.prototype), { feedback: valid, message: secret })
+  for (const [name, error] of [
+    ['ordinary message', new Error(secret)],
+    ['lookalike object', { name: 'ToolPreparationError', feedback: valid, message: secret }],
+    ['forged prototype', forged],
+    ['mutated trusted feedback', tampered],
+    ['hostile feedback accessor', accessor],
+  ]) await t.test(name, async () => {
+    const f = fixture([response([call('rejected', 'write')]), response()])
+    f.hooks.prepare = () => { throw error }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result,
+      { status: 'failed', output: { error: 'invalid_tool_input', executed: false } })
+    assert.deepEqual(f.executions, [])
+    assert.deepEqual(f.approvals, [])
+    assert.equal(JSON.stringify({ events: f.events, modelInputs: f.modelInputs, emitted: f.emitted }).includes(secret), false)
+  })
+  assert.equal(reads, 0, 'core must not invoke an exception feedback getter')
+  await t.test('even a trusted exception message is ignored', async () => {
+    const f = fixture([response([call('stale', 'write')]), response()])
+    const trusted = new ToolPreparationError(valid)
+    trusted.message = secret
+    trusted.stack = secret
+    f.hooks.prepare = () => { throw trusted }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(f.events.find(event => event.type === 'tool_completed').result.output, { ...valid, executed: false })
+    assert.equal(JSON.stringify({ events: f.events, modelInputs: f.modelInputs, emitted: f.emitted }).includes(secret), false)
+  })
+})
+
+test('cancellation and active-budget exhaustion take precedence over trusted preparation feedback', async t => {
+  for (const stopped of ['cancelled', 'budget_exhausted']) await t.test(stopped, async () => {
+    const f = fixture([response([call('stopped', 'write'), call('not-started', 'write')])])
+    f.request.budget = { maxActiveMs: 10 }
+    f.hooks.prepare = () => {
+      if (stopped === 'cancelled') f.controller.abort()
+      else f.setNow(10)
+      throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: 2, readTask: true })
+    }
+    const result = await f.run()
+    assert.equal(result.status, stopped)
+    assert.equal(result.modelRequests, 1)
+    assert.deepEqual(f.executions, [])
+    assert.deepEqual(f.approvals, [])
+    assert.equal(f.order.includes('prepare:not-started'), false)
+    const completed = f.events.filter(event => event.type === 'tool_completed')
+    assert.equal(completed.length, 2)
+    assert.ok(completed.every(event => event.result.status === (stopped === 'cancelled' ? 'cancelled' : 'not_executed')))
+    assert.equal(JSON.stringify(completed).includes('task_revision_changed'), false)
+  })
 })
 
 for (const mutation of ['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration', 'toolCallId', 'inputDigest', 'policyRevision']) {
@@ -235,7 +435,8 @@ test('input digest and durable admission consume the same active budget as model
   await t.test('remaining budget reaches model deadline', async () => {
     const f = fixture()
     f.request.budget = { maxActiveMs: 10 }
-    f.ports.host.digest = async value => { f.setNow(3); return digest(value) }
+    let firstDigest = true
+    f.ports.host.digest = async value => { if (firstDigest) { firstDigest = false; f.setNow(3) }; return digest(value) }
     f.hooks.begin = async () => { f.setNow(7) }
     const deadline = f.ports.host.deadline
     const deadlines = []
@@ -455,7 +656,7 @@ test('context maintenance runs only after all tool results commit and adopts its
   assert.deepEqual(f.modelInputs[1].context.items, [{ role: 'assistant', content: 'historical summary' }])
   const commit = f.order.indexOf('maintenance_commit')
   assert.equal(f.order[commit + 1], 'checkpoint')
-  assert.deepEqual(f.order.slice(commit + 2, commit + 5), ['capacity', 'model_request_started', 'model'])
+  assert.deepEqual(f.order.slice(commit + 2, commit + 6), ['capacity', 'model_request_started', 'model_request_diagnostic', 'model'])
 })
 
 test('unchanged context checks refund the reserved request and can defer until a later complete boundary', async () => {
@@ -632,6 +833,81 @@ test('compaction preserves duplicate tool identity and denied-input guards', asy
 const transient = { category: 'rate_limit', httpStatus: 429, retryable: true }
 const attempts = f => f.events.filter(event => event.type === 'model_request_started')
 const failures = f => f.events.filter(event => event.type === 'model_request_failed')
+
+test('diagnostics identify real retries separately, preserve child linkage, cache fields, and omit private text', async () => {
+  const cached = { inputTokens: 20, outputTokens: 2, totalTokens: 22, cacheReadInputTokens: 8, cacheCreationInputTokens: 4, nonCachedInputTokens: 8 }
+  const f = retryFixture([response([call('after-retry')], { usage: cached }), response([], { usage: cached })])
+  f.request.diagnosticPurpose = 'child'
+  f.request.diagnosticIdentity = { parentRunId: 'parent', childId: 'child' }
+  f.ports.model.requestDiagnostics = true
+  let generated = 0
+  f.hooks.generate = async input => {
+    await input.onRequestDiagnostic({ phase: 'request', protocol: 'fixture', payloadBytes: 100, payloadDigest: digest('private-wire-payload'), startedAt: generated === 0 ? 0 : 500 })
+    await input.onRequestDiagnostic({ phase: 'dispatched', protocol: 'fixture', startedAt: generated === 0 ? 0 : 500 })
+    if (++generated === 1) throw new Error('transient')
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.usage, null, 'failed paid retry keeps aggregate usage incomplete')
+  const finished = f.events.filter(event => event.type === 'model_request_diagnostic' && event.diagnostic.phase === 'finished').map(event => event.diagnostic)
+  assert.deepEqual(finished.map(diagnostic => diagnostic.purpose), ['child', 'retry', 'child'])
+  assert.equal(new Set(finished.map(diagnostic => diagnostic.requestKey)).size, 3)
+  assert.ok(finished.every(diagnostic => diagnostic.parentRunId === 'parent' && diagnostic.childId === 'child' && diagnostic.requestSent === true))
+  assert.deepEqual(finished[1].usage, cached)
+  assert.equal(JSON.stringify(finished).includes('do the task'), false)
+  assert.equal(JSON.stringify(finished).includes('private-wire-payload'), false)
+})
+
+test('failed diagnostic persistence prevents network and leaves recovery barrier without retry', async () => {
+  const f = retryFixture()
+  f.hooks.append = event => { if (event.type === 'model_request_diagnostic') throw new Error('disk unavailable') }
+  const result = await f.run()
+  assert.equal(result.status, 'recovery_required')
+  assert.equal(result.reason, 'store_model_request_diagnostic_failed')
+  assert.equal(result.committed, false)
+  assert.equal(f.modelInputs.length, 0)
+  assert.equal(failures(f).length, 0)
+})
+
+test('detailed input estimate and exact outgoing payload cannot bypass the independent byte budget', async t => {
+  await t.test('detailed preflight', async () => {
+    const f = fixture()
+    f.request.budget = { maxContextBytes: 200, maxInputTokens: 10_000 }
+    f.ports.model.estimateInputUsage = () => ({ estimatedInputTokens: 100, serializedBytes: 201, contextBytes: 20, method: 'tokenizer', source: 'tokenizer' })
+    const result = await f.run()
+    assert.equal(result.reason, 'context_budget')
+    assert.equal(result.modelRequests, 0)
+    assert.equal(f.modelInputs.length, 0)
+  })
+  await t.test('actual serialization verification', async () => {
+    const f = fixture()
+    f.request.budget = { maxContextBytes: 200, maxInputTokens: 10_000 }
+    f.ports.model.requestDiagnostics = true
+    let sent = false
+    f.hooks.generate = async input => {
+      await input.onRequestDiagnostic({ phase: 'request', protocol: 'fixture', payloadBytes: 201, payloadDigest: digest('oversized') })
+      sent = true
+    }
+    const result = await f.run()
+    assert.equal(result.status, 'budget_exhausted')
+    assert.equal(result.reason, 'context_budget')
+    assert.equal(sent, false)
+    const last = f.events.filter(event => event.type === 'model_request_diagnostic').at(-1).diagnostic
+    assert.equal(last.requestSent, false)
+    assert.equal(last.outcome, 'failed')
+  })
+})
+
+test('cache fields in normal responses and in-run summaries accumulate once with unknowns retained', async () => {
+  const f = maintenanceFixture()
+  const cached = { inputTokens: 10, outputTokens: 2, totalTokens: 12, cacheReadInputTokens: 3, cacheCreationInputTokens: 1, nonCachedInputTokens: 6 }
+  f.hooks.generate = () => response(f.modelInputs.length === 1 ? [call('cache-read')] : [], { usage: cached })
+  f.hooks.maintain = () => ({ ...f.compact(), usage: cached })
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.deepEqual(result.usage, { inputTokens: 30, outputTokens: 6, totalTokens: 36, cacheReadInputTokens: 9, cacheCreationInputTokens: 3, nonCachedInputTokens: 18 })
+})
 function retryFixture(responses) {
   const f = fixture(responses)
   f.request.modelRetry = 'safe_transient'
@@ -669,7 +945,8 @@ test('model attempt is durable before network and failed attempts have unknown a
   const f = retryFixture()
   let count = 0
   f.hooks.generate = () => {
-    assert.equal(f.events.at(-1).type, 'model_request_started')
+    assert.equal(f.events.at(-1).type, 'model_request_diagnostic')
+    assert.equal(f.events.at(-1).diagnostic.phase, 'started')
     if (++count === 1) throw new Error('transient')
   }
   const result = await f.run()

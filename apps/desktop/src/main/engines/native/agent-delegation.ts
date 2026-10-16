@@ -7,6 +7,7 @@ import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, NativeAgentWorktreeError, prepareAgentBaseline, verifyAgentBaseline,
   type NativeAgentBaseline, type NativeAgentWorktree } from './agent-worktrees';
 import { writeAgentArtifact, writeAgentReceipt } from './agent-artifacts';
+import { nativeDelegationExecutionPath, type NativeDelegationExecution } from './agent-delegation-audit';
 
 export interface NativeDelegationBudget {
   /** 由宿主强制执行的原子门控，与父任务和所有同级任务共享。 */
@@ -16,6 +17,8 @@ export interface NativeDelegationBudget {
 }
 export interface NativeAgentChildInput {
   identity: RunIdentity;
+  /** 由实际宿主回执分配，绝不从标题或模型输出推断。 */
+  childId?: string;
   taskId: string;
   parentIdentity: RunIdentity;
   parentTaskId: string;
@@ -93,7 +96,7 @@ const tasksJson: JsonObject = { type: 'array', minItems: 1, maxItems: 4, items: 
 } } };
 const toolDefinitions: ToolDefinition[] = [{
   name: 'delegate_review', risk: 'read',
-  description: 'Run 1–4 independent Native agents concurrently to review the current workspace. Each child starts with its own goal/context and a separate worker; it can only read local files and cannot run commands, write files, use external tools or spawn agents. Children and parent share request/tool/time limits. Provide complete, bounded review questions in tasks. Results include durable task/run receipts and summaries; a completed review is not implementation acceptance.',
+  description: 'Run 1–4 independent Native agents concurrently to review the current workspace. For an explicit user request for parallel analysis, use one call with 2–4 independent questions; a textual plan or sequential single-child calls do not satisfy it. Each child starts with its own goal/context and a separate worker; it can only read local files and cannot run commands, write files, use MCP/external tools or spawn agents. Children and parent share request/tool/time limits. Put Materials, Version/content, Independent question, Scope, Existing evidence, Permissions and Return format sections inside each bounded goal (maximum 6000 characters), including paths/source references and known/unknown evidence. Do not add unsupported tool fields. Read actual returned children using read_agent_result; completed execution is not acceptance.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['tasks'], properties: { tasks: tasksJson } },
 }, {
   name: 'delegate_implement', risk: 'write',
@@ -162,9 +165,18 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, toolCallId: state.prepared.call.id, ...task,
         mode, status: 'prepared', createdAt: now, updatedAt: now, receiptPath: path.join(batchPath, childId, 'receipt.json'), cwd: options.cwd };
     });
+    const execution: NativeDelegationExecution = { version: 1, batchId, parentRunId: parentIdentity.runId, toolCallId: state.prepared.call.id, mode,
+      clock: { id: randomUUID(), timeOrigin: performance.timeOrigin }, children: receipts.map(receipt => ({ childId: receipt.childId, identity: structuredClone(receipt.identity) })) };
+    let executionWrites = Promise.resolve();
+    const saveExecution = () => {
+      const snapshot = structuredClone(execution);
+      const write = executionWrites.then(() => writeAgentReceipt(nativeDelegationExecutionPath(options.storeDirectory, parentIdentity, batchId), snapshot));
+      executionWrites = write.catch(() => {}); return write;
+    };
+    const instant = () => ({ monotonicMs: performance.now(), wallTime: new Date().toISOString() });
     // 任何工作树或子模型操作前先持久化执行意图；完全相同的重复调用复用已有执行。
     state.effectsStarted = true;
-    try { for (const receipt of receipts) await save(receipt); }
+    try { for (const receipt of receipts) await save(receipt); await saveExecution(); }
     catch { return { status: 'unknown', output: { error: 'delegation_intent_unconfirmed', batchId } }; }
     let baseCommit: string | undefined;
     try {
@@ -181,6 +193,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
       const abort = new AbortController(); children.add(abort);
       const signal = AbortSignal.any([abort.signal, operationSignal]);
       let childStarted = false, worktreeAttempted = false;
+      let childOperation: Promise<NativeAgentChildResult> | undefined;
+      const lifecycle = execution.children.find(child => child.childId === receipt.childId)!;
       try {
         if (signal.aborted) throw new NativeAgentWorktreeError('cancelled', '委派已取消。');
         await options.assertOwnership();
@@ -200,9 +214,15 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         receipt.status = 'running'; await save(receipt);
         if (signal.aborted || options.budget.remainingMs() < 1) throw new NativeAgentWorktreeError(signal.aborted ? 'cancelled' : 'delegation_budget_exhausted', '委派已停止。');
         childStarted = true;
-        const result = await options.runChild({ identity: structuredClone(receipt.identity), taskId: receipt.taskId,
+        lifecycle.started = instant();
+        childOperation = options.runChild({ identity: structuredClone(receipt.identity), childId: receipt.childId, taskId: receipt.taskId,
           parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, title: receipt.title, goal: receipt.goal,
-          cwd: receipt.cwd, toolPolicy: mode === 'review' ? 'read_only' : 'workspace_write', budget: options.budget, signal });
+          cwd: receipt.cwd, toolPolicy: mode === 'review' ? 'read_only' : 'workspace_write', budget: options.budget, signal })
+          .finally(() => { lifecycle.settled = instant(); });
+        // 持久化起点期间 worker 仍并行执行；及时附加拒绝处理，失败后也必须等待物理子任务结算。
+        void childOperation.catch(() => {});
+        await saveExecution();
+        const result = await childOperation;
         credentials(result);
         if (encode(result.identity) !== encode(receipt.identity) || result.taskId !== receipt.taskId || !Number.isSafeInteger(result.modelRequests) || result.modelRequests < 0 ||
             !Number.isSafeInteger(result.toolCalls) || result.toolCalls < 0 || !['completed', 'cancelled', 'failed', 'budget_exhausted', 'recovery_required'].includes(result.status) ||
@@ -213,6 +233,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         else if (!result.committed) receipt.error = 'child_commit_unconfirmed';
       } catch (error) {
         abort.abort();
+        if (childStarted && !lifecycle.settled) lifecycle.settled = instant();
+        if (childOperation) await childOperation.catch(() => {});
         // 子任务启动被拒绝时仍可能已执行工具。除非
         // 宿主提供已持久化的终态 RunResult，否则必须恢复；绝不根据信号推断取消。
         receipt.status = childStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : signal.aborted ? 'cancelled' : 'failed';
@@ -230,6 +252,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
               sha256: createHash('sha256').update(evidence.patch).digest('hex'), bytes: evidence.patch.byteLength };
           } catch { receipt.status = 'unknown'; receipt.error = 'workspace_evidence_unconfirmed'; }
         }
+        try { await saveExecution(); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_execution_unconfirmed'; }
         try { await save(receipt); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_receipt_unconfirmed'; }
       }
     }));

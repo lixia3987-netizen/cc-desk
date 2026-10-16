@@ -349,8 +349,13 @@ test('Windows job loads its built-in compiler with the production filtered envir
   const root = guardian(directory);
   let job, helper, originalFailure;
   try {
-    const environment = commandEnvironment({ ...process.env, PSModulePath: directory });
+    const source = { ...process.env, PSModulePath: directory };
+    for (const key of Object.keys(source)) if (key.toUpperCase() === 'USERPROFILE') delete source[key];
+    source.USERPROFILE = 'credential-sentinel-profile';
+    const environment = commandEnvironment(source, ['credential-sentinel']);
     assert.equal(Object.keys(environment).some(key => key.toUpperCase() === 'PSMODULEPATH'), false);
+    assert.equal(environment.USERPROFILE, os.userInfo().homedir, 'OS profile explicitly prevents the pre-script CLR initialization failure');
+    assert.equal(JSON.stringify(environment).includes('credential-sentinel'), false);
     job = await startJob(root, { environment, onHelper: child => { helper = child; } });
     assert.equal(job.diagnostic.modulesLoaded, true, 'explicit system module load must finish before binding');
     assert.equal(job.usable, true);

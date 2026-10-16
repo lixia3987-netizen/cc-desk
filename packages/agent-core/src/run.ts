@@ -6,6 +6,10 @@ import type {
 import { contextBudgetUsage } from './context.js'
 import { validateModelFailureDiagnostic } from './recovery.js'
 import { validateUserImages } from './images.js'
+import { sumUsage, validateUsage } from './usage.js'
+import { createModelRequestDiagnostic, validateModelRequestDiagnostic } from './diagnostics.js'
+import { getToolPreparationFeedback } from './tool-preparation-error.js'
+import { completionFeedbackText, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision } from './completion-validation.js'
 
 export const DEFAULT_RUN_BUDGET: Readonly<RunBudget> = Object.freeze({
   maxModelRequests: 30,
@@ -86,6 +90,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   let modelRequests = 0
   let modelAttempt = 0
   let modelRetries = 0
+  let completionCorrections = 0
   let toolCalls = 0
   let usage: Usage | null = null
   let usageUnknown = false
@@ -169,15 +174,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   }
   const accumulateUsage = (next: Usage | null): void => {
     if (!next) { usageUnknown = true; return }
-    const previous = usage
-    const total: Usage = {}
-    for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
-      const n = next[key]
-      if (n !== undefined && Number.isFinite(n) && n >= 0 && (!previous || previous[key] !== undefined)) {
-        total[key] = (previous?.[key] ?? 0) + n
-      }
-    }
-    usage = total
+    if (!validateUsage(next)) { usageUnknown = true; return }
+    usage = sumUsage(usage ? [usage, next] : [next])
   }
   const maintainContext = async (): Promise<void> => {
     if (!ports.contextMaintenance || maintenanceAttempted || modelRequests === 0 ||
@@ -195,8 +193,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       if (!maintained || !['unchanged', 'compacted', 'failed'].includes(maintained.kind) ||
         ![0, 1].includes(maintained.modelRequests) || maintained.modelRequests === 0 && maintained.usage !== null ||
         maintained.kind === 'unchanged' && maintained.modelRequests !== 0 ||
-        maintained.usage !== null && (typeof maintained.usage !== 'object' || Array.isArray(maintained.usage) ||
-          Object.entries(maintained.usage).some(([key, value]) => !['inputTokens', 'outputTokens', 'totalTokens'].includes(key) || !Number.isSafeInteger(value) || value < 0))) {
+        !validateUsage(maintained.usage)) {
         throw new Error('Invalid context maintenance result')
       }
       if (maintained.kind === 'compacted' && (maintained.modelRequests !== 1 || !maintained.context ||
@@ -247,6 +244,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     await checkpoint()
   }
   const requestModel = async (): Promise<ModelResponse> => {
+    let retrying = false
     while (true) {
       checkStopped()
       if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
@@ -258,17 +256,72 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       modelRequests++
       const attempt = ++modelAttempt
       await append({ type: 'model_request_started', attempt })
+      const estimate = model.estimateInputUsage?.(clone(context), budget.maxOutputTokens)
+      const estimatedInputTokens = estimate?.estimatedInputTokens ?? model.estimateInputTokens(clone(context))
+      let diagnostic = await createModelRequestDiagnostic({
+        identity, attempt, requestKey: `${identity.runId}:${identity.requestId}:${attempt}`,
+        purpose: retrying ? 'retry' : request.diagnosticPurpose ?? 'normal',
+        context: clone(context), tools: tools.definitions, host,
+        estimatedInputTokens: Number.isSafeInteger(estimatedInputTokens) && estimatedInputTokens >= 0 ? estimatedInputTokens : null,
+        estimateMethod: estimate?.method ?? 'unknown', estimateSource: estimate?.source ?? 'unknown',
+        ...request.diagnosticIdentity,
+        ...(typeof configuration.model === 'string' ? { model: configuration.model } : {}),
+      })
+      if (model.requestDiagnostics) diagnostic.requestSent = false
+      const recordDiagnostic = async (): Promise<void> => {
+        if (!validateModelRequestDiagnostic(diagnostic)) throw new PersistenceFailure('model_request_diagnostic')
+        await append({ type: 'model_request_diagnostic', diagnostic })
+      }
+      await recordDiagnostic()
       let acceptingEvents = true
       let partial = false
+      let diagnosticFailure = false
       try {
-        return clone(await activeOperation((signal) => model.generate({
+        const response = clone(await activeOperation((signal) => model.generate({
           identity, context: clone(context), tools: clone(tools.definitions), maxOutputTokens: budget.maxOutputTokens,
+          ...(request.diagnosticInstructionSections === undefined ? {} : { diagnosticInstructionSections: clone(request.diagnosticInstructionSections) }),
+          async onRequestDiagnostic(adapter) {
+            try {
+              if (adapter.protocol !== model.protocol.id) throw new Error('Invalid diagnostic protocol')
+              if (adapter.phase === 'request') {
+                const inputExceeded = adapter.payloadBytes !== undefined && (adapter.payloadBytes > budget.maxContextBytes ||
+                  adapter.payloadBytes > budget.maxInputTokens)
+                diagnostic = { ...diagnostic, phase: 'request', requestSent: false,
+                  ...(adapter.model === undefined ? {} : { model: adapter.model }),
+                  ...(adapter.startedAt === undefined ? {} : { startedAt: adapter.startedAt }),
+                  ...(adapter.payloadBytes === undefined ? {} : { payloadBytes: adapter.payloadBytes }),
+                  ...(adapter.payloadDigest === undefined ? {} : { payloadDigest: adapter.payloadDigest }),
+                  components: { ...diagnostic.components, ...adapter.components } }
+                await recordDiagnostic()
+                if (inputExceeded) throw new Stop('budget_exhausted', 'context_budget')
+              } else if (adapter.phase === 'dispatched') {
+                diagnostic = { ...diagnostic, phase: 'dispatched', requestSent: true,
+                  ...(adapter.startedAt === undefined ? {} : { startedAt: adapter.startedAt }) }
+                await recordDiagnostic()
+              } else {
+                // 核心只保存一次 finished；适配器补充单调时钟耗时与原始计数。
+                diagnostic = { ...diagnostic,
+                  ...(adapter.elapsedMs === undefined ? {} : { elapsedMs: adapter.elapsedMs }),
+                  ...(adapter.finishedAt === undefined ? {} : { finishedAt: adapter.finishedAt }),
+                  ...(adapter.providerUsage === undefined ? {} : { providerUsage: adapter.providerUsage }) }
+              }
+            } catch (error) {
+              if (error instanceof Stop) throw error
+              diagnosticFailure = true; throw new PersistenceFailure('model_request_diagnostic')
+            }
+          },
           signal, onEvent(event) {
             if (acceptingEvents && !signal.aborted) { partial = true; emit({ ...event, identity }) }
           },
         })))
+        diagnostic = { ...diagnostic, phase: 'finished', finishedAt: diagnostic.finishedAt ?? host.now(),
+          elapsedMs: diagnostic.elapsedMs ?? Math.max(0, host.now() - diagnostic.startedAt), outcome: 'completed', usage: response.usage,
+          ...(response.providerUsage === undefined ? {} : { providerUsage: response.providerUsage }) }
+        await recordDiagnostic()
+        return response
       } catch (error) {
         acceptingEvents = false
+        if (error instanceof PersistenceFailure || diagnosticFailure) throw new PersistenceFailure('model_request_diagnostic')
         // 被拒绝的请求也可能已经计费。用量未知时，不得
         // 将重试描述为免费，也不得给出精确的汇总 token 数或费用。
         usageUnknown = true
@@ -277,6 +330,11 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
           const classified = error instanceof Stop ? undefined : model.classifyError?.(error)
           if (validateModelFailureDiagnostic(classified)) failure = clone(classified)
         } catch { /* 适配器分类绝不暴露任意错误内容。 */ }
+        diagnostic = { ...diagnostic, phase: 'finished', finishedAt: diagnostic.finishedAt ?? host.now(),
+          elapsedMs: diagnostic.elapsedMs ?? Math.max(0, host.now() - diagnostic.startedAt),
+          outcome: request.signal.aborted ? 'cancelled' : 'failed', failure, usage: null }
+        if (error instanceof Stop && diagnostic.requestSent === null) diagnostic.requestSent = false
+        await recordDiagnostic()
         const eligible = request.modelRetry === 'safe_transient' && !!host.wait && failure.retryable && !partial
         const delay = modelRetries === 0 ? 500 : 1500
         const retryDelayMs = eligible && modelRetries < 2 && modelRequests < budget.maxModelRequests &&
@@ -284,8 +342,10 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
         await append({ type: 'model_request_failed', attempt, failure, partial, ...(retryDelayMs === undefined ? {} : { retryDelayMs }) })
         await flushEvents()
         checkStopped()
+        if (error instanceof Stop) throw error
         if (retryDelayMs !== undefined) {
           modelRetries++
+          retrying = true
           try { await activeOperation(signal => host.wait!(retryDelayMs, signal)) }
           catch { checkStopped(); throw new Stop('failed', 'model_retry_wait_failed') }
           checkStopped()
@@ -336,9 +396,10 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       if (!tools.definitions.some((definition) => definition.name === call.name)) throw new Error('Unknown tool')
       prepared = clone(await activeOperation((signal) => tools.prepare(clone(call), toolContext(signal))))
       await validatePrepared(prepared, call, input)
-    } catch {
+    } catch (error) {
       checkStopped()
-      await completeTool(call, { status: 'failed', output: { error: 'invalid_tool_input', executed: false } })
+      const feedback = getToolPreparationFeedback(error)
+      await completeTool(call, { status: 'failed', output: feedback ? { ...feedback, executed: false } : { error: 'invalid_tool_input', executed: false } })
       return
     }
     checkStopped()
@@ -411,13 +472,19 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     while (true) {
       checkStopped()
       if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
-      let estimatedTokens = model.estimateInputTokens(clone(context))
-      if (Number.isFinite(estimatedTokens) && estimatedTokens >= 0 &&
-        contextBudgetUsage(context, estimatedTokens, budget).status !== 'within_budget') {
-        await maintainContext()
-        estimatedTokens = model.estimateInputTokens(clone(context))
+      const estimateInput = () => {
+        try { return model.estimateInputUsage?.(clone(context), budget.maxOutputTokens) ?? model.estimateInputTokens(clone(context)) }
+        catch { throw new Stop('budget_exhausted', 'context_budget') }
       }
-      if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0 || contextBudgetUsage(context, estimatedTokens, budget).status === 'exceeded') {
+      let estimated = estimateInput()
+      let estimatedTokens = typeof estimated === 'number' ? estimated : estimated.estimatedInputTokens
+      if (Number.isFinite(estimatedTokens) && estimatedTokens >= 0 &&
+        contextBudgetUsage(context, estimated, budget).status !== 'within_budget') {
+        await maintainContext()
+        estimated = estimateInput()
+        estimatedTokens = typeof estimated === 'number' ? estimated : estimated.estimatedInputTokens
+      }
+      if (!Number.isFinite(estimatedTokens) || estimatedTokens < 0 || contextBudgetUsage(context, estimated, budget).status === 'exceeded') {
         throw new Stop('budget_exhausted', 'context_budget')
       }
       const response = await requestModel()
@@ -436,6 +503,30 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       }
       if (response.toolCalls.length === 0) {
         if (response.finishReason === 'tool_calls') throw new Stop('failed', 'model_tool_calls_missing')
+        if (ports.completionValidation) {
+          checkStopped()
+          let decision
+          try {
+            decision = await activeOperation(signal => ports.completionValidation!.validate({ identity: clone(identity), attempt: modelAttempt, context: clone(context), signal }))
+          } catch {
+            checkStopped()
+            throw new Stop('failed', 'completion_validation_failed')
+          }
+          checkStopped()
+          if (!validateCompletionDecision(decision)) throw new Stop('failed', 'completion_validation_failed')
+          if (decision.kind === 'continue') {
+            const feedback = clone(decision), feedbackItems = clone(model.userItems(completionFeedbackText(feedback)))
+            if (!feedbackItems.length) throw new Stop('failed', 'completion_validation_failed')
+            await capacity(byteLength(feedbackItems) + byteLength(context) + 8192)
+            checkStopped()
+            await append({ type: 'completion_rejected', attempt: modelAttempt, feedback, feedbackItems })
+            context.items.push(...feedbackItems)
+            await checkpoint()
+            checkStopped()
+            if (completionCorrections++ >= MAX_COMPLETION_CORRECTIONS) throw new Stop('failed', 'completion_validation_limit')
+            continue
+          }
+        }
         return await finish('completed', 'model_completed')
       }
       batchResults = []

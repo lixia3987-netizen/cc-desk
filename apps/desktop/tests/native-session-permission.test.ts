@@ -54,7 +54,7 @@ test('unsupported provider, kind, mode, archived and stopping sessions cannot ch
 });
 
 test('invalid permission values and maintenance/recovery/lifecycle guards leave the config unchanged', () => {
-  for (const mode of ['unknown', 'plan', ''] as Parameters<typeof changeNativePermissionForNextTurn>[1][]) {
+  for (const mode of ['unknown', 'plan', ''] as unknown as Parameters<typeof changeNativePermissionForNextTurn>[1][]) {
     const f = fixture(); assert.throws(() => changeNativePermissionForNextTurn(f.session.id, mode, f.ports)); assert.equal(f.commits, 0);
   }
   const f = fixture(), original = structuredClone(f.session.engineConfig); f.block();

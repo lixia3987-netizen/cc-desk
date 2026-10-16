@@ -1,0 +1,187 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-15T10:36:53.362Z",
+  "platform": "win32",
+  "architecture": "x64",
+  "derivedValues": {
+    "systemRootHash": "c2bb903d586d19ec0d6eb6a2a659a882fd51244d6a137cee3595a385fda042f1",
+    "driveHash": "82179da1705476f753fdbb9fb58fef251195a42a5d468128266e12228af7e75b",
+    "commandPathHash": "4496c89920de8f74b7c366a5bce639d06f8c63d3c5b0f2ac29ef18c1e9163ed6",
+    "osProfileHash": "2dbb78b7e4aee98931a0799ee5aff8b60b02ef0e0ca5e2c5ef00ec59732c386a",
+    "profileDriveHash": "82179da1705476f753fdbb9fb58fef251195a42a5d468128266e12228af7e75b",
+    "profilePathHash": "9e14f57a0668b77c0e11a808411777cc55d53b5447b53d649f3524926dc9652a"
+  },
+  "productionScriptHash": "c93e14e3b57e12aa82aa5ec6fe5ad2619fb3a25e35b15142b52cd5f693dca2a6",
+  "results": [
+    {
+      "name": "filtered-baseline",
+      "step": "bootstrap",
+      "keysAdded": [],
+      "exitCode": 4294901760,
+      "signal": null,
+      "timedOut": false,
+      "markers": [],
+      "outputBytes": 0,
+      "errorBytes": 203,
+      "stdoutHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrHash": "0cd544457cc2f7a1a27a0eb569c0485988e3d52ff5052af01e52b7f8bb18762d",
+      "hresults": []
+    },
+    {
+      "name": "userprofile-from-os",
+      "step": "bootstrap",
+      "keysAdded": [
+        "USERPROFILE"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "bootstrap"
+      ],
+      "outputBytes": 23,
+      "errorBytes": 0,
+      "stdoutHash": "84368d2e35cba3aaff772e848190a6d1f11a77a8882855705822333ecbd289ce",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    },
+    {
+      "name": "homedrive-from-os",
+      "step": "bootstrap",
+      "keysAdded": [
+        "HOMEDRIVE"
+      ],
+      "exitCode": 4294901760,
+      "signal": null,
+      "timedOut": false,
+      "markers": [],
+      "outputBytes": 0,
+      "errorBytes": 203,
+      "stdoutHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrHash": "0cd544457cc2f7a1a27a0eb569c0485988e3d52ff5052af01e52b7f8bb18762d",
+      "hresults": []
+    },
+    {
+      "name": "homepath-from-os",
+      "step": "bootstrap",
+      "keysAdded": [
+        "HOMEPATH"
+      ],
+      "exitCode": 4294901760,
+      "signal": null,
+      "timedOut": false,
+      "markers": [],
+      "outputBytes": 0,
+      "errorBytes": 203,
+      "stdoutHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "stderrHash": "0cd544457cc2f7a1a27a0eb569c0485988e3d52ff5052af01e52b7f8bb18762d",
+      "hresults": []
+    },
+    {
+      "name": "profile-trio-from-os",
+      "step": "bootstrap",
+      "keysAdded": [
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "bootstrap"
+      ],
+      "outputBytes": 23,
+      "errorBytes": 0,
+      "stdoutHash": "84368d2e35cba3aaff772e848190a6d1f11a77a8882855705822333ecbd289ce",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    },
+    {
+      "name": "profile-trio-and-windir",
+      "step": "bootstrap",
+      "keysAdded": [
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "WINDIR"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "bootstrap"
+      ],
+      "outputBytes": 23,
+      "errorBytes": 0,
+      "stdoutHash": "84368d2e35cba3aaff772e848190a6d1f11a77a8882855705822333ecbd289ce",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    },
+    {
+      "name": "userprofile-from-os",
+      "step": "production-compile-only",
+      "keysAdded": [
+        "USERPROFILE"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "helperStarted",
+        "modulesLoaded",
+        "compiled"
+      ],
+      "outputBytes": 121,
+      "errorBytes": 0,
+      "stdoutHash": "9d64b8b0b8c603d3f4fada92ae2fc126378b28025f166bf95b7c9908f291a956",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    },
+    {
+      "name": "profile-trio-from-os",
+      "step": "production-compile-only",
+      "keysAdded": [
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "helperStarted",
+        "modulesLoaded",
+        "compiled"
+      ],
+      "outputBytes": 121,
+      "errorBytes": 0,
+      "stdoutHash": "9d64b8b0b8c603d3f4fada92ae2fc126378b28025f166bf95b7c9908f291a956",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    },
+    {
+      "name": "profile-trio-and-windir",
+      "step": "production-compile-only",
+      "keysAdded": [
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "WINDIR"
+      ],
+      "exitCode": 0,
+      "signal": null,
+      "timedOut": false,
+      "markers": [
+        "helperStarted",
+        "modulesLoaded",
+        "compiled"
+      ],
+      "outputBytes": 121,
+      "errorBytes": 0,
+      "stdoutHash": "9d64b8b0b8c603d3f4fada92ae2fc126378b28025f166bf95b7c9908f291a956",
+      "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "hresults": []
+    }
+  ]
+}

@@ -132,7 +132,7 @@ test('Anthropic: a saved thinking/tool conversation resumes after restart with i
     assert.deepEqual(f.server.requests[2].messages.slice(0, saved.context.items.length), saved.context.items);
     const ledger = await f.ledger(), run = ledger.runs.at(-1)!.result!;
     assert.equal(run.status, 'completed');
-    assert.deepEqual(run.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272 });
+    assert.deepEqual(run.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272, nonCachedInputTokens: 0, cacheReadInputTokens: 213, cacheCreationInputTokens: 0 });
     assert.equal(run.modelRequests, 1); assert.equal(run.toolCalls, 0);
     assert.equal(ledger.records.filter(record => record.event.type === 'model_request_failed').length, 0);
     assert.equal(ledger.records.filter(record => record.event.type === 'tool_completed').length, 1);

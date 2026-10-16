@@ -26,7 +26,7 @@ export async function source(root, file) {
   const stat = await fs.lstat(absolute); assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 2 * 1024 * 1024, 'ordinary bounded source file');
   return fs.readFile(absolute, 'utf8');
 }
-/** 使用评估器自身的工具打包候选 TypeScript；不会运行 npm 钩子。 */
+/** Bundles candidate TypeScript using evaluator-owned tooling; never runs npm hooks. */
 export async function load(root, file, { electron = false } = {}) {
   const result = await build({ entryPoints: [path.join(root, file)], bundle: true, write: false, format: 'cjs', platform: 'node', target: 'node22', packages: 'external',
     nodePaths: [path.join(trustedRoot, 'node_modules')], logLevel: 'silent',
@@ -58,7 +58,7 @@ export async function assertIntegrity(root, task) {
   return { protectedFiles: protectedFiles.length, changed };
 }
 
-/** 执行选定的原有回归测试及要求新增的测试；不代表完整仓库验证。 */
+/** Selected original regressions plus required new tests; not a full repository gate. */
 export function runSelectedTests(root, task) {
   const childEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => /^(PATH|SYSTEMROOT|WINDIR|TEMP|TMP|TMPDIR|HOME|USERPROFILE|LANG|LC_ALL)$/i.test(key)));
   const results = [];

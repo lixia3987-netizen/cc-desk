@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { ModelContext, ToolDefinition } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
+import { createNativeModel } from '@cc-desk/agent-node/native-model';
 import { assertNativeInputBudget, autoCompactBeforeSend, pendingNativeContext } from '../src/main/engines/native/automatic-compaction';
 import { parseNativeConfig } from '../src/main/engines/native/config';
 
@@ -17,7 +17,7 @@ test('post-compaction hard input boundary includes the immutable tool catalog at
   const tools = [definition(1200)];
   const selected = { ...model, toolDefinitions: tools };
   const pending = pendingNativeContext(context, '继续🙂', selected);
-  const limit = estimateResponsesInputTokens(pending, '项目规则', tools);
+  const limit = createNativeModel({ ...selected, instructions: '项目规则' }).estimateInputUsage!(pending, config(2048).maxOutputTokens).estimatedInputTokens!;
   assert.doesNotThrow(() => assertNativeInputBudget(context, '继续🙂', '项目规则', config(limit), selected));
   assert.throws(() => assertNativeInputBudget(context, '继续🙂', '项目规则', config(limit - 1), selected), /超过运行预算/);
   assert.doesNotThrow(() => assertNativeInputBudget(context, '继续🙂', '项目规则', config(limit - 1), model));

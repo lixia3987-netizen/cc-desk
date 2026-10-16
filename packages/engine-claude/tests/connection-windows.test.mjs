@@ -163,8 +163,8 @@ test('Windows cleanup discovers a new grandchild through an exited parent after 
     assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
     assert.equal(await exists(grandchildReady), false);
     cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
-      '$all=@(Get-CimInstance Win32_Process)',
-      `$all=@(Get-CimInstance Win32_Process)
+      '# windows-tree:after-snapshot',
+      `# windows-tree:after-snapshot
   if(!(Test-Path -LiteralPath ${psQuote(captured)})) {
     [IO.File]::WriteAllText(${psQuote(captured)},'captured')
     $handshakeDeadline=[DateTime]::UtcNow.AddSeconds(3)
@@ -237,9 +237,12 @@ test('Windows cleanup excludes stale parent PID links before following the proce
       const childPid = Number(await fs.readFile(childReady, 'utf8'));
       assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
       const staleParentPid = staleParent === 'root' ? root.pid : childPid;
+      // 将真实哨兵显式加入查询，旧父 PID 注入仍必须经过完整的身份验证。
       cleaning = runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
-        '$all=@(Get-CimInstance Win32_Process)',
-        `$all=@(Get-CimInstance Win32_Process)
+        '# windows-tree:before-query', `# windows-tree:before-query
+    $query+=' OR ProcessId=${unrelated.pid}'`).replace(
+        '# windows-tree:after-snapshot',
+        `# windows-tree:after-snapshot
   $all=@($all | ForEach-Object {
     if($_.ProcessId -eq ${unrelated.pid}) {
       [IO.File]::WriteAllText(${psQuote(injected)},'stale-parent-link')
@@ -354,6 +357,22 @@ test('Windows cleanup proves exit on its held handle when the process exits betw
     await cleaning?.catch(() => {});
     await fs.rm(directory, { recursive: true, force: true });
   }
+});
+
+test('Windows cleanup releases a signaled retained HANDLE when CIM keeps the exited process row', { skip: process.platform !== 'win32', timeout: 15000 }, async () => {
+  const startedAt = Date.now();
+  const root = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore', windowsHide: true });
+  const spawnedAt = Date.now();
+  try {
+    await runOwnedCleanup(root, startedAt, spawnedAt, script => script.replace(
+      '# windows-tree:after-snapshot',
+      `# windows-tree:after-snapshot
+  if(!$retainedRows) { $retainedRows=@($all | Where-Object { [int]$_.ProcessId -eq ${root.pid} }) }
+  foreach($row in $retainedRows) {
+    if(!(@($all | Where-Object { $_.ProcessId -eq $row.ProcessId }).Count)) { $all+=@($row) }
+  }`));
+    assert.equal(live(root.pid), false, 'release must be based on the original process HANDLE exit');
+  } finally { root.kill('SIGKILL'); }
 });
 
 test('Windows cleanup refuses a failed termination while the held process is still live', { skip: process.platform !== 'win32', timeout: 12000 }, async () => {

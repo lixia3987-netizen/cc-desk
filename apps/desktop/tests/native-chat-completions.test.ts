@@ -65,7 +65,9 @@ test('chat executor runs local tools and preserves native history, cost snapshot
     const before = await f.readLedger();
     assert.equal(before.context!.protocol.id, 'openai-chat-completions');
     assert.ok(before.context!.items.some(item => typeof item === 'object' && item && 'role' in item && item.role === 'tool'));
-    assert.equal(JSON.stringify(before).includes(secret), false); assert.ok(f.executor.snapshot(f.id).usage?.costUSD);
+    assert.equal(JSON.stringify(before).includes(secret), false);
+    assert.equal(f.executor.snapshot(f.id).usage?.costUSD, undefined);
+    assert.equal(f.executor.snapshot(f.id).usage?.nativeCost?.reason, 'missing_cache_usage');
     await f.restart(); assert.equal(f.executor.snapshot(f.id).messages.filter(item => item.role === 'tool').length, 1);
     assert.equal((await f.executor.send(f.id, 'Second explicit turn [read]')).success, true);
     assert.deepEqual(f.server.requests[2].messages.slice(1, before.context!.items.length + 1), before.context!.items);

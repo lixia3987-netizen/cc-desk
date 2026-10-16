@@ -106,12 +106,39 @@ export function windowsNodePtyBuildArguments(gyp, arch = process.arch, nodeVersi
     `--arch=${arch}`, `--target=${nodeVersion}`, '--dist-url=https://nodejs.org/download/release'];
 }
 
+export function windowsNodePtyBuildEnvironment(environment, arch = process.arch) {
+  if (!['x64', 'arm64'].includes(arch)) throw new Error(`Unsupported Windows node-pty build architecture: ${arch}`);
+  // 上游资源脚本优先读取 npm_config_arch，必须与原生编译参数一致。
+  // Windows 环境变量名不区分大小写，先移除所有同名变体。
+  return {
+    ...Object.fromEntries(Object.entries(environment).filter(([key]) => key.toLowerCase() !== 'npm_config_arch')),
+    npm_config_arch: arch,
+  };
+}
+
+export async function verifyConptyResources(root, arch = process.arch) {
+  if (!['x64', 'arm64'].includes(arch)) throw new Error(`Unsupported Windows node-pty resource architecture: ${arch}`);
+  const directory = path.join(root, 'third_party', 'conpty');
+  const versions = await fs.readdir(directory);
+  if (versions.length !== 1) throw new Error('Expected the single bundled ConPTY resource version from node-pty 1.1.0.');
+  for (const name of ['conpty.dll', 'OpenConsole.exe']) {
+    const [source, copied] = await Promise.all([
+      fs.readFile(path.join(directory, versions[0], `win10-${arch}`, name)),
+      fs.readFile(path.join(root, 'build', 'Release', 'conpty', name)),
+    ]);
+    if (source.length === 0 || !source.equals(copied)) {
+      throw new Error(`Prepared ConPTY ${name} does not match the bundled ${arch} resource.`);
+    }
+  }
+}
+
 export async function prepareWindowsNodePty(root) {
   if (process.platform !== 'win32') throw new Error('The Windows node-pty build must run on Windows.');
   if (!['x64', 'arm64'].includes(process.arch)) throw new Error(`Unsupported Windows node-pty build architecture: ${process.arch}`);
   const gyp = require.resolve('node-gyp/bin/node-gyp.js');
   const gypMetadata = JSON.parse(await fs.readFile(require.resolve('node-gyp/package.json'), 'utf8'));
   if (gypMetadata.version !== nodePtyPatch.nodeGypVersion) throw new Error('The pinned node-gyp version is required. Run npm ci.');
+  const environment = windowsNodePtyBuildEnvironment(process.env);
   await applyPinnedNodePtyPatch(root);
   console.log(`Building node-pty ${nodePtyPatch.version} with the cc-desk ConPTY fix (node-gyp ${gypMetadata.version}).`);
   // node-pty 使用 N-API：Node 测试和 Electron 均会加载此构建产物。
@@ -120,16 +147,17 @@ export async function prepareWindowsNodePty(root) {
   // 编译 ConPTY 后端从不加载的旧版 winpty 源码；保留
   // 上游预编译的 winpty 回退文件以及所有现有编译器诊断信息。
   const result = spawnSync(process.execPath, windowsNodePtyBuildArguments(gyp), {
-    cwd: root, stdio: 'inherit', windowsHide: true, timeout: 300_000,
+    cwd: root, env: environment, stdio: 'inherit', windowsHide: true, timeout: 300_000,
   });
   if (result.error || result.status !== 0) {
     throw new Error('Patched node-pty build failed. Install Python 3 and Visual Studio 2022 C++ Build Tools with the Windows SDK and Spectre-mitigated libraries.', { cause: result.error });
   }
   // node-gyp 会删除 build/；完成后恢复上游附带的 ConPTY DLL 文件。
   const resources = spawnSync(process.execPath, [path.join(root, 'scripts', 'post-install.js')], {
-    cwd: root, stdio: 'inherit', windowsHide: true, timeout: 30_000,
+    cwd: root, env: environment, stdio: 'inherit', windowsHide: true, timeout: 30_000,
   });
   if (resources.error || resources.status !== 0) throw new Error('node-pty native resource preparation failed.', { cause: resources.error });
+  await verifyConptyResources(root);
   verifyBuiltConpty(root);
   console.log(`Verified compiled ConPTY fix: ${sha256(await fs.readFile(path.join(root, 'build', 'Release', 'conpty.node')))}`);
 }

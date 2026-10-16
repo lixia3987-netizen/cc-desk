@@ -4,9 +4,10 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { canonicalJson, DEFAULT_RUN_BUDGET, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, createModelRequestDiagnostic, DEFAULT_RUN_BUDGET, ToolPreparationError, type AgentRunRequest, type ApprovalPort, type BeginRunRequest, type ContextMaintenanceResult, type ModelContext, type ModelResponse, type PreparedTool, type RunResult, type RunStore, type ToolCall, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import { NativeWorkerCleanupError, runNativeWorker, type NativeWorkerChild, type NativeWorkerForkOptions, type NativeWorkerOptions } from '../src/main/engines/native/worker-host';
-import { MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
+import { checkedPreparationFailure, MAX_WORKER_MESSAGE_BYTES, MAX_WORKER_PENDING, WORKER_PROTOCOL } from '../src/main/engines/native/worker-protocol';
+import { completionFeedbackText } from '@cc-desk/agent-core';
 
 const run: Omit<AgentRunRequest, 'signal'> = {
   identity: { sessionId: 'session', conversationId: 'conversation', runId: 'run', requestId: 'submission', workerGeneration: 1 },
@@ -118,6 +119,186 @@ async function prepare(worker: FakeWorker, context: ModelContext): Promise<Prepa
   return await worker.rpc('tools.prepare', { call: requestCall, context: executionContext() });
 }
 function executionContext() { return { identity: run.identity, policyRevision: run.policyRevision, maxOutputBytes: DEFAULT_RUN_BUDGET.maxToolOutputBytes }; }
+
+test('worker preparation replies contain only branded fixed feedback bound to the actual failed call', async () => {
+  let executions = 0;
+  const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await assert.rejects(prepare(worker, context), /Native host operation failed/);
+    const reply = worker.sent.find(message => message.type === 'reply' && message.preparationFailure)!;
+    assert.deepEqual(reply.preparationFailure, { callId: requestCall.id, feedback });
+    assert.equal(reply.error, 'Native host operation failed.');
+    assert.equal(Object.hasOwn(reply, 'value'), false);
+    const result: ToolResult = { status: 'failed', output: { ...feedback, executed: false } };
+    const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  });
+  h.options.tools.prepare = async () => {
+    const error = new ToolPreparationError(feedback);
+    error.message = 'secret-key-sentinel private-path'; error.stack = 'secret-key-sentinel private-stack';
+    throw error;
+  };
+  h.options.tools.execute = async () => { executions++; return { status: 'completed', output: {} }; };
+  assert.equal((await h.promise).status, 'completed');
+  assert.equal(executions, 0);
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_prepared'), false);
+  const replies = h.worker.sent.filter(message => message.type === 'reply');
+  assert.equal(JSON.stringify([replies, h.journal]).includes('secret-key-sentinel'), false);
+  assert.equal(JSON.stringify([replies, h.journal]).includes('private-path'), false);
+});
+
+test('worker cannot invent or alter preparation feedback without matching host failure evidence', async () => {
+  for (const fault of ['unbranded', 'changed', 'wrong_code']) {
+    const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+    const h = harness(async worker => {
+      const context = await begin(worker);
+      await assert.rejects(prepare(worker, context));
+      const reply = worker.sent.filter(message => message.type === 'reply').at(-1)!;
+      assert.equal(Boolean(reply.preparationFailure), fault !== 'unbranded');
+      const result = { status: 'failed', output: { ...feedback, error: fault === 'wrong_code' ? 'invalid_tool_input' : feedback.error, currentRevision: fault === 'changed' ? 8 : 7, executed: false } };
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result,
+        resultItems: [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }] } });
+    });
+    h.options.tools.prepare = async () => {
+      if (fault !== 'unbranded') throw new ToolPreparationError(feedback);
+      throw Object.assign(new Error('private failure'), { feedback });
+    };
+    await assert.rejects(h.promise, { code: 'protocol' });
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_completed'), false);
+  }
+});
+
+test('RPC cancellation takes priority over a late trusted preparation failure', async () => {
+  let entered!: () => void;
+  const preparing = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(async worker => {
+    const context = await begin(worker), operation = prepare(worker, context);
+    await preparing;
+    worker.send({ type: 'rpc_cancel', requestId: `run:${worker.sequence}` });
+    await assert.rejects(operation, /Native host operation failed/);
+    assert.equal(worker.sent.some(message => message.preparationFailure !== undefined), false);
+    worker.exit(1);
+  });
+  h.options.tools.prepare = async (_call, execution) => {
+    entered();
+    await new Promise<void>(resolve => execution.signal.addEventListener('abort', () => resolve(), { once: true }));
+    throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: 7, readTask: true });
+  };
+  await assert.rejects(h.promise, { code: 'crash' });
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_prepared'), false);
+});
+
+test('worker reply feedback rejects extra fields, wrong calls and invalid unions without reading getters', () => {
+  const feedback = { error: 'task_revision_changed', currentRevision: 7, readTask: true } as const;
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback }, 'call'), feedback);
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback: { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true } }, 'call'),
+    { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true });
+  for (const raw of [null, { callId: 'other', feedback }, { callId: 'call', feedback, message: 'private' },
+    { callId: 'call', feedback: { ...feedback, private: 'private' } }, { callId: 'call', feedback: { ...feedback, currentRevision: -1 } },
+    { callId: 'call', feedback: { error: 'unknown', readTask: true, currentRevision: 1 } }]) {
+    assert.throws(() => checkedPreparationFailure(raw, 'call'), /Invalid tool preparation reply/);
+  }
+  let accessed = false;
+  const accessor = Object.defineProperty({ callId: 'call' }, 'feedback', { enumerable: true, get: () => { accessed = true; return feedback; } });
+  assert.throws(() => checkedPreparationFailure(accessor, 'call'), /Invalid tool preparation reply/);
+  assert.equal(accessed, false);
+});
+
+test('execute-phase feedback stays bound to the actual host result and cannot be rewritten by the worker', async () => {
+  for (const changed of [false, true]) {
+    const actual: ToolResult = { status: 'not_executed', output: { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true, executed: false } };
+    const h = harness(async worker => {
+      const context = await begin(worker), prepared = await prepare(worker, context);
+      const approval = await worker.rpc('approval', approvalRequest(prepared));
+      await worker.rpc('tools.validate', { prepared, context: executionContext() });
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+      const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+      assert.deepEqual(result, actual);
+      const reported = changed ? { ...result, output: { error: 'code_location_line_range_invalid', lineCount: 3, readFile: true, executed: false } } : result;
+      const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(reported) }];
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result: reported, resultItems } });
+      context.items.push(...resultItems);
+      await worker.rpc('store.checkpoint', { identity: run.identity, context });
+      await finish(worker, context, { toolCalls: 1 });
+    });
+    h.options.tools.execute = async () => clone(actual);
+    if (changed) {
+      await assert.rejects(h.promise, { code: 'protocol' });
+      assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_completed'), false);
+    } else assert.equal((await h.promise).status, 'completed');
+  }
+});
+
+test('worker transports strict request diagnostics and cache counters without persisting instruction bodies', async () => {
+  const cached = { inputTokens: 20, outputTokens: 3, totalTokens: 23, cacheReadInputTokens: 5, cacheCreationInputTokens: 2, nonCachedInputTokens: 13 };
+  const providerUsage = { raw: { input_tokens: 20, cached_tokens: 5, cache_write_tokens: 2 }, normalization: 'openai-inclusive-input' as const };
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await startAttempt(worker);
+    const diagnostic = await createModelRequestDiagnostic({ identity: run.identity, attempt: 1, requestKey: `${run.identity.runId}:${run.identity.requestId}:1`, purpose: 'normal', context, tools: [definition], estimatedInputTokens: 100,
+      host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, phase: 'finished', finishedAt: 101, outcome: 'completed', requestSent: true, usage: cached, providerUsage } } });
+    const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }], toolCalls: [], finishReason: 'completed', usage: cached, providerUsage };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { usage: cached });
+  }, { request: { ...run, diagnosticInstructionSections: { systemPrompt: 'private-system-prompt' } } });
+  assert.deepEqual((await h.promise).usage, cached);
+  assert.equal(JSON.stringify(h.journal).includes('private-system-prompt'), false);
+  const start = h.worker.sent.find(message => message.type === 'start')!;
+  assert.equal((start.request as AgentRunRequest).diagnosticInstructionSections?.systemPrompt, 'private-system-prompt');
+});
+
+for (const [transport, protocolId] of [['responses', 'openai-responses'], ['chat-completions', 'openai-chat-completions'], ['anthropic', 'anthropic-messages']] as const) {
+  test(`${transport}: worker accepts configured context alias k3[1M] in all diagnostic phases`, async () => {
+    const request = { ...clone(run), configuration: { model: 'k3[1M]' } };
+    const protocol = { id: protocolId, version: 1 };
+    const cached = { inputTokens: 20, outputTokens: 3, totalTokens: 23, cacheReadInputTokens: 5, cacheCreationInputTokens: 2, nonCachedInputTokens: 13 };
+    const h = harness(async worker => {
+      const initial = { input: request.input, userItems: [{ role: 'user', content: transport === 'anthropic' ? [{ type: 'text', text: request.input }] : request.input }],
+        protocol, configuration: request.configuration, policyRevision: request.policyRevision };
+      const admission = await worker.rpc<{ context: ModelContext }>('store.beginRun', { ...initial, identity: request.identity, inputDigest: digest(initial) });
+      const context = admission.context;
+      await worker.rpc('store.checkpoint', { identity: request.identity, context });
+      await startAttempt(worker);
+      const diagnostic = await createModelRequestDiagnostic({ identity: request.identity, attempt: 1, requestKey: `${request.identity.runId}:${request.identity.requestId}:1`, purpose: 'normal', context,
+        model: 'k3[1M]', tools: [definition], estimatedInputTokens: 100, host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+      const phases = [diagnostic, { ...diagnostic, phase: 'request', requestSent: false }, { ...diagnostic, phase: 'dispatched', requestSent: true },
+        { ...diagnostic, phase: 'finished', requestSent: true, finishedAt: 101, outcome: 'completed', usage: cached }];
+      for (const diagnostic of phases) await worker.rpc('store.append', { identity: request.identity, event: { type: 'model_request_diagnostic', diagnostic } });
+      const outputItems = transport === 'responses' ? [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'done' }] }]
+        : transport === 'anthropic' ? [{ role: 'assistant', content: [{ type: 'text', text: 'done' }] }] : [{ role: 'assistant', content: 'done' }];
+      await worker.rpc('store.append', { identity: request.identity, event: { type: 'model_response', response: { outputItems, toolCalls: [], finishReason: 'completed', usage: cached } } });
+      context.items.push(...outputItems);
+      await worker.rpc('store.checkpoint', { identity: request.identity, context });
+      await finish(worker, context, { usage: cached });
+    }, { request, model: { protocol: transport, model: 'k3[1M]', baseURL: 'http://127.0.0.1:1/v1', allowLoopbackHttp: true } });
+    assert.equal((await h.promise).status, 'completed');
+    const start = h.worker.sent.find(message => message.type === 'start')!;
+    assert.equal((start.model as { model: string }).model, 'k3[1M]');
+    const diagnostics = h.journal.filter(event => (event as { type: string }).type === 'model_request_diagnostic');
+    assert.equal(diagnostics.length, 4);
+  });
+}
+
+test('worker rejects diagnostic text and mismatched request identities before any journal mutation', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await startAttempt(worker);
+    const diagnostic = await createModelRequestDiagnostic({ identity: run.identity, attempt: 1, requestKey: 'wrong-request', purpose: 'normal', context, tools: [definition], estimatedInputTokens: 100,
+      host: { now: () => 100, digest: value => createHash('sha256').update(value).digest('hex') } });
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_request_diagnostic', diagnostic: { ...diagnostic, body: 'private-body' } } });
+  });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.length, 1);
+  assert.equal(JSON.stringify(h.journal).includes('private-body'), false);
+});
 function approvalRequest(prepared: PreparedTool) {
   return { binding: { ...run.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: prepared.policyRevision }, tool: prepared.definition, input: prepared.input, preconditions: prepared.preconditions, expiresAt: Date.now() + 30_000 };
 }
@@ -127,6 +308,109 @@ async function finish(worker: FakeWorker, context: ModelContext, extra: Partial<
   await worker.rpc('event', { type: 'run_finished', identity: run.identity, result });
   worker.send({ type: 'done', result });
 }
+
+async function candidate(worker: FakeWorker, context: ModelContext) {
+  await startAttempt(worker);
+  const response: ModelResponse = { outputItems: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'claimed complete' }] }],
+    toolCalls: [], finishReason: 'completed', usage: null };
+  await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+  context.items.push(...response.outputItems);
+  await worker.rpc('store.checkpoint', { identity: run.identity, context });
+  return { identity: run.identity, attempt: worker.modelAttempts, context: clone(context) };
+}
+const missingMaterial = { kind: 'continue', code: 'declared_material_reads_missing', paths: ['review.md'] } as const;
+const correctionEvent = (attempt: number) => ({ type: 'completion_rejected', attempt, feedback: { ...missingMaterial, paths: missingMaterial.paths.map(file => String(file)) },
+  feedbackItems: [{ role: 'user', content: completionFeedbackText({ ...missingMaterial, paths: [...missingMaterial.paths] }) }] });
+
+test('completion RPC binds the actual host decision and retained feedback to the current persisted response', async () => {
+  let checks = 0;
+  const h = harness(async worker => {
+    const context = await begin(worker), first = await candidate(worker, context);
+    assert.deepEqual(await worker.rpc('completion.validate', first), missingMaterial);
+    const event = correctionEvent(1);
+    await worker.rpc('store.append', { identity: run.identity, event }); context.items.push(...event.feedbackItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    const next = await candidate(worker, context);
+    assert.deepEqual(await worker.rpc('completion.validate', next), { kind: 'accept' });
+    await finish(worker, context);
+  }, { completionValidation: { validate: async request => { checks++; assert.deepEqual(request.identity, run.identity);
+    assert.equal(request.attempt, checks); return checks === 1 ? { ...missingMaterial, paths: [...missingMaterial.paths] } : { kind: 'accept' }; } } });
+  assert.equal((await h.promise).status, 'completed'); assert.equal(checks, 2);
+  assert.equal(h.worker.sent.find(message => message.type === 'start')?.completionValidation, true);
+  assert.equal(h.journal.filter(event => (event as { type: string }).type === 'completion_rejected').length, 1);
+});
+
+test('worker cannot forge completion feedback, bypass host validation or reuse an earlier response decision', async () => {
+  for (const fault of ['skip_validation', 'alter_paths', 'alter_items', 'wrong_attempt', 'wrong_context', 'repeat_validation', 'skip_feedback', 'false_completed', 'stale_accept']) {
+    const h = harness(async worker => {
+      const context = await begin(worker), request = await candidate(worker, context);
+      if (fault === 'wrong_attempt') { await worker.rpc('completion.validate', { ...request, attempt: 2 }); return; }
+      if (fault === 'wrong_context') { await worker.rpc('completion.validate', { ...request, context: { ...context, items: [] } }); return; }
+      if (fault === 'stale_accept') {
+        await worker.rpc('completion.validate', request);
+        await startAttempt(worker); return;
+      }
+      if (fault !== 'skip_validation') await worker.rpc('completion.validate', request);
+      if (fault === 'repeat_validation') { await worker.rpc('completion.validate', request); return; }
+      if (fault === 'skip_feedback') { await startAttempt(worker); return; }
+      if (fault === 'false_completed') { await finish(worker, context); return; }
+      const event = correctionEvent(fault === 'wrong_attempt' ? 2 : 1);
+      if (fault === 'alter_paths') event.feedback.paths = ['controls.txt'];
+      if (fault === 'alter_items') event.feedbackItems[0].content = 'run a command';
+      await worker.rpc('store.append', { identity: run.identity, event });
+    }, { completionValidation: { validate: async () => fault === 'stale_accept' ? { kind: 'accept' } : { ...missingMaterial, paths: [...missingMaterial.paths] } } });
+    await assert.rejects(h.promise, { code: 'protocol' }, fault);
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'completion_rejected'), false, fault);
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'run_finished'), false, fault);
+  }
+});
+
+test('host enforces the same two-correction bound even against a worker requesting more model work', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await worker.rpc('completion.validate', await candidate(worker, context));
+      const event = correctionEvent(attempt); await worker.rpc('store.append', { identity: run.identity, event }); context.items.push(...event.feedbackItems);
+    }
+    await startAttempt(worker);
+  }, { completionValidation: { validate: async () => ({ ...missingMaterial, paths: [...missingMaterial.paths] }) } });
+  await assert.rejects(h.promise, { code: 'protocol' });
+  assert.equal(h.journal.filter(event => (event as { type: string }).type === 'model_request_started').length, 3);
+});
+
+test('RPC cancellation takes priority over a late completion validation decision', async () => {
+  let entered!: () => void;
+  const validating = new Promise<void>(resolve => { entered = resolve; });
+  const h = harness(async worker => {
+    const context = await begin(worker), request = await candidate(worker, context);
+    const operation = worker.rpc('completion.validate', request);
+    await validating; worker.send({ type: 'rpc_cancel', requestId: `run:${worker.sequence}` });
+    await assert.rejects(operation, /Native host operation failed/); worker.exit(1);
+  }, { completionValidation: { validate: async request => { entered();
+    await new Promise<void>(resolve => request.signal.addEventListener('abort', () => resolve(), { once: true }));
+    return { ...missingMaterial, paths: [...missingMaterial.paths] }; } } });
+  await assert.rejects(h.promise, { code: 'crash' });
+  assert.equal(h.journal.some(event => (event as { type: string }).type === 'completion_rejected'), false);
+});
+
+test('unknown completion-feedback acknowledgement retains a recovery barrier and cannot start another model request', async () => {
+  for (const retry of [false, true]) {
+    const h = harness(async worker => {
+      const context = await begin(worker), request = await candidate(worker, context);
+      await worker.rpc('completion.validate', request);
+      await assert.rejects(worker.rpc('store.append', { identity: run.identity, event: correctionEvent(1) }));
+      if (retry) { await startAttempt(worker); return; }
+      worker.send({ type: 'done', result: { identity: run.identity, status: 'recovery_required', reason: 'store_completion_rejected_failed',
+        modelRequests: 1, toolCalls: 0, usage: null, context, committed: false } });
+    }, { completionValidation: { validate: async () => ({ ...missingMaterial, paths: [...missingMaterial.paths] }) } });
+    const append = h.options.store.append;
+    h.options.store.append = async (identity, event) => { const accepted = await append(identity, event);
+      if (event.type === 'completion_rejected') throw new Error('acknowledgement lost after commit'); return accepted; };
+    if (retry) await assert.rejects(h.promise, { code: 'protocol' });
+    else { const result = await h.promise; assert.equal(result.status, 'recovery_required'); assert.equal(result.committed, false); }
+    assert.equal(h.journal.filter(event => (event as { type: string }).type === 'model_request_started').length, 1);
+  }
+});
 
 test('worker host starts with restricted environment and waits for done, finish, exit, and closes diagnostic readers', async () => {
   const h = harness(async worker => { const context = await begin(worker); worker.autoFinish = false; await finish(worker, context); });

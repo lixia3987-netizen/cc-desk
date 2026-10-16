@@ -1,13 +1,14 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import type { EventEmitter } from 'node:events';
-import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, validateModelFailureDiagnostic, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, getToolPreparationFeedback, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage, type AgentEvent, type AgentRunRequest, type ApprovalDecision, type ApprovalPort, type ApprovalRequest, type BeginRunRequest, type ContextMaintenancePort, type ContextMaintenanceRequest, type JsonValue, type ModelContext, type ModelResponse, type PreparedTool, type RunIdentity, type RunJournalEvent, type RunResult, type RunStore, type ToolCall, type ToolExecutionContext, type ToolPort, type ToolPreparationFeedback, type ToolResult, type Usage } from '@cc-desk/agent-core';
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas } from '@cc-desk/agent-node/responses-model';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { nativeResponseCalls, requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
 import { verifyNativeImageAttachments } from '../../native-image-attachments';
 import { checkedMessage, MAX_WORKER_PENDING, sameRun, WORKER_PROTOCOL } from './worker-protocol';
 import type { NativeActivePauseSource } from './active-pause';
+import { completionFeedbackText, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision, type CompletionValidationDecision, type CompletionValidationPort } from '@cc-desk/agent-core';
 
 interface NativeWorkerStream extends NodeJS.ReadableStream {
   destroyed?: boolean;
@@ -38,6 +39,7 @@ export interface NativeWorkerOptions {
   store: RunStore;
   approvals: ApprovalPort;
   contextMaintenance?: ContextMaintenancePort;
+  completionValidation?: CompletionValidationPort;
   /** 宿主管理的总容量，由工作流及委派工作进程共享。 */
   consumeBudget?(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean>;
   activePause?: NativeActivePauseSource;
@@ -84,9 +86,7 @@ function call(value: unknown): asserts value is ToolCall {
   if (!string(item.id) || !string(item.name) || typeof item.arguments !== 'string') invalid();
 }
 function usage(value: unknown): void {
-  if (value === null) return;
-  const item = fields(value, [], ['inputTokens', 'outputTokens', 'totalTokens']);
-  if (!Object.values(item).every(integer)) invalid();
+  if (!validateUsage(value)) invalid();
 }
 function toolResult(value: unknown): asserts value is ToolResult {
   const item = fields(value, ['status', 'output'], ['effects', 'truncated']);
@@ -171,6 +171,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     const abort = new AbortController();
     const inFlight = new Map<string, { controller: AbortController; work: Promise<void> }>();
     const toolStates = new Map<string, ToolState>();
+    const preparationFailures = new Map<string, ToolPreparationFeedback>();
+    const preparingCalls = new Set<string>();
     const completedTools = new Map<string, ToolResult>();
     const calls = new Map<string, ToolCall>();
     const pendingCalls: string[] = [];
@@ -185,8 +187,13 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
     let maintenanceInFlight = false, maintenanceUncertain = false, summaryRequests = 0;
     let modelBudgetReserved = false, toolBudgetReserved = false;
     let modelAttempts = 0, activeAttempt: number | undefined, modelStreamObserved = false, modelJournalUncertain = false, modelJournalInFlight = false;
+    let modelDiagnostic: Extract<RunJournalEvent, { type: 'model_request_diagnostic' }>['diagnostic'] | undefined;
+    let usageInstrumented = false, usageUnknown = false;
+    const responseUsages: Array<Usage | null> = [], summaryUsages: Array<Usage | null> = [];
     let retries = 0, retryNotBefore: number | undefined, modelFailureClosed = false;
     let maintenanceSource: ModelContext | undefined;
+    let completionCandidate: number | undefined, completionDecision: CompletionValidationDecision | undefined, completionChecking = false;
+    let completionChecked: number | undefined, completionRejections = 0;
     let lastMaintenanceBoundary: ModelContext | undefined, completedToolBoundary = false, maintenanceFailed = false;
     let failure: NativeWorkerError | undefined;
     let settled = false, outputBytes = 0;
@@ -314,9 +321,10 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       } else if (value !== undefined && (!state.approval || !equal(value, state.approval))) invalid();
     }
     function validResponse(value: unknown): ModelResponse {
-      const item = fields(value, ['outputItems', 'toolCalls', 'finishReason', 'usage'], ['continuation']);
+      const item = fields(value, ['outputItems', 'toolCalls', 'finishReason', 'usage'], ['continuation', 'providerUsage']);
       if (!Array.isArray(item.outputItems) || !Array.isArray(item.toolCalls) || !['completed', 'tool_calls', 'refused', 'incomplete'].includes(item.finishReason as string)) invalid();
       usage(item.usage);
+      if (item.providerUsage !== undefined && !validateProviderUsage(item.providerUsage)) invalid();
       const response = value as ModelResponse;
       for (const requested of response.toolCalls) {
         call(requested);
@@ -355,12 +363,32 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
       // 上下文切换是一项完整边界操作。被攻陷的工作进程
       // 不能通过其他存储修改或工具、审批请求与之竞争。
       if (maintenanceInFlight && method !== 'event') invalid();
+      if (completionChecking) invalid();
+      if (method === 'completion.validate') {
+        const item = fields(args, ['identity', 'attempt', 'context']);
+        identity(item.identity, runIdentity);
+        if (!options.completionValidation || committedResult || activeAttempt || activeTool || pendingCalls.length || inFlight.size !== 1 ||
+          !completionCandidate || completionChecked === completionCandidate || completionDecision || item.attempt !== completionCandidate || signal.aborted || abort.signal.aborted) invalid();
+        const source = requireContext(item.context);
+        completionChecked = completionCandidate;
+        completionChecking = true;
+        try {
+          const decision = await options.completionValidation.validate({ identity: clone(runIdentity), attempt: completionCandidate, context: source, signal });
+          // 取消优先，迟到反馈不能继续执行或授权完成。
+          if (signal.aborted || abort.signal.aborted) throw new NativeWorkerError('cancelled');
+          if (!validateCompletionDecision(decision)) throw new NativeWorkerError('completion_validation');
+          assertNoModelCredential(decision, forbiddenValues);
+          completionDecision = clone(decision);
+          return clone(decision);
+        } finally { completionChecking = false; }
+      }
       if (method === 'host.consumeBudget') {
         const item = fields(args, ['kind', 'identity']);
         identity(item.identity, runIdentity);
         if (!options.consumeBudget || committedResult || signal.aborted || inFlight.size !== 1 ||
             !['model', 'tool'].includes(item.kind as string)) invalid();
         const kind = item.kind as 'model' | 'tool';
+        if (kind === 'model' && options.completionValidation && (completionCandidate !== undefined || completionRejections > MAX_COMPLETION_CORRECTIONS)) invalid();
         if (kind === 'model' ? modelBudgetReserved || activeAttempt || pendingCalls.length || activeTool :
             toolBudgetReserved || activeAttempt || !pendingCalls.length || activeTool) invalid();
         const accepted = await options.consumeBudget(kind, runIdentity);
@@ -378,7 +406,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const source = requireContext(item.context);
         if (lastMaintenanceBoundary && equal(source, lastMaintenanceBoundary)) invalid();
         requireCompleteContext(source);
-        if (contextBudgetUsage(source, adapter.estimateInputTokens(source), budget).status === 'within_budget') invalid();
+        if (contextBudgetUsage(source, adapter.estimateInputUsage?.(source, budget.maxOutputTokens) ?? adapter.estimateInputTokens(source), budget).status === 'within_budget') invalid();
         maintenanceInFlight = true; maintenanceSource = clone(source); lastMaintenanceBoundary = clone(source);
         try {
           const request: ContextMaintenanceRequest = { identity: runIdentity, context: source, budget: clone(budget),
@@ -397,6 +425,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             savedContext = clone(result.context);
           }
           summaryRequests += result.modelRequests;
+          if (result.modelRequests === 1) summaryUsages.push(clone(result.usage));
           maintenanceFailed = result.kind === 'failed';
           maintenanceSource = undefined;
           return clone(result);
@@ -427,19 +456,34 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         if (!isObject(item.event) || typeof item.event.type !== 'string' || !savedContext || committedResult) invalid();
         const event = item.event as unknown as RunJournalEvent;
         if (maintenanceFailed && (event.type !== 'run_finished' || event.result.status === 'completed')) invalid();
-        const modelJournal = ['model_request_started', 'model_request_failed', 'model_response'].includes(event.type);
+        const modelJournal = ['model_request_started', 'model_request_failed', 'model_response', 'completion_rejected'].includes(event.type);
         if (modelJournal) modelJournalInFlight = true;
         try {
           let response: ModelResponse | undefined, state: ToolState | undefined;
-          if (event.type === 'model_request_started') {
+          if (event.type === 'model_request_diagnostic') {
+            fields(event, ['type', 'diagnostic']);
+            if (!validateModelRequestDiagnostic(event.diagnostic) || !activeAttempt || event.diagnostic.attempt !== activeAttempt ||
+                event.diagnostic.requestKey !== `${runIdentity.runId}:${runIdentity.requestId}:${activeAttempt}` ||
+                !sameRun(event.diagnostic.identity, runIdentity) || !equal(event.diagnostic.protocol, adapter.protocol) ||
+                ![run.diagnosticPurpose ?? 'normal', 'retry'].includes(event.diagnostic.purpose) ||
+                event.diagnostic.parentRunId !== run.diagnosticIdentity?.parentRunId || event.diagnostic.childId !== run.diagnosticIdentity?.childId ||
+                event.diagnostic.contextDigest !== createHash('sha256').update(JSON.stringify(savedContext)).digest('hex') ||
+                event.diagnostic.toolsetDigest !== createHash('sha256').update(JSON.stringify(definitions)).digest('hex')) invalid();
+            if (!modelDiagnostic ? event.diagnostic.phase !== 'started' : modelDiagnostic.phase === 'finished' ||
+                event.diagnostic.phase === 'started' || event.diagnostic.phase === 'request' && modelDiagnostic.phase !== 'started' ||
+                event.diagnostic.phase === 'dispatched' && (modelDiagnostic.phase !== 'request' || event.diagnostic.requestSent !== true) ||
+                modelDiagnostic.contextDigest !== event.diagnostic.contextDigest || modelDiagnostic.toolsetDigest !== event.diagnostic.toolsetDigest) invalid();
+          } else if (event.type === 'model_request_started') {
             fields(event, ['type', 'attempt']);
             if (options.consumeBudget && !modelBudgetReserved || !integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
                 modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
+                options.completionValidation && (completionCandidate !== undefined || completionRejections > MAX_COMPLETION_CORRECTIONS) ||
                 modelFailureClosed && (retryNotBefore === undefined || Date.now() < retryNotBefore)) invalid();
           } else if (event.type === 'model_request_failed') {
             fields(event, ['type', 'attempt', 'failure', 'partial'], ['retryDelayMs']);
             if (!activeAttempt || !integer(event.attempt) || event.attempt !== activeAttempt || typeof event.partial !== 'boolean' || !validateModelFailureDiagnostic(event.failure) ||
                 modelStreamObserved && !event.partial || inFlight.size !== 1) invalid();
+            if (modelDiagnostic && (modelDiagnostic.phase !== 'finished' || modelDiagnostic.outcome === 'completed' || modelDiagnostic.usage !== null)) invalid();
             if (event.retryDelayMs !== undefined && (modelRetry !== 'safe_transient' || !event.failure.retryable || event.partial ||
                 retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || modelAttempts + summaryRequests >= budget.maxModelRequests ||
                 event.retryDelayMs >= budget.maxActiveMs)) invalid();
@@ -447,6 +491,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             fields(event, ['type', 'response']);
             if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
             response = validResponse(event.response);
+            if (modelDiagnostic && (modelDiagnostic.phase !== 'finished' || modelDiagnostic.outcome !== 'completed' ||
+                !equal(modelDiagnostic.usage, response.usage) || !equal(modelDiagnostic.providerUsage ?? null, response.providerUsage ?? null))) invalid();
             // 完整响应替换投影中的流式文本。
             // 进行该持久化替换前，释放凭据守卫暂扣的末尾内容，
             // 防止随后被显示为新的部分响应。
@@ -456,6 +502,11 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             });
             projectionChain = flushing.catch(() => {});
             await flushing;
+          } else if (event.type === 'completion_rejected') {
+            fields(event, ['type', 'attempt', 'feedback', 'feedbackItems']);
+            if (!options.completionValidation || !completionCandidate || completionRejections > MAX_COMPLETION_CORRECTIONS || activeAttempt || pendingCalls.length || activeTool || inFlight.size !== 1 ||
+              completionDecision?.kind !== 'continue' || event.attempt !== completionCandidate || !equal(event.feedback, completionDecision) ||
+              !equal(event.feedbackItems, adapter.userItems(completionFeedbackText(completionDecision))) || signal.aborted || abort.signal.aborted) invalid();
           } else if (event.type === 'tool_prepared') {
             fields(event, ['type', 'prepared'], ['approval']);
             state = requirePrepared(event.prepared);
@@ -471,38 +522,58 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             // 不得虚构取消或失败结果并关闭账本。
             if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
             if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
+            const output = event.result.output;
+            if (!state?.result && isObject(output) && (['task_revision_changed', 'code_location_line_range_invalid'].includes(output.error as string) ||
+                ['currentRevision', 'lineCount', 'readTask', 'readFile'].some(key => Object.hasOwn(output, key)))) {
+              const feedback = preparationFailures.get(event.call.id);
+              if (state || !feedback || !equal(event.result, { status: 'failed', output: { ...feedback, executed: false } })) invalid();
+            }
             if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();
           } else if (event.type === 'run_finished') {
             fields(event, ['type', 'result']);
             result(event.result, runIdentity);
             if (!event.result.committed || !equal(event.result.context, savedContext) || activeAttempt ||
+                options.completionValidation && event.result.status === 'completed' && (completionCandidate !== modelAttempts || completionDecision?.kind !== 'accept') ||
                 modelFailureClosed && event.result.status === 'completed' ||
                 event.result.modelRequests !== modelAttempts + summaryRequests || event.result.toolCalls > budget.maxToolCalls ||
                 (pendingCalls.length && event.result.status !== 'recovery_required')) invalid();
+            if (usageInstrumented && !equal(event.result.usage, sumUsage([...responseUsages, ...summaryUsages, ...(usageUnknown ? [null] : [])]))) invalid();
           } else invalid();
           let receipt: { seq: number };
           try { receipt = await options.store.append(runIdentity, clone(event)); }
           catch (error) {
-            if (['model_request_started', 'model_request_failed', 'model_response'].includes(event.type)) modelJournalUncertain = true;
+            if (['model_request_started', 'model_request_failed', 'model_response', 'completion_rejected'].includes(event.type)) modelJournalUncertain = true;
             throw error;
           }
           if (event.type === 'model_request_started') {
             modelBudgetReserved = false;
+            modelDiagnostic = undefined;
             modelAttempts++; activeAttempt = event.attempt; modelStreamObserved = false; modelFailureClosed = false; retryNotBefore = undefined;
+          } else if (event.type === 'model_request_diagnostic') {
+            modelDiagnostic = clone(event.diagnostic);
+            usageInstrumented = true;
           } else if (event.type === 'model_request_failed') {
+            usageUnknown = true;
             activeAttempt = undefined; modelFailureClosed = true;
             // 失败的部分输出绝不重放到后续终态投影中。
             safeDeltas = new SafeModelDeltas(forbiddenValues, event => { projectionQueue.push({ ...event, identity: runIdentity }); });
             if (event.retryDelayMs !== undefined) { retries++; retryNotBefore = Date.now() + event.retryDelayMs; }
           } else if (event.type === 'model_response' && response) {
+            responseUsages.push(clone(response.usage));
             activeAttempt = undefined; modelFailureClosed = false;
+            completionCandidate = response.finishReason === 'completed' && response.toolCalls.length === 0 ? modelAttempts : undefined;
+            completionDecision = undefined;
             completedToolBoundary = response.toolCalls.length > 0;
             savedContext!.items.push(...clone(response.outputItems));
             if (response.continuation !== undefined) savedContext!.continuation = clone(response.continuation);
             else delete savedContext!.continuation;
             for (const requested of response.toolCalls) { calls.set(requested.id, clone(requested)); pendingCalls.push(requested.id); }
+          } else if (event.type === 'completion_rejected') {
+            savedContext!.items.push(...clone(event.feedbackItems));
+            completionRejections++;
+            completionCandidate = undefined; completionDecision = undefined;
           } else if (event.type === 'tool_prepared') state!.recorded = true;
-          else if (event.type === 'tool_completed') { toolBudgetReserved = false; savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); pendingCalls.shift(); }
+          else if (event.type === 'tool_completed') { toolBudgetReserved = false; savedContext!.items.push(...clone(event.resultItems)); completedTools.set(event.call.id, clone(event.result)); preparationFailures.delete(event.call.id); pendingCalls.shift(); }
           else if (event.type === 'run_finished') committedResult = clone(event.result);
           return receipt;
         } finally { if (modelJournal) modelJournalInFlight = false; }
@@ -512,8 +583,20 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         const requested = requireCall(item.call);
         if (options.consumeBudget && !toolBudgetReserved || !definitions.some(definition => definition.name === requested.name)) invalid();
         const bound = execution(item.context, signal);
-        if (signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
-        const prepared = await options.tools.prepare(clone(requested), bound);
+        if (signal.aborted || abort.signal.aborted || toolStates.has(requested.id)) throw new NativeWorkerError('cancelled');
+        if (preparingCalls.has(requested.id) || preparationFailures.has(requested.id)) invalid();
+        preparingCalls.add(requested.id);
+        let prepared: PreparedTool;
+        try {
+          prepared = await options.tools.prepare(clone(requested), bound);
+          if (signal.aborted || abort.signal.aborted) throw new NativeWorkerError('cancelled');
+        } catch (error) {
+          // 取消优先；只记录真实宿主 prepare 抛出的品牌错误，不记录 message/stack。
+          if (signal.aborted || abort.signal.aborted) throw new NativeWorkerError('cancelled');
+          const feedback = getToolPreparationFeedback(error);
+          if (feedback) preparationFailures.set(requested.id, feedback);
+          throw error;
+        } finally { preparingCalls.delete(requested.id); }
         if (!equal(prepared.call, requested) || prepared.policyRevision !== run.policyRevision || !equal(prepared.definition, definitions.find(definition => definition.name === requested.name))) invalid();
         toolStates.set(requested.id, { prepared: clone(prepared), validated: false, recorded: false, executing: false, executed: false });
         return prepared;
@@ -615,7 +698,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           }
           run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
           const paused = options.activePause?.paused ?? false;
-          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}), ...(paused ? { activePaused: true } : {}) });
+          post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.completionValidation ? { completionValidation: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}), ...(paused ? { activePaused: true } : {}) });
           if (paused) post({ type: 'active_pause', version: WORKER_PROTOCOL, identity: runIdentity, paused: true });
           if (abort.signal.aborted) post({ type: 'cancel', version: WORKER_PROTOCOL, identity: runIdentity });
           return;
@@ -673,7 +756,13 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, ...(value === undefined ? {} : { value }) });
         }, error => {
           if (error instanceof InvalidWorkerMessage || (error instanceof ResponsesModelError && error.code === 'credential_echo')) stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.'));
-          else if (!exited && !failure) post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, error: 'Native host operation failed.' });
+          else if (!exited && !failure) {
+            const feedback = message.method === 'tools.prepare' && !controller.signal.aborted && !abort.signal.aborted ? getToolPreparationFeedback(error) : null;
+            const callId = isObject(message.args) && isObject(message.args.call) ? message.args.call.id : undefined;
+            const actual = typeof callId === 'string' ? preparationFailures.get(callId) : undefined;
+            const preparationFailure = feedback && actual && equal(feedback, actual) ? { callId: callId as string, feedback } : undefined;
+            post({ type: 'reply', version: WORKER_PROTOCOL, identity: runIdentity, seq: ++replySequence, requestId, error: 'Native host operation failed.', ...(preparationFailure ? { preparationFailure } : {}) });
+          }
         }).finally(() => { inFlight.delete(requestId); checkFinished(); });
       } catch { stop(new NativeWorkerError('protocol', 'Native worker protocol validation failed.')); }
     }

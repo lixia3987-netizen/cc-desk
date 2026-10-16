@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { NativeConnectionInput, NativeConnectionList, NativeConnectionModelListCode, NativeConnectionModelListResult, NativeConnectionTestCode, NativeConnectionTestResult, NativeConnectionView, NativeModelCapabilitySnapshot } from '../../shared/native-connections';
 import { nativeConnectionsChanged } from '../useNativeConnectionReadiness';
 import { ModelCapabilityInfo } from './ModelCapabilityInfo';
+import { nativeCostLabel } from '../../shared/native-cost';
 
 function emptyConnection(): NativeConnectionInput {
   return { name: '', protocol: 'responses', baseURL: 'https://api.openai.com/v1', model: '', allowLoopbackHttp: false, enabled: true, auth: { mode: 'env', variable: 'OPENAI_API_KEY' } };
@@ -282,7 +283,7 @@ export function NativeConnections({ disabled = false, active = true, editConnect
   };
   const renderTestResult = (item: NativeConnectionView) => <>{testResults[item.id]?.revision === item.revision && <p className="hint native-connection-test-result" role="status">
         {diagnosticMessages[testResults[item.id].result.code]} 耗时 {testResults[item.id].result.durationMs} ms。
-        {testResults[item.id].result.estimatedCostUSD !== undefined && <> 按用户价格估算 ${testResults[item.id].result.estimatedCostUSD!.toFixed(6)}。</>}
+        {nativeCostLabel(testResults[item.id].result.costEstimate)}。
         {testResults[item.id].result.httpStatus !== undefined && <> HTTP {testResults[item.id].result.httpStatus}。</>}
         {testResults[item.id].result.usage ? <> 服务报告用量：输入 {testResults[item.id].result.usage?.inputTokens ?? '未提供'}，输出 {testResults[item.id].result.usage?.outputTokens ?? '未提供'}，合计 {testResults[item.id].result.usage?.totalTokens ?? '未提供'} tokens。</> : <> 服务未提供用量。</>}
       </p>}</>;
@@ -345,6 +346,19 @@ export function NativeConnections({ disabled = false, active = true, editConnect
       <summary>高级设置（价格与本地代理）</summary>
       <label className="checkbox"><input aria-label="填写模型价格" type="checkbox" checked={Boolean(draft.pricing)} disabled={locked} onChange={event => setDraft({ ...draft, pricing: event.target.checked ? { model: draft.model, inputUSDPerMillion: 0, outputUSDPerMillion: 0 } : undefined })}/><span>自行填写模型价格（可选，仅估算）</span></label>
       {draft.pricing && <fieldset disabled={locked}>
+        <p className="hint">估价来源：用户填写费率。普通输入价格只用于非缓存输入，缓存费率留空表示未知；明确填 0 表示免费。</p>
+        <label>缓存读取 USD / 百万 tokens<input aria-label="缓存读取单价" type="number" min="0" max="1000000" step="any" placeholder="未填写" value={draft.pricing.cacheReadUSDPerMillion ?? ''} onChange={event => {
+          const pricing = { ...draft.pricing! };
+          if (event.target.value === '') delete pricing.cacheReadUSDPerMillion;
+          else pricing.cacheReadUSDPerMillion = event.target.valueAsNumber;
+          setDraft({ ...draft, pricing });
+        }}/></label>
+        <label>缓存创建 USD / 百万 tokens<input aria-label="缓存创建单价" type="number" min="0" max="1000000" step="any" placeholder="未填写" value={draft.pricing.cacheCreationUSDPerMillion ?? ''} onChange={event => {
+          const pricing = { ...draft.pricing! };
+          if (event.target.value === '') delete pricing.cacheCreationUSDPerMillion;
+          else pricing.cacheCreationUSDPerMillion = event.target.valueAsNumber;
+          setDraft({ ...draft, pricing });
+        }}/></label>
         <label>价格对应模型<input aria-label="价格对应模型" value={draft.pricing.model} maxLength={200} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, model: event.target.value } })}/></label>
         <label>输入 USD / 百万 tokens<input aria-label="输入单价" type="number" min="0" max="1000000" step="any" value={draft.pricing.inputUSDPerMillion} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, inputUSDPerMillion: event.target.valueAsNumber } })}/></label>
         <label>输出 USD / 百万 tokens<input aria-label="输出单价" type="number" min="0" max="1000000" step="any" value={draft.pricing.outputUSDPerMillion} onChange={event => setDraft({ ...draft, pricing: { ...draft.pricing!, outputUSDPerMillion: event.target.valueAsNumber } })}/></label>

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { canonicalJson, validateNativeTaskPlan, type JsonObject, type PreparedTool, type RunIdentity, type ToolDefinition, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
+import { canonicalJson, getToolPreparationFeedback, ToolPreparationError, validateNativeTaskPlan, type JsonObject, type PreparedTool, type RunIdentity, type ToolDefinition, type ToolExecutionContext, type ToolPort, type ToolResult } from '@cc-desk/agent-core';
 import type { NativeTaskPlan, NativeTaskSnapshot, NativeTaskUpdate } from '@cc-desk/contracts/native-task';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 
@@ -24,7 +24,7 @@ const readSchema = z.object({ evidenceOffset: z.number().int().nonnegative().max
 const idSchema: JsonObject = { type: 'string', minLength: 1, maxLength: 80, pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$' };
 const definitions: ToolDefinition[] = [{
   name: 'update_plan', risk: 'read',
-  description: 'Create or revise the current engineering task plan with expectedRevision (0 for a new task; otherwise use read_task). Use stable step and acceptance-condition IDs. Step implemented is a model declaration, never verification. Dependencies must be acyclic and met before starting dependent work. A blocked step needs a reason. Criteria describe actual command checks or human review; a command success alone does not prove acceptance. Plans change only task metadata and grant no file, command, or external-tool permissions. Simple questions need no plan.',
+  description: 'Create or revise the current engineering task plan with expectedRevision (0 for a new task; otherwise use read_task). Each successful update_plan or record_code_location advances the task revision: use its returned revision for the next metadata write, and never reuse one revision for multiple calls in the same batch. Use stable step and acceptance-condition IDs. Step implemented is a model declaration, never verification. Dependencies must be acyclic and met before starting dependent work. A blocked step needs a reason. Criteria describe actual command checks or human review; a command success alone does not prove acceptance. Plans change only task metadata and grant no file, command, or external-tool permissions. Simple questions need no plan.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['expectedRevision', 'plan'], properties: {
     expectedRevision: { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER }, explanation: { type: 'string', minLength: 1, maxLength: 2000 },
     plan: { type: 'object', additionalProperties: false, required: ['goal', 'steps', 'criteria'], properties: {
@@ -85,7 +85,10 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
   };
   const revision = (prepared: PreparedTool) => {
     const task = snapshot();
-    if (prepared.call.name === 'update_plan' && (task?.revision ?? 0) !== prepared.input.expectedRevision) throw new Error('任务修订已改变，请先 read_task。');
+    if (prepared.call.name === 'update_plan' && (task?.revision ?? 0) !== prepared.input.expectedRevision) {
+      if (task) throw new ToolPreparationError({ error: 'task_revision_changed', currentRevision: task.revision, readTask: true });
+      throw new Error('任务修订已改变，请先 read_task。');
+    }
     return task;
   };
   const bounded = (result: ToolResult, context: ToolExecutionContext): ToolResult => {
@@ -148,7 +151,10 @@ export function createNativeTaskTool(options: NativeTaskToolOptions): ToolPort {
       state.execution = (async (): Promise<ToolResult> => {
         let task: NativeTaskSnapshot | undefined;
         try { task = revision(prepared); }
-        catch { return { status: 'not_executed', output: { error: 'task_revision_changed', readTask: true } }; }
+        catch (error) {
+          const feedback = getToolPreparationFeedback(error);
+          return { status: 'not_executed', output: feedback ? { ...feedback, executed: false } : { error: 'task_revision_changed', readTask: true } };
+        }
         if (prepared.call.name === 'read_task') {
           try { return bounded(readResult(prepared, task), context); }
           catch { return { status: 'failed', output: { error: 'task_read_unavailable' } }; }

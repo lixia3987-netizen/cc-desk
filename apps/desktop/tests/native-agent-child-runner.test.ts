@@ -42,6 +42,7 @@ function inProcessWorker(generate: (request: ModelRequest, options: NativeWorker
       estimateInputTokens: context => transport.estimateInputTokens(context), generate: request => generate(request, options),
     };
     return runAgent({ ...options.request, signal: options.signal }, { model, tools: options.tools, store: options.store, approvals: options.approvals,
+      completionValidation: options.completionValidation,
       host: { now: () => Date.now(), digest: input => createHash('sha256').update(input).digest('hex'),
         deadline: (milliseconds, parent) => {
           const abort = new AbortController(), cancel = () => abort.abort();
@@ -56,11 +57,21 @@ test('child runner persists a separate bound conversation/task and cannot access
   const f = await fixture(t); let count = 0;
   const result = await runNativeAgentChild(f.input, { ...f.options, worker: inProcessWorker(async (request, options) => {
     assert.deepEqual(request.identity, f.input.identity);
+    assert.match(options.model.instructions ?? '', /Children cannot spawn further agents/);
+    assert.match(options.model.instructions ?? '', /MCP and external tools/);
+    assert.match(options.model.instructions ?? '', /actual read_file\/search/);
+    assert.equal(options.request.diagnosticPurpose, 'child');
+    assert.equal(options.request.diagnosticIdentity?.parentRunId, f.input.parentIdentity.runId);
+    assert.equal(options.request.diagnosticIdentity?.childId, undefined, 'a host child ID is never invented');
     assert.ok(request.context.items.every(item => !(item && typeof item === 'object' && !Array.isArray(item) && item.parentContext)));
     assert.ok(request.tools.every(tool => tool.risk === 'read'));
-    for (const name of ['apply_patch', 'run_command', 'start_command', 'delegate_review', 'delegate_implement', 'ask_user']) assert.ok(!request.tools.some(tool => tool.name === name));
+    for (const name of ['apply_patch', 'run_command', 'start_command', 'delegate_review', 'delegate_implement', 'ask_user', 'read_agent_result']) assert.ok(!request.tools.some(tool => tool.name === name));
     await assert.rejects(async () => options.tools.prepare(call('apply_patch', { path: 'file.txt', content: 'wrong', expectedHash: null }),
       { identity: f.input.identity, policyRevision: options.request.policyRevision, signal: options.signal, maxOutputBytes: 65536 }), /只读/);
+    for (const name of ['run_command', 'delegate_review', 'delegate_implement', 'mcp_external_agent', 'read_agent_result']) {
+      await assert.rejects(async () => options.tools.prepare(call(name, {}),
+        { identity: f.input.identity, policyRevision: options.request.policyRevision, signal: options.signal, maxOutputBytes: 65536 }));
+    }
     return ++count === 1 ? tools(call('read_file', { path: 'file.txt' })) : completed();
   }) });
   assert.equal(result.status, 'completed'); assert.equal(result.committed, true); assert.equal(result.modelRequests, 2); assert.equal(result.toolCalls, 1);
@@ -72,6 +83,50 @@ test('child runner persists a separate bound conversation/task and cannot access
   const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.dataDirectory, 'native', 'conversations'), conversationId: f.input.identity.conversationId });
   try { assert.deepEqual(ledger.getRun(f.input.identity.runId)?.result?.status, 'completed'); assert.equal(ledger.listRuns().length, 1); }
   finally { await ledger.close(); }
+});
+
+test('review completion missing a declared index continues with real reads and durable same-run feedback', async t => {
+  const f = await fixture(t); let step = 0;
+  await fs.writeFile(path.join(f.cwd, 'review.md'), 'index requiring independent material verification\n');
+  f.input.goal = 'Materials: files `file.txt` and `review.md`\nVersion/content: current local snapshot\nIndependent question: review delivery\nScope: both declared files\nExisting evidence: unknown\nPermissions: read only\nReturn format: evidence and limitations';
+  const requests: ModelRequest[] = [];
+  const result = await runNativeAgentChild(f.input, { ...f.options, worker: inProcessWorker(async request => {
+    requests.push(request); step++;
+    if (step === 1) return tools(call('read_file', { path: 'file.txt' }));
+    if (step === 2) return completed('All done, including a claimed index review');
+    if (step === 3) {
+      const feedback = JSON.stringify(request.context.items.at(-1));
+      assert.match(feedback, /declared_material_reads_missing/); assert.match(feedback, /review\.md/);
+      assert.equal(feedback.includes('index requiring independent material verification'), false);
+      return tools(call('read_file', { path: 'review.md' }));
+    }
+    assert.equal(step, 4); return completed('Updated evidence after a real index read');
+  }) });
+  assert.equal(result.status, 'completed'); assert.equal(result.modelRequests, 4); assert.equal(result.toolCalls, 2);
+  assert.ok(requests.every(request => request.identity.runId === f.input.identity.runId));
+  const records = (await fs.readFile(result.evidence!.runJournalPath!, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const rejection = records.find(record => record.event.type === 'completion_rejected');
+  assert.equal(rejection.event.attempt, 2); assert.deepEqual(rejection.event.feedback.paths, ['review.md']);
+  const reads = records.filter(record => record.event.type === 'tool_completed' && record.event.call.name === 'read_file');
+  assert.deepEqual(reads.map(record => record.event.result.output.path), ['file.txt', 'review.md']);
+  assert.ok(reads[0].seq < rejection.seq && rejection.seq < reads[1].seq);
+  assert.equal(records.filter(record => record.event.type === 'model_response').length, 4);
+  const reopened = await NativeRunStore.open({ rootDirectory: path.join(f.dataDirectory, 'native', 'conversations'), conversationId: f.input.identity.conversationId });
+  try { assert.equal(reopened.recoveryRequired, false); assert.equal(reopened.getRun(f.input.identity.runId)?.result?.status, 'completed');
+    assert.equal(JSON.stringify(reopened.loadContext()).includes('declared_material_reads_missing'), true); }
+  finally { await reopened.close(); }
+});
+
+test('a review child cannot claim missing material reads indefinitely or receive more budget', async t => {
+  const f = await fixture(t); let requests = 0, consumed = 0;
+  f.input.goal = 'Materials: files `file.txt` and `review.md`\nVersion/content: current snapshot\nIndependent question: review\nScope: declared files\nExisting evidence: unknown\nPermissions: read only\nReturn format: evidence';
+  f.input.budget.consume = async kind => { if (kind === 'model') consumed++; return true; };
+  const result = await runNativeAgentChild(f.input, { ...f.options, worker: inProcessWorker(async () => { requests++; return completed('Claims all materials were read'); }) });
+  assert.equal(result.status, 'failed'); assert.equal(result.reason, 'completion_validation_limit');
+  assert.equal(requests, 3); assert.equal(consumed, 3); assert.equal(result.toolCalls, 0);
+  const records = (await fs.readFile(result.evidence!.runJournalPath!, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(records.filter(record => record.event.type === 'completion_rejected').length, 3);
+  assert.equal(records.some(record => record.event.type === 'tool_prepared'), false);
 });
 
 test('implementation uses exact write approvals and saves actual task evidence without accepting the task', async t => {

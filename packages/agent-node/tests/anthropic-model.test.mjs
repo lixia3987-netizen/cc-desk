@@ -23,7 +23,7 @@ test('fragmented UTF-8 text and complete streamed tool JSON retain native blocks
   assert.deepEqual(response.outputItems, [{ role: 'assistant', content }]);
   assert.deepEqual(response.toolCalls, content.slice(1).map(block => ({ id: block.id, name: block.name, arguments: JSON.stringify(block.input) })));
   assert.equal(response.finishReason, 'tool_calls');
-  assert.deepEqual(response.usage, { inputTokens: 11, outputTokens: 7, totalTokens: 18 });
+  assert.deepEqual(response.usage, { outputTokens: 7, cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: 11 });
   assert.equal(events.filter(event => event.type === 'text_delta').map(event => event.text).join(''), '中文🙂');
   assert.equal(events.filter(event => event.callId === 'toolu_read').map(event => event.delta).join(''), '{"path":"测试.txt"}');
   assert.equal(fixture.requests[0].system, 'Project rules.');
@@ -110,7 +110,7 @@ test('max tokens, refusal and context limits never enable tools; cache tokens co
     const response = await model.generate(request(model));
     assert.equal(response.finishReason, finishReason);
     assert.deepEqual(response.toolCalls, []);
-    assert.deepEqual(response.usage, { inputTokens: 18, outputTokens: 7, totalTokens: 25 });
+    assert.deepEqual(response.usage, { inputTokens: 18, outputTokens: 7, totalTokens: 25, cacheReadInputTokens: 4, cacheCreationInputTokens: 3, nonCachedInputTokens: 11 });
   }
   const { model } = await fixtureTest(t, { startMessage: { usage: null }, usage: null });
   assert.equal((await model.generate(request(model))).usage, null);
@@ -125,7 +125,8 @@ test('cumulative usage atomically reclassifies the initial input into cache coun
       startMessage: { usage: { input_tokens: 213, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } }, usage,
     });
     const response = await model.generate(request(model));
-    assert.deepEqual(response.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272 });
+    assert.deepEqual(response.usage, { inputTokens: 213, outputTokens: 59, totalTokens: 272, cacheReadInputTokens: usage.cache_read_input_tokens, cacheCreationInputTokens: usage.cache_creation_input_tokens, nonCachedInputTokens: usage.input_tokens });
+    assert.deepEqual(response.providerUsage, { raw: usage, normalization: 'anthropic-input-plus-cache' });
     assert.equal(response.finishReason, 'completed');
     assert.equal(fixture.requests.length, 1, 'usage reclassification needs no retry or protocol downgrade');
     assert.deepEqual(fixture.errors, []);
@@ -136,7 +137,7 @@ test('partial cumulative usage updates preserve unspecified input and cache coun
   const events = anthropicEvents(undefined, { startMessage: { usage: { input_tokens: 13, output_tokens: 1, cache_read_input_tokens: 100, cache_creation_input_tokens: 100 } } });
   events.splice(-2, 0, messageDelta(null, { output_tokens: 3 }));
   const { model } = await fixtureTest(t, { events });
-  assert.deepEqual((await model.generate(request(model))).usage, { inputTokens: 213, outputTokens: 7, totalTokens: 220 });
+  assert.deepEqual((await model.generate(request(model))).usage, { inputTokens: 213, outputTokens: 7, totalTokens: 220, cacheReadInputTokens: 100, cacheCreationInputTokens: 100, nonCachedInputTokens: 13 });
 });
 
 for (const [name, usage] of [

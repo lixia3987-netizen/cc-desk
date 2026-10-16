@@ -26,7 +26,7 @@ export function createInRunCompaction(options: {
     if (attempted || options.ledger.lookupRunCompaction(options.identity.runId)) return unchanged();
     if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
     if (request.modelRequests < 1 || request.budget.maxModelRequests - request.modelRequests < 2 ||
-        contextBudgetUsage(request.context, model.estimateInputTokens(request.context), request.budget).status === 'within_budget') return unchanged();
+        contextBudgetUsage(request.context, model.estimateInputUsage?.(request.context, request.budget.maxOutputTokens) ?? model.estimateInputTokens(request.context), request.budget).status === 'within_budget') return unchanged();
     maintaining = true;
     let phaseStarted = false;
     try {
@@ -46,11 +46,12 @@ export function createInRunCompaction(options: {
       try {
         continuity = await options.continuity();
         assertNoModelCredential(continuity, options.forbiddenValues);
-        prepareNativeContextSummary({ context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens, forbiddenValues: options.forbiddenValues });
+        prepareNativeContextSummary({ context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens,
+          maxOutputTokens: request.budget.maxOutputTokens, maxContextBytes: request.budget.maxContextBytes, forbiddenValues: options.forbiddenValues });
       } catch { return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' }; }
       const minimum = { ...source.retainedContext, items: [...source.retainedContext.items,
         contextSummaryItem('摘要', source.retainedContext.protocol), runContinuityItem(continuity, source.retainedContext.protocol)] };
-      if (contextBudgetUsage(minimum, model.estimateInputTokens(minimum), request.budget).status === 'exceeded') {
+      if (contextBudgetUsage(minimum, model.estimateInputUsage?.(minimum, request.budget.maxOutputTokens) ?? model.estimateInputTokens(minimum), request.budget).status === 'exceeded') {
         return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' };
       }
       const remaining = Math.floor(Math.min(request.remainingActiveMs, options.remainingMs()));
@@ -72,9 +73,11 @@ export function createInRunCompaction(options: {
       let summary;
       try {
         summary = await summarizeNativeContext({ identity: { ...options.identity, runId: randomUUID(), requestId },
-          context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens,
+          context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens, maxContextBytes: request.budget.maxContextBytes,
           maxOutputTokens: request.budget.maxOutputTokens, maxActiveMs: Math.max(1, Math.floor(Math.min(remaining, options.remainingMs()))),
-          signal: AbortSignal.any([options.signal, request.signal]), worker: options.worker, forbiddenValues: options.forbiddenValues });
+          signal: AbortSignal.any([options.signal, request.signal]), worker: options.worker, forbiddenValues: options.forbiddenValues,
+          diagnosticPurpose: 'summary_in_run', diagnosticIdentity: { parentRunId: options.identity.runId },
+          onDiagnostic: async diagnostic => { await options.ledger.recordModelDiagnostic(diagnostic); } });
       } catch (error) {
         if (error && typeof error === 'object' && 'cleanupUnconfirmed' in error && error.cleanupUnconfirmed) throw error;
         return await fail('context_maintenance_failed', error instanceof NativeContextSummaryError ? error.usage : null);

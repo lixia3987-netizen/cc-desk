@@ -3,6 +3,7 @@ import type { NativeContextMaintenance } from '../shared/chat';
 import { ModelCapabilityInfo } from './components/ModelCapabilityInfo';
 
 const count = (value: number) => value.toLocaleString();
+const knownTokens = (value: number | null | undefined) => typeof value === 'number' ? `${count(value)} tokens` : '未知';
 interface ContextMeterProps {
   context?: ContextUsage;
   native?: boolean;
@@ -49,7 +50,7 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
   const compacting = maintenance?.compacting;
   const automatic = maintenance?.compactionTrigger === 'automatic';
   const inTurn = maintenance?.compactionTrigger === 'in_turn';
-  const label = compacting ? inTurn ? '正在回合内压缩上下文…' : automatic ? '正在自动压缩上下文…' : '正在压缩上下文…' : budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} 估算 tokens` : '等待本回合预算数据';
+  const label = compacting ? inTurn ? '正在回合内压缩上下文…' : automatic ? '正在自动压缩上下文…' : '正在压缩上下文…' : budget ? `${count(budget.estimatedInputTokens)} / ${count(budget.maxInputTokens)} UTF-8 估算单位` : '等待本回合预算数据';
   return <details className={'context-meter' + (budget && budget.status !== 'within_budget' ? ' context-high' : '')}>
     <summary aria-label={'上下文运行预算：' + label}>
       <span>Context · 运行预算</span>
@@ -77,6 +78,12 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
       {maintenance?.lastCompaction && <span role="status">最近压缩：{new Date(maintenance.lastCompaction.createdAt).toLocaleString()} · {maintenance.lastCompaction.trigger === 'in_turn' ? '回合内自动' : maintenance.lastCompaction.trigger === 'automatic' ? '自动' : '手动'} · 上下文 {count(maintenance.lastCompaction.beforeBytes)} → {count(maintenance.lastCompaction.afterBytes)} 字节。原始聊天和工具记录已保留。</span>}
       {maintenance?.inTurn && <InTurnReceipt receipt={maintenance.inTurn} compacting={!!compacting && inTurn} historical={!!currentRunId && currentRunId !== maintenance.inTurn.runId}/>}
       <ModelCapabilityInfo capabilities={context?.modelCapabilities?.capabilities} conservative={context?.modelCapabilities?.conservative}/>
+      <span>计量来源：本地 UTF-8 字节保守估算。估算单位用于执行前预算，不是模型真实 token；字节安全上限与模型 token 上限分别校验。</span>
+      <span>{context?.peakInputTokens === undefined ? '本回合请求输入峰值：未知。'
+        : `本回合${context.peakInputComplete ? '请求输入峰值' : '已报告输入峰值'}：${count(context.peakInputTokens)} tokens${context.peakInputComplete ? '。' : '（仍有请求用量未知或尚未完成）。'}`}</span>
+      {context?.requestUsage && <span>最后一次普通请求输入分项：非缓存 {knownTokens(context.requestUsage.nonCachedInputTokens)} · 缓存读取 {knownTokens(context.requestUsage.cacheReadInputTokens)} · 缓存创建 {knownTokens(context.requestUsage.cacheCreationInputTokens)}。输入总量已包含缓存，缓存折扣不减小上下文占用。</span>}
+      {context?.requestUsage?.provider && <span>提供方原始计数：{Object.entries(context.requestUsage.provider.raw).map(([key, value]) => `${key}=${knownTokens(value)}`).join(' · ')}。归一化来源：{context.requestUsage.provider.normalization}。</span>}
+      {context?.requestDiagnostic && <RequestDiagnostic diagnostic={context.requestDiagnostic}/>}
       <span>运行预算按所选输入预算方式计算，并受已知模型限制约束，为输出预留窗口空间。预算按输入估算与上下文字节两项中较高的占比显示。</span>
       <span>按已保存历史、项目指令和工具定义的 UTF-8 字节保守估算，不等于服务端实际 token 计数。新输入和工具结果提交后更新。</span>
       {budget && <span>上下文大小：{count(budget.contextBytes)} / {count(budget.maxContextBytes)} 字节。</span>}
@@ -123,6 +130,23 @@ function CompactionPreview({ maintenance, blockedReason }: { maintenance?: Nativ
       <span>两组分别编码，原始目标有重叠，不可相加或推算节省量；摘要长度未知。字节数不是服务端 tokens 或实际费用，范围可用不代表预算或模型连接校验通过。</span>
     </> : <span>{unavailable ?? previewReasons.unavailable}</span>}
   </div>;
+}
+
+const diagnosticComponents: Record<string, string> = {
+  systemPrompt: '系统提示', permissions: '权限与协议提示', projectRules: '项目规则', skills: '所选技能', instructions: '有效指令',
+  tools: '工具目录', userInput: '用户输入', history: '历史', toolResults: '工具结果', reasoning: '协议推理状态', continuation: '续接状态', images: '图像', transport: '传输结构',
+};
+function RequestDiagnostic({ diagnostic }: { diagnostic: NonNullable<ContextUsage['requestDiagnostic']> }) {
+  const method = { utf8_bytes: 'UTF-8 字节保守估算', tokenizer: 'tokenizer 估算', calibrated: '校准估算', unknown: '未知' }[diagnostic.estimateMethod];
+  const source = { fallback: '本地 fallback', tokenizer: 'tokenizer', calibration: '校准记录', unknown: '未知' }[diagnostic.estimateSource];
+  return <details><summary>最后一次普通请求的计量诊断</summary>
+    <p>第 {diagnostic.attempt} 次尝试 · {diagnostic.purpose === 'retry' ? '重试' : diagnostic.purpose === 'child' ? '子代理请求' : '普通请求'} · {diagnostic.requestSent === true ? '已确认发送' : diagnostic.requestSent === false ? '未发送' : '是否已发送未知'}{diagnostic.elapsedMs === undefined ? '' : ` · 耗时 ${count(diagnostic.elapsedMs)} ms`}</p>
+    <p>估算方法：{method}；来源：{source}。{diagnostic.estimatedInputTokens === null ? '输入估算未知。' : `执行前输入估算 ${count(diagnostic.estimatedInputTokens)} 单位。`}上下文记录 {count(diagnostic.contextBytes)} 字节；请求序列化大小 {diagnostic.payloadBytes === undefined ? '未知' : `${count(diagnostic.payloadBytes)} 字节`}。</p>
+    <table><caption>请求贡献（字节）</caption><thead><tr><th>分类</th><th>大小</th><th>计量范围</th></tr></thead><tbody>
+      {Object.entries(diagnostic.components).map(([key, item]) => item && <tr key={key}><td>{diagnosticComponents[key] ?? key}</td><td>{count(item.bytes)}</td><td>{item.accounting === 'logical' ? '逻辑分类' : '序列化分项'}</td></tr>)}
+    </tbody></table>
+    <p>逻辑分类可能重叠，不能直接相加得到请求大小；图像编码字节和协议状态也不是实际 token。诊断不包含正文。</p>
+  </details>;
 }
 
 function InTurnReceipt({ receipt, compacting, historical }: { receipt: NonNullable<NativeContextMaintenance['inTurn']>; compacting: boolean; historical: boolean }) {

@@ -1,8 +1,10 @@
-import type { JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ToolCall, ToolDefinition, ToolResult, Usage, UserImage } from '@cc-desk/agent-core'
-import { canonicalJson, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
+import type { ContextInputEstimate, JsonObject, JsonValue, ModelContext, ModelFailureDiagnostic, ModelFailureReason, ModelFailureStage, ModelPort, ModelRequest, ModelResponse, ProviderUsage, ToolCall, ToolDefinition, ToolResult, UserImage } from '@cc-desk/agent-core'
+import { canonicalJson, estimateContextInput, estimateContextInputTokens, validateUserImages } from '@cc-desk/agent-core'
 import { assertNoModelCredential, ResponsesModelError, SafeModelDeltas, type ResponsesModelOptions } from './responses-model.js'
 import { chatCompletionsPendingCalls } from './context-maintenance.js'
 import { classifyNativeModelFailure, defaultModelFailureReason, describeNativeModelFailure, nativeModelFailureDetails } from './model-failure.js'
+import { normalizeOpenAIUsage, type NormalizedModelUsage } from './model-usage.js'
+import { dispatchedModelResponse, ModelRequestDiagnosticError, modelRequestDiagnostic } from './model-request-diagnostics.js'
 
 /** API 基础地址不含 /chat/completions。限制和凭据策略与 Responses 一致。 */
 export type ChatCompletionsModelOptions = ResponsesModelOptions
@@ -85,16 +87,9 @@ function endpoint(baseURL: string, allowLoopbackHttp: boolean): string {
   return url.href
 }
 
-function usageFrom(value: JsonValue): Usage | null {
-  if (!object(value)) return failure('schema', 'Invalid model usage record.', 'invalid_usage')
-  const result: Usage = {}
-  for (const [provider, local] of [['prompt_tokens', 'inputTokens'], ['completion_tokens', 'outputTokens'], ['total_tokens', 'totalTokens']] as const) {
-    const count = value[provider]
-    if (count === undefined || count === null) continue
-    if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return failure('schema', 'Invalid model usage count.', 'invalid_usage')
-    result[local] = count
-  }
-  return Object.keys(result).length ? result : null
+function usageFrom(value: JsonValue): NormalizedModelUsage {
+  try { return normalizeOpenAIUsage(value, 'chat') }
+  catch { return failure('schema', 'Invalid model usage count.', 'invalid_usage') }
 }
 
 const chatTools = (tools: readonly ToolDefinition[]): JsonObject[] => tools.map(tool => ({
@@ -120,6 +115,7 @@ function assertSupportedFields(value: JsonObject, fields: ReadonlySet<string>): 
 
 export class ChatCompletionsModel implements ModelPort {
   readonly protocol = Object.freeze({ id: 'openai-chat-completions', version: 1 })
+  readonly requestDiagnostics = true as const
   readonly #url: string
   readonly #apiKey: string | undefined
   readonly #model: string
@@ -157,6 +153,16 @@ export class ChatCompletionsModel implements ModelPort {
   }
 
   estimateInputTokens(context: ModelContext): number { return estimateWithTools(context, this.#instructions ?? '', this.#toolsJson) }
+  estimateInputUsage(context: ModelContext, maxOutputTokens = 4096): ContextInputEstimate {
+    return estimateContextInput(context, { instructions: this.#instructions, toolDefinitions: this.#tools, model: this.#model,
+      serializedInput: this.requestBody(context, maxOutputTokens) })
+  }
+  private requestBody(context: ModelContext, maxOutputTokens: number): string {
+    return JSON.stringify({ model: this.#model,
+      messages: [...(this.#instructions === undefined ? [] : [{ role: 'system', content: this.#instructions }]), ...context.items],
+      ...(this.#tools.length ? { tools: this.#tools, parallel_tool_calls: false } : {}),
+      n: 1, store: false, stream: true, stream_options: { include_usage: true }, max_completion_tokens: maxOutputTokens })
+  }
 
   classifyError(error: unknown): ModelFailureDiagnostic {
     if (!(error instanceof ChatCompletionsModelError)) return { category: 'unknown', retryable: false }
@@ -167,14 +173,23 @@ export class ChatCompletionsModel implements ModelPort {
 
   async generate(request: ModelRequest): Promise<ModelResponse> {
     let stage: ModelFailureStage = 'request'
-    try { return await this.generateResponse(request, value => { stage = value }) }
+    const startedAt = Date.now(), started = performance.now()
+    const modelIdentity = this.#apiKey && this.#model.includes(this.#apiKey) ? {} : { model: this.#model }
+    let response: ModelResponse
+    let providerUsage: ProviderUsage | null = null
+    try { response = await this.generateResponse(request, value => { stage = value }, value => { providerUsage = value }) }
     catch (error) {
-      if (error instanceof ChatCompletionsModelError) throw describeNativeModelFailure(error, { protocol: 'openai-chat-completions', stage })
-      throw error
+      const described = error instanceof ChatCompletionsModelError ? describeNativeModelFailure(error, { protocol: 'openai-chat-completions', stage }) : error
+      await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'openai-chat-completions', ...modelIdentity, result: 'failed', startedAt, finishedAt: Date.now(),
+        elapsedMs: performance.now() - started, providerUsage, failure: this.classifyError(described) })
+      throw described
     }
+    await request.onRequestDiagnostic?.({ phase: 'result', protocol: 'openai-chat-completions', ...modelIdentity, result: 'completed', startedAt, finishedAt: Date.now(),
+      elapsedMs: performance.now() - started, providerUsage: response.providerUsage ?? null })
+    return response
   }
 
-  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void): Promise<ModelResponse> {
+  private async generateResponse(request: ModelRequest, setStage: (stage: ModelFailureStage) => void, recordUsage: (usage: ProviderUsage | null) => void): Promise<ModelResponse> {
     if (request.context.protocol.id !== this.protocol.id || request.context.protocol.version !== this.protocol.version) {
       return failure('protocol', 'The saved conversation uses an incompatible model protocol.', 'protocol_mismatch')
     }
@@ -184,15 +199,11 @@ export class ChatCompletionsModel implements ModelPort {
     if (pendingCalls.length) return failure('protocol', 'The saved conversation contains unresolved model tool calls.', 'pending_tool_calls')
     if (!Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens <= 0) return failure('configuration', 'Invalid model output limit.')
     if (canonicalJson(chatTools(request.tools)) !== this.#toolsJson) return failure('tool_catalog', 'Model tools differ from the budgeted catalog.')
-    const body = JSON.stringify({
-      model: this.#model,
-      messages: [...(this.#instructions === undefined ? [] : [{ role: 'system', content: this.#instructions }]), ...request.context.items],
-      ...(this.#tools.length ? { tools: this.#tools, parallel_tool_calls: false } : {}),
-      n: 1, store: false, stream: true, stream_options: { include_usage: true },
-      max_completion_tokens: request.maxOutputTokens,
-    })
+    const body = this.requestBody(request.context, request.maxOutputTokens)
     guard(JSON.parse(body), this.#apiKey)
     if (Buffer.byteLength(body, 'utf8') > this.#maxRequestBytes) return failure('request_limit', 'The complete model context exceeds the transport limit.')
+    if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
+    await request.onRequestDiagnostic?.(modelRequestDiagnostic(request, body, 'openai-chat-completions', this.#instructions !== undefined, this.#model))
     if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
     const controller = new AbortController()
     let timedOut = false
@@ -203,7 +214,8 @@ export class ChatCompletionsModel implements ModelPort {
     try {
       const headers: Record<string, string> = { 'Content-Type': 'application/json', Accept: 'text/event-stream' }
       if (this.#apiKey) headers.Authorization = `Bearer ${this.#apiKey}`
-      const response = await fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      const pendingResponse = fetch(this.#url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'manual' })
+      const response = await dispatchedModelResponse(request, 'openai-chat-completions', this.#model, controller, pendingResponse)
       setStage('response_headers')
       if (!response.ok) {
         await response.body?.cancel()
@@ -224,7 +236,7 @@ export class ChatCompletionsModel implements ModelPort {
       let refusal: string | null = null
       let finished: ChatFinishReason | undefined
       let done = false
-      let usage: Usage | null = null
+      let normalizedUsage: NormalizedModelUsage = { usage: null, providerUsage: null }
       let seenUsage = false
       const calls = new Map<number, StreamingCall>()
       const deltas = new SafeModelDeltas(this.#apiKey, event => {
@@ -308,7 +320,8 @@ export class ChatCompletionsModel implements ModelPort {
         if (event.usage !== undefined && event.usage !== null) {
           setStage('completion')
           if (!finished || seenUsage) return failure('schema', 'Invalid repeated or premature model usage.', 'invalid_usage')
-          usage = usageFrom(event.usage)
+          normalizedUsage = usageFrom(event.usage)
+          recordUsage(normalizedUsage.providerUsage)
           seenUsage = true
         }
         // 顶层元数据（model、fingerprint、obfuscation）没有消息
@@ -340,10 +353,11 @@ export class ChatCompletionsModel implements ModelPort {
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       deltas.finish()
       return {
-        outputItems: [message], toolCalls, usage,
+        outputItems: [message], toolCalls, ...normalizedUsage,
         finishReason: refusal || finished === 'content_filter' ? 'refused' : finished === 'length' ? 'incomplete' : toolCalls.length ? 'tool_calls' : 'completed',
       }
     } catch (error) {
+      if (error instanceof ModelRequestDiagnosticError) throw error.original
       if (request.signal.aborted) return failure('cancelled', 'Model request cancelled.')
       if (timedOut) return failure('timeout', 'Model request timed out.')
       if (error instanceof ChatCompletionsModelError) throw error

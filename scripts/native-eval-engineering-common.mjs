@@ -3,14 +3,28 @@ import { constants } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { assertSuiteIdentity } from './native-eval-engineering-schema.mjs';
 
 export const evaluatorRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-export const suiteRoot = path.join(evaluatorRoot, 'evals/native-engineering/v1');
-export const ENGINEERING_SUITE = Object.freeze({
+export const LEGACY_ENGINEERING_SUITE = Object.freeze({
   id: 'cc-desk-engineering-v1',
   taskBaseline: 'b45bd0623d2a44a2878c46d4701fa4b388c7d9be',
   digest: '7ac65759b84e3946f632a931ff7bece2e50051fc25b2ee9a5e0c23bd2cbfba8a',
 });
+export const ENGINEERING_SUITE = Object.freeze({
+  id: 'cc-desk-engineering-v2',
+  taskBaseline: LEGACY_ENGINEERING_SUITE.taskBaseline,
+  digest: 'ec64644c0ee45495e0968c0859d483bf0c37fc22029c7a5f55883e6f0c0d6624',
+});
+const supportedSuites = [LEGACY_ENGINEERING_SUITE, ENGINEERING_SUITE];
+export function engineeringSuiteRoot(identity = ENGINEERING_SUITE) {
+  assertSuiteIdentity(identity);
+  const known = supportedSuites.find(suite => suite.id === identity.id);
+  if (!known) throw new Error('Unsupported engineering suite version.');
+  assertSuiteIdentity(identity, known);
+  return path.join(evaluatorRoot, 'evals/native-engineering', known === LEGACY_ENGINEERING_SUITE ? 'v1' : 'v2');
+}
+export const suiteRoot = engineeringSuiteRoot();
 export const ENGINEERING_TASK_IDS = Object.freeze(['01-snapshot-refresh', '02-session-info', '03-canonical-json']);
 const sha = value => createHash('sha256').update(value).digest('hex');
 const canonical = value => {
@@ -100,8 +114,18 @@ export function commandEnvironment() {
   };
 }
 
+/** 固定材料按路径及原始字节摘要绑定；派生的历史验收记录不参与材料身份。 */
+export function assertEngineeringSuiteDigest(files, identity = ENGINEERING_SUITE) {
+  engineeringSuiteRoot(identity);
+  const material = files.filter(([name]) => name !== 'validation.json');
+  const digest = sha(JSON.stringify(material));
+  if (digest !== identity.digest) throw new Error('Engineering suite digest mismatch; use the exact supported version.');
+  return digest;
+}
+
 /** 仅解析受支持且不可变的测试集；修改 v1 时必须创建新版本。 */
-export async function loadEngineeringSuite() {
+export async function loadEngineeringSuite(identity = ENGINEERING_SUITE) {
+  const suiteRoot = engineeringSuiteRoot(identity);
   await ordinaryDirectory(suiteRoot);
   const files = []; let totalBytes = 0;
   async function visit(relative = '') {
@@ -120,9 +144,9 @@ export async function loadEngineeringSuite() {
     }
   }
   await visit();
-  if (sha(JSON.stringify(files)) !== ENGINEERING_SUITE.digest) throw new Error('Engineering suite digest mismatch; use the exact supported version.');
+  assertEngineeringSuiteDigest(files, identity);
   const manifest = await readJson(path.join(suiteRoot, 'manifest.json'));
   const template = await readJson(path.join(suiteRoot, 'record-template.json'));
-  if (manifest.schemaVersion !== 1 || manifest.suiteId !== ENGINEERING_SUITE.id || manifest.taskBaseline !== ENGINEERING_SUITE.taskBaseline || JSON.stringify(manifest.tasks?.map(task => task.id)) !== JSON.stringify(ENGINEERING_TASK_IDS)) throw new Error('Engineering suite manifest mismatch.');
-  return { suite: { ...ENGINEERING_SUITE }, manifest, template, suiteRoot, evaluatorRoot };
+  if (manifest.schemaVersion !== 1 || manifest.suiteId !== identity.id || manifest.taskBaseline !== identity.taskBaseline || JSON.stringify(manifest.tasks?.map(task => task.id)) !== JSON.stringify(ENGINEERING_TASK_IDS)) throw new Error('Engineering suite manifest mismatch.');
+  return { suite: { ...identity }, manifest, template, suiteRoot, evaluatorRoot };
 }

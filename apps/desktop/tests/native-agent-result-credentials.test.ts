@@ -21,7 +21,7 @@ const mcp: NativeMcpConnectionInput = { name: 'credential protection fixture', t
 const newIdentity = (): RunIdentity => ({ sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 });
 const secret = () => `fixture-private-${randomUUID()}`;
 function temporary(t: { after(fn: () => void): void }): string {
-  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'native-agent-result-credentials-')));
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'native-agent-result-credentials-')));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true })); return directory;
 }
 function storage(): NativeSafeStorage {
@@ -168,6 +168,12 @@ test('disabled and diagnostic-locked credentials stop legacy retained-result dis
     result: { identity: child, taskId, status: 'completed', reason: 'model_completed', committed: true, summary: 'unverified', modelRequests: 1, toolCalls: 0 } };
   fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(receipt));
   const request = { parentRunId: parent.runId, childId, patchCharacters: 1 };
+  // 先证明回执与安全补丁可读，避免路径校验提前失败而掩盖凭据保护断言。
+  fs.writeFileSync(patchPath, '+safe\n');
+  const safeResult = await readNativeAgentResult(directory, parent, request, { forbiddenValues: protectedValues });
+  assert.equal(safeResult.patch?.integrity, 'legacy_unverified');
+  assert.equal(safeResult.patch?.text, '+');
+  assert.equal(safeResult.patch?.nextOffset, 1);
   for (const value of secrets) {
     fs.writeFileSync(patchPath, '+ordinary\n'.repeat(3000) + value);
     await assert.rejects(readNativeAgentResult(directory, parent, request, { forbiddenValues: protectedValues }),

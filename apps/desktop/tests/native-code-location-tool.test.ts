@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { NATIVE_TASK_LIMITS, NativeTaskError, type PreparedTool, type ToolExecutionContext } from '@cc-desk/agent-core';
+import { NATIVE_TASK_LIMITS, NativeTaskError, ToolPreparationError, type PreparedTool, type ToolExecutionContext } from '@cc-desk/agent-core';
 import { NativeTaskStore, type NativeTaskStoreFaultPoint } from '@cc-desk/agent-node/task-store';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { ProjectFiles } from '@cc-desk/agent-node/tools';
@@ -52,7 +52,14 @@ test('line extraction preserves CRLF and exact UTF-8 bounds without phantom or t
   assert.equal(extractCodeLines('\n', 1, 1), '\n');
   assert.equal(extractCodeLines('a\n', 1, 1), 'a\n');
   assert.equal(extractCodeLines('a\r', 1, 1), 'a\r');
-  assert.throws(() => extractCodeLines('', 1, 1)); assert.throws(() => extractCodeLines('a\n', 2, 2));
+  for (const [content, start, end, lineCount] of [['', 1, 1, 0], ['a\n', 2, 2, 1], ['a\n\n', 3, 3, 2]] as const) {
+    assert.throws(() => extractCodeLines(content, start, end), (error: unknown) => {
+      assert.ok(error instanceof ToolPreparationError);
+      assert.deepEqual(error.feedback, { error: 'code_location_line_range_invalid', lineCount, readFile: true });
+      return true;
+    });
+  }
+  assert.equal(extractCodeLines('a\n\n', 2, 2), '\n');
   assert.throws(() => extractCodeLines('a\n'.repeat(81), 1, 81));
   assert.equal(extractCodeLines('字'.repeat(2730) + 'ab', 1, 1), '字'.repeat(2730) + 'ab');
   assert.throws(() => extractCodeLines('字'.repeat(2731), 1, 1));
@@ -101,6 +108,32 @@ test('strict location input rejects fabricated evidence, unsafe paths, broken as
     assert.equal((await f.execute({ ...base, expectedHash: 'a'.repeat(64) }, 'hash-mismatch')).status, 'not_executed');
     assert.equal((await f.execute({ ...base, endLine: 4 }, 'missing-line')).status, 'not_executed');
     assert.equal(f.task.evidence.length, 0);
+  } finally { await f.dispose(); }
+});
+
+test('location revision and EOF feedback permit an explicit corrected retry without publishing failed evidence', async () => {
+  const f = await fixture({ content: 'private first line\nsecond\n' });
+  try {
+    const base = f.input(), revision = f.task.revision;
+    await assert.rejects(f.prepare({ ...base, expectedRevision: revision - 1 }, 'stale'), (error: unknown) => {
+      assert.ok(error instanceof ToolPreparationError);
+      assert.deepEqual(error.feedback, { error: 'task_revision_changed', currentRevision: revision, readTask: true });
+      return true;
+    });
+    assert.equal(f.task.revision, revision); assert.equal(f.task.evidence.length, 0);
+    const invalid = await f.execute({ ...base, endLine: 3 }, 'past-eof');
+    assert.deepEqual(invalid, { status: 'not_executed', output: { error: 'code_location_line_range_invalid', lineCount: 2, readFile: true, executed: false } });
+    assert.equal(JSON.stringify(invalid).includes(f.relative), false); assert.equal(JSON.stringify(invalid).includes('private first line'), false);
+    assert.equal(f.task.revision, revision); assert.equal(f.task.evidence.length, 0);
+    const recorded = await f.execute(base, 'explicit-correction');
+    assert.equal(recorded.status, 'completed'); assert.equal((recorded.output as any).revision, revision + 1);
+    await assert.rejects(f.prepare(base, 'stale-after-success'), (error: unknown) => {
+      assert.ok(error instanceof ToolPreparationError);
+      assert.deepEqual(error.feedback, { error: 'task_revision_changed', currentRevision: revision + 1, readTask: true });
+      return true;
+    });
+    assert.equal((await f.execute({ ...base, expectedRevision: revision + 1 }, 'next-revision')).status, 'completed');
+    assert.equal(f.task.evidence.length, 2);
   } finally { await f.dispose(); }
 });
 

@@ -16,7 +16,66 @@ export interface RunIdentity {
   workerGeneration: number
 }
 export type RunStatus = 'completed' | 'cancelled' | 'failed' | 'budget_exhausted' | 'recovery_required'
-export interface Usage { inputTokens?: number; outputTokens?: number; totalTokens?: number }
+export interface Usage {
+  inputTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  /** 输入总量已经包含缓存；缺失或 null 表示未知，不能补零。 */
+  cacheReadInputTokens?: number | null
+  cacheCreationInputTokens?: number | null
+  nonCachedInputTokens?: number | null
+}
+export interface ProviderUsage {
+  /** 只允许适配器固定的 token 计数字段，不保存提供商响应正文。 */
+  raw: Record<string, number | null>
+  normalization: 'openai-inclusive-input' | 'anthropic-input-plus-cache'
+}
+export type ModelDiagnosticComponent = 'systemPrompt' | 'permissions' | 'projectRules' | 'skills' | 'instructions' | 'tools' | 'userInput' | 'history' | 'toolResults' | 'reasoning' | 'continuation' | 'images' | 'transport'
+export interface ModelInputMeasurement { bytes: number; digest: string; count?: number; accounting: 'serialized' | 'logical' }
+export interface ModelAdapterDiagnostic {
+  phase: 'request' | 'dispatched' | 'result'
+  protocol: ModelFailureProtocol
+  model?: string
+  payloadBytes?: number
+  payloadDigest?: string
+  components?: Partial<Record<ModelDiagnosticComponent, ModelInputMeasurement>>
+  startedAt?: number
+  finishedAt?: number
+  elapsedMs?: number
+  result?: 'completed' | 'failed'
+  providerUsage?: ProviderUsage | null
+  failure?: ModelFailureDiagnostic
+}
+export interface ModelRequestDiagnostic {
+  schemaVersion: 1
+  requestKey: string
+  identity: RunIdentity
+  attempt: number
+  purpose: 'normal' | 'child' | 'retry' | 'summary_in_run' | 'summary_before_send' | 'summary_manual'
+  parentRunId?: string
+  childId?: string
+  protocol: ProtocolVersion
+  model?: string
+  phase: 'started' | 'request' | 'dispatched' | 'finished'
+  /** true 仅确认 transport 已调用，不代表提供商已收到或已收费。 */
+  requestSent: boolean | null
+  startedAt: number
+  finishedAt?: number
+  elapsedMs?: number
+  estimatedInputTokens: number | null
+  estimateMethod: 'utf8_bytes' | 'tokenizer' | 'calibrated' | 'unknown'
+  estimateSource: 'fallback' | 'tokenizer' | 'calibration' | 'unknown'
+  contextBytes: number
+  contextDigest: string
+  toolsetDigest: string
+  components: Partial<Record<ModelDiagnosticComponent, ModelInputMeasurement>>
+  payloadBytes?: number
+  payloadDigest?: string
+  usage: Usage | null
+  providerUsage?: ProviderUsage | null
+  outcome?: 'completed' | 'failed' | 'cancelled'
+  failure?: ModelFailureDiagnostic
+}
 export interface RunResult {
   identity: RunIdentity
   status: RunStatus
@@ -47,6 +106,9 @@ export interface ModelRequest {
   maxOutputTokens: number
   signal: AbortSignal
   onEvent(event: ModelStreamEvent): void
+  /** 发网前必须等待诊断持久化；失败时不继续发送付费请求。 */
+  onRequestDiagnostic?(diagnostic: ModelAdapterDiagnostic): void | Promise<void>
+  diagnosticInstructionSections?: Partial<Record<'systemPrompt' | 'permissions' | 'projectRules' | 'skills', string>>
 }
 export interface ModelResponse {
   /** 提供方完整且有序的输出，包含推理和续接项。 */
@@ -55,6 +117,7 @@ export interface ModelResponse {
   continuation?: JsonValue
   finishReason: 'completed' | 'tool_calls' | 'refused' | 'incomplete'
   usage: Usage | null
+  providerUsage?: ProviderUsage | null
 }
 /** 经过脱敏的传输分类；绝不包含提供方文本、URL 或请求头。 */
 export type ModelFailureProtocol = 'openai-responses' | 'openai-chat-completions' | 'anthropic-messages'
@@ -83,9 +146,11 @@ export interface ToolResult {
 export interface UserImage { mimeType: 'image/png' | 'image/jpeg'; dataUrl: string }
 export interface ModelPort {
   readonly protocol: ProtocolVersion
+  readonly requestDiagnostics?: true
   userItems(input: string, images?: UserImage[]): JsonValue[]
   toolResultItems(call: ToolCall, result: ToolResult): JsonValue[]
   estimateInputTokens(context: ModelContext): number
+  estimateInputUsage?(context: ModelContext, maxOutputTokens?: number): import('./context.js').ContextInputEstimate
   generate(request: ModelRequest): Promise<ModelResponse>
   /** 仅分类可信的适配器错误；无法识别的错误必须归为 unknown。 */
   classifyError?(error: unknown): ModelFailureDiagnostic
@@ -150,9 +215,11 @@ export type BeginRunResult =
   | { kind: 'accepted'; context: ModelContext }
   | { kind: 'duplicate'; identity: RunIdentity; result?: RunResult }
 export type RunJournalEvent =
+  | { type: 'model_request_diagnostic'; diagnostic: ModelRequestDiagnostic }
   | { type: 'model_request_started'; attempt: number }
   | { type: 'model_request_failed'; attempt: number; failure: ModelFailureDiagnostic; partial: boolean; retryDelayMs?: number }
   | { type: 'model_response'; response: ModelResponse }
+  | { type: 'completion_rejected'; attempt: number; feedback: Extract<CompletionValidationDecision, { kind: 'continue' }>; feedbackItems: JsonValue[] }
   | { type: 'tool_prepared'; prepared: PreparedTool; approval?: ApprovalDecision }
   | { type: 'tool_completed'; call: ToolCall; result: ToolResult; resultItems: JsonValue[] }
   | { type: 'run_finished'; result: RunResult }
@@ -206,6 +273,9 @@ export interface AgentRunRequest {
   budget?: Partial<RunBudget>
   /** 默认关闭。每轮最多重试两次明确属于暂时性问题的 HTTP 失败。 */
   modelRetry?: 'off' | 'safe_transient'
+  diagnosticPurpose?: Exclude<ModelRequestDiagnostic['purpose'], 'retry'>
+  diagnosticIdentity?: { parentRunId?: string; childId?: string }
+  diagnosticInstructionSections?: Partial<Record<'systemPrompt' | 'permissions' | 'projectRules' | 'skills', string>>
 }
 export interface ContextMaintenanceRequest {
   identity: RunIdentity
@@ -236,4 +306,12 @@ export interface AgentPorts {
   approvals: ApprovalPort
   host: RuntimeHost
   contextMaintenance?: ContextMaintenancePort
+  completionValidation?: CompletionValidationPort
+}
+
+export type CompletionValidationDecision = { kind: 'accept' } |
+  { kind: 'continue'; code: 'declared_material_reads_missing'; paths: string[] }
+export interface CompletionValidationPort {
+  /** 只检查当前已持久化响应及宿主证据，不代替模型执行工具。 */
+  validate(request: { identity: RunIdentity; attempt: number; context: ModelContext; signal: AbortSignal }): Promise<CompletionValidationDecision>
 }

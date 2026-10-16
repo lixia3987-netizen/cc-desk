@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-15T10:55:56.448Z",
+  "exitCode": 0,
+  "signal": null,
+  "timedOut": false,
+  "records": [
+    {
+      "probe": "session",
+      "elapsedMs": 31,
+      "created": true
+    },
+    {
+      "probe": "query",
+      "elapsedMs": 412,
+      "round": 1,
+      "processCount": 591,
+      "mode": "direct"
+    },
+    {
+      "probe": "query",
+      "elapsedMs": 411,
+      "round": 1,
+      "processCount": 591,
+      "mode": "local_dcom_session"
+    },
+    {
+      "probe": "query",
+      "elapsedMs": 375,
+      "round": 2,
+      "processCount": 591,
+      "mode": "direct"
+    },
+    {
+      "probe": "query",
+      "elapsedMs": 387,
+      "round": 2,
+      "processCount": 591,
+      "mode": "local_dcom_session"
+    }
+  ],
+  "stdoutBytes": 395,
+  "stderrBytes": 0,
+  "stdoutHash": "7ed9383556d1bef7d73a5708eed47f5e381fd5b101201e9e91197d68ced681fa",
+  "stderrHash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

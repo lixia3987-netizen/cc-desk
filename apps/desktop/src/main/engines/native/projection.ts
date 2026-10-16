@@ -4,11 +4,12 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { contextBudgetUsage, DEFAULT_RUN_BUDGET, type AgentEvent, type JsonObject, type JsonValue, type RunResult, type ToolDefinition } from '@cc-desk/agent-core';
 import { estimateNativeInputTokens, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
-import { estimateNativeCost } from '../../../shared/native-cost';
+import { nativeCostEstimate } from '../../../shared/native-cost';
 import { isNativeImageAttachments } from '@cc-desk/contracts/chat';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetPreview, type NativeChangeSetFileEvent, type NativeChangeSetResult } from '@cc-desk/contracts/native-changes';
 import type { NativeRunStore, RunStoreRecord } from '@cc-desk/agent-node/run-store';
 import type { ChatApproval, ChatMessage, ChatPageOptions, ChatSnapshot, NativeCommandSnapshot, TaskState } from '../../../shared/chat';
+import type { ContextUsage } from '../../../shared/execution';
 import type { ChatJournalEvent } from '../../../shared/execution-events';
 import { getSessionIdentity } from '../../../shared/execution';
 import type { Session } from '../../../shared/types';
@@ -145,6 +146,17 @@ export class NativeProjection {
     let configuration: JsonObject | undefined;
     let inputTokens: number | undefined;
     let measuredAt: string | undefined;
+    let requestUsage: ContextUsage['requestUsage'];
+    let requestDiagnostic: ContextUsage['requestDiagnostic'];
+    let peakInputTokens: number | undefined;
+    let peakInputComplete = true;
+    let measuredRequests = 0;
+    const measurePeak = (usage: unknown) => {
+      const value = object(usage) ? usage.inputTokens : undefined;
+      if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+        peakInputTokens = Math.max(peakInputTokens ?? 0, value); measuredRequests++;
+      } else peakInputComplete = false;
+    };
     for (const record of records) {
       const event = record.event;
       if (record.identity && record.identity.sessionId !== id) throw new Error('Native 记录不属于当前会话。');
@@ -157,6 +169,11 @@ export class NativeProjection {
         configuration = event.request.configuration;
         inputTokens = undefined;
         measuredAt = undefined;
+        requestUsage = undefined;
+        requestDiagnostic = undefined;
+        peakInputTokens = undefined;
+        peakInputComplete = true;
+        measuredRequests = 0;
         const model = event.request.configuration.model;
         add({ type: 'metadata', resetUsage: true, ...(typeof model === 'string' ? { model } : {}) });
         const images = configuration.imageAttachments;
@@ -165,10 +182,27 @@ export class NativeProjection {
           ...(images === undefined ? {} : { nativeImageAttachments: clone(images) }) } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'model_request_started') {
+        inputTokens = undefined; measuredAt = undefined; requestUsage = undefined;
+        requestDiagnostic = undefined;
         streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
         if (scheduledRetries.delete(runId)) retryCounts.set(runId, (retryCounts.get(runId) ?? 0) + 1);
         add({ type: 'state', taskState: 'thinking' });
+      } else if (event.type === 'model_request_diagnostic') {
+        const diagnostic = event.diagnostic;
+        if (diagnostic.identity.runId === currentIdentity?.runId && ['normal', 'child', 'retry'].includes(diagnostic.purpose)) {
+          requestDiagnostic = {
+            attempt: diagnostic.attempt, purpose: diagnostic.purpose as 'normal' | 'child' | 'retry', phase: diagnostic.phase,
+            requestSent: diagnostic.requestSent, contextBytes: diagnostic.contextBytes,
+            estimatedInputTokens: diagnostic.estimatedInputTokens, estimateMethod: diagnostic.estimateMethod, estimateSource: diagnostic.estimateSource,
+            ...(diagnostic.payloadBytes === undefined ? {} : { payloadBytes: diagnostic.payloadBytes }),
+            ...(diagnostic.elapsedMs === undefined ? {} : { elapsedMs: diagnostic.elapsedMs }),
+            components: Object.fromEntries(Object.entries(diagnostic.components).map(([key, value]) => [key,
+              { bytes: value!.bytes, accounting: value!.accounting, ...(value!.count === undefined ? {} : { count: value!.count }) }])),
+          };
+        }
       } else if (event.type === 'model_request_failed') {
+        inputTokens = undefined; measuredAt = undefined; requestUsage = undefined;
+        peakInputComplete = false;
         streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
         failures.set(runId, event);
         if (event.retryDelayMs !== undefined) scheduledRetries.add(runId);
@@ -178,6 +212,11 @@ export class NativeProjection {
         streamEpochs.set(runId, (streamEpochs.get(runId) ?? 0) + 1);
         const reported = event.response.usage?.inputTokens;
         inputTokens = typeof reported === 'number' && Number.isSafeInteger(reported) && reported >= 0 ? reported : undefined;
+        measurePeak(event.response.usage);
+        requestUsage = event.response.usage ? {
+          ...clone(event.response.usage),
+          ...(event.response.providerUsage ? { provider: clone(event.response.providerUsage) } : {}),
+        } : undefined;
         measuredAt = createdAt;
         modelCounts.set(runId, (modelCounts.get(runId) ?? 0) + 1);
         event.response.outputItems.forEach((item, index) => {
@@ -226,11 +265,17 @@ export class NativeProjection {
         const result = event.result;
         // 失败的请求可能消耗服务令牌，却没有产生可持久化响应。
         // 此时此前报告的用量仅为部分用量，不能据此计算整个运行的费用。
-        const costUSD = !failures.has(runId) && result.modelRequests === (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0)
-          ? estimateNativeCost(result.usage, configuration?.pricing, configuration?.model) : undefined;
+        const recorded = (modelCounts.get(runId) ?? 0) + (summaryCounts.get(runId) ?? 0);
+        const complete = !failures.has(runId) && result.modelRequests === recorded;
+        const nativeCost = complete ? nativeCostEstimate(result.usage, configuration?.pricing, configuration?.model)
+          : { source: 'user_rates' as const, status: 'unknown' as const, reason: 'incomplete_requests' as const,
+            ...(typeof configuration?.model === 'string' ? { model: configuration.model } : {}) };
+        peakInputComplete = peakInputComplete && measuredRequests === result.modelRequests;
         const failure = failures.get(runId);
         const error = nativeRunError(result.reason, { modelRequests: result.modelRequests, toolCalls: result.toolCalls, retries: retryCounts.get(runId) ?? 0, ...(failure ? { modelFailure: failure.failure.category, diagnostic: failure.failure, partial: failure.partial } : {}) });
-        add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, ...(costUSD === undefined ? {} : { costUSD }) }, ...(result.status === 'completed' ? {} : { error }) });
+        add({ type: 'result', success: result.status === 'completed', summary: '', usage: { ...result.usage, nativeCost,
+          nativeRequests: { scope: 'parent_run_with_in_turn_summaries', recorded, expected: result.modelRequests, complete },
+          ...(nativeCost.costUSD === undefined ? {} : { costUSD: nativeCost.costUSD }) }, ...(result.status === 'completed' ? {} : { error }) });
         add({ type: 'state', taskState: taskState(result), ...(result.status === 'completed' ? {} : { error }) });
         if (result.status === 'recovery_required') for (const messageId of preparedTools) {
           const message = tools.get(messageId);
@@ -239,6 +284,7 @@ export class NativeProjection {
       } else if (event.type === 'recovery_resolved') {
         currentTerminal = true;
         inputTokens = undefined; measuredAt = undefined;
+        requestUsage = undefined;
         for (const completion of event.completions) {
           const messageId = `${runId}:tool:${completion.call.id}`;
           const message = tools.get(messageId);
@@ -251,10 +297,13 @@ export class NativeProjection {
         add({ type: 'message', message: { id: `run-compaction-attempt:${record.seq}`, turnId: runId, role: 'system', text: '本回合尝试压缩完整的旧模型与工具记录。原始回执继续保留；摘要计入本轮请求和用量，不会重复尝试或重放工具。', createdAt } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'run_context_compacted') {
+        measurePeak(event.plan.usage);
         inputTokens = undefined; measuredAt = undefined;
+        requestUsage = undefined;
         add({ type: 'message', message: { id: `run-compaction:${record.seq}`, turnId: runId, role: 'system', text: '回合内上下文已压缩并持久保存。用户请求、最新完整工具结果和任务证据引用已保留；当前回合继续执行。', createdAt } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'run_context_compaction_failed') {
+        measurePeak(event.failure.usage);
         add({ type: 'message', message: { id: `run-compaction-failure:${record.seq}`, turnId: runId, role: 'system', text: nativeRunError(event.failure.reason), isError: true, createdAt } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'context_compaction_attempted') {
@@ -268,6 +317,7 @@ export class NativeProjection {
       } else if (event.type === 'context_compacted') {
         currentTerminal = true;
         inputTokens = undefined; measuredAt = undefined;
+        requestUsage = undefined;
         add({ type: 'metadata', resetUsage: true });
         add({ type: 'message', message: { id: `compaction:${record.seq}`, turnId: currentIdentity?.runId ?? '', role: 'system', text: (event.plan.automaticRequestId ? '发送前自动压缩已完成；' : '') + '上下文已压缩为历史摘要；原始对话记录、最初目标和最近完整回合已保留。摘要可能遗漏细节，后续重要约束可重新补充。', createdAt } });
         add({ type: 'state', taskState: 'interrupted' });
@@ -297,6 +347,9 @@ export class NativeProjection {
         ...(model ? { model, requestModel: model } : {}),
         ...(modelCapabilities ? { modelCapabilities, ...(modelCapabilities.capabilities.contextWindow ? { contextWindow: modelCapabilities.capabilities.contextWindow.value } : {}) } : {}),
         ...(inputTokens !== undefined ? { inputTokens } : {}),
+        ...(requestUsage ? { requestUsage } : {}),
+        ...(requestDiagnostic ? { requestDiagnostic } : {}),
+        ...(peakInputTokens !== undefined ? { peakInputTokens, peakInputComplete: currentTerminal && peakInputComplete } : {}),
         ...(measuredAt ? { measuredAt } : {}), source: 'request', status: inputTokens === undefined ? 'unknown' : 'ready',
         ...(budget ? { budget } : {}),
       } } });

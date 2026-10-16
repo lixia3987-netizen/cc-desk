@@ -1,14 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
+import os from 'node:os';
 import { syncBuiltinESMExports } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { setImmediate as tick } from 'node:timers/promises';
 import { ProcessSupervisor, commandEnvironment } from '../dist/process-supervisor.js';
 
-function fixture({ failedSpawn = false } = {}) {
+function fixture({ failedSpawn = false, osUserProfile } = {}) {
   const originalSpawn = childProcess.spawn;
+  const originalUserInfo = os.userInfo;
   const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
   const messages = [];
   const helpers = [];
@@ -27,6 +29,8 @@ function fixture({ failedSpawn = false } = {}) {
     return child;
   };
   const guardian = makeChild(failedSpawn ? undefined : 321);
+  if (osUserProfile !== undefined) os.userInfo = () => ({ uid: -1, gid: -1, username: 'fixture', shell: null,
+    homedir: typeof osUserProfile === 'function' ? osUserProfile() : osUserProfile });
   Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' });
   childProcess.spawn = (_executable, argv) => {
     if (!helpers.length) {
@@ -44,6 +48,7 @@ function fixture({ failedSpawn = false } = {}) {
   return {
     guardian, helpers, messages,
     restore() {
+      os.userInfo = originalUserInfo;
       childProcess.spawn = originalSpawn; syncBuiltinESMExports();
       Object.defineProperty(process, 'platform', originalPlatform);
       for (const helper of helpers) {
@@ -54,18 +59,65 @@ function fixture({ failedSpawn = false } = {}) {
 }
 
 test('Windows environment deduplicates names and explicitly masks every libuv host fallback', () => {
-  const f = fixture();
+  const profile = 'C:\\OS-test-profile';
+  const f = fixture({ osUserProfile: profile });
   try {
     const environment = commandEnvironment({ Path: 'credential-sentinel', PATH: 'unrelated-path', SystemRoot: 'C:\\Windows', USERNAME: 'private-identity' }, ['credential-sentinel']);
     assert.equal(environment.PATH, '', 'a filtered duplicate cannot restore executable lookup');
     assert.equal(environment.SYSTEMROOT, 'C:\\Windows');
     assert.equal(environment.Path, undefined);
     assert.equal(environment.SystemRoot, undefined);
-    for (const key of ['HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'SYSTEMDRIVE', 'TEMP', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'WINDIR']) assert.equal(environment[key], '', key);
+    assert.equal(environment.USERPROFILE, profile, 'the sole required directory comes from OS user records');
+    for (const key of ['HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'SYSTEMDRIVE', 'TEMP', 'USERDOMAIN', 'USERNAME', 'WINDIR']) assert.equal(environment[key], '', key);
     assert.equal(environment.NODE_V8_COVERAGE, '');
     assert.equal(JSON.stringify(environment).includes('credential-sentinel'), false);
     assert.equal(JSON.stringify(environment).includes('private-identity'), false);
   } finally { f.restore(); }
+});
+
+test('Windows missing, empty or filtered USERPROFILE uses only the OS directory and preserves the other guards', () => {
+  const profile = 'D:\\OS-accounts\\safe-user';
+  const f = fixture({ osUserProfile: profile });
+  try {
+    for (const supplied of [undefined, '', 'private-credential-profile']) {
+      const environment = commandEnvironment({ SystemRoot: 'C:\\Windows', ...(supplied === undefined ? {} : { USERPROFILE: supplied }), PSModulePath: 'private-module', NODE_OPTIONS: 'private-loader' }, ['private-credential']);
+      assert.equal(environment.USERPROFILE, profile);
+      assert.equal(environment.PSMODULEPATH, undefined);
+      assert.equal(environment.NODE_OPTIONS, undefined);
+      assert.equal(environment.USERNAME, '');
+      assert.equal(environment.USERDOMAIN, '');
+      assert.equal(environment.HOMEPATH, '');
+      assert.equal(environment.HOMEDRIVE, '');
+      assert.equal(environment.WINDIR, '');
+      assert.equal(JSON.stringify(environment).includes('private-credential'), false);
+    }
+    const explicit = commandEnvironment({ SystemRoot: 'C:\\Windows', USERPROFILE: 'E:\\explicit-profile' });
+    assert.equal(explicit.USERPROFILE, 'E:\\explicit-profile');
+  } finally { f.restore(); }
+});
+
+test('Windows OS profile fallback still rejects secrets, invalid directories and failed OS queries', () => {
+  for (const profile of ['C:\\private-credential-user', 'relative-profile', '\\\\server\\profile', 'C:relative', 'C:\\profile\n', () => { throw new Error('OS user query failed'); }]) {
+    const f = fixture({ osUserProfile: profile });
+    try {
+      const environment = commandEnvironment({ SystemRoot: 'C:\\Windows', USERPROFILE: 'private-credential-supplied' }, ['private-credential']);
+      assert.equal(environment.USERPROFILE, '');
+      assert.equal(JSON.stringify(environment).includes('private-credential'), false);
+    } finally { f.restore(); }
+  }
+});
+
+test('Windows profile initialization cannot restore an unapproved ambient home directory', () => {
+  const profile = 'C:\\OS-accounts\\safe-user';
+  const originalHomedir = os.homedir;
+  const f = fixture({ osUserProfile: profile });
+  os.homedir = () => 'C:\\private-credential-ambient';
+  syncBuiltinESMExports();
+  try {
+    const environment = commandEnvironment({ SystemRoot: 'C:\\Windows' }, ['private-credential']);
+    assert.equal(environment.USERPROFILE, profile);
+    assert.equal(JSON.stringify(environment).includes('private-credential'), false);
+  } finally { os.homedir = originalHomedir; f.restore(); }
 });
 
 test('a guardian spawn error with no PID still waits for Node close without requiring an exit event', async () => {

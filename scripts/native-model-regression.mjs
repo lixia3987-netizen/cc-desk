@@ -37,7 +37,8 @@ export async function runNativeModelRegression(options) {
   const rootDirectory = path.join(options.outputDirectory, 'journals');
   await mkdir(options.outputDirectory, { recursive: true });
   const reportFile = path.join(options.outputDirectory, 'report.json');
-  const report = { version: 1, model: modelName, protocol: 'anthropic', startedAt: new Date().toISOString(), cases: [] };
+  // 该入口只验证传输/续接/恢复；它不构成生产多 Agent 自主委派的通过证据。
+  const report = { version: 2, source: 'real_model_transport_probe', delegationReleaseGate: 'not_run', model: modelName, protocol: 'anthropic', startedAt: new Date().toISOString(), cases: [] };
   const transport = { protocol: 'anthropic', baseURL: environment.ANTHROPIC_BASE_URL, model: modelName,
     apiKey, authHeader: environment.ANTHROPIC_AUTH_TOKEN ? 'authorization' : 'x-api-key',
     instructions: 'Follow the regression instructions exactly. Use regression_probe only when requested. Keep the final answer short.',

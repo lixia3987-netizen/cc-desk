@@ -83,6 +83,24 @@ export interface ContextUsage {
   /** 提供商选定的模型或别名，在进程重启后保留。 */
   selectionModel?: string;
   inputTokens?: number;
+  /** 本回合各请求的已报告输入峰值；并非当前上下文或累计输入。 */
+  peakInputTokens?: number;
+  peakInputComplete?: boolean;
+  /** 最后一次普通请求的提供方计数，原始值与归一化规则分开保留。 */
+  requestUsage?: {
+    inputTokens?: number; outputTokens?: number;
+    nonCachedInputTokens?: number | null; cacheReadInputTokens?: number | null; cacheCreationInputTokens?: number | null;
+    provider?: { raw: Record<string, number | null>; normalization: string };
+  };
+  /** 最后一次普通请求的脱敏诊断，只保留计量和来源，不含正文。 */
+  requestDiagnostic?: {
+    attempt: number; purpose: 'normal' | 'child' | 'retry'; phase: 'started' | 'request' | 'dispatched' | 'finished';
+    requestSent: boolean | null; contextBytes: number; payloadBytes?: number; elapsedMs?: number;
+    estimatedInputTokens: number | null;
+    estimateMethod: 'utf8_bytes' | 'tokenizer' | 'calibrated' | 'unknown';
+    estimateSource: 'fallback' | 'tokenizer' | 'calibration' | 'unknown';
+    components: Partial<Record<'systemPrompt' | 'permissions' | 'projectRules' | 'skills' | 'instructions' | 'tools' | 'userInput' | 'history' | 'toolResults' | 'reasoning' | 'continuation' | 'images' | 'transport', { bytes: number; accounting: 'serialized' | 'logical'; count?: number }>>;
+  };
   contextWindow?: number;
   measuredAt?: string;
   source?: 'request' | 'context-command';

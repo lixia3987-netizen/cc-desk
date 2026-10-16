@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { runAgent } from '@cc-desk/agent-core';
-import { createNativeModel } from '@cc-desk/agent-node/native-model';
+import { runAgent, type ModelContext } from '@cc-desk/agent-core';
+import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { requireCompleteContext } from '@cc-desk/agent-node/context-maintenance';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { StateStore } from '../src/main/store';
@@ -25,6 +25,9 @@ const secret = 'sk-in-turn-executor-local-fixture';
 const input = 'Keep the original engineering goal intact; inspect the file and retain human verification.';
 const summary = '历史目标与约束保持不变。已建立检查计划并读取 fixture.txt；人工验收仍未执行。继续读取当前任务，不能根据模型文字宣称验收通过。';
 const padding = 'ordinary historical observation '.repeat(730);
+// 指令变更只需一个真实文件批次：旧历史可摘要，最新读取仍须完整保留。
+const instructionChangeContent = 'instruction-change file observation\n'.repeat(200);
+const unknownCache = { cacheReadInputTokens: null, cacheCreationInputTokens: null, nonCachedInputTokens: null };
 const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
   contextMaintenance: options.contextMaintenance,
@@ -43,15 +46,18 @@ const inline: NonNullable<NativeExecutorOptions['worker']> = options => runAgent
 });
 
 async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: string; maxModelRequests?: number; toolOnlyBoundary?: boolean; retryBeforeOrdinary?: boolean } = {}) {
+  const inputBudget = options.toolOnlyBoundary ? 50000 : 90000;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-in-turn-executor-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data'); await fs.mkdir(project);
-  await fs.writeFile(path.join(project, 'fixture.txt'), options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
+  await fs.writeFile(path.join(project, 'fixture.txt'), options.mode === 'instructions-changed' ? instructionChangeContent
+    : options.toolOnlyBoundary ? 'large bounded file observation\n'.repeat(2000) : 'original content remains unchanged\n');
   // 不同文件代表实际检查进展；反复读取同一个未变化的文件，
   // 会在三个批次后被 N3-03 有意阻止。
-  for (const index of [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
+  for (const index of options.mode === 'instructions-changed' ? [1] : [1, 2, 3]) await fs.copyFile(path.join(project, 'fixture.txt'), path.join(project, `fixture-${index}.txt`));
   await fs.writeFile(path.join(project, 'AGENTS.md'), 'Preserve user files; never invent a verification result.');
   await fs.writeFile(path.join(project, 'CLAUDE.md'), 'Keep the current task and evidence references.');
   let ordinary = 0, summaries = 0, retryFired = false, summaryEntered!: () => void;
+  let instructionChangeHistory = '';
   const summaryStarted = new Promise<void>(resolve => { summaryEntered = resolve; });
   const server = await (protocol === 'responses' ? startResponsesFixture : startChatCompletionsFixture)({ assertReplay: false,
     handler: ({ body }: { body: Body }) => {
@@ -67,14 +73,24 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       const items = body.input ?? body.messages!.filter(item => item.role !== 'system');
       requireCompleteContext({ protocol: { id: protocol === 'responses' ? 'openai-responses' : 'openai-chat-completions', version: 1 }, items });
       const index = ordinary++;
+      if (options.mode === 'instructions-changed' && index === 0) {
+        // 真实 Responses 请求正文与适配器的 UTF-8 估计使用相同 JSON.stringify。
+        // 为首个计划回执保留 3500 字节；下一次完整读取再越过原 90k 的 90% 阈值。
+        const initialPayloadBytes = Buffer.byteLength(JSON.stringify(body), 'utf8');
+        const historyBytes = inputBudget * 0.9 - 3500 - initialPayloadBytes;
+        assert.ok(Number.isSafeInteger(historyBytes) && historyBytes > 0);
+        const observation = 'ordinary historical observation ';
+        instructionChangeHistory = observation.repeat(Math.ceil(historyBytes / observation.length)).slice(0, historyBytes);
+        assert.equal(Buffer.byteLength(instructionChangeHistory, 'utf8'), historyBytes);
+      }
       const call = (id: string, name: string, args: unknown, text = '') => protocol === 'responses'
         ? { output: [...(text ? [assistantMessage(`${id}-notes`, text, 'commentary')] : []), functionCall(id, name, args)] }
         : { message: { role: 'assistant', content: text || null, tool_calls: [{ id, type: 'function', function: { name, arguments: JSON.stringify(args) } }] } };
       if (index === 0) return call('plan', 'update_plan', { expectedRevision: 0, plan: {
         goal: input, steps: [{ id: 'inspect', title: 'Inspect original file', dependsOn: [], status: 'in_progress' }],
         criteria: [{ id: 'verify-humans', description: 'Human confirms scope and relevance', stepIds: ['inspect'], kind: 'manual' }],
-      } });
-      if (index <= 3) return call(`read-${index}`, 'read_file', { path: `fixture-${index}.txt` }, options.toolOnlyBoundary ? '' : `${index}: ${padding}`);
+      } }, options.mode === 'instructions-changed' ? instructionChangeHistory : '');
+      if (index <= 3) return call(`read-${index}`, 'read_file', { path: `fixture-${index}.txt` }, options.toolOnlyBoundary || options.mode === 'instructions-changed' ? '' : `${index}: ${padding}`);
       if (index === 4) return call('task-after-history', 'read_task', {});
       if (options.mode === 'empty-final') return protocol === 'responses' ? { output: [] } : { message: { role: 'assistant', content: '' } };
       return protocol === 'responses' ? { output: [assistantMessage('final', '模型声称整项任务已经验收通过。')] }
@@ -92,10 +108,17 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       execution: { providerId: 'native', mode: 'structured', conversationId },
       engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: options.autoCompact ?? 'before_send_and_during_run',
         ...(options.retryBeforeOrdinary ? { modelRetry: 'safe_transient' } : {}),
-        maxInputTokens: options.toolOnlyBoundary ? 40000 : 90000, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
+        // 完整 wire payload 的固定提示/目录约 24 KiB；40k 会在首个文件批次
+        // 就触发，而此时仅旧计划可被移除，连续性索引反而更大。50k 让第二个
+        // 完整文件批次进入维护：旧文件正文足以被摘要，最新无文本工具对仍保留。
+        maxInputTokens: inputBudget, maxModelRequests: options.maxModelRequests ?? 10 } }), started: false, archived: false, status: 'idle',
       createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
   });
+  let lastOrdinaryModel: NativeModelOptions | undefined, lastOrdinaryOutputLimit: number | undefined;
   const worker: NonNullable<NativeExecutorOptions['worker']> = async request => {
+    if (request.request.configuration.purpose !== 'context_summary') {
+      lastOrdinaryModel = request.model; lastOrdinaryOutputLimit = request.request.budget?.maxOutputTokens;
+    }
     const result = await inline(request);
     if (options.mode === 'instructions-changed' && request.request.configuration.purpose === 'context_summary') {
       await fs.appendFile(path.join(project, 'CLAUDE.md'), '\nNew rule added while the summary was in flight.');
@@ -103,7 +126,13 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
     return result;
   };
   let executor = new NativeStructuredExecutor(store, connections, events, { worker }); await executor.initialize();
-  return { id, project, server, summaryStarted, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
+  return { id, project, server, summaryStarted, inputBudget, get instructionChangeHistory() { return instructionChangeHistory; }, get executor() { return executor; }, get summaries() { return summaries; }, get ordinary() { return ordinary; },
+    contextPayloadBytes(context: ModelContext) {
+      assert.ok(lastOrdinaryModel && lastOrdinaryOutputLimit);
+      const estimate = createNativeModel(lastOrdinaryModel).estimateInputUsage?.(context, lastOrdinaryOutputLimit);
+      assert.ok(estimate, 'the production adapter must provide its actual wire payload estimate');
+      return estimate.serializedBytes;
+    },
     send: () => executor.send(id, input, [], undefined, { requestId: 'in-turn-submission' }),
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
@@ -121,7 +150,7 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     assert.equal(f.summaries, 1); assert.equal(f.ordinary, 6);
     const ledger = await f.ledger(); assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
     const run = ledger.runs[0]; assert.equal(run.result!.modelRequests, 7);
-    assert.deepEqual(run.result!.usage, { inputTokens: 77, outputTokens: 49, totalTokens: 126 });
+    assert.deepEqual(run.result!.usage, { inputTokens: 77, outputTokens: 49, totalTokens: 126, ...unknownCache }, 'the summary counters join the six ordinary responses exactly once; unreported cache partitions stay unknown');
     assert.equal(ledger.records.filter(record => record.event.type === 'model_response').length, 6, 'the raw ordinary responses remain intact');
     const after = f.server.requests.filter((body: Body) => body.tools?.length).at(-1) as Body;
     const encoded = JSON.stringify(after);
@@ -133,9 +162,11 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     const maintenance = f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!;
     assert.equal(maintenance.status, 'committed');
     assert.deepEqual(maintenance.summaryUsage, { inputTokens: 11, outputTokens: 7 });
-    assert.ok(Math.abs(maintenance.summaryCostUSD! - 0.000078) < 1e-12);
-    const totalCost = f.executor.snapshot(f.id).usage?.costUSD; assert.ok(typeof totalCost === 'number');
-    assert.ok(Math.abs(totalCost - 0.000546) < 1e-12, 'total cost includes the summary exactly once');
+    assert.equal(maintenance.summaryCostUSD, undefined, 'unreported cache counters cannot be priced as zero');
+    const totalUsage = f.executor.snapshot(f.id).usage!;
+    assert.equal(totalUsage.costUSD, undefined);
+    assert.equal(totalUsage.nativeCost?.status, 'unknown');
+    assert.equal(totalUsage.nativeCost?.reason, 'missing_cache_usage');
     assert.equal(await fs.readFile(path.join(f.project, 'fixture.txt'), 'utf8'), 'original content remains unchanged\n');
     const requests = f.server.requests.length, task = f.executor.snapshot(f.id).nativeTask;
     await f.restart(); assert.equal((await f.send()).success, true);
@@ -173,7 +204,7 @@ test('invalid summary stops the current run without a second summary or a follow
     assert.equal(f.ordinary, 4); assert.equal(JSON.stringify((await f.ledger()).context).includes(summary), false);
     const resultReceipt = (await f.ledger()).runs[0].result!;
     assert.equal(resultReceipt.modelRequests, 5);
-    assert.deepEqual(resultReceipt.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 }, 'a complete rejected summary still contributes its known service usage');
+    assert.deepEqual(resultReceipt.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90, ...unknownCache }, 'a complete rejected summary still contributes known totals while unreported cache partitions remain unknown');
     assert.notEqual(f.executor.snapshot(f.id).nativeTask!.verification, 'passed');
   } finally { await f.dispose(); }
 });
@@ -198,11 +229,61 @@ test('the last model slot cannot be consumed by an in-turn summary', { timeout: 
 test('CLAUDE instruction changes during summary prevent committing or resuming the old policy', { timeout: 20000 }, async () => {
   const f = await fixture('responses', { mode: 'instructions-changed' });
   try {
-    const result = await f.send(); assert.equal(result.success, false);
-    assert.equal(f.summaries, 1); assert.equal(f.ordinary, 4);
-    const ledger = await f.ledger(); assert.equal(JSON.stringify(ledger.context).includes(summary), false);
+    const originalInstructions = await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8');
+    const originalInstructionHash = createHash('sha256').update(originalInstructions).digest('hex');
+    const result = await f.send(); assert.equal(result.success, false); assert.deepEqual(f.server.errors, []);
+    assert.equal(f.inputBudget, 90000); assert.equal(f.summaries, 1); assert.equal(f.ordinary, 2); assert.equal(f.server.requests.length, 3);
+    const ordinaryRequests = f.server.requests.filter((body: Body) => body.tools?.length);
+    assert.equal(ordinaryRequests.length, 2);
+    const initialPayloadBytes = Buffer.byteLength(JSON.stringify(ordinaryRequests[0]), 'utf8');
+    const beforeReadPayloadBytes = Buffer.byteLength(JSON.stringify(ordinaryRequests[1]), 'utf8');
+    const threshold = f.inputBudget * 0.9;
+    assert.equal(Buffer.byteLength(f.instructionChangeHistory, 'utf8'), threshold - 3500 - initialPayloadBytes);
+    assert.ok(beforeReadPayloadBytes >= threshold - 3500 && beforeReadPayloadBytes < threshold,
+      `真实读取前的请求 ${beforeReadPayloadBytes} 必须低于维护阈值 ${threshold}`);
+    const ledger = await f.ledger(); assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
+    const run = ledger.runs[0].result!;
+    assert.equal(run.status, 'failed'); assert.equal(run.reason, 'context_maintenance_failed');
+    assert.equal(run.modelRequests, 3); assert.equal(run.toolCalls, 2);
+    assert.deepEqual(run.usage, { inputTokens: 33, outputTokens: 21, totalTokens: 54, ...unknownCache });
+
+    // 核验真实工具回执，避免用失败或截断的读取意外触发摘要。
+    const completed = ledger.records.flatMap(record => record.event.type === 'tool_completed' ? [record.event] : []);
+    assert.deepEqual(completed.map(event => ({ name: event.call.name, status: event.result.status })), [
+      { name: 'update_plan', status: 'completed' }, { name: 'read_file', status: 'completed' },
+    ]);
+    const planOutput = completed[0].result.output;
+    assert.ok(planOutput && typeof planOutput === 'object' && !Array.isArray(planOutput));
+    // 首次计划保存后，宿主还会记录工作区基线：总修订号递增，计划版本保持不变。
+    assert.equal(planOutput.revision, 2); assert.equal(planOutput.planRevision, 1);
+    const readOutput = completed[1].result.output;
+    assert.ok(readOutput && typeof readOutput === 'object' && !Array.isArray(readOutput));
+    assert.equal(readOutput.path, 'fixture-1.txt'); assert.equal(readOutput.content, instructionChangeContent);
+    assert.equal(readOutput.bytes, Buffer.byteLength(instructionChangeContent));
+    assert.equal(readOutput.hash, createHash('sha256').update(instructionChangeContent).digest('hex'));
+    assert.equal(readOutput.truncated, false); assert.equal(completed[1].result.truncated, false);
+
+    const changedInstructions = await fs.readFile(path.join(f.project, 'CLAUDE.md'), 'utf8');
+    assert.equal(changedInstructions, originalInstructions + '\nNew rule added while the summary was in flight.');
+    assert.notEqual(createHash('sha256').update(changedInstructions).digest('hex'), originalInstructionHash);
+    assert.equal(ledger.records.filter(record => record.event.type === 'model_response').length, 2);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_attempted').length, 1);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compaction_failed').length, 1);
+    assert.equal(ledger.records.filter(record => record.event.type === 'run_context_compacted').length, 0);
+    assert.equal(JSON.stringify(ledger.context).includes(summary), false);
+    assert.ok(JSON.stringify(ledger.context).includes(f.instructionChangeHistory), '失败摘要必须保留原始历史上下文');
+    requireCompleteContext(ledger.context!);
+    const afterReadPayloadBytes = f.contextPayloadBytes(ledger.context!);
+    assert.ok(afterReadPayloadBytes >= threshold && afterReadPayloadBytes <= f.inputBudget,
+      `真实读取后的适配器估计 ${afterReadPayloadBytes} 必须跨过维护阈值 ${threshold} 且不超过原输入预算`);
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.inTurn!.status, 'failed');
-    assert.deepEqual(ledger.runs[0].result!.usage, { inputTokens: 55, outputTokens: 35, totalTokens: 90 });
+
+    // 同一提交重启后只重放失败回执，不发网，也不替换原上下文或运行结果。
+    const requests = f.server.requests.length;
+    await f.restart(); assert.equal((await f.send()).success, false);
+    assert.equal(f.server.requests.length, requests);
+    const replay = await f.ledger();
+    assert.deepEqual(replay.context, ledger.context); assert.deepEqual(replay.runs[0].result, run);
   } finally { await f.dispose(); }
 });
 
@@ -252,9 +333,18 @@ for (const protocol of ['responses', 'chat-completions'] as const) test(`${proto
     return receipt;
   };
   try {
-    const result = await f.send(); assert.equal(injected, true); assert.equal(f.summaries, 1);
+    const result = await f.send();
+    const beforeCancellation = await f.ledger();
+    const payloads = beforeCancellation.records.filter(record => record.event.type === 'model_request_diagnostic' && record.event.diagnostic.phase === 'request')
+      .map(record => record.event.type === 'model_request_diagnostic' ? { purpose: record.event.diagnostic.purpose, bytes: record.event.diagnostic.payloadBytes } : {});
+    assert.equal(injected, true, JSON.stringify({ result, ordinary: f.ordinary, summaries: f.summaries,
+      reason: beforeCancellation.runs[0]?.result?.reason, maintenance: f.executor.snapshot(f.id).nativeContextMaintenance?.inTurn, payloads }));
+    assert.equal(f.summaries, 1);
     assert.equal(result.success, false); assert.equal(result.interrupted, true); assert.equal(result.summary, '');
     const ledger = await f.ledger(); assert.ok(JSON.stringify(ledger.context).includes(summary));
+    requireCompleteContext(ledger.context!);
+    const afterPayloadBytes = f.contextPayloadBytes(ledger.context!);
+    assert.ok(afterPayloadBytes < f.inputBudget * 0.9, `compacted wire payload ${afterPayloadBytes} must leave the maintenance threshold ${f.inputBudget * 0.9}`);
     const last = ledger.records.findLast(record => record.event.type === 'model_response')!;
     assert.equal(last.event.type, 'model_response');
     if (last.event.type === 'model_response') assert.ok(last.event.response.toolCalls.length > 0, 'latest raw response is the textless tool batch');

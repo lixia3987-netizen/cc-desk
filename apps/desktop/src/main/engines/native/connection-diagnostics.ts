@@ -3,7 +3,7 @@ import { ResponsesModelError } from '@cc-desk/agent-node/responses-model';
 import { ChatCompletionsModelError } from '@cc-desk/agent-node/chat-completions-model';
 import { AnthropicModelError } from '@cc-desk/agent-node/anthropic-model';
 import { createNativeModel, extractNativeAssistantText } from '@cc-desk/agent-node/native-model';
-import { estimateNativeCost } from '../../../shared/native-cost';
+import { nativeCostEstimate } from '../../../shared/native-cost';
 import type { ModelResponse, Usage } from '@cc-desk/agent-core';
 import type { NativeConnectionTestCode, NativeConnectionTestInput, NativeConnectionTestResult } from '../../../shared/native-connections';
 import type { ConnectionStore, ResolvedNativeConnection } from './connections';
@@ -34,6 +34,10 @@ function safeUsage(usage: Usage | null): Usage | undefined {
   for (const key of ['inputTokens', 'outputTokens', 'totalTokens'] as const) {
     const value = usage[key];
     if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) result[key] = value;
+  }
+  for (const key of ['nonCachedInputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens'] as const) {
+    const value = usage[key];
+    if (value === null || typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) result[key] = value;
   }
   return Object.keys(result).length ? result : undefined;
 }
@@ -141,8 +145,10 @@ export class NativeConnectionDiagnostics {
         signal: entry.controller.signal, onEvent: () => {},
       });
       const usage = safeUsage(response.usage);
-      const estimatedCostUSD = estimateNativeCost(usage, connection.pricing, connection.model);
-      return { ...common, ...(estimatedCostUSD === undefined ? {} : { estimatedCostUSD }), code: entry.controller.signal.aborted ? 'cancelled' : responseCode(response), durationMs: elapsed(), ...(usage ? { usage } : {}) };
+      const costEstimate = nativeCostEstimate(usage, connection.pricing, connection.model);
+      return { ...common, costEstimate, ...(costEstimate.costUSD === undefined ? {} : { estimatedCostUSD: costEstimate.costUSD }),
+        ...(response.providerUsage ? { providerUsage: structuredClone(response.providerUsage) } : {}),
+        code: entry.controller.signal.aborted ? 'cancelled' : responseCode(response), durationMs: elapsed(), ...(usage ? { usage } : {}) };
     } catch (error) {
       return { ...common, ...(entry.controller.signal.aborted ? { code: 'cancelled' as const } : failure(error)), durationMs: elapsed() };
     }

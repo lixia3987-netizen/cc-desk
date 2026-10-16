@@ -1,5 +1,4 @@
 import { openNewSessionOptions } from './helpers/session-ui';
-import { openSessionSettings, closeSessionSettings } from './helpers/session-settings';
 import { desktopRoot, documentationPath } from './helpers/paths';
 import { sessionAction, sessionRow, stubChatSubmission, submitNewSession } from './helpers/session-ui';
 import { selectProjectFilter } from './helpers/project-filter';

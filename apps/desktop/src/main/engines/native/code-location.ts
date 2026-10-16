@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ToolPreparationError } from '@cc-desk/agent-core';
 import type { NativeTaskCodeLocation, NativeTaskEvidence, NativeTaskSnapshot } from '@cc-desk/contracts/native-task';
 import { isSensitivePath, normalizeProjectPath, ProjectFiles } from '@cc-desk/agent-node/tools';
 
@@ -12,7 +13,7 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 export function extractCodeLines(content: string, startLine: number, endLine: number): string {
   if (!Number.isSafeInteger(startLine) || !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine || endLine - startLine >= 80) throw new Error('位置必须是连续的 1–80 行。');
   const lines = content.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-  if (endLine > lines.length) throw new Error('文件中不存在指定行。');
+  if (endLine > lines.length) throw new ToolPreparationError({ error: 'code_location_line_range_invalid', lineCount: lines.length, readFile: true });
   const excerpt = lines.slice(startLine - 1, endLine).join('');
   if (Buffer.byteLength(excerpt) > 8192) throw new Error('原始片段超过 8192 字节，请选择更小范围。');
   return excerpt;

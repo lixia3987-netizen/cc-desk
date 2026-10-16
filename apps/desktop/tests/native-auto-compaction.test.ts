@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { runAgent, type ModelContext, type ToolDefinition } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import { ResponsesModel, estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
+import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
 import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
@@ -109,7 +109,8 @@ async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
       const context = (await readLedger()).context!;
       const pending: ModelContext = { ...context, items: [...context.items, { role: 'user', content: input }] };
       const previous = calls.filter(call => !call.summary).at(-1)!;
-      return estimateResponsesInputTokens(pending, previous.instructions, previous.definitions);
+      return new ResponsesModel({ baseURL: server.baseURL, allowLoopbackHttp: true, model: 'auto-compaction-fixture',
+        instructions: previous.instructions, toolDefinitions: previous.definitions }).estimateInputUsage(pending, previous.budget!.maxOutputTokens!).estimatedInputTokens;
     },
     async enableAtThreshold(input: string, changes: Record<string, unknown> = {}) {
       const maxInputTokens = Math.floor(await this.estimate(input) / 0.95);

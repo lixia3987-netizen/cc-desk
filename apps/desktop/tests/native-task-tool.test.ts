@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { applyNativeTaskUpdate, type PreparedTool, type ToolExecutionContext } from '@cc-desk/agent-core';
+import { applyNativeTaskUpdate, ToolPreparationError, type PreparedTool, type ToolExecutionContext } from '@cc-desk/agent-core';
 import type { NativeTaskPlan, NativeTaskSnapshot, NativeTaskUpdate } from '@cc-desk/contracts/native-task';
 import { createNativeTaskTool } from '../src/main/engines/native/task-tool';
 
@@ -84,12 +84,19 @@ test('task plans reject injected identity, verification, unsupported statuses, i
 test('stale plan revisions cannot overwrite a committed plan, including a revision changed after preparation', async () => {
   const f = fixture();
   await f.execute();
-  await assert.rejects(f.prepare({ expectedRevision: 0, plan: plan() }, 'stale'), /修订/);
+  await assert.rejects(f.prepare({ expectedRevision: 0, plan: plan() }, 'stale'), (error: unknown) => {
+    assert.ok(error instanceof ToolPreparationError);
+    assert.deepEqual(error.feedback, { error: 'task_revision_changed', currentRevision: 1, readTask: true });
+    return true;
+  });
+  assert.equal(f.applyCount, 1, '过期 CAS 不执行更新');
   const pending = await f.prepare({ expectedRevision: 1, plan: plan() }, 'will-stale');
   await f.execute({ expectedRevision: 1, plan: { ...plan(), goal: '新目标' } }, 'updated');
-  await assert.rejects(f.tool.validate(pending, f.context), /修订/);
-  assert.equal((await f.tool.execute(pending, f.context)).status, 'not_executed');
+  await assert.rejects(f.tool.validate(pending, f.context), ToolPreparationError);
+  assert.deepEqual(await f.tool.execute(pending, f.context), { status: 'not_executed', output: { error: 'task_revision_changed', currentRevision: 2, readTask: true, executed: false } });
   assert.equal(f.task?.goal, '新目标'); assert.equal(f.task?.revision, 2); assert.equal(f.applyCount, 2);
+  assert.equal((await f.execute({ expectedRevision: 2, plan: plan() }, 'explicit-retry')).status, 'completed');
+  assert.equal(f.task?.revision, 3); assert.equal(f.applyCount, 3);
 });
 
 test('exact call preparation and concurrent execution are idempotent, while substituted bindings fail', async () => {

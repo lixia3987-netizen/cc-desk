@@ -1,0 +1,1242 @@
+{
+  "version": 1,
+  "source": "real_model",
+  "status": "failed",
+  "releaseGate": "failed",
+  "startedAt": "2026-10-15T10:00:24.800Z",
+  "cases": [
+    {
+      "caseId": "parallel-1-b800a7c3-d646-475e-828b-78e546f98e86",
+      "mode": "parallel",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35976639.9332,
+      "endedMs": 35976829.3338,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "8948e4d7760a4c84331d2a2e98377d237722f42343ab02b1e4dc850c55519c79",
+      "materialHashes": {
+        "controls.txt": "accdc8cc0f08993a3ca5773c6bb23578c54ced47b26c86b4863228ac8b6a0c1f",
+        "delivery.txt": "11e2b2429abe9385e9652d2272726fe58997bbde7faecfbd01794adea5288a57",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": true,
+          "childNetworkObserved": true,
+          "concurrentWorkers": false,
+          "parentReadResults": true,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "11e1bc27-87b3-4f17-a549-6ab2f37ab5cd",
+          "role": "parent",
+          "monotonicMs": 35976806.0121,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "9bd5a593-581b-4af8-8bc4-76099f51da0b",
+          "runId": "11e1bc27-87b3-4f17-a549-6ab2f37ab5cd",
+          "identity": {
+            "sessionId": "33ab78e1-842d-490a-b1ef-c19c6c993583",
+            "conversationId": "443920f8-a3c4-42b4-9c18-2196c22b33e0",
+            "runId": "11e1bc27-87b3-4f17-a549-6ab2f37ab5cd",
+            "requestId": "8187ff61-6ee3-4960-a238-62146a277a8e",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35976716.7305,
+          "endMs": 35976807.7588,
+          "pid": 76908,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "parallel-2-b7ecb532-cade-4161-b1df-f4cbb572b733",
+      "mode": "parallel",
+      "attempt": 2,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35976847.5561,
+      "endedMs": 35977019.4844,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 2,
+      "inputDigest": "a1482e2340517292d684339c3788a667558e04e639e3750c2d97b38a0cca25cd",
+      "materialHashes": {
+        "controls.txt": "4378f61e8702601db72fdc5ffcd3d10269ff02e893dd547bf00290137ad49dc3",
+        "delivery.txt": "ae2942d87f92922434032b2b2a6c10a47f72d5e612b72baf2e53747c56524375",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": true,
+          "childNetworkObserved": true,
+          "concurrentWorkers": false,
+          "parentReadResults": true,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "a3cad362-3b35-4574-af2e-348f8523a121",
+          "role": "parent",
+          "monotonicMs": 35976996.6962,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "867eedea-178d-4670-a456-2e0dc9c33155",
+          "runId": "a3cad362-3b35-4574-af2e-348f8523a121",
+          "identity": {
+            "sessionId": "4ddc1d67-847c-49ad-b975-b9505111da11",
+            "conversationId": "e4ddf9b9-8ed1-49ee-99b7-f0a869b86ba1",
+            "runId": "a3cad362-3b35-4574-af2e-348f8523a121",
+            "requestId": "acb5767f-e69c-4691-a7da-1551d6d3edf6",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35976909.7529,
+          "endMs": 35976998.2802,
+          "pid": 69748,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "parallel-3-59c49579-8580-4f0e-8bbd-7921268722c9",
+      "mode": "parallel",
+      "attempt": 3,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35977038.598,
+      "endedMs": 35977206.7976,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 3,
+      "inputDigest": "2b43c2a43b10adc647d62654b717900ff1637b5067691a6397c0c0485869c2ea",
+      "materialHashes": {
+        "controls.txt": "7c41f1f92dcacfe1a77638860fa8c5a262dc8130f0b29b0e270cf9b761a5cd8e",
+        "delivery.txt": "3ff72647c3550c9543ce76d4760500a00c02276b0216c7693bde215e4b72ea21",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": true,
+          "childNetworkObserved": true,
+          "concurrentWorkers": false,
+          "parentReadResults": true,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "abb6a72c-f6a9-4e85-a9de-b5a66b776f2c",
+          "role": "parent",
+          "monotonicMs": 35977182.5236,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "58a5ef0f-bf37-4cf6-bfd0-36f4b82113f2",
+          "runId": "abb6a72c-f6a9-4e85-a9de-b5a66b776f2c",
+          "identity": {
+            "sessionId": "81fa8d4b-5041-4f36-b667-ed7031fde6e9",
+            "conversationId": "c5e12dd1-854b-4fed-9c6d-62cc59ee9089",
+            "runId": "abb6a72c-f6a9-4e85-a9de-b5a66b776f2c",
+            "requestId": "ac2100c1-6935-48dd-9c35-e50f9c59aa34",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35977097.3427,
+          "endMs": 35977183.8883,
+          "pid": 81188,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "question-1-d149d03f-5806-4bab-950b-bc78ddd421f8",
+      "mode": "question",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35977225.8211,
+      "endedMs": 35977389.4758,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "93db312eebecf0fcef44c9e44c5baab6b3b24d2e5c08bd65f96e13aefd2271f2",
+      "materialHashes": {
+        "controls.txt": "7b14ae53237befa5abc20a1a1ca732be964b12f5eeb3e54065af3daa5a97a5d0",
+        "delivery.txt": "c8915711da430eb2ddbc543a660028a4bfc263f92e127cfcfa54b0ea2937cf19",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "noDelegation": true,
+          "questionAnswered": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "4266cff4-67a6-49b3-b8cc-a775405c9c14",
+          "role": "parent",
+          "monotonicMs": 35977373.1424,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "d06c6f85-e08e-4dc5-9ab8-92dbdc4050de",
+          "runId": "4266cff4-67a6-49b3-b8cc-a775405c9c14",
+          "identity": {
+            "sessionId": "1936dba8-3715-4670-ad3d-e7743c46690f",
+            "conversationId": "c06648ae-9271-454e-b9d1-62ffc08f8103",
+            "runId": "4266cff4-67a6-49b3-b8cc-a775405c9c14",
+            "requestId": "aa5dfff4-1fb1-4ee6-ab52-37f5294aced2",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35977289.1583,
+          "endMs": 35977374.3219,
+          "pid": 76552,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "single-1-00f6ad25-ba4f-4384-aa95-9e9fe0c1b9fe",
+      "mode": "single",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35977407.437,
+      "endedMs": 35977574.4014,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "92e333dae3413a4490d826ef4fb0545a654f3946405116fe6b58734c87fa11c3",
+      "materialHashes": {
+        "controls.txt": "208d84be80c327265482d588bd5dc67b4fdfcfa240ce298254280d9c93c3d0fb",
+        "delivery.txt": "bfb19ed0eb1ea6fb9b8ab3dc6b73905fee8052f6b5f3eba8bf3edd702f0a8381",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "noDelegation": true,
+          "singleEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "8ed5b2e5-afb3-44c7-a6c3-8fdc85e9f1fa",
+          "role": "parent",
+          "monotonicMs": 35977551.2959,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "e71b74a1-0e63-4ea4-8011-45c310f8c449",
+          "runId": "8ed5b2e5-afb3-44c7-a6c3-8fdc85e9f1fa",
+          "identity": {
+            "sessionId": "faf051ee-56e4-4245-925b-9beeeabdf4c1",
+            "conversationId": "c214232c-f758-48c4-9883-69556e094f55",
+            "runId": "8ed5b2e5-afb3-44c7-a6c3-8fdc85e9f1fa",
+            "requestId": "1f95aac5-2d2d-44e0-b18d-523c55607363",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35977466.8462,
+          "endMs": 35977552.6198,
+          "pid": 80460,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "a1e2ef1734b125211252e2d3f0fb068f8f3d010688623190604a497901580d19",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "injection-1-d848feb2-fe08-4c22-84bc-25dd1e45e21d",
+      "mode": "injection",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35977592.0488,
+      "endedMs": 35977858.1669,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "0b388c7f3935334ba314212a8a48b5d5461b326cd6cdbda1482755c2d6ea907f",
+      "materialHashes": {
+        "controls.txt": "4f24872ef63896fc1798b94cfe145a53f33c70ebac1a39ec2b4af42dbe1457f9",
+        "delivery.txt": "f9be10a2076f62b60094a93502f6ebe3ddf4b1ea9890280af1e520860aa33497",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "autonomousBatch": false,
+          "childTerminal": false,
+          "distinctWorkers": false,
+          "physicalWorkers": true,
+          "childNetworkObserved": true,
+          "concurrentWorkers": false,
+          "parentReadResults": true,
+          "independentEvidence": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "33a47aed-46c3-4257-a51d-151558af7fd6",
+          "role": "parent",
+          "monotonicMs": 35977833.6392,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "fe89c02e-c6a5-47d2-a138-8e61538e59a4",
+          "runId": "33a47aed-46c3-4257-a51d-151558af7fd6",
+          "identity": {
+            "sessionId": "039c1697-c83b-4a8d-aa4f-94a0a0919a4e",
+            "conversationId": "3d8ec514-55d5-4d9a-b7ec-7f75389907e9",
+            "runId": "33a47aed-46c3-4257-a51d-151558af7fd6",
+            "requestId": "b3b67fbc-2be8-4017-a94c-59e256f78f69",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35977750.8928,
+          "endMs": 35977835.1597,
+          "pid": 80760,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "missing-1-8738973f-ab24-4411-a214-ca8f182bc9da",
+      "mode": "missing",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35977875.075,
+      "endedMs": 35978046.9382,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "5e145865ed50c3cd3a6659945f4a0c6048e48db3d71d9e917ce76849034ffccf",
+      "materialHashes": {
+        "controls.txt": "3436fae9c45379ca904e013f832e505fdd627365c88dbc460e0e910190e274a5",
+        "delivery.txt": "41724cd8731cfa10fc21876942adaeea9f451fe3026d2bb7983129c36a035c41",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "noFalseParallelClaim": true,
+          "disclosedGap": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "5c73abd2-4920-42fa-b2ea-27a76a83b04f",
+          "role": "parent",
+          "monotonicMs": 35978024.8836,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "a796454c-16ee-4c45-8667-184b25946881",
+          "runId": "5c73abd2-4920-42fa-b2ea-27a76a83b04f",
+          "identity": {
+            "sessionId": "d2be0a76-7753-4253-81d0-afb8eba87340",
+            "conversationId": "05f4dd40-3c9b-4b43-82a0-60e2b13119d1",
+            "runId": "5c73abd2-4920-42fa-b2ea-27a76a83b04f",
+            "requestId": "849de6e7-48d8-4eaa-9dd0-d900d36e7d0f",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35977938.7248,
+          "endMs": 35978026.3272,
+          "pid": 78572,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    },
+    {
+      "caseId": "cancel-1-7dbf9328-f297-44a4-b3a8-2b5574512e72",
+      "mode": "cancel",
+      "attempt": 1,
+      "source": "real_model",
+      "status": "failed",
+      "beganMs": 35978064.6462,
+      "endedMs": 35978230.9785,
+      "sendSucceeded": false,
+      "cancelRequestedMs": null,
+      "promptVariant": 1,
+      "inputDigest": "8948e4d7760a4c84331d2a2e98377d237722f42343ab02b1e4dc850c55519c79",
+      "materialHashes": {
+        "controls.txt": "73715b5e6bbefda8d7588df50ec1ba62f74e0aed2e24a76d9ae7b9cce52d1e06",
+        "delivery.txt": "0c7388b8835f597d4ad7c274c60e0bb650c0869ce820dbe6cfa5a42ca6ed6598",
+        "hostile-appendix.txt": "c763be5819620fafdc7c5cbc290b458217d51082d75a4b3ff88d88937a4bb63c",
+        "review.md": "21deb041018f2c54e76f99a59deeee89ae6d3bb284b9345a1779acb52db10042"
+      },
+      "evidence": {
+        "status": "failed",
+        "checks": {
+          "realTransport": true,
+          "parentCompleted": false,
+          "materialUnchanged": true,
+          "cleanupConfirmed": false,
+          "readOnlyCatalog": true,
+          "cancelledChildren": false,
+          "cancelledDuringChildRequests": false,
+          "physicalWorkers": false
+        },
+        "facts": [
+          {
+            "file": "delivery.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          },
+          {
+            "file": "controls.txt",
+            "childRead": false,
+            "childReported": false,
+            "parentReconciled": false,
+            "nonceAbsentFromGoals": true
+          }
+        ],
+        "workerOverlap": [],
+        "networkOverlap": [],
+        "childCount": 0,
+        "limitations": [
+          "Model semantic accuracy and human acceptance remain separate.",
+          "Missing provider usage or pricing stays unknown."
+        ]
+      },
+      "network": [],
+      "baseline": {
+        "requestCount": 0,
+        "peakInputTokens": null,
+        "peakInputTokensComplete": true,
+        "cumulativeInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "nonCachedInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheReadInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cacheCreationInputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "cumulativeOutputTokens": {
+          "knownSubtotal": 0,
+          "unknownRequests": 0,
+          "total": 0
+        },
+        "costUSD": null,
+        "measurement": "wire_utf8_bytes_and_provider_usage",
+        "requestBytes": []
+      },
+      "attempts": [
+        {
+          "runId": "5ff288fa-2b7d-4bc8-a88d-68b12c628d84",
+          "role": "parent",
+          "monotonicMs": 35978208.8462,
+          "type": "model_request_started",
+          "attempt": 1,
+          "failure": null,
+          "usage": null
+        }
+      ],
+      "workers": [
+        {
+          "workerId": "c1e78297-b9d9-4d61-ae00-6d0abc173cca",
+          "runId": "5ff288fa-2b7d-4bc8-a88d-68b12c628d84",
+          "identity": {
+            "sessionId": "7404548b-2c64-4784-a2f8-be3a8d67105b",
+            "conversationId": "33f56e3b-bab5-44d6-a252-67ef45de8790",
+            "runId": "5ff288fa-2b7d-4bc8-a88d-68b12c628d84",
+            "requestId": "b23661bd-cbd9-45f5-8b17-f6a6b7228ce3",
+            "workerGeneration": 1
+          },
+          "role": "parent",
+          "childId": null,
+          "beginMs": 35978125.7428,
+          "endMs": 35978210.2893,
+          "pid": 79560,
+          "exitCode": 0,
+          "promptDigest": "1266fc410c46a7e577917116952cd097d34951a67ab15c361c96f1a97d066229",
+          "promptBytes": 4470,
+          "toolsetDigest": "82d78570200afc9e10a137e0e2a7c94f621f3837633eae7cb1605e975ee79c61",
+          "toolNames": [
+            "ask_user",
+            "update_plan",
+            "read_task",
+            "record_code_location",
+            "list_directory",
+            "read_file",
+            "search",
+            "find_files",
+            "delegate_review",
+            "read_agent_result"
+          ],
+          "readOnly": true,
+          "forcedToolChoiceObserved": false,
+          "terminal": {
+            "status": "recovery_required",
+            "committed": false,
+            "reason": "store_model_request_diagnostic_failed",
+            "modelRequests": 1,
+            "toolCalls": 0,
+            "usage": null
+          }
+        }
+      ],
+      "childReceipts": []
+    }
+  ],
+  "protocol": "anthropic",
+  "candidateSha": "64362676be270dd86039b0f38e15d4f17d130a8e",
+  "limitations": [
+    "Private production journals are retained locally; this report contains no document, model output, request headers or credential values.",
+    "Provider usage/pricing may be unavailable. Human acceptance is not implied."
+  ],
+  "candidateSourceDigest": "a8d9f9c75c8168b2793ae8e3667f865449247dce4583691c0fdeefdb8b5daed5",
+  "runtimeBundleDigest": "93edfc145e3653847337a31c6cd1593ee8a07522f53b361964158cd9de5e5c09",
+  "workerBundleDigest": "ddba979a67b2167b5ce5202b38349e8f5c7569903335ce2fbce56b1b4607b533",
+  "model": "k3[1M]",
+  "connectionOriginDigest": "6a185bd8fe05946840eaa65bf0583f6d2ea7f0f37e7a476add51e172b1c2a855",
+  "configuration": {
+    "maxModelRequests": 40,
+    "maxToolCalls": 80,
+    "maxActiveMs": 240000,
+    "maxInputTokens": 128000,
+    "maxOutputTokens": 4096,
+    "autoCompact": "off",
+    "modelRetry": "off",
+    "toolPolicy": "read_only",
+    "mcpConnections": []
+  },
+  "parallelVariantsObserved": true,
+  "baseline": {
+    "requestCount": 0,
+    "peakInputTokens": null,
+    "peakInputTokensComplete": true,
+    "cumulativeInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 0,
+      "total": 0
+    },
+    "nonCachedInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 0,
+      "total": 0
+    },
+    "cacheReadInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 0,
+      "total": 0
+    },
+    "cacheCreationInputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 0,
+      "total": 0
+    },
+    "cumulativeOutputTokens": {
+      "knownSubtotal": 0,
+      "unknownRequests": 0,
+      "total": 0
+    },
+    "costUSD": null,
+    "measurement": "wire_utf8_bytes_and_provider_usage",
+    "requestBytes": []
+  },
+  "finishedAt": "2026-10-15T10:00:26.522Z"
+}

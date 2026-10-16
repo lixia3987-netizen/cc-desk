@@ -1,5 +1,7 @@
 # E0-02：版本化工程任务评估报告
 
+2026-10-16 更新：新批次默认固定到 [v2 材料](../evals/native-engineering/v2/README.md)，修正 Windows `--import` 的绝对路径入口；读取旧批次、报告及执行其验收时，始终按其完整 suite 身份选择原版本。v1 的材料、摘要、历史 validation 与失败尝试保持不动。不同 suite 不能比较或复用尝试。本页第 5 节仍是原 v1 的历史现场记录，不能当作 v2 的执行证据。
+
 日期：2026-09-28（北京时间）。开发基线：`dev/native-agent@82aa2878451fded120f6bcd67345a053846f7b73`。本批补齐工程评估的记录、受控验收和对照入口，沿用 [E0-01](NATIVE-AGENT-E0.md) 已固定的任务及独立检查，不执行 E0-03 真实模型对照。
 
 2026-09-29 后续补充：[Windows + cc-switch 执行准备](NATIVE-AGENT-E0-WINDOWS.md)确定平台与不设评估上限的选择。`engineering-init ... --unlimited-budget` 可创建记录 schemaVersion 2，预算用 `"unlimited"` 明示；默认仍为 v1。报告、验收意图及批次的外层版本保持 v1，保留嵌套记录的版本和内容；旧工具不支持新记录时需更新评估工具，不能将其强改为 v1。未知实际指标仍是 `null`。
@@ -10,9 +12,9 @@
 
 | 项目 | 固定值或含义 |
 | --- | --- |
-| suiteId | `cc-desk-engineering-v1` |
+| suiteId | 新批次为 `cc-desk-engineering-v2`；已有 v1 批次保持 `cc-desk-engineering-v1` |
 | taskBaseline | `b45bd0623d2a44a2878c46d4701fa4b388c7d9be` |
-| suiteDigest | `7ac65759b84e3946f632a931ff7bece2e50051fc25b2ee9a5e0c23bd2cbfba8a` |
+| suiteDigest | v2 为 `ec64644c0ee45495e0968c0859d483bf0c37fc22029c7a5f55883e6f0c0d6624`；v1 保持 `7ac65759b84e3946f632a931ff7bece2e50051fc25b2ee9a5e0c23bd2cbfba8a` |
 | appRevision | 操作者预先指定的完整应用 commit；与任务代码基线分开，脚本不自动识别实际运行的桌面二进制 |
 | 批次 | Native / Claude × 三项任务 × 第 1 / 2 轮，共 12 条固定记录 |
 | 验收尝试 | 同一轮可以多次运行代码检查，每次保存新的意图和结果；不覆盖此前失败 |

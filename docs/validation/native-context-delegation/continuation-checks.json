@@ -1,0 +1,752 @@
+{
+  "schemaVersion": 2,
+  "recordedAt": "2026-10-15T11:34:30.479Z",
+  "source": "分阶段真实执行记录；保留历史失败",
+  "candidate": {
+    "head": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+    "tree": "0d67031cadb414a977b03f44a3b472772da86496",
+    "gitObjectShaVerified": true,
+    "allBlobsVerified": true,
+    "checkoutClean": true,
+    "fsckFullStrictExitCode": 0,
+    "shallowBoundariesExplicit": true,
+    "note": "候选对象验证不将此前分阶段测试追认为同一候选的一次完整验收"
+  },
+  "releaseGate": "pending",
+  "mainMerged": false,
+  "physicalFinalAttempt": {
+    "id": "physical_electron_stale_revision_recovery_final_attempt",
+    "candidate": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+    "requestedCommand": "node apps/desktop/scripts/run-desktop-tests.mjs native-agent.spec.ts --grep 'receives trusted stale-revision feedback' --workers 1",
+    "prerequisite": {
+      "command": "node scripts/build.mjs",
+      "workingDirectory": "apps/desktop",
+      "exitCode": 1,
+      "errorCode": "EPERM",
+      "operation": "native realpath",
+      "plugin": "vite:build-html",
+      "file": "src/renderer/main.tsx"
+    },
+    "status": "failed_before_test",
+    "testsExecuted": 0,
+    "oldBundleUsed": false,
+    "retries": 0,
+    "log": {
+      "file": "followup-final-electron-feedback.log",
+      "sha256": "a2d8bdd32e783c9218ffa092bdf94a5505eb344dab1062c6488d73404944e97c",
+      "machineRootRedacted": true
+    },
+    "note": "普通执行入口已作最终实际尝试，生产构建前置失败，未执行物理用例。"
+  },
+  "archiveFinalCodeChecks": {
+    "recordedAt": "2026-10-15T11:36:28.948Z",
+    "workingDirectory": "cc-desk-development",
+    "evidenceKind": "root-observed tool output",
+    "candidateCodeSnapshotMatches": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+    "verifiedChangedBlobCount": 30,
+    "verifiedChangedBlobs": [
+      {
+        "path": "apps/desktop/src/main/engines/native/agent-prompts.ts",
+        "sha": "7dd7a70a607d5e6f4e81562a099e2a2e782a9b3e"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/agent-delegation-audit.ts",
+        "sha": "9ade00f4303a2287bf017972559be4ed74048ebf"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/code-location-tool.ts",
+        "sha": "f36147957297dc31fed0b8b0a2d28bb49fbb95d8"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/code-location.ts",
+        "sha": "ca3649d749831557fef0614ad848dc0556094958"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/task-tool.ts",
+        "sha": "31137c0ef4633ce83e4b5315b4458c78cd54e899"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-host.ts",
+        "sha": "fa3605d29051db6c0b52aaa393e800598dc8d067"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-entry.ts",
+        "sha": "d66636ec72dbe4bbe3d5c37160a982ce8e08616d"
+      },
+      {
+        "path": "apps/desktop/src/main/engines/native/worker-protocol.ts",
+        "sha": "225234d6ce7169543d1265a1c825d60ce13e5767"
+      },
+      {
+        "path": "scripts/native-delegation-model-regression-lib.mjs",
+        "sha": "7a3c2ca978a7d6e94cbe1eaba7f5d9b98bc34991"
+      },
+      {
+        "path": "scripts/native-delegation-model-regression.mjs",
+        "sha": "cdea125de221a2b4eb3fb55136021dba12e83cea"
+      },
+      {
+        "path": "scripts/native-regression-candidate.mjs",
+        "sha": "e0057788e99ece0f6f17374101ba54e1a847b011"
+      },
+      {
+        "path": "scripts/native-regression-runtime-policy.mjs",
+        "sha": "a26d80191be03c976d6e103984b269bd503d9117"
+      },
+      {
+        "path": "apps/desktop/scripts/native-delegation-runtime.ts",
+        "sha": "a99a09ee5a3cd3df9d0ce0ed4465b1441e232792"
+      },
+      {
+        "path": "apps/desktop/tests/native-agent-delegation-policy.test.ts",
+        "sha": "bcd1b4524dbd27c1ca069dd03ae2a2d211ca676c"
+      },
+      {
+        "path": "apps/desktop/tests/native-task-tool.test.ts",
+        "sha": "fde255a2e8bf8c65e2e23b39337d5d42b6390a3c"
+      },
+      {
+        "path": "apps/desktop/tests/native-code-location-tool.test.ts",
+        "sha": "574f2c169e7038501218d80e4814f5b2733d8e27"
+      },
+      {
+        "path": "apps/desktop/tests/native-code-location-executor.test.ts",
+        "sha": "f8f2aabe974147807a1084df873b416bc8c3ed37"
+      },
+      {
+        "path": "apps/desktop/tests/native-worker-host.test.ts",
+        "sha": "574563cdd123fee301a595d8d0ff295f62827ab0"
+      },
+      {
+        "path": "apps/desktop/tests/native-agent.spec.ts",
+        "sha": "30f02f420ab108ffa3e3a0453453501d6c839b52"
+      },
+      {
+        "path": "apps/desktop/tests/chat.test.ts",
+        "sha": "3cf4fb30858a0fc426385d4acf85c7528ea67869"
+      },
+      {
+        "path": "apps/desktop/tests/native-maintenance.test.ts",
+        "sha": "734c3d247586cdad35f9b544f2e4456fb6d2ed02"
+      },
+      {
+        "path": "scripts/tests/native-delegation-model-regression.test.mjs",
+        "sha": "0a4775aed94c632f7bedf795790237bf30e18a7e"
+      },
+      {
+        "path": "scripts/tests/native-regression-candidate.test.mjs",
+        "sha": "4d47767eb82496dabb4c36b656fc642a39e1e795"
+      },
+      {
+        "path": "scripts/tests/native-regression-runtime-policy.test.mjs",
+        "sha": "593d692db846d241bd312d246c81c0f3cba3d188"
+      },
+      {
+        "path": "packages/agent-core/src/index.ts",
+        "sha": "c9a697676d8d8bbca78f26d640229c0f2db6af6a"
+      },
+      {
+        "path": "packages/agent-core/src/run.ts",
+        "sha": "54a0f87c108f1f23441712b3918847cc8d122565"
+      },
+      {
+        "path": "packages/agent-core/src/tool-preparation-error.ts",
+        "sha": "f1802ac77b0e9a3676a5feccad9e73c64f5785e9"
+      },
+      {
+        "path": "packages/agent-core/tests/core.test.mjs",
+        "sha": "4af5619cf83f9a7424d33ebdb59d2dfc58933a65"
+      },
+      {
+        "path": "packages/agent-core/tests/tool-preparation-error.test.mjs",
+        "sha": "2c10c6122045c26f2b8c3d036eb209ba23220ef0"
+      },
+      {
+        "path": "packages/agent-core/tests/fixtures/consumer.mts",
+        "sha": "ff69875845f4e7f16dc61281a84f99171a56f518"
+      }
+    ],
+    "checks": [
+      {
+        "id": "desktop_typescript_final",
+        "command": "node node_modules/typescript/lib/tsc.js --noEmit --project apps/desktop/tsconfig.json",
+        "exitCode": 0,
+        "toolOutputReferences": [
+          "fcb0cd",
+          "e84091",
+          "fe903a"
+        ],
+        "rawLog": null
+      },
+      {
+        "id": "worker_entry_and_physical_fixture_compile_final",
+        "command": "esbuild build each entry with bundle:true platform:node format:cjs write:false and electron/node-pty/@playwright/test external",
+        "entryPoints": [
+          "apps/desktop/src/main/engines/native/worker-entry.ts",
+          "apps/desktop/tests/native-agent.spec.ts"
+        ],
+        "exitCode": 0,
+        "toolOutputReferences": [
+          "3fe16d"
+        ],
+        "rawLog": null,
+        "physicalExecution": false
+      }
+    ],
+    "note": "源码冻结后新执行的类型/编译观察，随后逐文件Git哈希核对匹配已发布候选；不冒充Electron物理运行，也不补造原始日志。"
+  },
+  "checks": [
+    {
+      "name": "prepare-native",
+      "exitCode": 1,
+      "summary": [],
+      "failures": [],
+      "logSha256": "686a95b576bef52211b8a0cd4446734056bfeb48483efdb86eb3f7d3956518ad"
+    },
+    {
+      "name": "windows-job-diagnostic",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "dc45e841e4e93ceaf473c0d43e6a4dc2a0b00bd1436bd2d84e3aa8a777a99300"
+    },
+    {
+      "name": "native-connection-probe",
+      "exitCode": 1,
+      "summary": [],
+      "failures": [],
+      "logSha256": "7b2125efa4d965a8da131411bfff4828bf99b39a3fa12c9fb37d8ce959f15365"
+    },
+    {
+      "name": "engineering-restored",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 38",
+        "ℹ pass 35",
+        "ℹ fail 2",
+        "ℹ cancelled 0",
+        "ℹ skipped 1",
+        "ℹ duration_ms 3097.409"
+      ],
+      "failures": [
+        "✖ engineering verification preserves failed and successful attempts and refuses false completion (39.251ms)",
+        "✖ engineering CLI rejects trailing arguments before creating a report or batch (31.0412ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "5ce9f1b938b223452512fc3028fa0d229604425cb2f6b5f143d5355313f749d3"
+    },
+    {
+      "name": "windows-job-ab",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "1b93191a52043b8906302fce12ec21d55b16137a016b23954eab5868b35762dd"
+    },
+    {
+      "name": "windows-job-profile",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "83c8263e255f2e766748bde62284e22ca19f494947ef2968c4a30ee5ab04b040"
+    },
+    {
+      "name": "profile-and-regression-unit",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 19",
+        "ℹ pass 19",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 90.9468"
+      ],
+      "failures": [],
+      "logSha256": "d089825b107233b67fc9e9ef993b6bbf9f998b2289ece572ad3cd50b7ba65eed"
+    },
+    {
+      "name": "native-connection-profile-probe",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "2bdc2ca53e7d794869480f2b56d373204a20fd463748204142afeead9fa90d21"
+    },
+    {
+      "name": "windows-command-regression",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 79",
+        "ℹ pass 74",
+        "ℹ fail 1",
+        "ℹ cancelled 0",
+        "ℹ skipped 4",
+        "ℹ duration_ms 73475.0915"
+      ],
+      "failures": [
+        "✖ Windows handle cleanup retains an exited parent anchor and finds the later detached grandchild (10640.1686ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "d47c3059f53206976537b1705a3e979e680ada60057b0a2ab2a767dde267f8c0"
+    },
+    {
+      "name": "continuation-build",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "fd093350a0339075305bf9d202ecd68ff097df0fd4ea8a2138b5bd3e88dd1a33"
+    },
+    {
+      "name": "agent-core-full",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 184",
+        "ℹ pass 184",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 927.3096"
+      ],
+      "failures": [],
+      "logSha256": "b724bccbe38f8bfe238dd6505cebcc04d675eb57326321999e143b6123e146f7"
+    },
+    {
+      "name": "agent-node-full",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 851",
+        "ℹ pass 836",
+        "ℹ fail 3",
+        "ℹ cancelled 0",
+        "ℹ skipped 12",
+        "ℹ duration_ms 109760.2322"
+      ],
+      "failures": [
+        "✖ Windows handle cleanup retains an exited parent anchor and finds the later detached grandchild (12170.2468ms)",
+        "✖ Windows cleanup excludes a stale parent link to its root while stopping actual descendants (12993.8712ms)",
+        "✖ Windows cleanup excludes a stale parent link to its intermediate while stopping actual descendants (13142.2083ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "0bed5a343364bc01088e824eee70204d76879b9aebda4f9a7756ee0c75c7f602"
+    },
+    {
+      "name": "desktop-typecheck",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "name": "desktop-unit-full",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 1580",
+        "ℹ pass 1526",
+        "ℹ fail 21",
+        "ℹ cancelled 2",
+        "ℹ skipped 31",
+        "ℹ duration_ms 1025732.9692"
+      ],
+      "failures": [
+        "✖ journal disk failure during streamed output settles pending turn and terminates the subprocess (6069.077ms)",
+        "✖ approval-time instructions changes invalidate the entire group before its first write (4385.8989ms)",
+        "✖ manual compaction makes one tool-free request and preserves raw history, first goal, latest full turn and restart idempotency (736.9264ms)",
+        "✖ compaction cancellation retains resource locks through worker cleanup and leaves the original context untouched (916.0483ms)",
+        "✖ invalid summary tool_call cannot execute tools or replace the durable context (847.557ms)",
+        "✖ invalid summary oversized_summary cannot execute tools or replace the durable context (1627.7834ms)",
+        "✖ real PTY supports Unicode/spaces, isolated output, input, resize, concurrency and stopping (31.1088ms)",
+        "✖ a naturally exited terminal restarts while cancelled title cleanup is still pending (13.7185ms)",
+        "✖ terminal runtime accepts another provider and isolates identity observations to the current launch (14.3982ms)",
+        "✖ a process owning silent PTYs exits after natural exit, update disconnect and shutdown (447.0755ms)",
+        "✖ shutdown reports launch-resource failure even when the terminal process already exited (10.4562ms)",
+        "✖ terminal exit keeps stopping status and ownership until all launch resources close (20002.1392ms)",
+        "✖ CLI update disconnects real terminals and cancels pending starts without permanently shutting down the runtime (23.2285ms)",
+        "✖ session maintenance disconnects Claude while Shell stays interactive and normal capacity still applies (25.7706ms)",
+        "✖ session maintenance cancels deferred prepare and awaits its resource without waiting for another provider prepare (46.4206ms)",
+        "✖ session disconnect awaits selected launcher cleanup and leaves unrelated stopping cleanup owned (16001.0827ms)",
+        "✖ session disconnect isolates old cleanup faults and drains every selected resource before reporting failures (21.0737ms)",
+        "✖ session disconnect drains all selected PTYs after a state write fails even if storage recovers during cleanup (18.6283ms)",
+        "✖ stop and exit release a real PTY even when every state write fails (20.882ms)",
+        "✖ selected terminal maintenance waits for its naming job without cancelling another session title (19.8489ms)",
+        "✖ Windows title cleanup confirms both root and descendant exit after continuous oversized output (8380.9707ms)",
+        "✖ Windows title cleanup confirms both root and descendant exit after explicit abort (8113.0246ms)",
+        "✖ Windows native PTY closes concurrent consoles and failed spawns before the owner exits (211.6983ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "bd08c3434901533d14b0ad7aabb88b12d34121e4a4d0cd85c1f2478bede6f548"
+    },
+    {
+      "name": "desktop-production-build",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "c607e665bac4b1c1287e1354e014f134e7c1d2700ea69d267dc5b6ed4f44a1c3"
+    },
+    {
+      "name": "contracts-full",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 3",
+        "ℹ pass 3",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 554.6004"
+      ],
+      "failures": [],
+      "logSha256": "46448f192ff2b3a0acf72f5ad474ed5445c0c6b1614e1db3d0722802467e9fec"
+    },
+    {
+      "name": "engine-claude-full",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 39",
+        "ℹ pass 35",
+        "ℹ fail 3",
+        "ℹ cancelled 0",
+        "ℹ skipped 1",
+        "ℹ duration_ms 92509.5048"
+      ],
+      "failures": [
+        "✖ Windows cleanup discovers a new grandchild through an exited parent after its first snapshot (11902.1283ms)",
+        "✖ Windows cleanup follows an original root exit during helper startup with a fresh descendant scan (23437.2604ms)",
+        "✖ failing tests:",
+        "✖ confirm_original_root (11523.6893ms)"
+      ],
+      "logSha256": "ac40ee928f76cc9c4ef233f554e2eb50b4f85e80f7d8efd0ab069a4acac5e959"
+    },
+    {
+      "name": "harness-final-unit",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 20",
+        "ℹ pass 20",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 98.9806"
+      ],
+      "failures": [],
+      "logSha256": "60874f75e1cbf28a1597af855f924be0e5b7d188d4d48afd73d7d3dd65895c2e"
+    },
+    {
+      "name": "native-real-full",
+      "exitCode": 1,
+      "summary": [],
+      "failures": [],
+      "logSha256": "4579224c9b93b77692aab59508c4f4818a34b3c275c36df5da1bb04ac6953d35"
+    },
+    {
+      "name": "native-electron-e2e",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "1acbaa18d1ff11da61317964947da4dd0f1a41eb114c75523fb3b6b04eb5019a"
+    },
+    {
+      "name": "desktop-journal-release",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 1",
+        "ℹ pass 1",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 8278.6779"
+      ],
+      "failures": [],
+      "logSha256": "07b97080fea573d37ae5bf2d182290205c41f578640058d2051dd56652810891"
+    },
+    {
+      "name": "windows-cim-performance",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "5aa703fd39b1e1c53b2b578d237b2eeb3138df1c5e432772b59a245ecd5d774e"
+    },
+    {
+      "name": "cim-node-retry",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 3",
+        "ℹ pass 0",
+        "ℹ fail 3",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 40390.0361"
+      ],
+      "failures": [
+        "✖ Windows handle cleanup retains an exited parent anchor and finds the later detached grandchild (13075.8329ms)",
+        "✖ Windows cleanup excludes a stale parent link to its root while stopping actual descendants (13712.4641ms)",
+        "✖ Windows cleanup excludes a stale parent link to its intermediate while stopping actual descendants (13535.2343ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "a3c42bade2d43d5dd05849d0577ed432971511fd79ccbc4f0222c964ae6bb489"
+    },
+    {
+      "name": "manual-compaction-retry",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 7",
+        "ℹ pass 3",
+        "ℹ fail 4",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 6363.4227"
+      ],
+      "failures": [
+        "✖ manual compaction makes one tool-free request and preserves raw history, first goal, latest full turn and restart idempotency (660.3665ms)",
+        "✖ compaction cancellation retains resource locks through worker cleanup and leaves the original context untouched (671.4761ms)",
+        "✖ invalid summary tool_call cannot execute tools or replace the durable context (886.6339ms)",
+        "✖ invalid summary oversized_summary cannot execute tools or replace the durable context (1198.4903ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "8fe35af34f633036621ea50265f6cc9acc0217453825123857d669eb3b65c431"
+    },
+    {
+      "name": "approval-instructions-retry",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 1",
+        "ℹ pass 1",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 1528.8703"
+      ],
+      "failures": [],
+      "logSha256": "a6c691f0fbc0b9a5e0619157111f2c628dcee438b42e15e8a93b77b3768b5de8"
+    },
+    {
+      "name": "cim-engine-retry",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 3",
+        "ℹ pass 2",
+        "ℹ fail 1",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 28146.1697"
+      ],
+      "failures": [
+        "✖ Windows cleanup discovers a new grandchild through an exited parent after its first snapshot (12585.9728ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "27ab0194f759407e663863dfe9a0206f6a100fb715741aeb92d5a982f5aa9dfa"
+    },
+    {
+      "name": "manual-compaction-fixed",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 7",
+        "ℹ pass 7",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 10643.2984"
+      ],
+      "failures": [],
+      "logSha256": "a8e765d6387d3157a736deede2a30bf6d16d0e5504ecdfc5561d0ce0bb864c01"
+    },
+    {
+      "name": "harness-complete-fixed",
+      "exitCode": 1,
+      "summary": [
+        "ℹ tests 31",
+        "ℹ pass 30",
+        "ℹ fail 1",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 164.5178"
+      ],
+      "failures": [
+        "✖ 显式候选必须等于真实 Git HEAD，查询不修改 Git 配置 (1.5262ms)",
+        "✖ failing tests:"
+      ],
+      "logSha256": "8883f64d8eb10d0c0bd9b68fdd1162e328b25a20781681aeca723c4abc3f40f6"
+    },
+    {
+      "name": "native-policy-fixed",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 11",
+        "ℹ pass 11",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 428.1964"
+      ],
+      "failures": [],
+      "logSha256": "b2fc41f2cc365804ff34e41afb5386f3a6971074eca0e3aae2028960bb213b7a"
+    },
+    {
+      "name": "harness-final-frozen",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 32",
+        "ℹ pass 32",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 162.5387"
+      ],
+      "failures": [],
+      "logSha256": "0ccd902b19b7f0a6b8e8f7e8a7fce70c6df58a91e0cf2354e520f26370f3e9c2"
+    },
+    {
+      "name": "native-metadata-feedback",
+      "exitCode": 0,
+      "summary": [
+        "ℹ tests 37",
+        "ℹ pass 37",
+        "ℹ fail 0",
+        "ℹ cancelled 0",
+        "ℹ skipped 0",
+        "ℹ duration_ms 8982.4541"
+      ],
+      "failures": [],
+      "logSha256": "08028239c02207d62c5966fb51bb7c385870ca1679a0f558b74354775179bcfc"
+    },
+    {
+      "name": "feedback-desktop-typecheck",
+      "exitCode": 0,
+      "summary": [],
+      "failures": [],
+      "logSha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    }
+  ],
+  "additionalEvidence": [
+    {
+      "path": "core-maintenance-evidence.json",
+      "description": "core 220/220 与维护 7/7；证据来源和缺日志边界明确"
+    },
+    {
+      "path": "worker-rpc-evidence.json",
+      "description": "RPC 92/92，最后一次测试字面量调整后定向 1/1；物理 Electron 尚未运行"
+    },
+    {
+      "path": "engineering-git-final.json",
+      "description": "最终真实 Git HEAD 集成 2 项：1 通过、1 被 EPERM symlink 阻断"
+    },
+    {
+      "path": "5928696-attempt-3.json",
+      "description": "第三次八场景全部记录与103次真实请求，旧失败不改写；公开投影绑定完整原报告hash"
+    },
+    {
+      "path": "native-probe-actual-connection.json",
+      "description": "实际 Native k3 连接 HTTP200；仅认证探针，releaseGate not_run"
+    },
+    {
+      "path": "native-probe-before-profile.json",
+      "description": "此前未就绪探针保留"
+    },
+    {
+      "path": "windows-userprofile-ab.json",
+      "description": "Windows helper 根因对照"
+    },
+    {
+      "path": "windows-cim-performance-ab.json",
+      "description": "direct/DCOM 未证明性能收益"
+    }
+  ],
+  "engineeringFinal": {
+    "schemaVersion": 1,
+    "kind": "native-engineering-git-followup",
+    "candidate": {
+      "head": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+      "tree": "0d67031cadb414a977b03f44a3b472772da86496",
+      "clean": true
+    },
+    "after": {
+      "head": "ef28b95683f3d74f8a0d275613ed5339ffa06a13",
+      "tree": "0d67031cadb414a977b03f44a3b472772da86496",
+      "clean": true
+    },
+    "command": "node --test scripts/tests/native-engineering-integration.test.mjs",
+    "startedAt": "2026-10-15T19:31:59.215658+08:00",
+    "finishedAt": "2026-10-15T19:32:00.173541+08:00",
+    "exitCode": 1,
+    "timedOut": false,
+    "counts": {
+      "tests": 2,
+      "suites": 0,
+      "pass": 1,
+      "fail": 1,
+      "cancelled": 0,
+      "skipped": 0,
+      "todo": 0
+    },
+    "failureNames": [
+      "engineering verification preserves failed and successful attempts and refuses false completion"
+    ],
+    "permissionBlock": {
+      "codes": [
+        "EPERM"
+      ],
+      "operations": [
+        "symlink"
+      ]
+    },
+    "log": {
+      "file": "followup-final-engineering-git.log",
+      "bytes": 2094,
+      "sha256": "10c68958d2d90e0d1c4c4dbff09264fa7816aa3c0f6200db07acd3f4c6b974f7"
+    },
+    "outcome": "blocked_by_environment",
+    "blockedStage": "fixture_dependency_junction_before_nested_verification"
+  },
+  "pending": [
+    {
+      "id": "final_electron_feedback_fixture",
+      "status": "not_run",
+      "reason": "最终普通入口实际尝试在 fresh production build 因 Vite native realpath EPERM 失败；物理测试执行 0，不借用旧 bundle"
+    },
+    {
+      "id": "final_electron_delegation_suite",
+      "status": "not_run",
+      "reason": "此前5/5早于最终RPC修复，最终候选需重跑"
+    },
+    {
+      "id": "final_real_model_eight_cases",
+      "status": "not_run",
+      "reason": "实际Native认证已成功；最终候选运行连接不可用，不能借用旧八场景失败报告"
+    },
+    {
+      "id": "patched_pty_binary",
+      "status": "blocked",
+      "reason": "固定补丁已应用但缺MSVC，未产出带ccDeskConptyFix=2的原生模块；未伪造或降级"
+    },
+    {
+      "id": "windows_cim_cleanup",
+      "status": "failed",
+      "reason": "node复试0/3、engine复试2/3；保留静默确认超时和曾观察到后代仍存活两种失败，不放宽期限/判定"
+    },
+    {
+      "id": "engineering_nested_verification",
+      "status": "blocked",
+      "reason": "最终Git集成的fixture依赖junction创建EPERM，8个内层验证未执行"
+    },
+    {
+      "id": "desktop_production_build_final",
+      "status": "blocked",
+      "reason": "此前生产构建通过；最终普通入口Vite native realpath EPERM，未完成最终打包"
+    },
+    {
+      "id": "nine_scene_cost_quality_matrix",
+      "status": "pending"
+    },
+    {
+      "id": "real_token_calibration",
+      "status": "pending"
+    },
+    {
+      "id": "RA-34_RA-35",
+      "status": "pending"
+    }
+  ],
+  "interpretation": [
+    "中间阶段检查的通过、失败、取消、跳过分别保留，不将专项通过替代全套结论。",
+    "日志SHA仅绑定实际落盘日志；owner-observed无日志项目不伪造日志。",
+    "核心与worker归档时源码hash不冒充运行时hash。",
+    "真实模型640379是跨父子/重试累计输入，单请求峰值16902；价格未知，不构成节省比例。",
+    "第三次模型报告旧launcher未验证HEAD，不能建立当前候选门禁。"
+  ]
+}

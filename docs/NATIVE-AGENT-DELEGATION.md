@@ -32,6 +32,8 @@ Native 宿主提供 `delegate_review` 和 `delegate_implement`。每次调用可
 
 ## 验证范围
 
+2026-10-15 新增直接并行请求的父策略、完整 goal 交接及宿主完成审计：必须真实批量委派、核对材料与子账本终局，并由父读取成果；单 Agent 请求在宿主侧不提供委派工具。独立执行时序与审计文件分别位于 `native/delegation-executions`、`native/delegation-audits`，原 receipt 格式及目录保持兼容。实现、专项真实模型入口及本候选验证见 [上下文与明确委派实施记录](NATIVE-AGENT-CONTEXT-DELEGATION-IMPLEMENTATION.md)。当前真实连接返回 HTTP 401，真实模型与 RA-34/RA-35 仍未通过，不能继承下述历史通过计数。
+
 本地回归覆盖真实 Git 快照和成果保留、任务与运行绑定、目录互斥、宿主配额、审批、取消及重启恢复。Electron 回归使用生产 utilityProcess 和可控 HTTP/SSE 模型 fixture，确认实际并行、独立上下文、父审批与进程关闭。这些验证覆盖执行机制，不替代真实模型的工程质量评估。
 
 历史验证（2026-10-08，成果审阅交接改进之前）：Windows 构建、Desktop 类型检查以及定向执行、生命周期、目录隔离、委派和投影回归通过；扩展 Electron 回归同次 22/22 通过，覆盖多 Agent 的四项实际进程用例，以及原有 Native 任务、自动压缩、回合内压缩和 workflow 验收/预算。审批范围由独立宿主字段验证，模型参数不能伪造子任务身份。本轮最终候选的结果在验证完成后另行登记，不能继承历史计数。
