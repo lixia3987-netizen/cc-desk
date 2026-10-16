@@ -436,7 +436,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
     await defaultPermission(page).selectOption('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
-    await settings.getByLabel('默认每回合工具调用上限',{exact:true}).fill('25');
+    await settings.getByLabel('默认单个子 Agent 工具调用上限',{exact:true}).fill('25');
     await settings.getByLabel('最大并发会话',{exact:true}).fill('6');
     await settings.getByRole('tab',{name:'模型与上下文',exact:true}).click();
     await expect(settings.getByLabel('默认模型',{exact:true})).toHaveCount(0);
@@ -456,7 +456,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
     await expect(defaultPermission(page)).toHaveValue('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
-    await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
+    await expect(settings.getByLabel('默认单个子 Agent 工具调用上限',{exact:true})).toHaveValue('25');
     await expect(settings.getByRole('button',{name:'保存并检测',exact:true})).toHaveCount(0);
     await settings.getByRole('button',{name:'保存设置',exact:true}).click();
     await expect(settings.getByText('全局设置已同步',{exact:true})).toBeVisible();
@@ -487,7 +487,7 @@ test('experience: native model and terminal settings retain shared drafts and pr
     await settings.getByRole('tab',{name:'权限与审批',exact:true}).click();
     await expect(defaultPermission(page)).toHaveValue('plan');
     await settings.getByRole('tab',{name:'运行限制',exact:true}).click();
-    await expect(settings.getByLabel('默认每回合工具调用上限',{exact:true})).toHaveValue('25');
+    await expect(settings.getByLabel('默认单个子 Agent 工具调用上限',{exact:true})).toHaveValue('25');
     await settings.getByRole('tab',{name:'终端与CLI',exact:true}).click();
     await settings.getByRole('tab',{name:'Shell 与终端',exact:true}).click();
     await expect(settings.getByLabel('终端字号',{exact:true})).toHaveValue('18');

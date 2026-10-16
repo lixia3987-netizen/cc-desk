@@ -29,7 +29,7 @@ test('actual prompt composition grants parent host delegation, preserves project
   const input = { permissionInstructions: 'Host approval policy: read-only.', projectInstructions: 'AGENTS.md: project constraints\nSelected skill: follow bounded source paths.' };
   const parent = buildNativeParentInstructions(input), child = buildNativeChildInstructions({ ...input, toolPolicy: 'read_only' });
   assert.ok(parent.includes(input.permissionInstructions)); assert.ok(parent.includes(input.projectInstructions));
-  assert.match(parent, /provided host-managed delegate_review/); assert.match(parent, /one delegate_review call with 2–4/);
+  assert.match(parent, /provided host-managed delegate_review/); assert.match(parent, /one delegate_review call with at least two/);
   assert.match(parent, /Workflow alone does not request delegation/); assert.match(parent, /exact parentRunId and childId returned by the host/);
   assert.match(parent, /truncated\/omittedFields and pagination/); assert.doesNotMatch(parent, /parent cannot spawn|cannot use delegate_review/iu);
   assert.ok(child.includes(input.projectInstructions)); assert.match(child, /Children cannot spawn further agents/);
@@ -196,4 +196,31 @@ test('sequential single-child calls, duplicate questions and missing handoff can
   assert.ok(auditNativeDelegation(missing).issues.includes('parallel_execution_evidence_missing'));
   assert.equal(auditNativeDelegation({ ...fixture(), incomplete: true }).status, 'unknown');
   const optional = fixture(); optional.run.input = '请解释 workflow。'; assert.equal(auditNativeDelegation(optional).status, 'not_required');
+});
+
+test('a verified fresh recovery satisfies the original parallel child slot while failed history stays intact', () => {
+  const f = fixture(), original = f.receipts[0], originalRun = f.childRuns.get(original.childId)!;
+  original.status = 'failed'; original.result!.status = 'failed'; original.result!.reason = 'model_failed';
+  originalRun.status = 'failed'; originalRun.result!.status = 'failed'; originalRun.result!.reason = 'model_failed';
+  const child = identity(), taskId = randomUUID(), childId = randomUUID(), callId = randomUUID();
+  const recovered: NativeDelegationReceipt = { ...structuredClone(original), childId, batchId: randomUUID(), taskId, identity: child, toolCallId: callId, status: 'completed',
+    recovery: { previousChildId: original.childId, previousRunId: original.identity.runId, attempt: 1 },
+    result: { ...structuredClone(original.result!), identity: child, taskId, status: 'completed', reason: 'model_completed' } };
+  f.receipts.push(recovered);
+  const recoveredRun = structuredClone(originalRun); recoveredRun.identity = child; recoveredRun.configuration.nativeTaskId = taskId;
+  recoveredRun.status = 'completed'; recoveredRun.result!.identity = child; recoveredRun.result!.status = 'completed'; recoveredRun.result!.reason = 'model_completed';
+  f.childRuns.set(childId, recoveredRun);
+  f.run.tools.push(f.tool('recover_agent', { childId: original.childId }, { parentRunId: f.run.identity.runId, children: [{ childId }] }, callId),
+    f.tool('read_agent_result', { parentRunId: f.run.identity.runId, childId }, { source: 'untrusted_agent_result', parentRunId: f.run.identity.runId,
+      result: { acceptance: 'not_assessed', agent: { childId, identity: child as unknown as JsonObject } } }));
+  assert.equal(auditNativeDelegation(f).status, 'satisfied'); assert.equal(original.status, 'failed');
+  recoveredRun.result!.modelRequests++;
+  assert.equal(auditNativeDelegation(f).status, 'unknown', 'a recovery cannot bypass real journal terminal verification');
+});
+
+test('a failed or unknown child keeps independent audit gaps without converting completed parent execution to failure', () => {
+  const f = fixture(); f.receipts[1].status = 'unknown'; f.receipts[1].result!.committed = false;
+  const audit = auditNativeDelegation(f);
+  assert.equal(audit.status, 'unknown'); assert.ok(audit.issues.includes('child_execution_incomplete'));
+  assert.equal(nativeDelegationAuditFailure(audit, { status: 'completed' }), undefined);
 });

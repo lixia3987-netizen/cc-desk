@@ -3,11 +3,12 @@ import { providerIdSchema } from '../shared/schema';
 
 const shortId = z.string().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/);
 const date = z.string().datetime();
+/** 仅为兼容旧版请求、草稿和存档保留；不再约束 Native 主任务。 */
 export const workflowBudgetSchema = z.object({
   maxModelRequests: z.number().int().min(1).max(1000), maxToolCalls: z.number().int().min(1).max(2000),
   maxActiveMs: z.number().int().min(1000).max(7_200_000),
 }).strict();
-const usageCounters = { modelRequests: z.number().int().min(0).max(100_000), toolCalls: z.number().int().min(0).max(200_000), activeMs: z.number().int().min(0).max(86_400_000) };
+const usageCounters = { modelRequests: z.number().int().min(0), toolCalls: z.number().int().min(0), activeMs: z.number().int().min(0) };
 const identity = z.object({ sessionId: z.string().uuid(), conversationId: z.string().uuid(), runId: z.string().uuid(),
   requestId: z.string().min(1).max(256), workerGeneration: z.number().int().min(1) }).strict();
 const digest = z.string().regex(/^[a-f0-9]{64}$/);

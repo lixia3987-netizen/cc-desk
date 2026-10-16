@@ -452,6 +452,54 @@ test('worker startup deducts fork and readiness time before handing the remainin
   assert.equal(request.budget.maxActiveMs, 100, 'caller configuration remains unchanged');
 });
 
+test('unlimited worker preserves its mode across startup and accepts independent request and tool accounting beyond finite caps', async t => {
+  let now = 0;
+  t.mock.method(performance, 'now', () => now);
+  const request = { ...run, budget: { unlimited: true, maxActiveMs: 1, maxModelRequests: 1, maxToolCalls: 1 } };
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await startAttempt(worker);
+    const calls = [requestCall, { ...requestCall, id: 'call-two' }];
+    const response: ModelResponse = {
+      outputItems: calls.map(call => ({ type: 'function_call', id: `fc-${call.id}`, call_id: call.id, name: call.name, arguments: call.arguments, status: 'completed' })),
+      toolCalls: calls, finishReason: 'tool_calls', usage: null,
+    };
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'model_response', response } });
+    context.items.push(...response.outputItems);
+    for (const call of calls) {
+      const prepared = await worker.rpc<PreparedTool>('tools.prepare', { call, context: executionContext() });
+      const approval = await worker.rpc('approval', approvalRequest(prepared));
+      await worker.rpc('tools.validate', { prepared, context: executionContext() });
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_prepared', prepared, approval } });
+      const result = await worker.rpc<ToolResult>('tools.execute', { prepared, context: executionContext(), approval });
+      const resultItems = [{ type: 'function_call_output', call_id: call.id, output: JSON.stringify(result) }];
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call, result, resultItems } });
+      context.items.push(...resultItems);
+    }
+    await candidate(worker, context);
+    await finish(worker, context, { toolCalls: 2 });
+  }, { request, fork: async () => { await tick(); now += 60 * 60_000; return h.worker; } });
+  while (!h.worker.listenerCount('message')) await tick();
+  now += 60 * 60_000;
+  h.worker.emit('message', { type: 'ready', version: WORKER_PROTOCOL, pid: h.worker.pid });
+  const result = await h.promise;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.modelRequests, 2);
+  assert.equal(result.toolCalls, 2);
+  const start = h.worker.sent.find(message => message.type === 'start')!;
+  assert.deepEqual((start.request as AgentRunRequest).budget, request.budget);
+});
+
+test('worker rejects an invalid unlimited budget mode before forking', async () => {
+  let forks = 0;
+  const h = harness(async () => {}, {
+    request: { ...run, budget: { unlimited: 'true' as unknown as boolean } },
+    fork: () => { forks++; return new FakeWorker(async () => {}); },
+  });
+  await assert.rejects(h.promise, { code: 'configuration' });
+  assert.equal(forks, 0);
+});
+
 for (const phase of ['fork', 'readiness'] as const) test(`worker ${phase} budget exhaustion stops before start and confirms child cleanup`, async t => {
   let now = 0;
   t.mock.method(performance, 'now', () => now);
@@ -989,6 +1037,25 @@ test('context maintenance sends only capability flag and accepts a trusted no-op
   assert.equal(start.contextMaintenance, true); assert.equal(h.worker.scriptError, undefined);
 });
 
+test('unlimited worker permits maintenance after nominal model slots are exhausted and keeps finite IPC data', async () => {
+  let maintained = 0;
+  const h = harness(async worker => {
+    const context = await maintenanceBoundary(worker);
+    const request = maintenanceRequest(worker, context);
+    request.remainingActiveMs = 1;
+    assert.equal(request.budget.unlimited, true);
+    assert.deepEqual(await worker.rpc('context.maintain', request), { kind: 'unchanged', modelRequests: 0, usage: null });
+    await candidate(worker, context);
+    await finish(worker, context, { toolCalls: 1 });
+  }, { ...maintenanceOptions, request: { ...run, budget: { ...maintenanceBudget, unlimited: true, maxModelRequests: 1, maxActiveMs: 1 } },
+    contextMaintenance: { async maintain(request) {
+      maintained++; assert.equal(request.budget.unlimited, true); assert.equal(request.remainingActiveMs, 1);
+      return { kind: 'unchanged', modelRequests: 0, usage: null };
+    } } });
+  assert.equal((await h.promise).status, 'completed');
+  assert.equal(maintained, 1);
+});
+
 test('context maintenance switches host mirror only after authoritative replacement and validates later checkpoints', async () => {
   const replacement: ModelContext = { protocol: { id: 'openai-responses', version: 1 }, items: [{ role: 'user', content: run.input }, { role: 'assistant', content: 'historical summary' }] };
   const h = harness(async worker => {
@@ -1169,6 +1236,19 @@ test('host enforces durable backoff and allows only two additional attempts per 
     }, retryOptions);
     await assert.rejects(denied.promise, { code: 'protocol' });
   }
+});
+
+test('unlimited worker admits bounded transient retries beyond nominal request and active limits', async t => {
+  let now = Date.now(); t.mock.method(Date, 'now', () => now);
+  const h = harness(async worker => {
+    const context = await begin(worker); await startAttempt(worker);
+    await failAttempt(worker, { retryDelayMs: 500 }); now += 500;
+    await startAttempt(worker); await failAttempt(worker, { retryDelayMs: 1500 }); now += 1500;
+    await startAttempt(worker); await textResponse(worker, context); await finish(worker, context);
+  }, { request: { ...run, modelRetry: 'safe_transient', budget: { unlimited: true, maxModelRequests: 1, maxActiveMs: 1 } } });
+  const result = await h.promise;
+  assert.equal(result.status, 'completed');
+  assert.equal(result.modelRequests, 3);
 });
 test('observed partial output cannot be relabeled as empty and held tails never leak after failure', async () => {
   const forged = harness(async worker => {

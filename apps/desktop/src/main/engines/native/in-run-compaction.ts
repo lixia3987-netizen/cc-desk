@@ -25,7 +25,7 @@ export function createInRunCompaction(options: {
     if (!sameRun(request.identity, options.identity) || maintaining) throw new Error('Invalid context maintenance ownership.');
     if (attempted || options.ledger.lookupRunCompaction(options.identity.runId)) return unchanged();
     if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
-    if (request.modelRequests < 1 || request.budget.maxModelRequests - request.modelRequests < 2 ||
+    if (request.modelRequests < 1 || !request.budget.unlimited && request.budget.maxModelRequests - request.modelRequests < 2 ||
         contextBudgetUsage(request.context, model.estimateInputUsage?.(request.context, request.budget.maxOutputTokens) ?? model.estimateInputTokens(request.context), request.budget).status === 'within_budget') return unchanged();
     maintaining = true;
     let phaseStarted = false;
@@ -54,7 +54,7 @@ export function createInRunCompaction(options: {
       if (contextBudgetUsage(minimum, model.estimateInputUsage?.(minimum, request.budget.maxOutputTokens) ?? model.estimateInputTokens(minimum), request.budget).status === 'exceeded') {
         return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' };
       }
-      const remaining = Math.floor(Math.min(request.remainingActiveMs, options.remainingMs()));
+      const remaining = request.budget.unlimited ? 60_000 : Math.floor(Math.min(request.remainingActiveMs, options.remainingMs()));
       if (remaining < 1) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
       if (request.signal.aborted || options.signal.aborted) return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_failed' };
       await options.assertOwnership();

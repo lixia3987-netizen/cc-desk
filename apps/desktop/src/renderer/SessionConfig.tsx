@@ -3,7 +3,7 @@ import { Check } from 'lucide-react';
 import type { Session, Settings } from '../shared/types';
 import type { ExecutionDescriptor } from '../shared/execution';
 import { isSessionBusy } from '../shared/session-activity';
-import { resolveNativeRuntimeConfig } from '../shared/native-runtime-policy';
+import { nativeSubagentPolicyKeys, resolveNativeRuntimeConfig } from '../shared/native-runtime-policy';
 import { EngineConfigFields, configurationSupported, engineDefaults } from './EngineConfiguration';
 import { NativeProjectSkills } from './components/NativeProjectSkills';
 import { NativeMcpSelection } from './components/NativeMcpSelection';
@@ -40,7 +40,11 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
   const native = session.execution.providerId === 'native';
   const policyGroup = native && ['context', 'compaction', 'limits', 'recovery'].includes(group);
   const followsDefaults = policyGroup && value.options.runtimePolicy === 'defaults';
-  const effective = native ? resolveNativeRuntimeConfig({ ...value, options: { permissionMode: 'default', ...value.options } }, engineDefaults(descriptor, settings)) : value;
+  const nativeSubagentDefaults = Object.fromEntries(nativeSubagentPolicyKeys.flatMap(key => {
+    const fallback = descriptor?.configuration?.defaults.schemaVersion === value.schemaVersion ? descriptor.configuration.defaults.options[key] : undefined;
+    return fallback === undefined ? [] : [[key, fallback]];
+  }));
+  const effective = native ? resolveNativeRuntimeConfig({ ...value, options: { permissionMode: 'default', ...nativeSubagentDefaults, ...value.options } }, engineDefaults(descriptor, settings)) : value;
   const fields = engineFieldsForGroup(descriptor, group, effective);
   const projectSkills = value.options.projectSkills;
   const validProjectSkills = projectSkills === undefined || Array.isArray(projectSkills) && projectSkills.every(path => typeof path === 'string');
@@ -73,8 +77,9 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
         setValue(current => source === 'custom' ? { ...effective, options: { ...effective.options, runtimePolicy: 'custom' } }
           : { ...current, options: { ...current.options, runtimePolicy: 'defaults' } });
       }}><option value="defaults">跟随默认</option><option value="custom">单独设置</option></select></label>}
-      {policyGroup && <p className="panel-note">此来源统一控制上下文预算、自动压缩、失败重试和运行限制。{followsDefaults ? '当前跟随已保存的默认策略；选择“单独设置”会复制整套当前策略，再为此会话调整。' : '当前使用此会话单独保存的整套策略；切换来源会同时影响以上四项。'}</p>}
+      {policyGroup && <p className="panel-note">此来源统一控制上下文预算、自动压缩、失败重试及子 Agent 预算与并发上限。{followsDefaults ? '当前跟随已保存的默认策略；选择“单独设置”会复制整套当前策略，再为此会话调整。' : '当前使用此会话单独保存的整套策略；切换来源会同时影响以上配置。'}</p>}
       {native && group === 'context' && <NativeContextSettingsInfo config={effective}/>}
+      {native && group === 'limits' && <p className="panel-note">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。</p>}
       <EngineConfigFields value={effective} fields={fields} prefix="会话" disabled={locked || followsDefaults || bindingLocked} running={running} onChange={setValue} />
       {group === 'context' && effective.options.inputBudgetMode === 'model' && <p className="panel-note">窗口未知时备用输入预算：{Number(effective.options.maxInputTokens ?? 64000).toLocaleString()} tokens。</p>}
       {bindingLocked && <p className="panel-note">已有模型上下文，请新建会话切换模型连接或模型。</p>}

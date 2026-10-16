@@ -148,6 +148,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
   catch { throw new NativeWorkerError('credential', 'Native worker input contained a protected credential.'); }
   const runIdentity = run.identity;
   const budget = { ...DEFAULT_RUN_BUDGET, ...run.budget };
+  if (budget.unlimited !== undefined && typeof budget.unlimited !== 'boolean') throw new NativeWorkerError('configuration');
   let pausedAt = options.activePause?.paused ? startedAt : undefined, pausedMs = 0;
   let notifyPause: ((paused: boolean) => void) | undefined;
   const activeElapsed = () => {
@@ -401,7 +402,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
         identity(item.identity, runIdentity);
         if (!options.contextMaintenance || committedResult || pendingCalls.length || activeTool || activeAttempt || modelFailureClosed || summaryRequests || !completedToolBoundary || inFlight.size !== 1 ||
             !equal(item.budget, budget) || !integer(item.modelRequests) || item.modelRequests !== modelAttempts + summaryRequests || item.modelRequests < 1 ||
-            budget.maxModelRequests - item.modelRequests < 2 || !integer(item.toolCalls) || item.toolCalls !== completedTools.size || item.toolCalls > budget.maxToolCalls ||
+            !budget.unlimited && budget.maxModelRequests - item.modelRequests < 2 || !integer(item.toolCalls) || item.toolCalls !== completedTools.size || !budget.unlimited && item.toolCalls > budget.maxToolCalls ||
             !integer(item.remainingActiveMs) || item.remainingActiveMs < 1 || item.remainingActiveMs > budget.maxActiveMs) invalid();
         const source = requireContext(item.context);
         if (lastMaintenanceBoundary && equal(source, lastMaintenanceBoundary)) invalid();
@@ -476,7 +477,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           } else if (event.type === 'model_request_started') {
             fields(event, ['type', 'attempt']);
             if (options.consumeBudget && !modelBudgetReserved || !integer(event.attempt) || event.attempt !== modelAttempts + 1 || activeAttempt || pendingCalls.length || activeTool ||
-                modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
+                !budget.unlimited && modelAttempts + summaryRequests >= budget.maxModelRequests || inFlight.size !== 1 ||
                 options.completionValidation && (completionCandidate !== undefined || completionRejections > MAX_COMPLETION_CORRECTIONS) ||
                 modelFailureClosed && (retryNotBefore === undefined || Date.now() < retryNotBefore)) invalid();
           } else if (event.type === 'model_request_failed') {
@@ -485,8 +486,8 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
                 modelStreamObserved && !event.partial || inFlight.size !== 1) invalid();
             if (modelDiagnostic && (modelDiagnostic.phase !== 'finished' || modelDiagnostic.outcome === 'completed' || modelDiagnostic.usage !== null)) invalid();
             if (event.retryDelayMs !== undefined && (modelRetry !== 'safe_transient' || !event.failure.retryable || event.partial ||
-                retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || modelAttempts + summaryRequests >= budget.maxModelRequests ||
-                event.retryDelayMs >= budget.maxActiveMs)) invalid();
+                retries >= 2 || event.retryDelayMs !== [500, 1500][retries] || !budget.unlimited && modelAttempts + summaryRequests >= budget.maxModelRequests ||
+                !budget.unlimited && event.retryDelayMs >= budget.maxActiveMs)) invalid();
           } else if (event.type === 'model_response') {
             fields(event, ['type', 'response']);
             if (!activeAttempt || pendingCalls.length || inFlight.size !== 1) invalid();
@@ -535,7 +536,7 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             if (!event.result.committed || !equal(event.result.context, savedContext) || activeAttempt ||
                 options.completionValidation && event.result.status === 'completed' && (completionCandidate !== modelAttempts || completionDecision?.kind !== 'accept') ||
                 modelFailureClosed && event.result.status === 'completed' ||
-                event.result.modelRequests !== modelAttempts + summaryRequests || event.result.toolCalls > budget.maxToolCalls ||
+                event.result.modelRequests !== modelAttempts + summaryRequests || !budget.unlimited && event.result.toolCalls > budget.maxToolCalls ||
                 (pendingCalls.length && event.result.status !== 'recovery_required')) invalid();
             if (usageInstrumented && !equal(event.result.usage, sumUsage([...responseUsages, ...summaryUsages, ...(usageUnknown ? [null] : [])]))) invalid();
           } else invalid();
@@ -691,12 +692,14 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
           if (failure || abort.signal.aborted) return;
           // 工作进程内部计时只在启动后开始。传递剩余额度前，将宿主准备、
           // fork 和就绪过程都计入同一次运行。
-          budget.maxActiveMs = Math.floor(budget.maxActiveMs - activeElapsed());
-          if (budget.maxActiveMs < 1) {
-            stop(new NativeWorkerError('active_time_budget', 'Native worker startup exhausted the active time budget.'));
-            return;
+          if (!budget.unlimited) {
+            budget.maxActiveMs = Math.floor(budget.maxActiveMs - activeElapsed());
+            if (budget.maxActiveMs < 1) {
+              stop(new NativeWorkerError('active_time_budget', 'Native worker startup exhausted the active time budget.'));
+              return;
+            }
+            run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
           }
-          run.budget = { ...run.budget, maxActiveMs: budget.maxActiveMs };
           const paused = options.activePause?.paused ?? false;
           post({ type: 'start', version: WORKER_PROTOCOL, request: run, model, definitions, ...(options.contextMaintenance ? { contextMaintenance: true } : {}), ...(options.completionValidation ? { completionValidation: true } : {}), ...(options.consumeBudget ? { sharedBudget: true } : {}), ...(paused ? { activePaused: true } : {}) });
           if (paused) post({ type: 'active_pause', version: WORKER_PROTOCOL, identity: runIdentity, paused: true });

@@ -23,7 +23,9 @@ test('workflow creation exposes explicit gates and does not advertise unsupporte
   assert.match(native, /验收等待不会重新执行/);
   assert.doesNotMatch(claude, /检查任务验收条件|严格只读|整个工作流预算/);
   assert.match(claude, /规划指令不会强制只读/);
-  assert.equal(native.includes('整个工作流预算'), NATIVE_WORKFLOW_POLICIES_ENABLED);
+  assert.doesNotMatch(native, /整个工作流预算|高级预算设置|模型请求总上限|工具调用总上限|执行总时长/);
+  assert.match(native, /主 Agent 不限制执行时长、模型请求或工具调用次数/);
+  assert.match(native, /每个子 Agent 独立/);
   assert.equal(native.includes('严格只读'), NATIVE_WORKFLOW_POLICIES_ENABLED);
 });
 

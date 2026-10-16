@@ -24,7 +24,7 @@ const sessionOptions = (call: WorkerOptions) => call.request.configuration.sessi
 const summary = '原始任务要求只读检查项目。历史检查已完成，未修改文件。保留原始约束与最近回合，后续仍需验证。';
 const initialDefaults: EngineConfig = { schemaVersion: 1, options: {
   maxInputTokens: 64_000, maxOutputTokens: 1024, autoCompact: 'off', modelRetry: 'off',
-  maxModelRequests: 3, maxToolCalls: 5, maxActiveMs: 5000,
+  maxModelRequests: 3, maxToolCalls: 5, maxActiveMs: 5000, maxSubagents: 2,
 } };
 const inlineWorker: Worker = options => runAgent({ ...options.request, signal: options.signal }, {
   model: createNativeModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
@@ -87,7 +87,7 @@ async function fixture(t: TestContext, options: { legacy?: boolean; known?: bool
   };
 }
 
-test('settings inheritance snapshots each ordinary run, applies changes on the next run and leaves historical budgets intact', async t => {
+test('settings inheritance snapshots independent child limits, keeps the parent unlimited and preserves historical runs', async t => {
   const f = await fixture(t);
   let entered!: () => void, release!: () => void;
   const arrived = new Promise<void>(resolve => { entered = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
@@ -96,15 +96,17 @@ test('settings inheritance snapshots each ordinary run, applies changes on the n
     const pending = f.executor.send(f.id, 'Read-only first task', [], undefined, { requestId: 'policy-first-task' });
     const changedDefaults = createNativeConfig({ schemaVersion: 1, options: { connectionId: 'unrelated-global-connection', model: 'unrelated-global-model',
       inputBudgetMode: 'custom', maxInputTokens: 48_000, maxOutputTokens: 512, autoCompact: 'before_send_and_during_run',
-      modelRetry: 'safe_transient', maxModelRequests: 7, maxToolCalls: 9, maxActiveMs: 6000 } });
+      modelRetry: 'safe_transient', maxModelRequests: 7, maxToolCalls: 9, maxActiveMs: 6000, maxSubagents: 30 } });
     f.setDefaults(changedDefaults);
     await arrived;
     assert.equal(f.executor.send(f.id, 'Read-only first task', [], undefined, { requestId: 'policy-first-task' }), pending,
       'an in-flight duplicate keeps the original settings snapshot');
     const first = f.calls[0];
     assert.equal(first.request.budget!.maxInputTokens, 1_000_000 - 1024);
-    assert.equal(first.request.budget!.maxOutputTokens, 1024); assert.equal(first.request.budget!.maxModelRequests, 3);
-    assert.equal(first.request.budget!.maxToolCalls, 5); assert.ok(first.request.budget!.maxActiveMs! <= 5000);
+    assert.equal(first.request.budget!.maxOutputTokens, 1024);
+    assert.equal(first.request.budget!.unlimited, true, 'saved child ceilings must never become parent request/tool/deadline limits');
+    assert.deepEqual(Object.fromEntries(['maxModelRequests', 'maxToolCalls', 'maxActiveMs', 'maxSubagents'].map(key => [key, sessionOptions(first)[key]])),
+      { maxModelRequests: 3, maxToolCalls: 5, maxActiveMs: 5000, maxSubagents: 2 }, 'all child limits use the operation-start snapshot, even after settings change');
     assert.equal(sessionOptions(first).inputBudgetMode, 'model', 'an old saved default without a mode follows fresh model policy');
     assert.equal(first.model.model, 'fixture-model'); assert.equal(first.request.configuration.connectionId, f.connection.id);
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.autoCompact!.mode, 'off');
@@ -116,7 +118,9 @@ test('settings inheritance snapshots each ordinary run, applies changes on the n
     assert.equal((await f.executor.send(f.id, 'Read-only second task')).success, true);
     const second = f.calls[1];
     assert.equal(second.request.budget!.maxInputTokens, 48_000); assert.equal(second.request.budget!.maxOutputTokens, 512);
-    assert.equal(second.request.budget!.maxModelRequests, 7); assert.equal(second.request.budget!.maxToolCalls, 9);
+    assert.equal(second.request.budget!.unlimited, true);
+    assert.deepEqual(Object.fromEntries(['maxModelRequests', 'maxToolCalls', 'maxActiveMs', 'maxSubagents'].map(key => [key, sessionOptions(second)[key]])),
+      { maxModelRequests: 7, maxToolCalls: 9, maxActiveMs: 6000, maxSubagents: 30 }, 'the next run takes the complete updated child policy');
     assert.equal(second.request.modelRetry, 'safe_transient'); assert.ok(second.contextMaintenance);
     assert.deepEqual((await f.ledger()).runs[0], originalRun, 'changing settings cannot reinterpret or rewrite a historical run');
     assert.deepEqual(f.store.state.sessions.find(session => session.id === f.id)!.engineConfig, f.engineConfig);
@@ -132,6 +136,9 @@ test('legacy sessions without policy markers keep their original 64K ceiling and
   try {
     assert.equal((await f.executor.send(f.id, 'Keep the legacy policy')).success, true);
     assert.equal(f.calls[0].request.budget!.maxInputTokens, 64_000); assert.equal(f.calls[0].request.budget!.maxOutputTokens, 8192);
+    assert.equal(f.calls[0].request.budget!.unlimited, true);
+    assert.deepEqual(Object.fromEntries(['maxModelRequests', 'maxToolCalls', 'maxActiveMs', 'maxSubagents'].map(key => [key, sessionOptions(f.calls[0])[key]])),
+      { maxModelRequests: 60, maxToolCalls: 120, maxActiveMs: 30 * 60_000, maxSubagents: 4 }, 'legacy absent limits resolve to the new per-child defaults');
     assert.equal(sessionOptions(f.calls[0]).runtimePolicy, 'custom');
     assert.equal(f.executor.snapshot(f.id).nativeContextMaintenance!.autoCompact!.mode, 'off');
     assert.deepEqual(f.store.state.sessions.find(session => session.id === f.id)!.engineConfig, f.engineConfig);

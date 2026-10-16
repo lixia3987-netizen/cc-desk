@@ -107,7 +107,7 @@ async function fixture(scenario: Scenario) {
     inspectNativeTask: receipt => executor.inspectTaskReceipt(receipt), };
   let engine = new WorkflowEngine(data, engineOptions);
   return { project, server, mcp, approvals, get engine() { return engine; },
-    create: (toolPolicy: WorkflowToolPolicy = 'standard', budget?: WorkflowBudget, stages = 1) => engine.create({ sessionId: id, goal: 'Enforce actual policy and cumulative budgets',
+    create: (toolPolicy: WorkflowToolPolicy = 'standard', budget?: WorkflowBudget, stages = 1, pauseAfterEachStage = false) => engine.create({ sessionId: id, goal: 'Enforce actual stage permissions and retain cumulative usage', pauseAfterEachStage,
       stages: Array.from({ length: stages }, (_, index) => ({ id: `stage-${index}`, title: `Stage ${index}`, instruction: 'Perform only the allowed step', toolPolicy,
         dependsOn: index ? [`stage-${index - 1}`] : [] })), ...(budget ? { budget } : {}) }),
     async pending(name: string) { for (let count = 0; count < 500; count++) { const value = executor.snapshot(id).pending.find(item => name === 'mcp_' ? item.toolName?.startsWith(name) : item.toolName === name);
@@ -150,41 +150,43 @@ test('actual Native standard workflow preserves separate approvals before file, 
   } finally { await f.dispose(); }
 });
 
-test('actual workflow request budgets accumulate across stages and restart and stop before another stage dispatch', async () => {
+test('actual Native workflow stages continue beyond old request totals across restart', async () => {
   const f = await fixture('simple');
   try {
-    const run = f.create('standard', { maxModelRequests: 2, maxToolCalls: 5, maxActiveMs: 10_000 }, 3); f.engine.start(run.id);
-    const stopped = await f.engine.wait(run.id); assert.equal(stopped.status, 'interrupted'); assert.equal(stopped.usage?.modelRequests, 2);
-    assert.deepEqual(stopped.stages.map(stage => stage.attempts), [1, 1, 0]); assert.equal(f.server.requests.length, 2);
-    await f.restart(); f.engine.continue(run.id); await f.engine.wait(run.id); assert.equal(f.server.requests.length, 2);
-    assert.equal((await f.ledger()).records.filter(record => record.event.type === 'model_request_started').length, 2);
+    const run = f.create('standard', { maxModelRequests: 2, maxToolCalls: 5, maxActiveMs: 10_000 }, 3, true); f.engine.start(run.id);
+    const paused = await f.engine.wait(run.id); assert.equal(paused.status, 'paused'); assert.equal(paused.usage?.modelRequests, 1);
+    assert.deepEqual(paused.stages.map(stage => stage.attempts), [1, 0, 0]);
+    await f.restart(); f.engine.continue(run.id); assert.equal((await f.engine.wait(run.id)).status, 'paused');
+    f.engine.continue(run.id); const done = await f.engine.wait(run.id);
+    assert.equal(done.status, 'completed'); assert.equal(done.usage?.modelRequests, 3);
+    assert.deepEqual(done.stages.map(stage => stage.attempts), [1, 1, 1]); assert.equal(f.server.requests.length, 3);
+    assert.equal((await f.ledger()).records.filter(record => record.event.type === 'model_request_started').length, 3);
   } finally { await f.dispose(); }
 });
 
-test('a failed actual model request remains charged against workflow allowance when explicitly retried after restart', async () => {
+test('a failed model request remains visible in usage without blocking retry or downstream work after restart', async () => {
   const f = await fixture('fail-once');
   try {
     const run = f.create('standard', { maxModelRequests: 2, maxToolCalls: 5, maxActiveMs: 10_000 }, 2); f.engine.start(run.id);
     const failed = await f.engine.wait(run.id); assert.equal(failed.status, 'failed'); assert.equal(failed.usage?.modelRequests, 1);
     await f.restart(); f.engine.retry(run.id); const stopped = await f.engine.wait(run.id);
-    assert.equal(stopped.status, 'interrupted'); assert.equal(stopped.usage?.modelRequests, 2);
-    assert.deepEqual(stopped.stages.map(stage => stage.attempts), [2, 0]); assert.equal(f.server.requests.length, 2);
+    assert.equal(stopped.status, 'completed'); assert.equal(stopped.usage?.modelRequests, 3);
+    assert.deepEqual(stopped.stages.map(stage => stage.attempts), [2, 1]); assert.equal(f.server.requests.length, 3);
     assert.equal((await f.ledger()).records.filter(record => record.event.type === 'model_request_failed').length, 1);
   } finally { await f.dispose(); }
 });
 
-test('actual host tool budget stops a complete batch at its exact capacity and cannot refill on workflow retry', async () => {
+test('Native workflow main agent executes a full tool batch beyond an obsolete total tool allowance', async () => {
   const f = await fixture('tool-budget');
   try {
     const run = f.create('standard', { maxModelRequests: 5, maxToolCalls: 2, maxActiveMs: 10_000 }); f.engine.start(run.id);
-    const failed = await f.engine.wait(run.id); assert.equal(failed.status, 'failed'); assert.equal(failed.usage?.toolCalls, 2);
-    const ledger = await f.ledger(); assert.equal(ledger.records.filter(record => record.event.type === 'tool_prepared').length, 2);
-    assert.equal(f.server.requests.length, 1);
-    await f.restart(); f.engine.retry(run.id); await f.engine.wait(run.id); assert.equal(f.server.requests.length, 1);
+    const done = await f.engine.wait(run.id); assert.equal(done.status, 'completed'); assert.equal(done.usage?.toolCalls, 3);
+    const ledger = await f.ledger(); assert.equal(ledger.records.filter(record => record.event.type === 'tool_prepared').length, 3);
+    assert.equal(f.server.requests.length, 2);
   } finally { await f.dispose(); }
 });
 
-test('approval waiting beyond the whole workflow active-time ceiling does not consume that execution allowance', async () => {
+test('approval waiting remains excluded from Native workflow usage accounting', async () => {
   const f = await fixture('approval-time');
   try {
     const run = f.create('standard', { maxModelRequests: 5, maxToolCalls: 5, maxActiveMs: 5000 }); f.engine.start(run.id);

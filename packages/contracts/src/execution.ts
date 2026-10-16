@@ -9,6 +9,8 @@ export interface EngineConfigField {
   type: 'text' | 'select' | 'number';
   min?: number;
   max?: number;
+  /** 数字控件的显示单位对应多少存储单位；min/max 仍使用存储单位。 */
+  numberScale?: number;
   options?: { value: string; label: string }[];
   placeholder?: string;
   description?: string;

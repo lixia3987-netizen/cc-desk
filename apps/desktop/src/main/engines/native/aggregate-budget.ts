@@ -1,11 +1,11 @@
 import type { RunIdentity } from '@cc-desk/agent-core';
 import { sameRun } from './worker-protocol';
 
-/** 一个由宿主管理的门控覆盖父任务、其摘要以及所有已注册的子工作进程。 */
+/** 宿主管理的身份校验与用量计数；子任务实例独立限额，主任务仅计数。 */
 export class NativeAggregateBudget {
   private counts = { modelRequests: 0, toolCalls: 0 };
   private owners = new Map<string, RunIdentity>();
-  constructor(private limits: { maxModelRequests: number; maxToolCalls: number },
+  constructor(private limits: { maxModelRequests: number; maxToolCalls: number; unlimited?: boolean },
     private signal: AbortSignal, readonly remainingMs: () => number,
     initial: { modelRequests: number; toolCalls: number } = { modelRequests: 0, toolCalls: 0 }) {
     this.counts = { ...initial };
@@ -19,10 +19,10 @@ export class NativeAggregateBudget {
   async consume(kind: 'model' | 'tool', identity: RunIdentity): Promise<boolean> {
     const owner = this.owners.get(identity.runId);
     if (!owner || !sameRun(owner, identity)) throw new Error('共享预算执行身份已失效。');
-    if (this.signal.aborted || this.remainingMs() <= 0) return false;
+    if (this.signal.aborted || !this.limits.unlimited && this.remainingMs() <= 0) return false;
     const field = kind === 'model' ? 'modelRequests' : 'toolCalls';
     const ceiling = kind === 'model' ? this.limits.maxModelRequests : this.limits.maxToolCalls;
-    if (this.counts[field] >= ceiling) return false;
+    if (!this.limits.unlimited && this.counts[field] >= ceiling) return false;
     // 检查与预留之间没有 await，防止并发子进程 RPC 超出预算。
     this.counts[field]++;
     return true;

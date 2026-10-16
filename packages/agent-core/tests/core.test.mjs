@@ -548,6 +548,71 @@ test('tool, model, active-time and input-context budgets stop explicitly', async
   })
 })
 
+test('unlimited main runs exceed model, tool and active-time caps without creating active deadline timers', async () => {
+  const f = fixture([
+    response([call('a', 'read', { path: 'a.txt' })]),
+    response([call('b', 'read', { path: 'b.txt' })]),
+    response(),
+  ])
+  f.request.budget = { unlimited: true, maxModelRequests: 1, maxToolCalls: 1, maxActiveMs: 1 }
+  let now = 0
+  f.hooks.generate = input => {
+    f.setNow(now += 60_000)
+    assert.equal(input.signal, f.request.signal)
+    assert.equal(input.signal.aborted, false)
+  }
+  f.ports.host.deadline = () => { throw new Error('unlimited active operations must not create deadline timers') }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.equal(result.toolCalls, 2)
+  assert.deepEqual(f.executions, ['a', 'b'])
+})
+
+test('unlimited runs keep cancellation, context, output, approval and repeated-failure protections', async t => {
+  await t.test('cancellation', async () => {
+    const f = fixture([response([call('a')]), response()])
+    f.request.budget = { unlimited: true }
+    f.hooks.execute = () => { f.controller.abort(); return { status: 'completed', output: 'done' } }
+    assert.equal((await f.run()).status, 'cancelled')
+    assert.equal(f.modelInputs.length, 1)
+  })
+  await t.test('context', async () => {
+    const f = fixture()
+    f.request.budget = { unlimited: true, maxInputTokens: 1 }
+    assert.equal((await f.run()).reason, 'context_budget')
+  })
+  await t.test('output', async () => {
+    const f = fixture([response([call('a')])])
+    f.request.budget = { unlimited: true, maxToolOutputBytes: 1 }
+    assert.equal((await f.run()).reason, 'tool_output_limit_violated')
+  })
+  await t.test('approval deadline', async () => {
+    const f = fixture([response([call('a', 'write')]), response()])
+    f.request.budget = { unlimited: true, approvalTimeoutMs: 1234 }
+    const deadline = f.ports.host.deadline
+    const observed = []
+    f.ports.host.deadline = (milliseconds, parent) => { observed.push(milliseconds); return deadline(milliseconds, parent) }
+    assert.equal((await f.run()).status, 'completed')
+    assert.deepEqual(observed, [1234])
+  })
+  await t.test('repeated failures', async () => {
+    const f = fixture([response([call('a')]), response([call('b')]), response([call('c')])])
+    f.request.budget = { unlimited: true }
+    f.hooks.execute = () => ({ status: 'failed', output: { error: 'failed' } })
+    assert.equal((await f.run()).reason, 'tool_failure_repeated')
+  })
+})
+
+test('unlimited budget mode must be a boolean', async () => {
+  for (const unlimited of [0, 1, 'true', null]) {
+    const f = fixture()
+    f.request.budget = { unlimited }
+    await assert.rejects(f.run(), /Invalid run budget: unlimited/)
+    assert.equal(f.events.length, 0)
+  }
+})
+
 test('storage capacity is checked before a tool can have effects', async () => {
   const f = fixture([response([call('a', 'write')])])
   f.hooks.capacity = async () => { if (f.events.some((e) => e.type === 'model_response')) throw new Error('full') }
@@ -657,6 +722,22 @@ test('context maintenance runs only after all tool results commit and adopts its
   const commit = f.order.indexOf('maintenance_commit')
   assert.equal(f.order[commit + 1], 'checkpoint')
   assert.deepEqual(f.order.slice(commit + 2, commit + 6), ['capacity', 'model_request_started', 'model_request_diagnostic', 'model'])
+})
+
+test('unlimited main runs can summarize after nominal request and active limits have been exceeded', async () => {
+  const f = maintenanceFixture()
+  f.request.budget = { ...f.request.budget, unlimited: true, maxModelRequests: 1, maxToolCalls: 1, maxActiveMs: 1 }
+  f.hooks.execute = () => { f.setNow(60_000); return { status: 'completed', output: 'done' } }
+  f.hooks.maintain = request => {
+    assert.equal(request.budget.unlimited, true)
+    assert.equal(request.remainingActiveMs, 1)
+    assert.equal(request.signal, f.request.signal)
+    return f.compact()
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.equal(f.maintenance.length, 1)
 })
 
 test('unchanged context checks refund the reserved request and can defer until a later complete boundary', async () => {
@@ -980,6 +1061,21 @@ test('safe HTTP recovery has two extra requests per whole run and bounded backof
   assert.equal(result.modelRequests, 3)
   assert.deepEqual(failures(f).map(event => event.retryDelayMs), [500, 1500, undefined])
   assert.deepEqual(attempts(f).map(event => event.attempt), [1, 2, 3])
+})
+
+test('unlimited main retry eligibility ignores finite call and active limits while retaining two retries', async () => {
+  const f = retryFixture()
+  f.request.budget = { unlimited: true, maxModelRequests: 1, maxActiveMs: 1 }
+  let count = 0
+  f.hooks.generate = () => {
+    f.setNow(++count * 60_000)
+    if (count < 3) throw new Error('transient')
+    return response()
+  }
+  const result = await f.run()
+  assert.equal(result.status, 'completed')
+  assert.equal(result.modelRequests, 3)
+  assert.deepEqual(failures(f).map(event => event.retryDelayMs), [500, 1500])
 })
 
 test('successful tool batches do not reset the whole-run retry allowance or replay tools', async () => {

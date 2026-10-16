@@ -53,10 +53,15 @@ interface Props {
   disabled?: boolean; prefix?: string; running?: boolean;
 }
 
-/** 空草稿或无效草稿不会覆盖上次持久化的有效整数。 */
-export function parseEngineConfigNumber(text: string, field: Pick<EngineConfigField, 'min' | 'max'>): number | undefined {
+const numberScale = (field: Pick<EngineConfigField, 'numberScale'>) => Number.isSafeInteger(field.numberScale) && field.numberScale! > 0 ? field.numberScale! : 1;
+
+/** 显示单位换算后仍以有效整数存储；空草稿或无效草稿不会覆盖已保存值。 */
+export function parseEngineConfigNumber(text: string, field: Pick<EngineConfigField, 'min' | 'max' | 'numberScale'>): number | undefined {
   if (!text.trim()) return undefined;
-  const value = Number(text);
+  const scale = numberScale(field), scaled = Number(text) * scale;
+  // 消除分钟等显示单位往返换算的浮点误差，不截断实际的小数存储单位。
+  const nearest = Math.round(scaled);
+  const value = scale !== 1 && Math.abs(scaled - nearest) <= Number.EPSILON * Math.max(1, Math.abs(scaled)) * 4 ? nearest : scaled;
   if (!Number.isSafeInteger(value) || field.min !== undefined && value < field.min || field.max !== undefined && value > field.max) return undefined;
   return value;
 }
@@ -65,7 +70,8 @@ function IntegerConfigInput({ value, field, label, disabled, onChange }: { value
   const [draft, setDraft] = useState(value);
   useEffect(() => { setDraft(value); }, [value]);
   const valid = parseEngineConfigNumber(draft, field) !== undefined;
-  return <input type="number" aria-label={label} min={field.min} max={field.max} step={1} value={draft} disabled={disabled}
+  const scale = numberScale(field);
+  return <input type="number" aria-label={label} min={field.min === undefined ? undefined : field.min / scale} max={field.max === undefined ? undefined : field.max / scale} step={scale === 1 ? 1 : 'any'} value={draft} disabled={disabled}
     aria-invalid={!valid && draft !== '' ? true : undefined}
     onChange={event => { const text = event.target.value; setDraft(text); const next = parseEngineConfigNumber(text, field); if (next !== undefined) onChange(next); }}
     onBlur={() => { if (!valid) setDraft(value); }} />;
@@ -76,7 +82,7 @@ export function EngineConfigFields({ value, fields, onChange, disabled = false, 
   return <>{fields.map(field => {
     const raw = value.options[field.key];
     const scalar = raw === undefined || (field.type === 'number' ? typeof raw === 'number' && Number.isSafeInteger(raw) : typeof raw === 'string');
-    const text = raw === undefined ? '' : typeof raw === 'string' ? raw : JSON.stringify(raw);
+    const text = raw === undefined ? '' : typeof raw === 'string' ? raw : field.type === 'number' && typeof raw === 'number' ? String(raw / numberScale(field)) : JSON.stringify(raw);
     const label = prefix + field.label;
     const locked = disabled || !scalar || (running && field.apply === 'stopped');
     const change = (next: string | number) => onChange({ ...value, options: { ...value.options, [field.key]: next } });

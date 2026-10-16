@@ -255,25 +255,40 @@ test('production Native utilityProcesses review concurrently with independent co
   } finally { barrier.release(); await closeNativeApp(app); await fixture.close(); await f.dispose(); }
 });
 
-test('parent and physical child workers share the saved overall request allowance', async () => {
+test('physical children have independent request allowances while one exhausted child cannot stop the parent', async () => {
   const f = await workspace(), barrier = gate(), started = new Set<string>();
   const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body }: { body: Body }) => {
     if (!body.instructions.includes('independent delegated Native agent')) return parentResponse(body, 'review');
-    const name = userGoal(body).startsWith('READ_A') ? 'a' : 'b';
-    if (!toolResults(body).has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
-    return final(`child-${name}-done`, '不应有额度发送此请求');
+    const name = userGoal(body).startsWith('READ_A') ? 'a' : 'b', done = toolResults(body);
+    if (!done.has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
+    if (name === 'a') {
+      expect(done.has('child-a-extra-read'), 'the exhausted child cannot issue a third model request').toBe(false);
+      return responseCall('child-a-extra-read', 'read_file', { path: 'fixture.txt' });
+    }
+    return final('child-b-done', '子任务 B 使用自己的额度完成审阅。');
   } });
   const app = await f.launch();
   try {
-    const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL, 4);
-    const pending = page.evaluate(id => window.desktop.sendChat(id, '用有限总额度委派两个只读审阅', [], 'multi-budget-request'), session.id);
+    const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL, 2);
+    const pending = page.evaluate(id => window.desktop.sendChat(id, '委派两个独立只读审阅，每个子 Agent 独立限制请求次数，失败后继续主任务。', [], 'multi-budget-request'), session.id);
     await waitForChildren(started, page, session.id, fixture, f.data); barrier.release();
     const result = await pending;
-    expect(result.success).toBe(false); expect(fixture.requests).toHaveLength(4); expect(fixture.errors).toEqual([]);
+    expect(result.success).toBe(true); expect(fixture.requests).toHaveLength(9); expect(fixture.errors).toEqual([]);
     const saved = await receipts(f.data); expect(saved).toHaveLength(2);
-    expect(saved.every(child => child.result?.status === 'budget_exhausted' && child.result.committed)).toBe(true);
-    expect(saved.reduce((sum, child) => sum + child.result!.modelRequests, 0)).toBe(2);
-    expect(result.nativeReceipt?.usage.modelRequests).toBe(4);
+    const exhausted = saved.find(child => child.goal.startsWith('READ_A'))!, completed = saved.find(child => child.goal.startsWith('READ_B'))!;
+    expect(exhausted.status).toBe('failed'); expect(exhausted.result?.status).toBe('budget_exhausted'); expect(exhausted.result?.committed).toBe(true);
+    expect(exhausted.result?.modelRequests).toBe(2); expect(exhausted.result?.toolCalls).toBe(2);
+    expect(completed.status).toBe('completed'); expect(completed.result?.committed).toBe(true); expect(completed.result?.modelRequests).toBe(2);
+    expect(saved.reduce((sum, child) => sum + child.result!.modelRequests, 0)).toBe(4);
+    const parentRequests = fixture.requests.filter(body => !body.instructions.includes('independent delegated Native agent'));
+    expect(parentRequests).toHaveLength(5); expect(parentRequests.length).toBeGreaterThan(2);
+    expect(toolResults(parentRequests.at(-1)!).get('parent-delegate')?.status).toBe('completed');
+    expect(toolResults(parentRequests.at(-1)!).has('parent-result-0')).toBe(true);
+    expect(toolResults(parentRequests.at(-1)!).has('parent-result-1')).toBe(true);
+    expect(result.nativeReceipt?.usage.modelRequests).toBe(9); expect(result.nativeReceipt?.usage.toolCalls).toBe(7);
+    const audit = JSON.parse(await fs.readFile(nativeDelegationAuditPath(f.data, exhausted.parentIdentity), 'utf8'));
+    expect(audit.issues).toContain('child_execution_incomplete'); expect(audit.status).not.toBe('satisfied');
+    expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('committed parent\n');
     await expect.poll(() => childrenMetrics(app)).toBe(0);
   } finally { barrier.release(); await closeNativeApp(app); await fixture.close(); await f.dispose(); }
 });

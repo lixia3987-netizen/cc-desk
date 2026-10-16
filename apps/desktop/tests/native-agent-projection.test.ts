@@ -58,16 +58,16 @@ test('legal long and Unicode request IDs remain identity-bound without entering 
   assert.throws(() => nativeAgentReceiptDirectory(directory, { ...parent, requestId: 'request\0invalid' }));
 });
 
-test('all sixteen visible children preserve active work and retain complete recovery records', async t => {
+test('thirty visible children preserve active work while every historical recovery record is retained', async t => {
   const directory = await temporary(t), parent = newIdentity(), projection = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(directory, parent));
   const active = receipt(directory, parent); projection.record(active);
-  for (let index = 1; index < 16; index++) {
+  for (let index = 1; index < 30; index++) {
     const child = complete(receipt(directory, parent, { createdAt: `2026-10-08T01:00:${String(index).padStart(2, '0')}.000Z` })); projection.record(child);
   }
   const snapshot = projection.snapshot(true);
-  assert.equal(snapshot.items.length, 16); assert.equal(snapshot.omitted, 0); assert.equal(snapshot.items[0].childId, active.childId);
-  assert.equal(projection.receipts().length, 16);
-  projection.record(complete(receipt(directory, parent))); assert.equal(projection.receipts().length, 16); assert.equal(projection.snapshot().incomplete, true);
+  assert.equal(snapshot.items.length, 30); assert.equal(snapshot.omitted, 0); assert.equal(snapshot.items[0].childId, active.childId);
+  assert.equal(projection.receipts().length, 30);
+  projection.record(complete(receipt(directory, parent))); assert.equal(projection.receipts().length, 31); assert.equal(projection.snapshot().items.length, 30); assert.equal(projection.snapshot().omitted, 1); assert.equal(projection.snapshot().incomplete, undefined);
 });
 
 test('inactive host ownership and uncommitted completed claims derive unknown without changing durable facts', async t => {

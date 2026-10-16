@@ -65,10 +65,10 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
       <CompactionPreview maintenance={maintenance} blockedReason={previewBlockedReason}/>
       {maintenance?.autoCompact && <span>{maintenance.autoCompact.enabled
         ? maintenance.autoCompact.mode === 'before_send_and_during_run'
-          ? `自动压缩已开启：发送前与回合内达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试；发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次。摘要请求可能计费，并计入本回合模型请求次数和运行时长。`
-          : `自动压缩已开启：仅发送新指令前，达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试，每次提交最多一次。摘要请求可能计费，并计入本回合模型请求次数和运行时长。`
+          ? `自动压缩已开启：发送前与回合内达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试；发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次。摘要请求可能计费；主 Agent 不限模型请求次数和运行时长，子 Agent 的摘要计入其独立预算。`
+          : `自动压缩已开启：仅发送新指令前，达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试，每次提交最多一次。摘要请求可能计费；主 Agent 不限模型请求次数和运行时长，子 Agent 的摘要计入其独立预算。`
         : '自动压缩已关闭，可在设置的“模型与上下文 → 自动压缩”中开启。'}</span>}
-      {maintenance?.autoCompact?.enabled && maintenance.autoCompact.mode === 'before_send_and_during_run' && <span>回合内压缩需保留摘要与继续执行的请求额度；长命令运行中或结果未知时暂缓。超出预算仍会停止。</span>}
+      {maintenance?.autoCompact?.enabled && maintenance.autoCompact.mode === 'before_send_and_during_run' && <span>子 Agent 回合内压缩需保留自身摘要与继续执行的请求额度；长命令运行中或结果未知时暂缓。子 Agent 超出自身预算时停止，主任务可继续。</span>}
       {maintenance?.autoCompact?.blocked && <span role="status">当前上下文的自动压缩未完成，已停止自动重试。请先手动压缩，或在设置中关闭自动压缩后调整输入预算或新建会话。</span>}
       {onCompact && <>
         <span>使用当前模型生成摘要，可能产生费用；不会执行工具。摘要会省略细节，原始记录保留，后续任务可重新读取项目文件。</span>

@@ -1,9 +1,10 @@
 import type { NativeExecutionReceipt } from '@cc-desk/contracts/native-task';
 export type WorkflowNativeReceipt = NativeExecutionReceipt;
-/** Native 执行器实施阶段权限与共享预算约束后才启用。 */
+/** Native 执行器实施阶段工具权限约束后才启用。 */
 export const NATIVE_WORKFLOW_POLICIES_ENABLED = true;
 export type WorkflowGate = 'none' | 'manual' | 'native_task';
 export type WorkflowToolPolicy = 'read_only' | 'standard';
+/** @deprecated 仅保留旧版存档和请求兼容；Native 主任务不再使用累计预算。 */
 export interface WorkflowBudget { maxModelRequests: number; maxToolCalls: number; maxActiveMs: number }
 export interface WorkflowUsage { modelRequests: number; toolCalls: number; activeMs: number; recordedExecutionIds: string[]; complete: boolean }
 export interface WorkflowConfirmation { id: string; stageId: string; expectedAttempt: number; decision: 'approve' | 'reject'; reason: string }
@@ -71,6 +72,7 @@ export interface WorkflowRun extends WorkflowBinding {
   createdAt: string;
   updatedAt: string;
   error?: string;
+  /** @deprecated 历史配置，仅展示兼容，不再实施累计限制。 */
   budget?: WorkflowBudget;
   usage?: WorkflowUsage;
 }
@@ -83,6 +85,7 @@ export interface NewWorkflow {
   pauseAfterEachStage?: boolean;
   /** 包含首次尝试，每次重试都必须由用户明确操作触发。 */
   maxAttempts?: number;
+  /** @deprecated 接受旧版客户端请求时忽略此字段。 */
   budget?: WorkflowBudget;
 }
 

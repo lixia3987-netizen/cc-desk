@@ -13,6 +13,29 @@ test('legacy Native sessions retain their custom budget and fresh descriptor def
   assert.deepEqual(resolveNativeRuntimeConfig(legacy, createNativeDefaultConfig()), legacy);
 });
 
+test('subagents receive independent default limits while explicit legacy numeric values remain unchanged', () => {
+  const defaults = parseNativeConfig(createNativeDefaultConfig());
+  assert.equal(defaults.maxModelRequests, 60);
+  assert.equal(defaults.maxToolCalls, 120);
+  assert.equal(defaults.maxActiveMs, 30 * 60_000);
+  assert.equal(defaults.maxSubagents, 4);
+  const legacy = { schemaVersion: 1, options: { maxModelRequests: 30, maxToolCalls: 60, maxActiveMs: 10 * 60_000 } };
+  const original = structuredClone(legacy);
+  const parsed = parseNativeConfig(legacy);
+  for (const [key, value] of Object.entries(legacy.options)) assert.equal(parsed[key as keyof typeof parsed], value);
+  assert.equal(parsed.maxSubagents, 4);
+  assert.deepEqual(legacy, original, 'loading new defaults cannot rewrite saved limits');
+});
+
+test('subagent limits accept their new maxima and reject excessive, zero and fractional values', () => {
+  const maxima = { maxModelRequests: 200, maxToolCalls: 400, maxActiveMs: 300 * 60_000, maxSubagents: 30 };
+  const parsed = parseNativeConfig({ schemaVersion: 1, options: maxima });
+  for (const [key, value] of Object.entries(maxima)) {
+    assert.equal(parsed[key as keyof typeof parsed], value);
+    for (const invalid of [0, 0.5, value + 1]) assert.throws(() => parseNativeConfig({ schemaVersion: 1, options: { [key]: invalid } }), `${key}=${invalid}`);
+  }
+});
+
 test('following settings inherits only runtime policy and leaves session binding, selections and unknown data independent', () => {
   const session: EngineConfig = { schemaVersion: 1, options: {
     runtimePolicy: 'defaults', connectionId: 'session-connection', model: 'session-model',
@@ -20,7 +43,7 @@ test('following settings inherits only runtime policy and leaves session binding
   } };
   const defaults: EngineConfig = { schemaVersion: 1, options: {
     inputBudgetMode: 'model', maxInputTokens: 128_000, maxOutputTokens: 4096, autoCompact: 'before_send', modelRetry: 'safe_transient',
-    maxModelRequests: 7, maxToolCalls: 11, maxActiveMs: 120_000, connectionId: 'global-connection', model: 'global-model',
+    maxModelRequests: 7, maxToolCalls: 11, maxActiveMs: 120_000, maxSubagents: 27, connectionId: 'global-connection', model: 'global-model',
     projectSkills: ['global-skill'], mcpConnections: ['global-mcp'], futureOption: { retained: [] }, runtimePolicy: 'custom',
   } };
   const original = structuredClone(session), resolved = resolveNativeRuntimeConfig(session, defaults);

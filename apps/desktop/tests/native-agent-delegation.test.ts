@@ -8,7 +8,7 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import type { ApprovalDecision, ToolExecutionContext } from '@cc-desk/agent-core';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeDelegationBudget, type NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
-import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline } from '../src/main/engines/native/agent-worktrees';
+import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBaseline, prepareAgentBaseline, verifyAgentBaseline, verifyAgentWorkspace } from '../src/main/engines/native/agent-worktrees';
 import { ensureWorktreeParent } from '../src/main/worktree-paths';
 import { nativeDelegationExecutionPath, nativeDelegationIntervalsOverlap } from '../src/main/engines/native/agent-delegation-audit';
 
@@ -28,13 +28,13 @@ async function repository(t: { after(fn: () => Promise<void>): void }) {
 }
 const resultFor = (input: NativeAgentChildInput, result: Partial<NativeAgentChildResult> = {}): NativeAgentChildResult => ({ identity: input.identity, taskId: input.taskId,
   status: 'completed', reason: 'model_completed', committed: true, summary: `${input.title}完成`, modelRequests: 1, toolCalls: 0, ...result });
-function fixture(directory: string, runChild: (input: NativeAgentChildInput) => Promise<NativeAgentChildResult>, options: { policy?: 'read_only' | 'workspace_write'; budget?: NativeDelegationBudget; requiresApproval?: boolean; record?: (r: NativeDelegationReceipt) => Promise<void>; storeDirectory?: string } = {}) {
+function fixture(directory: string, runChild: (input: NativeAgentChildInput) => Promise<NativeAgentChildResult>, options: { policy?: 'read_only' | 'workspace_write'; budget?: NativeDelegationBudget; maxSubagents?: number; createChildBudget?: (identity: NativeAgentChildInput['identity']) => NativeDelegationBudget; requiresApproval?: boolean; record?: (r: NativeDelegationReceipt) => Promise<void>; storeDirectory?: string } = {}) {
   const abort = new AbortController();
   const identity = { sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 };
   const budget: NativeDelegationBudget = options.budget ?? { consume: async () => true, remainingMs: () => 120000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) };
   const tool = createAgentDelegationTools({ identity, parentTaskId: randomUUID(), cwd: directory, policy: options.policy ?? 'workspace_write', signal: abort.signal,
     forbiddenValues: ['sk-protected-delegation-secret'], storeDirectory: options.storeDirectory ?? path.join(directory, '..', 'records'), worktreeRoot: path.join(directory, '..', 'worktrees'),
-    assertOwnership: async () => {}, budget, runChild, requiresApproval: options.requiresApproval ?? false, record: options.record });
+    assertOwnership: async () => {}, createChildBudget: options.createChildBudget ?? (() => ({ ...budget })), maxSubagents: options.maxSubagents, runChild, requiresApproval: options.requiresApproval ?? false, record: options.record });
   const context: ToolExecutionContext = { identity, policyRevision: 'instructions:1', signal: abort.signal, maxOutputBytes: 64 * 1024 };
   const prepare = (tasks = [{ title: '审阅', goal: '检查状态边界' }], name = 'delegate_review', id = randomUUID(), baseline = 'snapshot') =>
     tool.prepare({ id, name, arguments: JSON.stringify({ tasks, ...(name === 'delegate_implement' ? { baseline } : {}) }) }, context);
@@ -66,7 +66,7 @@ test('one review batch starts separate child contexts concurrently and retains b
   assert.equal(result.status, 'completed'); assert.equal(starts, 3);
   assert.equal(new Set(inputs.map(i => i.identity.sessionId)).size, 3); assert.equal(new Set(inputs.map(i => i.identity.conversationId)).size, 3);
   assert.equal(new Set(inputs.map(i => i.identity.runId)).size, 3); assert.equal(new Set(inputs.map(i => i.taskId)).size, 3);
-  for (const input of inputs) { assert.equal(input.cwd, repo.cwd); assert.equal(input.toolPolicy, 'read_only'); assert.equal(input.budget, f.budget); assert.deepEqual(input.parentIdentity, f.identity); }
+  for (const input of inputs) { assert.equal(input.cwd, repo.cwd); assert.equal(input.toolPolicy, 'read_only'); assert.notEqual(input.budget, f.budget); assert.deepEqual(input.parentIdentity, f.identity); }
   const receipts = await readReceipts(repo.storeDirectory);
   assert.equal(receipts.length, 3); assert.ok(receipts.every(r => r.status === 'completed' && r.result?.committed));
   assert.ok(receipts.every(r => r.parentTaskId === inputs[0].parentTaskId));
@@ -91,11 +91,32 @@ test('canonical temporary roots support Git worktrees while unnormalized symboli
   assert.equal((await git(repo.cwd, 'rev-parse', 'HEAD')).trim(), baseline.parentHead);
 });
 
+test('retained workspace verification canonicalizes real Git roots and still rejects changed branches, escaped cwd and links', async t => {
+  const repo = await repository(t), root = path.join(repo.directory, 'retained 空格'), baseline = await prepareAgentBaseline(repo.cwd, 'head');
+  const worktree = await createAgentWorktree(baseline, root, baseline.parentHead, randomUUID());
+  const reported = (await git(worktree.path, 'rev-parse', '--show-toplevel')).trim();
+  assert.equal(await fs.realpath(reported), worktree.path);
+  if (process.platform === 'win32') {
+    assert.ok(reported.includes('/'), 'real Git on Windows reports a slash-form path');
+    assert.ok(worktree.path.includes('\\'), 'the retained host path uses Windows separators');
+    assert.notEqual(reported, worktree.path, 'equivalent Git and host paths require filesystem canonicalization');
+  }
+  await verifyAgentWorkspace(worktree, root);
+  await assert.rejects(verifyAgentWorkspace({ ...worktree, cwd: repo.cwd }, root), { code: 'worktree_identity_changed' });
+  const alias = path.join(root, 'linked-workspace');
+  await fs.symlink(worktree.path, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(verifyAgentWorkspace({ ...worktree, path: alias, cwd: alias }, root), { code: 'worktree_identity_changed' });
+  await git(worktree.path, 'checkout', '-b', 'changed-retained-branch');
+  await assert.rejects(verifyAgentWorkspace(worktree, root), { code: 'worktree_identity_changed' });
+  assert.equal(await fs.readFile(path.join(worktree.cwd, 'file.txt'), 'utf8'), 'initial\n');
+  assert.equal((await git(repo.cwd, 'symbolic-ref', '--short', 'HEAD')).trim(), 'main');
+});
+
 test('read-only parents cannot register or invoke implementation and forged bindings are rejected', async t => {
   const repo = await repository(t); let started = 0;
   const f = fixture(repo.cwd, async input => { started++; return resultFor(input); }, { policy: 'read_only' });
   t.after(() => f.tool.closeAll());
-  assert.deepEqual(f.tool.definitions.map(d => d.name), ['delegate_review']);
+  assert.deepEqual(f.tool.definitions.map(d => d.name), ['delegate_review', 'recover_agent']);
   await assert.rejects(f.prepare(undefined, 'delegate_implement'));
   const prepared = await f.prepare();
   await assert.rejects(f.tool.validate({ ...prepared, input: { tasks: [] } }, f.context));
@@ -103,12 +124,12 @@ test('read-only parents cannot register or invoke implementation and forged bind
   assert.equal(started, 0);
 });
 
-test('a committed child recovery barrier remains unknown and stops parent delegation instead of becoming an ordinary failure', async t => {
+test('a child recovery barrier stays unknown in its receipt while the parent tool completes', async t => {
   const repo = await repository(t);
   const f = fixture(repo.cwd, async input => resultFor(input, { status: 'recovery_required', reason: 'unknown_tool_effects', committed: true }));
   t.after(() => f.tool.closeAll());
   const result = await f.tool.execute(await f.prepare(), f.context);
-  assert.equal(result.status, 'unknown');
+  assert.equal(result.status, 'completed');
   const saved = await readReceipts(repo.storeDirectory);
   assert.equal(saved[0].status, 'unknown'); assert.equal(saved[0].error, 'child_recovery_required');
   assert.equal(saved[0].result!.committed, true); assert.equal(saved[0].result!.status, 'recovery_required');
@@ -128,19 +149,17 @@ test('parent cancellation reaches every live sibling and waits for durable cance
   assert.ok((await readReceipts(repo.storeDirectory)).every(r => r.status === 'cancelled'));
 });
 
-test('siblings use a single atomic parent budget instead of independently multiplying request allowances', async t => {
+test('siblings receive fresh atomic request budgets without consuming each other allowances', async t => {
   const repo = await repository(t); let consumed = 0;
-  const budget: NativeDelegationBudget = { consume: async () => consumed < 1 ? (++consumed, true) : false, remainingMs: () => 120000,
-    snapshot: () => ({ modelRequests: consumed, toolCalls: 0 }) };
   const f = fixture(repo.cwd, async input => {
     const allowed = await input.budget.consume('model', input.identity);
     return resultFor(input, { status: allowed ? 'completed' : 'budget_exhausted', reason: allowed ? 'model_completed' : 'model_request_budget', modelRequests: allowed ? 1 : 0 });
-  }, { budget }); t.after(() => f.tool.closeAll());
+  }, { createChildBudget: () => { let requests = 0; return { consume: async () => requests < 1 ? (++requests, ++consumed, true) : false, remainingMs: () => 120000, snapshot: () => ({ modelRequests: requests, toolCalls: 0 }) }; } }); t.after(() => f.tool.closeAll());
   const result = await f.tool.execute(await f.prepare([{ title: '一', goal: '审阅一' }, { title: '二', goal: '审阅二' }]), f.context);
-  assert.equal(result.status, 'failed'); assert.equal(consumed, 1);
+  assert.equal(result.status, 'completed'); assert.equal(consumed, 2);
   const receipts = await readReceipts(repo.storeDirectory);
-  assert.equal(receipts.reduce((sum, r) => sum + r.result!.modelRequests, 0), 1);
-  assert.equal(receipts.filter(r => r.result?.status === 'budget_exhausted').length, 1);
+  assert.equal(receipts.reduce((sum, r) => sum + r.result!.modelRequests, 0), 2);
+  assert.equal(receipts.filter(r => r.result?.status === 'budget_exhausted').length, 0);
 });
 
 test('dirty snapshots preserve staged/unstaged/new files while leaving parent HEAD, index and files intact', async t => {
@@ -233,7 +252,7 @@ test('raw artifact credential guards block publication without discarding the re
     return resultFor(input);
   });
   t.after(() => f.tool.closeAll());
-  assert.equal((await f.tool.execute(await f.prepare(undefined, 'delegate_implement', randomUUID(), 'head'), f.context)).status, 'unknown');
+  assert.equal((await f.tool.execute(await f.prepare(undefined, 'delegate_implement', randomUUID(), 'head'), f.context)).status, 'completed');
   const saved = (await readReceipts(repo.storeDirectory))[0];
   assert.equal(saved.status, 'unknown'); assert.equal(saved.error, 'workspace_evidence_unconfirmed'); assert.equal(saved.artifact, undefined);
   assert.ok(await fs.stat(saved.workspace!.path));
@@ -246,7 +265,7 @@ test('lost child settlement and substituted receipts cause an unknown barrier, n
   const f = fixture(repo.cwd, async input => input.title === 'lost' ? Promise.reject(new Error('transport gone')) : resultFor(input, { identity: { ...input.identity, runId: randomUUID() } }));
   t.after(() => f.tool.closeAll());
   const result = await f.tool.execute(await f.prepare([{ title: 'lost', goal: '审阅' }, { title: 'forged', goal: '审阅' }]), f.context);
-  assert.equal(result.status, 'unknown'); assert.ok((await readReceipts(repo.storeDirectory)).every(r => r.status === 'unknown'));
+  assert.equal(result.status, 'completed'); assert.ok((await readReceipts(repo.storeDirectory)).every(r => r.status === 'unknown'));
 });
 
 test('untracked content changes invalidate a prepared snapshot even if porcelain status stays identical', async t => {
@@ -255,7 +274,7 @@ test('untracked content changes invalidate a prepared snapshot even if porcelain
   await assert.rejects(verifyAgentBaseline(baseline), /基线/);
 });
 
-test('new delegates cannot exceed concurrent or retained-child bounds and malformed inputs grant no work', async t => {
+test('new delegates obey configured concurrent capacity while settled children never exhaust lifetime capacity', async t => {
   const repo = await repository(t); let starts = 0;
   const f = fixture(repo.cwd, async input => { starts++; return resultFor(input); }); t.after(() => f.tool.closeAll());
   const invalid = [{ tasks: [] }, { tasks: [{ title: ' title ', goal: 'question' }] }, { tasks: [{ title: 'a', goal: 'sk-protected-delegation-secret' }] },
@@ -263,7 +282,7 @@ test('new delegates cannot exceed concurrent or retained-child bounds and malfor
   for (const input of invalid) await assert.rejects(f.tool.prepare({ id: randomUUID(), name: 'delegate_review', arguments: JSON.stringify(input) }, f.context));
   const tasks = Array.from({ length: 4 }, () => ({ title: '审阅', goal: 'question' }));
   for (let i = 0; i < 4; i++) assert.equal((await f.tool.execute(await f.prepare(tasks), f.context)).status, 'completed');
-  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'not_executed'); assert.equal(starts, 16);
+  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed'); assert.equal(starts, 17);
 });
 
 test('worktree creation skips repository hooks and never removes pre-existing destinations', async t => {
@@ -280,7 +299,7 @@ test('worktree creation skips repository hooks and never removes pre-existing de
 test('credential-bearing child output is omitted from durable receipts and model output', async t => {
   const repo = await repository(t);
   const f = fixture(repo.cwd, async input => resultFor(input, { summary: 'sk-protected-delegation-secret' })); t.after(() => f.tool.closeAll());
-  const result = await f.tool.execute(await f.prepare(), f.context); assert.equal(result.status, 'unknown');
+  const result = await f.tool.execute(await f.prepare(), f.context); assert.equal(result.status, 'completed');
   assert.doesNotMatch(JSON.stringify(result), /sk-protected/);
   for (const receipt of await readReceipts(repo.storeDirectory)) assert.doesNotMatch(JSON.stringify(receipt), /sk-protected/);
 });
@@ -333,7 +352,7 @@ test('all output truncation levels retain the parent and child IDs needed to rea
     assert.ok(result.output.children.every(child => child && typeof child === 'object' && !Array.isArray(child) && typeof child.childId === 'string'));
     assert.match(JSON.stringify(result.output), /read_agent_result/);
     assert.ok(Buffer.byteLength(JSON.stringify(result.output)) <= maxOutputBytes);
-    levels.push('integration' in result.output ? 'full' : 'budget' in result.output ? 'references' : 'receiptDirectory' in result.output ? 'batch' : 'identities');
+    levels.push('integration' in result.output ? 'full' : 'limits' in result.output ? 'references' : 'receiptDirectory' in result.output ? 'batch' : 'identities');
   }
   assert.deepEqual(levels, ['full', 'references', 'batch', 'identities']);
 });
@@ -356,4 +375,114 @@ test('parallel execution evidence must be durable before any child launches', as
   assert.equal(result.status, 'unknown'); assert.equal(starts, 0);
   const saved = await readReceipts(repo.storeDirectory);
   assert.equal(saved.length, 1); assert.equal(saved[0].status, 'prepared');
+});
+
+test('configured capacity supports thirty concurrently active independent children with bounded result references', async t => {
+  const repo = await repository(t); let starts = 0, release!: () => void;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const budgets = new Set<NativeDelegationBudget>();
+  const f = fixture(repo.cwd, async input => {
+    budgets.add(input.budget); if (++starts === 30) release(); await barrier; return resultFor(input);
+  }, { maxSubagents: 30 });
+  t.after(() => f.tool.closeAll()); f.context.maxOutputBytes = 2048;
+  assert.equal(((f.tool.definitions[0].inputSchema.properties as Record<string, { maxItems: number }>).tasks).maxItems, 30);
+  await assert.rejects(f.prepare(Array.from({ length: 31 }, () => ({ title: 'Too many', goal: 'Review' }))));
+  const result = await f.tool.execute(await f.prepare(Array.from({ length: 30 }, (_, index) => ({ title: `Review ${index}`, goal: 'Independent review' }))), f.context);
+  assert.equal(result.status, 'completed'); assert.equal(starts, 30); assert.equal(budgets.size, 30);
+  assert.ok(Buffer.byteLength(JSON.stringify(result.output)) <= 2048);
+  assert.equal((result.output as { children: unknown[] }).children.length, 30);
+  const saved = await readReceipts(repo.storeDirectory); assert.equal(saved.length, 30);
+});
+
+test('a failed sibling leaves the parent able to continue and recover only that child with a fresh identity and budget', async t => {
+  const repo = await repository(t); const inputs: NativeAgentChildInput[] = [];
+  const f = fixture(repo.cwd, async input => {
+    inputs.push(input);
+    return resultFor(input, inputs.length === 1 ? { status: 'budget_exhausted', reason: 'model_request_budget' } : {});
+  });
+  t.after(() => f.tool.closeAll());
+  const delegated = await f.tool.execute(await f.prepare([{ title: 'Fails', goal: 'Independent question one' }, { title: 'Succeeds', goal: 'Independent question two' }]), f.context);
+  assert.equal(delegated.status, 'completed');
+  const failed = (await readReceipts(repo.storeDirectory)).find(receipt => receipt.status === 'failed')!;
+  assert.ok(failed); assert.equal(inputs.length, 2);
+  const recovered = await f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context);
+  assert.equal((await f.tool.execute(recovered, f.context)).status, 'completed');
+  const continuation = inputs[2]; assert.notEqual(continuation.identity.runId, inputs[0].identity.runId);
+  assert.notEqual(continuation.taskId, inputs[0].taskId); assert.notEqual(continuation.budget, inputs[0].budget);
+  assert.equal(continuation.cwd, inputs[0].cwd); assert.equal(continuation.recovery?.previousChildId, failed.childId);
+  assert.equal(continuation.recovery?.previousRunId, failed.identity.runId);
+  const records = await readReceipts(repo.storeDirectory), recoveredReceipt = records.find(receipt => receipt.recovery)!;
+  assert.equal(recoveredReceipt.status, 'completed'); assert.equal(recoveredReceipt.recovery!.attempt, 1);
+  assert.equal(records.find(receipt => receipt.childId === failed.childId)!.status, 'failed', 'old evidence is immutable');
+  await assert.rejects(f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context));
+  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed');
+});
+
+test('implementation recovery continues in the retained workspace without replaying earlier file effects', async t => {
+  const repo = await repository(t); const inputs: NativeAgentChildInput[] = [];
+  const f = fixture(repo.cwd, async input => {
+    inputs.push(input);
+    if (!input.recovery) {
+      await fs.writeFile(path.join(input.cwd, 'effect.txt'), 'already executed once\n');
+      return resultFor(input, { status: 'failed', reason: 'model_failed', summary: 'Saved effect.txt; remaining work is not complete.' });
+    }
+    assert.equal(await fs.readFile(path.join(input.cwd, 'effect.txt'), 'utf8'), 'already executed once\n');
+    assert.match(input.recovery.summary, /Saved effect.txt/);
+    await fs.writeFile(path.join(input.cwd, 'remaining.txt'), 'continued\n'); return resultFor(input);
+  });
+  t.after(() => f.tool.closeAll());
+  assert.equal((await f.tool.execute(await f.prepare(undefined, 'delegate_implement', randomUUID(), 'head'), f.context)).status, 'completed');
+  const failed = (await readReceipts(repo.storeDirectory))[0]; assert.equal(failed.status, 'failed');
+  const prepared = await f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context);
+  await f.tool.validate(prepared, f.context);
+  assert.equal((await f.tool.execute(prepared, f.context)).status, 'completed');
+  assert.equal(inputs.length, 2); assert.equal(inputs[1].cwd, inputs[0].cwd); assert.notEqual(inputs[1].budget, inputs[0].budget);
+  const continuation = (await readReceipts(repo.storeDirectory)).find(receipt => receipt.recovery)!;
+  assert.deepEqual(continuation.workspace, failed.workspace); assert.equal(continuation.recovery!.workspaceOwnerChildId, failed.childId);
+  assert.equal(continuation.status, 'completed'); assert.match(await fs.readFile(continuation.artifact!.patchPath, 'utf8'), /remaining.txt/);
+  await assert.rejects(fs.stat(path.join(repo.cwd, 'effect.txt')));
+});
+
+test('unknown child effects block its recovery without preventing unrelated parent work', async t => {
+  const repo = await repository(t); let starts = 0;
+  const f = fixture(repo.cwd, async input => resultFor(input, ++starts === 1 ? { status: 'recovery_required', reason: 'unknown_command_cleanup' } : {}));
+  t.after(() => f.tool.closeAll());
+  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed');
+  const failed = (await readReceipts(repo.storeDirectory))[0]; assert.equal(failed.status, 'unknown');
+  await assert.rejects(f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context));
+  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed'); assert.equal(starts, 2);
+});
+
+test('recovery approval cannot be reused after retained workspace contents change', async t => {
+  const repo = await repository(t); let starts = 0;
+  const f = fixture(repo.cwd, async input => { starts++; return resultFor(input, { status: 'failed', reason: 'model_failed' }); });
+  t.after(() => f.tool.closeAll());
+  await f.tool.execute(await f.prepare(undefined, 'delegate_implement', randomUUID(), 'head'), f.context);
+  const failed = (await readReceipts(repo.storeDirectory))[0];
+  const prepared = await f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context);
+  await fs.writeFile(path.join(failed.cwd, 'changed-after-prepare.txt'), 'external change\n');
+  await assert.rejects(f.tool.validate(prepared, f.context), /工作区/);
+  assert.equal((await f.tool.execute(prepared, f.context)).status, 'not_executed'); assert.equal(starts, 1);
+});
+
+test('one settled child releases its configured slot while another sibling is still executing', async t => {
+  const repo = await repository(t); let quickSaved!: () => void, release!: () => void, starts = 0;
+  const settledQuick = new Promise<void>(resolve => { quickSaved = resolve; }), slow = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(repo.cwd, async input => { starts++; if (input.title === 'Slow') await slow; return resultFor(input); }, {
+    maxSubagents: 2, record: async receipt => { if (receipt.title === 'Quick' && receipt.status === 'completed') quickSaved(); },
+  });
+  t.after(async () => { release(); await f.tool.closeAll(); });
+  const pending = f.tool.execute(await f.prepare([{ title: 'Quick', goal: 'One short question' }, { title: 'Slow', goal: 'One longer question' }]), f.context);
+  await settledQuick; await new Promise(resolve => setImmediate(resolve));
+  assert.equal((await f.tool.execute(await f.prepare([{ title: 'Replacement', goal: 'Independent follow-up' }]), f.context)).status, 'completed');
+  assert.equal(starts, 3); release(); assert.equal((await pending).status, 'completed');
+});
+
+test('read-only parents expose read-risk recovery and can recover only their own review children', async t => {
+  const repo = await repository(t); let starts = 0;
+  const f = fixture(repo.cwd, async input => resultFor(input, ++starts === 1 ? { status: 'failed', reason: 'model_failed' } : {}), { policy: 'read_only' });
+  t.after(() => f.tool.closeAll()); assert.equal(f.tool.definitions.find(definition => definition.name === 'recover_agent')!.risk, 'read');
+  await f.tool.execute(await f.prepare(), f.context); const failed = (await readReceipts(repo.storeDirectory))[0];
+  const prepared = await f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context);
+  assert.equal(prepared.requiresApproval, false); assert.equal((await f.tool.execute(prepared, f.context)).status, 'completed'); assert.equal(starts, 2);
 });

@@ -21,7 +21,7 @@ export interface NativeAgentView {
 }
 export interface NativeAgentSnapshot {
   parentRunId: string;
-  /** 本次父任务运行最多包含 16 个子任务，优先显示活跃子任务。 */
+  /** 展示最近最多 30 个子任务，优先显示活跃项；实际并发由会话配置限制。 */
   items: NativeAgentView[];
   /** 其他结果保留在父任务运行的回执目录中。 */
   omitted: number; receiptDirectory: string;

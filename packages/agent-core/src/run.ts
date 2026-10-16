@@ -52,6 +52,10 @@ const isObject = (value: JsonValue): value is JsonObject => value !== null && ty
 
 function checkBudget(budget: RunBudget): void {
   for (const [name, value] of Object.entries(budget)) {
+    if (name === 'unlimited') {
+      if (typeof value !== 'boolean') throw new Error(`Invalid run budget: ${name}`)
+      continue
+    }
     if (!Number.isSafeInteger(value) || value < 1) throw new Error(`Invalid run budget: ${name}`)
   }
 }
@@ -130,7 +134,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   }
   const checkStopped = (): void => {
     if (request.signal.aborted) throw new Stop('cancelled', 'cancelled')
-    if (activeMs() >= budget.maxActiveMs) throw new Stop('budget_exhausted', 'active_time_budget')
+    if (!budget.unlimited && activeMs() >= budget.maxActiveMs) throw new Stop('budget_exhausted', 'active_time_budget')
   }
   const consumeSharedBudget = async (kind: 'model' | 'tool'): Promise<void> => {
     if (!host.consumeBudget) return
@@ -142,6 +146,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   }
   const activeOperation = async <T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     checkStopped()
+    // 无限主任务直接继承取消信号，不用 Infinity/超大数值创建溢出的计时器。
+    if (budget.unlimited) return await operation(request.signal)
     const deadline = host.deadline(Math.max(1, budget.maxActiveMs - activeMs()), request.signal)
     try { return await operation(deadline.signal) } finally { deadline.dispose() }
   }
@@ -179,7 +185,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   }
   const maintainContext = async (): Promise<void> => {
     if (!ports.contextMaintenance || maintenanceAttempted || modelRequests === 0 ||
-      budget.maxModelRequests - modelRequests < 2) return
+      !budget.unlimited && budget.maxModelRequests - modelRequests < 2) return
     // 仅在完整的模型及工具批次之间调用。宿主联系模型之前
     // 预留一次请求，并保留续接请求的名额。
     const previousRequests = modelRequests++
@@ -188,7 +194,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
       maintained = clone(await activeOperation((signal) => ports.contextMaintenance!.maintain({
         identity: clone(identity), context: clone(context), budget: clone(budget),
         modelRequests: previousRequests, toolCalls,
-        remainingActiveMs: Math.max(1, budget.maxActiveMs - activeMs()), signal,
+        remainingActiveMs: budget.unlimited ? budget.maxActiveMs : Math.max(1, budget.maxActiveMs - activeMs()), signal,
       })))
       if (!maintained || !['unchanged', 'compacted', 'failed'].includes(maintained.kind) ||
         ![0, 1].includes(maintained.modelRequests) || maintained.modelRequests === 0 && maintained.usage !== null ||
@@ -247,7 +253,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     let retrying = false
     while (true) {
       checkStopped()
-      if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
+      if (!budget.unlimited && modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
       await capacity(8192)
       checkStopped()
       await consumeSharedBudget('model')
@@ -337,8 +343,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
         await recordDiagnostic()
         const eligible = request.modelRetry === 'safe_transient' && !!host.wait && failure.retryable && !partial
         const delay = modelRetries === 0 ? 500 : 1500
-        const retryDelayMs = eligible && modelRetries < 2 && modelRequests < budget.maxModelRequests &&
-          !request.signal.aborted && budget.maxActiveMs - activeMs() > delay ? delay : undefined
+        const retryDelayMs = eligible && modelRetries < 2 && (budget.unlimited || modelRequests < budget.maxModelRequests) &&
+          !request.signal.aborted && (budget.unlimited || budget.maxActiveMs - activeMs() > delay) ? delay : undefined
         await append({ type: 'model_request_failed', attempt, failure, partial, ...(retryDelayMs === undefined ? {} : { retryDelayMs }) })
         await flushEvents()
         checkStopped()
@@ -352,8 +358,8 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
           continue
         }
         if (eligible && modelRetries >= 2) throw new Stop('failed', 'model_retry_exhausted')
-        if (eligible && modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
-        if (eligible && budget.maxActiveMs - activeMs() <= delay) throw new Stop('budget_exhausted', 'active_time_budget')
+        if (eligible && !budget.unlimited && modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
+        if (eligible && !budget.unlimited && budget.maxActiveMs - activeMs() <= delay) throw new Stop('budget_exhausted', 'active_time_budget')
         throw new Stop('failed', `model_${failure.category}`)
       } finally { acceptingEvents = false }
     }
@@ -386,7 +392,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
   }
   const executeCall = async (call: ToolCall): Promise<void> => {
     checkStopped()
-    if (toolCalls >= budget.maxToolCalls) throw new Stop('budget_exhausted', 'tool_call_budget')
+    if (!budget.unlimited && toolCalls >= budget.maxToolCalls) throw new Stop('budget_exhausted', 'tool_call_budget')
     await consumeSharedBudget('tool')
     toolCalls++
     let prepared: PreparedTool
@@ -471,7 +477,7 @@ export async function runAgent(request: AgentRunRequest, ports: AgentPorts): Pro
     await checkpoint()
     while (true) {
       checkStopped()
-      if (modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
+      if (!budget.unlimited && modelRequests >= budget.maxModelRequests) throw new Stop('budget_exhausted', 'model_request_budget')
       const estimateInput = () => {
         try { return model.estimateInputUsage?.(clone(context), budget.maxOutputTokens) ?? model.estimateInputTokens(clone(context)) }
         catch { throw new Stop('budget_exhausted', 'context_budget') }

@@ -30,7 +30,7 @@ test('the actual native retry control explains consent, budget, bounded waits an
   const stopped = render(false);
   assert.match(stopped, /value="off" selected=""/);
   assert.match(stopped, /value="safe_transient"/);
-  for (const text of ['默认关闭', '完整模型响应与工具结果', '部分输出', '429', '502', '503', '504', '额外请求 2 次', '500 毫秒、1500 毫秒', '可取消', '每次请求可能计费', '模型请求次数与执行时长', '摘要和本地工具不自动重试', '结果未知的操作不重放']) assert.ok(stopped.includes(text), text);
+  for (const text of ['默认关闭', '完整模型响应与工具结果', '部分输出', '429', '502', '503', '504', '额外请求 2 次', '500 毫秒、1500 毫秒', '可取消', '每次请求可能计费', '子 Agent 的重试计入其独立请求与时长预算', '主 Agent 不限请求次数与执行时长', '摘要和本地工具不自动重试', '结果未知的操作不重放']) assert.ok(stopped.includes(text), text);
   assert.doesNotMatch(stopped, /disabled=""/);
   assert.match(render(true), /disabled=""/);
   assert.match(render(true), /停止会话后可修改此项/);
@@ -110,4 +110,15 @@ test('tool and persistence blockers keep unknown effects under explicit user con
   assert.match(nativeRunError('store_model_request_failed_failed'), /请求结果和费用可能尚未确认/);
   for (const reason of ['store_model_request_started_failed', 'store_model_request_failed_failed']) assert.match(nativeRunError(reason), /恢复状态/);
   assert.match(nativeRunError('model_retry_wait_failed'), /不会自动继续请求或重放工具/);
+});
+
+
+test('runtime limit errors describe independent child budgets and preserve parent continuation', () => {
+  for (const reason of ['model_request_budget', 'tool_call_budget', 'active_time_budget', 'shared_model_budget', 'shared_tool_budget']) {
+    const message = nativeRunError(reason);
+    assert.match(message, /子 Agent/); assert.match(message, /独立/);
+    assert.doesNotMatch(message, /流程共享|父任务、摘要和子任务共同计入预算|调整流程预算/);
+  }
+  for (const reason of ['shared_model_budget', 'shared_tool_budget']) assert.match(nativeRunError(reason), /其他子 Agent 和主 Agent 的预算不受影响/);
+  assert.match(nativeRunError('shared_budget_unavailable'), /暂停该子任务/);
 });
