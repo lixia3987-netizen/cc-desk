@@ -54,6 +54,17 @@ async function until(condition, phase, timeout = 3000) {
   const deadline = Date.now() + timeout;
   while (!await condition()) { assert.ok(Date.now() < deadline, phase); await pause(); }
 }
+async function fixtureIdentity(root) {
+  // 专项断言使用仍由 ChildProcess 句柄持有的真实进程，避免 JS 时钟精度
+  // 与内核创建时间的差异抢先触发 spawn_window_mismatch，遮住待测分支。
+  assert.equal(root.exitCode, null); assert.equal(root.signalCode, null);
+  const result = await run(`$ErrorActionPreference='Stop'; $born=(Get-CimInstance -Query 'SELECT CreationDate FROM Win32_Process WHERE ProcessId=${root.pid}').CreationDate.ToUniversalTime(); @{ created=$born.ToString('yyyyMMddHHmmssffffff',[Globalization.CultureInfo]::InvariantCulture); createdAt=([DateTimeOffset]$born).ToUnixTimeMilliseconds() } | ConvertTo-Json -Compress`);
+  const identity = JSON.parse(result.stdout.replace(/^\uFEFF/, ''));
+  assert.match(identity.created, /^\d{20}$/);
+  assert.ok(Number.isSafeInteger(identity.createdAt) && identity.createdAt > 0);
+  assert.equal(root.exitCode, null); assert.equal(root.signalCode, null);
+  return identity;
+}
 async function cleanupFixture(root, directory) {
   root.kill('SIGKILL');
   // 父进程使用自己持有的进程句柄。脱离的测试后代进程先通过
@@ -124,13 +135,12 @@ test('Windows cleanup proves closure with one post-exit snapshot even when CIM r
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-closed-snapshot-'));
   const ready = path.join(directory, 'ready');
   const exitConfirmed = path.join(directory, 'exit-confirmed');
-  const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
   const rootClosed = new Promise(resolve => root.once('close', resolve));
-  const spawnCompletedAt = Date.now();
   try {
     await until(() => exists(ready), 'fixture process must start');
-    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000)
+    const { created } = await fixtureIdentity(root);
+    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000)
       // 恰好两轮的前提是第二轮之前已确认真实 HANDLE 退出，等待仍受原八秒期限约束。
       .replace('$closedBeforeSnapshot=$true', `if($snapshots -eq 1) {
   if($handles.Count -eq 0) { throw 'Fixture requires an owned native HANDLE.' }
@@ -165,14 +175,14 @@ foreach($row in $retainedRows) {
 for (const failureKind of ['invalid_pid', 'snapshot_absent', 'access_denied']) test(`Windows cleanup cannot adopt a live PID after an earlier ${failureKind} result`, { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-invalid-pid-'));
   const ready = path.join(directory, 'ready');
-  const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
   const rootClosed = new Promise(resolve => root.once('close', resolve));
-  const spawnCompletedAt = Date.now();
   try {
     await until(() => exists(ready), 'fixture process must start');
     // 仅注入首次缺行或原生错误；后置快照、第二次打开、创建时间和活状态都来自真实 Windows。
-    let script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000);
+    // 从未绑定状态进入墓碑分支；用真实创建时间的最窄毫秒窗，不用 created 预先填充 known。
+    const { createdAt } = await fixtureIdentity(root);
+    let script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt: createdAt, spawnCompletedAt: createdAt }], 8000);
     if (failureKind === 'snapshot_absent') {
       script = script.replace('# windows-tree:after-snapshot', `# windows-tree:after-snapshot
 if($snapshots -eq 0) { $all=@($all | Where-Object { [int]$_.ProcessId -ne ${root.pid} }) }`);
@@ -217,16 +227,15 @@ test('Windows handle cleanup retains an exited parent anchor and finds the later
   const grandchild = `${record(grandchildReady)}setInterval(()=>{},1000);`;
   const child = `${record(childReady)}const poll=setInterval(()=>{if(!fs.existsSync(${JSON.stringify(forkGate)}))return;clearInterval(poll);const next=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(grandchild)}],{stdio:'ignore',detached:true,windowsHide:true});next.once('spawn',()=>process.exit(0));next.unref()},10);`;
   const rootScript = `require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}).unref();setInterval(()=>{},1000);`;
-  const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', rootScript], { cwd: directory, stdio: 'ignore', windowsHide: true });
-  const spawnCompletedAt = Date.now();
   let cleaning, failure;
   try {
     await until(() => exists(childReady), 'fixture child must start');
     const childPid = Number(await fs.readFile(childReady, 'utf8'));
     assert.ok(Number.isSafeInteger(childPid) && childPid > 1 && live(childPid));
     assert.equal(await exists(grandchildReady), false);
-    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], 8000).replace(
+    const { created } = await fixtureIdentity(root);
+    const script = buildWindowsTreeCleanupScript([{ pid: root.pid, created }], 8000).replace(
       '# windows-tree:after-snapshot',
       `# windows-tree:after-snapshot
 if(!([IO.File]::Exists(${quote(captured)}))) {

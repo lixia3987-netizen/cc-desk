@@ -254,7 +254,8 @@ test('CLAUDE instruction changes during summary prevent committing or resuming t
     ]);
     const planOutput = completed[0].result.output;
     assert.ok(planOutput && typeof planOutput === 'object' && !Array.isArray(planOutput));
-    assert.equal(planOutput.revision, 1); assert.equal(planOutput.planRevision, 1);
+    // 首次计划保存后，宿主还会记录工作区基线：总修订号递增，计划版本保持不变。
+    assert.equal(planOutput.revision, 2); assert.equal(planOutput.planRevision, 1);
     const readOutput = completed[1].result.output;
     assert.ok(readOutput && typeof readOutput === 'object' && !Array.isArray(readOutput));
     assert.equal(readOutput.path, 'fixture-1.txt'); assert.equal(readOutput.content, instructionChangeContent);

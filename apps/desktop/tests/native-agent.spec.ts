@@ -44,9 +44,17 @@ async function nativeSession(page: Page, projectId: string, connectionId: string
     return session;
   }, { projectId, connectionId, title });
 }
-async function pendingTool(page: Page, sessionId: string, name: string) {
-  await expect.poll(() => page.evaluate(async ({ sessionId, name }) => (await window.desktop.chatSnapshot(sessionId)).pending.find(item => item.toolName === name)?.requestId, { sessionId, name })).toBeTruthy();
-  return page.evaluate(async ({ sessionId, name }) => (await window.desktop.chatSnapshot(sessionId)).pending.find(item => item.toolName === name)!.requestId, { sessionId, name });
+async function pendingTool(page: Page, sessionId: string, name: string, completion?: Promise<unknown>) {
+  let requestId: string | undefined;
+  // Windows 冷启动需经过真实 worker 和两轮本地 HTTP；仍只等待实际审批，
+  // 若运行先结束则立即报告结果，不能用更长等待掩盖执行失败。
+  const pending = expect.poll(async () => {
+    requestId = await page.evaluate(async ({ sessionId, name }) => (await window.desktop.chatSnapshot(sessionId)).pending.find(item => item.toolName === name)?.requestId, { sessionId, name });
+    return requestId;
+  }, { timeout: 15_000, message: `等待实际 ${name} 审批` }).toBeTruthy();
+  if (completion) await Promise.race([pending, completion.then(result => { throw new Error(`运行在 ${name} 审批前结束：${JSON.stringify(result)}`); })]);
+  else await pending;
+  return requestId!;
 }
 async function readyWindow(app: ElectronApplication): Promise<Page> {
   const page = await app.firstWindow();
@@ -280,7 +288,7 @@ test('native incremental edit uses approved file identity and exposes measured u
     await expect.poll(() => page.evaluate(async id => (await window.desktop.snapshot()).state.sessions.find(item => item.id === id)?.engineConfig.options.maxInputTokens, session.id)).toBe(64_010);
     await closeSessionSettings(page);
     const result = page.evaluate(id => window.desktop.sendChat(id, 'Replace only the unique before native phrase, preserving the other line.'), session.id);
-    await pendingTool(page, session.id, 'edit_file');
+    await pendingTool(page, session.id, 'edit_file', result);
     const approval = page.getByRole('region', { name: '工具审批' });
     await expect(approval).toContainText('before native');
     await expect(approval).toContainText('after native');
