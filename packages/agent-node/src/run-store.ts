@@ -1451,7 +1451,12 @@ export class NativeRunStore implements RunStore {
     if (started.event.type !== 'run_started') return undefined;
     return clone({ request: started.event.request, identity: run.identity, status: run.status, ...(run.result ? { result: run.result } : {}) });
   }
-  getRun(runId: string): StoredRun | undefined { return this.listRuns().find(run => run.identity.runId === runId); }
+  getRun(runId: string): StoredRun | undefined {
+    const run = this.runs.get(runId);
+    if (!run) return undefined;
+    const { payloadDigest: _digest, finishedSeq: _seq, tools, ...publicRun } = run;
+    return clone({ ...publicRun, tools: [...tools.values()] });
+  }
   getToolState(runId: string, toolCallId: string): StoredToolState | undefined {
     const tool = this.runs.get(runId)?.tools.get(toolCallId);
     return tool ? clone(tool) : undefined;
@@ -1465,6 +1470,11 @@ export class NativeRunStore implements RunStore {
   }
   get recoveryRequired(): boolean { return this.poisoned || this.recoveredStartupRequests.size > 0 || [...this.runs.values()].some(run => run.status === 'recovery_required'); }
   get usage(): { journalBytes: number; records: number } { return { journalBytes: this.journalBytes, records: this.records.length }; }
+  /** 元数据查询无需复制最后一条记录中可能包含的完整模型上下文。 */
+  get head(): { seq: number; hash: string } | undefined {
+    const record = this.records.at(-1);
+    return record ? { seq: record.seq, hash: record.hash } : undefined;
+  }
   close(): Promise<void> {
     return this.exclusive(async () => {
       if (this.closed) return;

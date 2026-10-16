@@ -221,9 +221,10 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     return operation;
   }
   private async refreshProjection(id: string, ledger: NativeRunStore) {
-    this.agentResultParents.set(id, new Map(ledger.listRuns().filter(run => run.identity.sessionId === id &&
+    const runs = ledger.listRuns();
+    this.agentResultParents.set(id, new Map(runs.filter(run => run.identity.sessionId === id &&
       run.identity.conversationId === this.session(id).execution.conversationId).map(run => [run.identity.runId, structuredClone(run.identity)])));
-    const headHash = ledger.replay(Math.max(0, ledger.usage.records - 1), 1)[0]?.hash ?? '';
+    const headHash = ledger.head?.hash ?? '';
     const report = ledger.getRecoveryReport();
     if (report) {
       const tools = { completed: 0, notExecuted: 0, unknown: 0 };
@@ -238,7 +239,6 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const last = ledger.getLastCompaction();
     if (ledger.getAutoCompactionForCurrentContext()?.status === 'attempted') this.autoCompactionBlocked.add(id);
     else this.autoCompactionBlocked.delete(id);
-    const runs = ledger.listRuns();
     const recentAttempt = runs.toReversed().map(run => ({ run, attempt: ledger.lookupRunCompaction(run.identity.runId) })).find(item => item.attempt);
     const attempt = recentAttempt?.attempt;
     const active = this.active.get(id);
@@ -381,6 +381,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     return snapshot;
   }
   async page(id: string, options?: ChatPageOptions) { await this.hydrate(id); return this.projection.page(id, options); }
+  readDisplay(id: string, options?: ChatPageOptions) { this.session(id); return this.projection.readDisplay(id, options); }
   async search(id: string, query: string, before?: string) { await this.hydrate(id); return this.projection.search(id, query, before); }
   attention() { return [...this.active.entries()].flatMap(([sessionId, run]) => run.approval ? [{ sessionId, requestId: run.approval.publicId, kind: run.approval.kind, toolName: run.approval.request.tool.name, createdAt: run.approval.createdAt }] : []); }
   send(id: string, text: string, attachments: string[] = [], _titlePrompt?: string, submission?: ExecutionSubmission): Promise<ChatTurnResult> {

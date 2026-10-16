@@ -58,6 +58,14 @@ test('journal cursors preserve exact page boundaries and independent copies befo
   const expected = f.store.replay(0, 1000);
   for (const restart of [false, true]) {
     if (restart) await f.reopen();
+    const latest = expected.at(-1);
+    assert.deepEqual(f.store.head, { seq: latest.seq, hash: latest.hash });
+    const head = f.store.head; head.hash = 'caller mutation';
+    assert.equal(f.store.head.hash, latest.hash, 'head metadata is an independent scalar copy');
+    assert.deepEqual(f.store.getRun(req.identity.runId), f.store.listRuns()[0]);
+    const ownRun = f.store.getRun(req.identity.runId); ownRun.identity.requestId = 'caller mutation';
+    assert.equal(f.store.getRun(req.identity.runId).identity.requestId, req.identity.requestId);
+    assert.equal(f.store.getRun(randomUUID()), undefined);
     for (let cursor = 0; cursor <= expected.length + 1; cursor++) {
       for (const limit of [1, 2, 1000]) assert.deepEqual(f.store.replay(cursor, limit), expected.slice(cursor, cursor + limit));
     }

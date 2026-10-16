@@ -10,15 +10,18 @@ export interface HistoryEntry { id: string; title: string; cwd: string; modified
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const INDEX_LIMIT = 2048;
 export const claudeProjects = () => path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
-interface TranscriptFile { file: string; id: string; modified: number; size: number }
+interface TranscriptFile { file: string; id: string; modified: number; size: number; identity: string }
 interface IndexedTranscript { signature: string; entry: HistoryEntry | null }
 // 仅缓存元数据；对话正文及凭据绝不进入持久化索引。
 const metadata = new Map<string, IndexedTranscript>();
 const queries = new Map<string, { signature:string; entries:HistoryEntry[] }>();
+const sources = new Map<string, { file: string; signature: string }>();
 const QUERY_ENTRY_LIMIT = 20000;
 let parsedFiles = 0;
+let sourceMetadataFiles = 0;
+let directoryScans = 0;
 /** 用于分析元数据缓存性能的只读计数器，不包含对话记录内容。 */
-export function historyCacheStats() { return { parsedFiles, metadataEntries:metadata.size, queryEntries:[...queries.values()].reduce((sum,item)=>sum+item.entries.length,0) }; }
+export function historyCacheStats() { return { parsedFiles, sourceMetadataFiles, directoryScans, metadataEntries:metadata.size, sourceEntries:sources.size, queryEntries:[...queries.values()].reduce((sum,item)=>sum+item.entries.length,0) }; }
 
 function normalizedPath(value: string): string {
   const resolved = path.resolve(value);
@@ -28,10 +31,14 @@ function normalizedPath(value: string): string {
 async function canonicalPath(value: string): Promise<string> {
   try { return normalizedPath(await fs.realpath(value)); } catch { return normalizedPath(value); }
 }
+export function transcriptSourceVersion(stat: { dev: number; ino: number; ctimeMs: number; mtimeMs: number; size: number }): string {
+  return `${stat.dev}:${stat.ino}:${stat.ctimeMs}:${stat.mtimeMs}:${stat.size}`;
+}
 
 async function transcriptFiles(id?: string): Promise<TranscriptFile[]> {
   const root = claudeProjects();
   let folders;
+  directoryScans++;
   try { folders = await fs.readdir(root, { withFileTypes: true }); } catch { return []; }
   const files: TranscriptFile[] = [];
   for (const folder of folders) {
@@ -44,7 +51,7 @@ async function transcriptFiles(id?: string): Promise<TranscriptFile[]> {
       const file = path.join(directory, name);
       try {
         const info = await fs.lstat(file);
-        if (info.isFile()) files.push({ file, id: name.slice(0, -6), modified: info.mtimeMs, size: info.size });
+        if (info.isFile()) files.push({ file, id: name.slice(0, -6), modified: info.mtimeMs, size: info.size, identity: `${info.dev}:${info.ino}:${info.ctimeMs}` });
       } catch { /* 对话记录可能在扫描期间消失。 */ }
     }
   }
@@ -91,7 +98,7 @@ function recordText(record: TranscriptRecord): string {
 }
 
 async function indexFile(file: TranscriptFile, cache:ReadonlyMap<string,IndexedTranscript> = metadata): Promise<HistoryEntry | null> {
-  const signature = `${file.modified}:${file.size}`;
+  const signature = `${file.identity}:${file.modified}:${file.size}`;
   const previous = cache.get(file.file);
   if (previous?.signature === signature) {
     metadata.delete(file.file); metadata.set(file.file, previous);
@@ -126,7 +133,7 @@ export async function queryHistory(cwd: string, options: HistoryQuery = {}): Pro
   const expected = await canonicalPath(cwd);
   const files = await transcriptFiles();
   const signatureHash=createHash('sha256');
-  for(const file of files)signatureHash.update(JSON.stringify([file.file,file.modified,file.size]));
+  for(const file of files)signatureHash.update(JSON.stringify([file.file,file.identity,file.modified,file.size]));
   const signature=signatureHash.digest('hex');
   const key=JSON.stringify([claudeProjects(),expected,query]);
   const cached=queries.get(key);
@@ -166,15 +173,62 @@ export async function readHistory(cwd: string): Promise<HistoryEntry[]> {
   return (await queryHistory(cwd, { limit: 100 })).entries;
 }
 
-/** 仅在元数据匹配所请求的项目后，才返回只读对话记录来源。 */
-export async function findClaudeTranscript(cwd: string, id: string): Promise<string | undefined> {
+/** 返回经过项目和会话身份验证的文件版本；调用方不能把路径替换后的内容当作该版本。 */
+export async function findClaudeTranscriptSource(cwd: string, id: string, inheritedSourceIds: readonly string[] = []): Promise<{file:string;version:string} | undefined> {
   if (!uuid.test(id)) return undefined;
   const expected = await canonicalPath(cwd);
+  const allowedSourceIds = new Set([id, ...inheritedSourceIds.filter(value => uuid.test(value))].map(value => value.toLowerCase()));
+  const key = JSON.stringify([claudeProjects(), expected, id, [...allowedSourceIds].sort()]);
+  const previous = sources.get(key);
+  const checked = new Set<string>();
+  const inspect = async (file: string): Promise<{file:string;version:string} | undefined> => {
+    if (checked.has(file)) return undefined;
+    checked.add(file);
+    try {
+      const before = await fs.lstat(file);
+      if (!before.isFile()) return undefined;
+      const signature = transcriptSourceVersion(before);
+      if (previous?.file === file && previous.signature === signature) return {file,version:signature};
+      let sourceCwd = ''; let wrongIdentity = false;
+      sourceMetadataFiles++;
+      // 定位来源只需要首个项目身份，不需要为标题/摘要遍历全文。
+      // 无 sessionId 的旧记录仍以 UUID 文件名及 cwd 绑定来源。
+      await visitRecords(file, record => {
+        const sourceId = typeof record.sessionId === 'string' ? record.sessionId : typeof record.session_id === 'string' ? record.session_id : undefined;
+        if (sourceId && !allowedSourceIds.has(sourceId.toLowerCase())) { wrongIdentity = true; return false; }
+        if (typeof record.cwd === 'string') { sourceCwd = record.cwd; return false; }
+      });
+      if (wrongIdentity || !sourceCwd || await canonicalPath(sourceCwd) !== expected) return undefined;
+      const after = await fs.lstat(file);
+      if (!after.isFile() || signature !== transcriptSourceVersion(after)) return undefined;
+      sources.delete(key); sources.set(key, { file, signature });
+      while (sources.size > INDEX_LIMIT) sources.delete(sources.keys().next().value!);
+      return {file,version:signature};
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return undefined;
+      throw error;
+    }
+  };
+  if (previous) {
+    const source = await inspect(previous.file);
+    if (source) return source;
+    sources.delete(key);
+  }
+  // Claude 通常按工作目录编码存放记录；命中时只 stat 此文件。
+  // 不同 CLI 版本或旧导入目录继续使用后备扫描，但后续读取记住已验证路径。
+  for (const project of new Set([path.resolve(cwd), expected])) {
+    const source = await inspect(path.join(claudeProjects(), project.replace(/[^a-zA-Z0-9]/g, '-'), id + '.jsonl'));
+    if (source) return source;
+  }
   for (const file of await transcriptFiles(id)) {
-    const entry = await indexFile(file);
-    if (entry && await canonicalPath(entry.cwd) === expected) return file.file;
+    const source = await inspect(file.file);
+    if (source) return source;
   }
   return undefined;
+}
+/** 兼容只需要路径的导出调用方；导入方应保留经验证的来源版本。 */
+export async function findClaudeTranscript(cwd: string, id: string, inheritedSourceIds: readonly string[] = []): Promise<string | undefined> {
+  return (await findClaudeTranscriptSource(cwd, id, inheritedSourceIds))?.file;
 }
 
 export interface TranscriptExportSummary {

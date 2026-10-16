@@ -189,6 +189,11 @@ export interface ChatPage {
   /** 部分来源内容不可用，或超出了安全读取上限。 */
   incomplete: boolean;
 }
+/** 只读展示页不携带运行、审批或恢复结论；这些状态必须读取权威快照。 */
+export interface ChatDisplayPage extends ChatPage {
+  sessionId: string;
+  conversationId?: string;
+}
 export interface ChatSearchHit { id: string; role: ChatMessage['role']; toolName?: string; excerpt: string; createdAt: string }
 export interface ChatSearchPage { hits: ChatSearchHit[]; nextBefore: string | null; incomplete: boolean }
 export interface ChatAttention {

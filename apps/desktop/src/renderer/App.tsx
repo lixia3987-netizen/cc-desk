@@ -37,6 +37,13 @@ import { importNativePastedImages, nativePasteTargetAvailable, withAttachmentImp
 import { sessionReadLifecycle } from './session-read-lifecycle';
 import { paintActionFeedback } from './action-feedback';
 import { chatSubmissionState } from './chat-submission-state';
+import { chatDisplayCache } from './chat-display-state';
+import { sharedChatSnapshots } from './shared-chat-snapshot';
+
+function retainChatViews(sessions: readonly Session[]): void {
+  const scopes = sessions.map(session => ({ id: session.id, conversationId: session.execution.conversationId }));
+  chatDisplayCache.retain(scopes); sharedChatSnapshots.retain(scopes);
+}
 
 type Modal = 'continuation' | 'settings' | 'history' | 'palette' | null;
 interface BlankSession {
@@ -141,6 +148,7 @@ export function App() {
   const project = state?.projects.find(p => p.id === (active?.projectId ?? blank?.input.projectId ?? projectId));
   const applyState = useCallback((value: AppState) => {
     latestState.current = value; setState(value); retainSessions(value.sessions.map(session => session.id));
+    retainChatViews(value.sessions);
     chatSubmissionState.retain(value.sessions.map(session => JSON.stringify([session.id, session.execution.conversationId ?? ''])));
     sessionReadLifecycle.retain(value.sessions.map(session => session.id));
     const id = selection.current.receive(value.selectedSessionId);
@@ -324,6 +332,7 @@ export function App() {
         const next = { ...current, sessions: [session, ...current.sessions] };
         latestState.current = next; setState(next);
         retainSessions(next.sessions.map(item => item.id));
+        retainChatViews(next.sessions);
         sessionReadLifecycle.retain(next.sessions.map(item => item.id));
       }
       chatSubmissionState.retain((latestState.current?.sessions ?? []).map(item => JSON.stringify([item.id, item.execution.conversationId ?? ''])));

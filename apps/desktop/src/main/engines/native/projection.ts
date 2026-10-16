@@ -15,6 +15,7 @@ import { getSessionIdentity } from '../../../shared/execution';
 import type { Session } from '../../../shared/types';
 import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
+import { ChatDisplayReader, displayPage, writeDisplaySidecar } from '../../chat-display-reader';
 import type { ExecutionEvents } from '../../execution/events';
 import { parseNativeConfig } from './config';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
@@ -73,6 +74,7 @@ export class NativeProjection {
   private serial = new Map<string, Promise<void>>();
   private missingContext = new Set<string>();
   private archive: ChatArchive;
+  private display: ChatDisplayReader;
   private directory: string;
   constructor(
     private dataDirectory: string,
@@ -85,6 +87,7 @@ export class NativeProjection {
     this.directory = path.join(dataDirectory, 'chat');
     fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
     this.archive = new ChatArchive(this.directory);
+    this.display = new ChatDisplayReader(this.directory);
   }
   private validId(id: string): void { if (!/^[a-z0-9-]{1,100}$/i.test(id)) throw new Error('无效会话 ID。'); }
   private history(): ChatHistory { return new ChatHistory(this.dataDirectory, this.isActive, this.onError, true); }
@@ -113,22 +116,22 @@ export class NativeProjection {
   }
   private async rebuild(id: string, store: NativeRunStore): Promise<void> {
     const old = this.entry(id);
+    const count = store.usage.records;
+    const latest = store.head;
+    // 空账本不能抹除既有显示记录。这可能意味着
+    // 权威模型账本丢失，而非这是新聊天。
+    if ((!latest || count === 1) && await this.preserveMissingContext(id, old, store.conversationId)) return;
+    if (!latest || old.conversationId === store.conversationId && old.seq === latest.seq && old.hash === latest.hash) return;
     for (const name of await fsp.readdir(this.directory)) {
       if (name.startsWith(`${id}.native-`) && /^[a-z0-9-]+\.native-[0-9a-f-]{36}\.tmp$/i.test(name)) await fsp.rm(path.join(this.directory, name), { force: true });
     }
-    const count = store.usage.records;
-    const latest = store.replay(Math.max(0, count - 1), 1)[0];
-    // 空账本不能抹除既有显示记录。这可能意味着
-    // 权威模型账本丢失，而非这是新聊天。
-    if ((!latest || count === 1 && latest.event.type === 'conversation_created') && await this.preserveMissingContext(id, old)) return;
-    if (!latest || old.conversationId === store.conversationId && old.seq === latest.seq && old.hash === latest.hash) return;
     const records: RunStoreRecord[] = [];
     for (let cursor = 0; cursor < latest.seq;) {
       const page = store.replay(cursor, 1000).filter(record => record.seq <= latest.seq);
       if (!page.length) throw new Error('Native 记录投影序列不完整。');
       records.push(...page); cursor = page.at(-1)!.seq;
     }
-    if (!records.some(record => record.event.type === 'run_started') && await this.preserveMissingContext(id, old)) return;
+    if (!records.some(record => record.event.type === 'run_started') && await this.preserveMissingContext(id, old, store.conversationId)) return;
     const session = this.getSession(id);
     const modelCounts = new Map<string, number>();
     const summaryCounts = new Map<string, number>();
@@ -361,7 +364,7 @@ export class NativeProjection {
       const handle = await fsp.open(temporary, 'wx', 0o600);
       try {
         for (const { seq, event } of projected) {
-          const line = JSON.stringify({ nativeSchemaVersion: 1, nativeSeq: seq, ...event }) + '\n';
+          const line = JSON.stringify({ nativeSchemaVersion: 1, conversationId: store.conversationId, nativeSeq: seq, ...event }) + '\n';
           bytes += Buffer.byteLength(line);
           if (bytes > MAX_PROJECTION) throw new Error('Native 展示记录超过磁盘预算。');
           await handle.writeFile(line);
@@ -380,6 +383,9 @@ export class NativeProjection {
     } finally { await fsp.rm(temporary, { force: true }); }
     const history = this.history();
     const snapshot = history.get(id);
+    // 派生尾页仅改善展示；失配或缺失时读侧退回有界日志尾部，不影响权威投影。
+    try { await writeDisplaySidecar(this.directory, id, store.conversationId, displayPage(snapshot.messages, !!snapshot.truncated, !!snapshot.sourceIncomplete)); }
+    catch { /* 缓存发布失败不能改变已提交的展示日志或执行回执。 */ }
     // ChatHistory 会正确地把恢复出的运行中状态视为已中断。当前
     // 宿主仍拥有活动运行，因此使用内存中当前已提交的状态。
     if (this.isActive(id)) snapshot.taskState = finalState;
@@ -414,7 +420,7 @@ export class NativeProjection {
     this.changed(id);
   }
 
-  private async preserveMissingContext(id: string, entry: ProjectionEntry): Promise<boolean> {
+  private async preserveMissingContext(id: string, entry: ProjectionEntry, conversationId: string): Promise<boolean> {
     const snapshot = entry.history.get(id);
     let hasLog = false;
     try { const stat = await fsp.lstat(path.join(this.directory, `${id}.jsonl`)); hasLog = stat.isFile() && stat.size > 0; }
@@ -426,6 +432,9 @@ export class NativeProjection {
     entry.currentTerminal = true;
     entry.pending = [];
     entry.stream = undefined;
+    // 权威核查已经判定旧展示应保留；只发布不完整的显示绑定，不授权任何执行或恢复。
+    try { await writeDisplaySidecar(this.directory, id, conversationId, displayPage(snapshot.messages, !!snapshot.truncated, true)); }
+    catch { /* 旧显示与原始记录保留，派生缓存失败不改变恢复隔离。 */ }
     this.changed(id);
     return true;
   }
@@ -459,6 +468,10 @@ export class NativeProjection {
     return snapshot;
   }
   page(id: string, options?: ChatPageOptions) { return this.archive.page(id, clone(this.entry(id).history.get(id)), options); }
+  readDisplay(id: string, options?: ChatPageOptions) {
+    this.validId(id);
+    return this.display.page(id, options, { conversationId: this.getSession(id).execution.conversationId, requireConversationMatch: true });
+  }
   search(id: string, query: string, before?: string) { return this.archive.search(id, clone(this.entry(id).history.get(id)), query, before); }
   event(id: string, event: AgentEvent): void {
     const entry = this.entry(id);
@@ -480,6 +493,6 @@ export class NativeProjection {
     this.journal(id, { type: 'state', taskState, ...(error ? { error } : {}) }); this.changed(id);
   }
   flush(): void { for (const entry of this.entries.values()) entry.history.flush(); }
-  forget(id: string): void { this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); }
+  forget(id: string): void { this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); this.display.forget(id); }
   exportPath(id: string): string { this.validId(id); this.flush(); return path.join(this.directory, `${id}.jsonl`); }
 }

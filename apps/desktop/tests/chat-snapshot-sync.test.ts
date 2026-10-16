@@ -193,3 +193,31 @@ test('disposing while waiting for an old read or a fresh reply never confirms th
   assert.equal(active.applied.length,0);
   assert.equal(await active.sync.refreshFresh(),undefined);
 });
+
+test('fork detaches pending work while inheriting retired epochs, expected versions and worker generation guards',async()=>{
+  const hanging=deferred<ChatSnapshot>();let reads=0;
+  const prior=fixture(async()=>++reads===1?{...snapshot(5),version:{...version(5),workerGeneration:4}}:hanging.promise);
+  await prior.sync.refresh();
+  prior.sync.notify(version(1,1,'host-b'));
+  const old=prior.sync.refreshFresh();
+  const applied:ChatSnapshot[]=[],states:ChatSyncState[]=[];
+  const replies=[snapshot(100,'completed','host-a'),snapshot(101,'completed','host-a'),{...snapshot(2,'thinking','host-b'),version:{...version(2,2,'host-b'),workerGeneration:5}}];
+  prior.sync.dispose();
+  const next=prior.sync.fork({read:async()=>replies.shift(),apply:value=>applied.push(value),state:value=>states.push(value)});
+  assert.equal(next.notify(version(200,200,'host-a')),false,'retired host remains retired across the reader fork');
+  await assert.rejects(next.refreshFresh(),/状态仍在变化/);
+  assert.equal(applied.length,0);
+  const authority=await next.refreshFresh();
+  assert.equal(authority?.version?.hostEpoch,'host-b');
+  assert.equal(applied.length,1);
+  hanging.resolve(snapshot(999,'completed'));assert.equal(await old,undefined);
+  assert.equal(next.snapshot,authority);
+  next.dispose();
+
+  const worker=fixture(async()=>({...snapshot(5),version:{...version(5),workerGeneration:4}}));
+  await worker.sync.refresh();worker.sync.dispose();
+  const inherited=worker.sync.fork({read:async()=>({...snapshot(6),version:{...version(6),workerGeneration:3}}),apply:()=>assert.fail('worker generation regression applied'),state:()=>{}});
+  await assert.rejects(inherited.refreshFresh(),/状态仍在变化/);
+  assert.equal(inherited.snapshot?.version?.workerGeneration,4);
+  inherited.dispose();
+});

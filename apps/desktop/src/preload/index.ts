@@ -61,6 +61,7 @@ const api: DesktopAPI = {
   setSelection:id => ipcRenderer.invoke('session:select',id),
   deleteSession:(id,options) => ipcRenderer.invoke('session:delete',options ? {...options,id} : id),
   chatSnapshot:id => ipcRenderer.invoke('chat:snapshot',id),
+  chatDisplay:(id,options) => ipcRenderer.invoke('chat:display',{id,...options}),
   prepareChatCommands:id => ipcRenderer.invoke('chat:commands',id),
   recoverChatContext:id => ipcRenderer.invoke('chat:recover-context',id),
   chatPage:(id,options) => ipcRenderer.invoke('chat:page',{id,...options}),

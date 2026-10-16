@@ -2,12 +2,14 @@ import type { ClaudeHost } from '@cc-desk/engine-claude';
 import { SessionTitles, type SessionTitleGenerator } from '../../session-titles';
 import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
+import { ChatDisplayReader } from '../../chat-display-reader';
 import { SubtaskTracker } from '../../subtask-tracker';
 import { cliInvocation } from '../../commands';
 import { environment } from '../../platform-commands';
 import { signalPosixGroup } from '../../posix-process-group';
 import type { StateStore } from '../../store';
 import { claudeSessionPatch, projectClaudeSession } from './session';
+import type { ChatPageOptions } from '../../../shared/chat';
 
 const observe = (callback: () => void) => { try { callback(); } catch { /* 观察者不能改变执行或持久化结果。 */ } };
 
@@ -37,7 +39,15 @@ export function createClaudeHost(store: StateStore, onState: () => void, onConve
     },
     conversations({ isActive, onError }) {
       const history = new ChatHistory(store.directory, isActive, onError);
-      return { history, archive: new ChatArchive(history.directory) };
+      const archive = new ChatArchive(history.directory);
+      const display = new ChatDisplayReader(history.directory);
+      const forget = archive.forget.bind(archive);
+      return { history, archive: Object.assign(archive, {
+        readDisplay: (id: string, options?: ChatPageOptions) => display.page(id, options, {
+          conversationId: store.state.sessions.find(session => session.id === id)?.execution.conversationId,
+        }),
+        forget(id: string) { forget(id); display.forget(id); },
+      }) };
     },
     subtasks: notify => new SubtaskTracker(store, notify),
     launch: { environment, invocation: env => cliInvocation(store.state.settings, env) },

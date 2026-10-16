@@ -13,7 +13,7 @@ import { attachmentFilters, attachmentPathsSchema, draftAttachmentSelectionSchem
 import type { Register } from './registration';
 
 interface ChatPorts {
-  chat: Pick<StructuredExecutions, 'has' | 'hydrate' | 'snapshot' | 'prepareCommands' | 'page' | 'search' | 'attention' | 'respond' | 'recoverContext'>;
+  chat: Pick<StructuredExecutions, 'has' | 'hydrate' | 'snapshot' | 'readDisplay' | 'prepareCommands' | 'page' | 'search' | 'attention' | 'respond' | 'recoverContext'>;
   runtime: Pick<TerminalExecutions, 'has'>;
   workflows: Pick<WorkflowEngine, 'isSessionBusy'>;
   queue: ChatQueue;
@@ -68,6 +68,18 @@ const responseSchema = z.object({
   }),
 });
 
+/** Opt-in numeric diagnostics; message bodies and execution configuration are never logged. */
+async function traceRead<T extends { messages: unknown[] }>(operation: 'snapshot' | 'display', id: string, read: () => Promise<T>): Promise<T> {
+  if (process.env.CC_DESK_CHAT_PERF !== '1') return read();
+  const started = performance.now();
+  const value = await read();
+  try {
+    console.info('[cc-desk:chat-load]', JSON.stringify({ operation, sessionId: id, elapsedMs: Math.round((performance.now() - started) * 100) / 100,
+      messages: value.messages.length, payloadBytes: Buffer.byteLength(JSON.stringify(value)) }));
+  } catch { /* Profiling must not change read semantics. */ }
+  return value;
+}
+
 export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
   const draftAttachments = new DraftAttachments(ports.attachments);
   const assertCanStageAttachments = (id: string) => {
@@ -76,12 +88,21 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     ports.assertUnlocked(session);
     return session;
   };
-  handle('chat:snapshot', idSchema, async id => {
+  handle('chat:snapshot', idSchema, id => traceRead('snapshot', id, async () => {
     ports.structured(id);
     await ports.chat.hydrate(id);
     const snapshot = ports.chat.snapshot(id);
     return ports.versionSnapshot({ ...snapshot, queue: snapshot.queue ?? ports.queue.snapshot(id) });
-  });
+  }));
+  handle('chat:display', pageSchema, ({ id, ...options }) => traceRead('display', id, async () => {
+    const session = ports.structured(id);
+    const identity = { ...session.execution };
+    const page = await ports.chat.readDisplay(id, options);
+    const current = ports.structured(id);
+    if (current.execution.providerId !== identity.providerId || current.execution.mode !== identity.mode ||
+      current.execution.conversationId !== identity.conversationId) throw new Error('会话上下文已改变，请重新读取记录。');
+    return { ...page, sessionId: id, conversationId: identity.conversationId };
+  }));
   handle('chat:commands', idSchema, async id => {
     const checkAdmission = ports.captureAdmission(id);
     const session = ports.structured(id);

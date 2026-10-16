@@ -10,13 +10,16 @@ export interface ChatReadingPosition {
 }
 
 /** 在可见消息内部保留锚点，避免上方内容换行或流式更新改变阅读位置。 */
-export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefined, positions: Map<string, ChatReadingPosition>) {
+export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefined, positions: Map<string, ChatReadingPosition>, ensureMessage?: (id: string) => Promise<boolean>) {
   const position=useRef<ChatReadingPosition>(positions.get(sessionId)??{follow:true,top:0});
   const [follow,setFollow]=useState(position.current.follow);
   const following=useRef(follow);following.current=follow;
   const scroll=useRef<HTMLDivElement>(null),content=useRef<HTMLDivElement>(null);
   const ready=useRef(false),adjusting=useRef(false),frame=useRef(0);
   const pendingJump=useRef(false);
+  const mounting=useRef<string | undefined>(undefined);
+  const restoreLater=useRef<()=>void>(()=>{});
+  const latestSnapshot=useRef(snapshot);latestSnapshot.current=snapshot;
 
   const remember=useCallback(()=>{
     const element=scroll.current;
@@ -29,7 +32,12 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
       let low=0,high=messages.length;
       while(low<high){const middle=(low+high)>>>1;if(messages[middle].getBoundingClientRect().bottom<=top)low=middle+1;else high=middle;}
       const anchor=messages[low];
-      if(anchor){next.messageId=anchor.dataset.messageId;next.requestId=anchor.dataset.requestId;next.offset=anchor.getBoundingClientRect().top-top;}
+      if(anchor){
+        const bounds=anchor.getBoundingClientRect();
+        // A fling may reach a spacer before the virtual window commits. Do not capture
+        // an overscan row far outside this viewport as the new reading anchor.
+        if(bounds.top<top+element.clientHeight&&bounds.bottom>top){next.messageId=anchor.dataset.messageId;next.requestId=anchor.dataset.requestId;next.offset=bounds.top-top;}
+      }
     }
     position.current=next;positions.set(sessionId,next);
   },[positions,sessionId]);
@@ -41,6 +49,13 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     else{
       const saved=position.current;
       const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]')).find(message=>saved.messageId?message.dataset.messageId===saved.messageId:!!saved.requestId&&message.dataset.requestId===saved.requestId);
+      if(!anchor&&saved.messageId&&ensureMessage&&latestSnapshot.current?.messages.some(message=>message.id===saved.messageId)){
+        if(mounting.current!==saved.messageId){
+          const id=saved.messageId;mounting.current=id;
+          void ensureMessage(id).then(found=>{if(mounting.current===id){mounting.current=undefined;if(found)restoreLater.current();}});
+        }
+        return;
+      }
       // 分页请求可能在 React 提交消息前完成，应保留明确的
       // 目标直到它出现，避免记住上一页的首行。
       if(pendingJump.current&&!anchor)return;
@@ -52,7 +67,8 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     adjusting.current=true;
     cancelAnimationFrame(frame.current);
     frame.current=requestAnimationFrame(()=>{adjusting.current=false;remember();});
-  },[remember]);
+  },[remember,ensureMessage]);
+  restoreLater.current=restore;
 
   useLayoutEffect(()=>{if(snapshot){ready.current=true;restore();}},[snapshot,follow,restore]);
   useLayoutEffect(()=>{
@@ -68,12 +84,13 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     const next=element.scrollHeight-element.scrollTop-element.clientHeight<70;
     following.current=next;remember();setFollow(next);
   };
-  const jumpToLatest=()=>{pendingJump.current=false;following.current=true;setFollow(true);restore();};
+  const jumpToLatest=useCallback(()=>{pendingJump.current=false;following.current=true;setFollow(true);restoreLater.current();},[]);
   const jumpToItem=useCallback((id:string,kind:'message'|'request'='message',offset=8)=>{
     following.current=false;
     pendingJump.current=true;
     position.current={follow:false,top:0,offset,...(kind==='message'?{messageId:id}:{requestId:id})};
     positions.set(sessionId,position.current);setFollow(false);restore();
   },[positions,sessionId,restore]);
-  return {scroll,content,follow,onScroll,jumpToLatest,jumpToItem};
+  const captureReading=useCallback(()=>{following.current=false;setFollow(false);remember();},[remember]);
+  return {scroll,content,follow,onScroll,jumpToLatest,jumpToItem,remember:captureReading};
 }

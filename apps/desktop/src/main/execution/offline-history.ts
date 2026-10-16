@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { ChatPageOptions, ChatSnapshot } from '../../shared/chat';
 import { ChatHistory } from '../chat-history';
 import { ChatArchive } from '../chat-archive';
+import { readDisplayPage } from '../chat-display-reader';
 
 /** 被动读取宿主持有的显示记录，不加载执行适配器。 */
 export class OfflineHistory {
@@ -20,5 +21,6 @@ export class OfflineHistory {
       error: `${reason}${exists ? ' 当前显示已保存的只读记录。' : ' 没有可读取的本地聊天记录。'}` };
   }
   page(id: string, reason: string, options?: ChatPageOptions) { return this.archive.page(id, this.snapshot(id, reason), options); }
+  readDisplay(id: string, options?: ChatPageOptions) { return readDisplayPage(this.history.directory, id, options); }
   search(id: string, reason: string, query: string, before?: string) { return this.archive.search(id, this.snapshot(id, reason), query, before); }
 }
