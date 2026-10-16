@@ -13,6 +13,7 @@ import { registerNativeImageHandlers } from './ipc/native-image-handlers';
 import { readNativeImageAttachments } from './native-image-attachments';
 import { WorkflowEngine } from './workflows';
 import { ChatQueue } from './chat-queue';
+import { TaskNotifications } from './task-notifications';
 import { ChatSnapshotClock } from './chat-snapshot-clock';
 import type { WorkspaceQueries } from './workspace-queries';
 import { gitWorktreeRoot } from './git';
@@ -44,7 +45,7 @@ export class SessionService {
   private directoryExecution = new DirectoryExecutionCoordinator();
   private executionLeases = new Map<string, DirectoryLease>();
   private releaseOperations = new Map<string, Promise<void>>();
-  private notified = new Map<string,string>();
+  private notified = new TaskNotifications();
   private workflowStates = new Map<string,string>();
   private stopping = false;
   private chatClock = new ChatSnapshotClock();
@@ -69,8 +70,8 @@ export class SessionService {
       this.queue?.wake(id);
       const version = this.chatClock.changed(id, event.identity.conversationId);
       window?.webContents.send('chat:changed', id, state, version);
-      const old = this.notified.get(id); this.notified.set(id,state);
-      if (old !== state && store.state.settings.notifications && ['waiting_approval','waiting_input','completed','error'].includes(state) && Notification.isSupported()) {
+      const shouldNotify = this.notified.observe(event.identity, state, state === 'completed' && this.chat.isBusy(id));
+      if (shouldNotify && store.state.settings.notifications && Notification.isSupported()) {
         const session = store.state.sessions.find(s => s.id === id);
         const labels: Record<string,string> = {waiting_approval:'需要批准工具操作',waiting_input:'需要你的回答',completed:'本轮任务已完成',error:'任务遇到错误'};
         if (session?.execution.providerId === 'native') labels.completed = '本轮执行已结束';

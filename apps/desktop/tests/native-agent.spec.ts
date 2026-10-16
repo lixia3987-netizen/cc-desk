@@ -76,6 +76,88 @@ function gate() {
   return { promise, release };
 }
 
+test('a restored Native conversation notifies completion only after its first new turn actually settles', async () => {
+  const f = await workspace(), response = gate();
+  const saved = JSON.parse(await fs.readFile(path.join(f.data, 'workspace.json'), 'utf8'));
+  saved.settings.notifications = true;
+  await fs.writeFile(path.join(f.data, 'workspace.json'), JSON.stringify(saved));
+  const fixture: Fixture = await startResponsesFixture({ handler: async ({ index }: { index: number }) => {
+    if (index === 0) return { output: [functionCall('restore-plan', 'update_plan', { expectedRevision: 0, plan: {
+      goal: 'Keep a durable plan for the restored conversation',
+      steps: [{ id: 'inspect', title: 'Inspect the saved task', dependsOn: [], status: 'in_progress' }],
+      criteria: [{ id: 'review', description: 'Human review remains unverified', stepIds: ['inspect'], kind: 'manual' }],
+    } })] };
+    if (index === 1) return { output: [assistantMessage('restore-first', '旧回合执行已结束，人工验收未执行。')] };
+    await response.promise;
+    return { output: [assistantMessage('restore-second', '恢复后的新回合执行结束。')] };
+  } });
+  let app = await f.launch();
+  let sending: Promise<unknown> | undefined;
+  type CleanupGate = { entered: boolean; release(): void; restore(): void };
+  const captureNotifications = () => app.evaluate(({ Notification }) => {
+    const notices: string[] = [];
+    (globalThis as typeof globalThis & { nativeResumeNotifications: string[] }).nativeResumeNotifications = notices;
+    Notification.isSupported = () => true;
+    Notification.prototype.show = function (this: { body: string }) { notices.push(this.body); };
+  });
+  const notices = () => app.evaluate(() => (globalThis as typeof globalThis & { nativeResumeNotifications: string[] }).nativeResumeNotifications);
+  try {
+    let page = await readyWindow(app);
+    await captureNotifications();
+    const configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id, '恢复后的首次发送');
+    const first = await page.evaluate(id => window.desktop.sendChat(id, '记录一个检查计划，保留人工验收状态。'), session.id);
+    expect(first.success).toBe(true);
+    expect(await notices()).toEqual(['本轮执行已结束']);
+    await cleanupApp(app);
+    app = await f.launch(); page = await readyWindow(app);
+    await captureNotifications();
+    const current = await page.evaluate(async id => (await window.desktop.nativeConnections.list()).connections.find(item => item.id === id)!, configured.id);
+    await page.evaluate(({ item, secret }) => window.desktop.nativeConnections.setCredential({ id: item.id, revision: item.revision, mode: 'memory', secret }), { item: current, secret: sentinel });
+    await page.evaluate(id => window.desktop.setSelection(id), session.id);
+    expect((await page.evaluate(id => window.desktop.chatSnapshot(id), session.id)).taskState).toBe('completed');
+    expect(await notices()).toEqual([]);
+    const pending = page.evaluate(id => window.desktop.sendChat(id, '继续检查之前的任务，保留已有记录。'), session.id);
+    sending = pending;
+    await expect.poll(() => fixture.requests.length).toBe(3);
+    expect(await notices(), 'history replay must not announce completion while the new model request is still running').toEqual([]);
+    expect((await page.evaluate(id => window.desktop.chatSnapshot(id), session.id)).taskState).toBe('thinking');
+    // 工作进程的完成回执先于宿主资源释放：真实锁文件保持占用，验证通知不能抢跑。
+    await app.evaluate(async (_electron, { data, conversationId }) => {
+      const fsp = process.getBuiltinModule('node:fs/promises') as typeof import('node:fs/promises');
+      const path = process.getBuiltinModule('node:path') as typeof import('node:path');
+      const { syncBuiltinESMExports } = process.getBuiltinModule('node:module') as typeof import('node:module');
+      const lock = path.join(await fsp.realpath(path.join(data, 'native', 'conversations', conversationId)), '.writer-lock');
+      const unlink = fsp.unlink;
+      let release!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const gate: CleanupGate = { entered: false, release,
+        restore() { release(); fsp.unlink = unlink; syncBuiltinESMExports(); } };
+      (globalThis as typeof globalThis & { nativeResumeCleanup: CleanupGate }).nativeResumeCleanup = gate;
+      fsp.unlink = async file => {
+        if (file === lock && !gate.entered) { gate.entered = true; await held; }
+        return unlink(file);
+      };
+      syncBuiltinESMExports();
+    }, { data: f.data, conversationId: session.execution.conversationId! });
+    let settled = false; void pending.then(() => { settled = true; }, () => { settled = true; });
+    response.release();
+    await expect.poll(() => app.evaluate(() => (globalThis as typeof globalThis & { nativeResumeCleanup: CleanupGate }).nativeResumeCleanup.entered)).toBe(true);
+    expect(settled, 'the real host turn is still holding its writer release barrier').toBe(false);
+    expect(await notices(), 'a worker completion receipt cannot announce host completion during cleanup').toEqual([]);
+    await app.evaluate(() => (globalThis as typeof globalThis & { nativeResumeCleanup: CleanupGate }).nativeResumeCleanup.restore());
+    expect((await pending).success).toBe(true);
+    await expect.poll(notices).toEqual(['本轮执行已结束']);
+    expect(fixture.requests).toHaveLength(3);
+    expect(fixture.errors).toEqual([]);
+    await noSavedSecret(f.data);
+  } finally {
+    response.release();
+    await app.evaluate(() => (globalThis as typeof globalThis & { nativeResumeCleanup?: CleanupGate }).nativeResumeCleanup?.restore()).catch(() => {});
+    await sending?.catch(() => {});
+    try { await cleanupApp(app); await f.dispose(); } finally { await fixture.close(); }
+  }
+});
+
 test('native utilityProcess receives trusted stale-revision feedback and continues with a corrected new call', async () => {
   const f = await workspace();
   let observedRevision: number | undefined;

@@ -64,7 +64,7 @@ interface ProjectionEntry {
   commands?: NativeCommandSnapshot;
   agents?: NativeAgentProjection;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
-  override?: { taskState: TaskState; error?: string };
+  override?: { taskState: TaskState; error?: string; requestId?: string };
 }
 
 /** 可重建的界面投影；原生账本是模型上下文的唯一来源。 */
@@ -404,7 +404,11 @@ export class NativeProjection {
       }
     }
     this.missingContext.delete(id);
-    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal ? [] : old.pending, stream, commands: projectNativeCommands(records), agents });
+    // 冷历史和启动/摘要记录仍可能指向上一回合。只有当前请求的 run_started
+    // 才能接管宿主启动状态；同时保留文件 I/O 期间到达的最新宿主状态。
+    const live = this.entry(id), override = live.override;
+    const pendingOverride = this.isActive(id) && override?.requestId && override.requestId !== currentIdentity?.requestId ? override : undefined;
+    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal && !pendingOverride ? [] : live.pending, stream, commands: projectNativeCommands(records), agents, ...(pendingOverride ? { override: pendingOverride } : {}) });
     this.archive.forget(id);
     if (old.seq && old.conversationId === store.conversationId) for (const item of projected) if (item.seq > old.seq) this.journal(id, item.event);
     this.changed(id);
@@ -471,8 +475,8 @@ export class NativeProjection {
     if (approval) this.journal(id, { type: 'approval_requested', approval: clone(approval) });
     this.changed(id);
   }
-  state(id: string, taskState: TaskState, error?: string): void {
-    this.entry(id).override = { taskState, ...(error ? { error } : {}) };
+  state(id: string, taskState: TaskState, error?: string, requestId?: string): void {
+    this.entry(id).override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
     this.journal(id, { type: 'state', taskState, ...(error ? { error } : {}) }); this.changed(id);
   }
   flush(): void { for (const entry of this.entries.values()) entry.history.flush(); }
