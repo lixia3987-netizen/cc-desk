@@ -188,6 +188,9 @@ test('native utilityProcess receives trusted stale-revision feedback and continu
     expect(fixture.errors).toEqual([]);
     expect(fixture.requests).toHaveLength(4);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('before native\n');
+    // The running UI may hydrate again after the turn settles. Close its host
+    // writer before this independent offline ledger verification.
+    await cleanupApp(app);
     const ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: session.execution.conversationId! });
     try {
       const saved = ledger.listRuns()[0], stale = saved.tools.find(tool => tool.call.id === 'revision-stale')!;
