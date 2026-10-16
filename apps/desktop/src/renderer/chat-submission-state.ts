@@ -25,6 +25,7 @@ interface SessionSubmissions {
   records: Map<string, SubmissionRecord>;
   canonicalIds: Set<string>;
   observedIds: Set<string>;
+  receipts: Map<string, string>;
   snapshot: readonly PendingChatSubmission[];
 }
 const empty: readonly PendingChatSubmission[] = Object.freeze([]);
@@ -64,6 +65,8 @@ export function visibleChatSubmissions(
 export class ChatSubmissionState {
   private readonly sessions = new Map<string, SessionSubmissions>();
   private readonly listeners = new Set<() => void>();
+  private retainedScopes?: Set<string>;
+  private readonly clearedScopes = new Set<string>();
 
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
@@ -86,6 +89,31 @@ export class ChatSubmissionState {
 
   /** 供异步提交在绘制反馈后核对来源上下文是否仍然存在。 */
   hasScope(sessionId: string): boolean { return this.sessions.has(sessionId); }
+
+  /** 首条消息已经由创建流程持久接收时，将其临时展示接入同一身份链，不再次发送。 */
+  adoptAccepted(sessionId: string, input: { requestId: string; messageId: string; draft: string; files: readonly Attachment[] }): boolean {
+    if (!this.allowed(sessionId)) return false;
+    const session = this.session(sessionId), existing = session.records.get(input.requestId);
+    if (existing) {
+      if (existing.value.messageId !== undefined && existing.value.messageId !== input.messageId) return false;
+      return this.accepted(sessionId, input.requestId, input.messageId);
+    }
+    if (session.observedIds.has(input.requestId)) return true;
+    const receipt = session.receipts.get(input.requestId);
+    if (receipt !== undefined && receipt !== input.messageId) return false;
+    if (receipt || [...session.receipts.values()].includes(input.messageId) || session.canonicalIds.has(input.messageId)) {
+      remember(session.observedIds, input.requestId);
+      return true;
+    }
+    const files = structuredClone([...input.files]);
+    for (const file of files) Object.freeze(file);
+    Object.freeze(files);
+    const value: PendingChatSubmission = Object.freeze({ requestId: input.requestId, messageId: input.messageId,
+      draft: input.draft, text: input.draft.trim(), files, status: 'accepted' });
+    session.records.set(input.requestId, { value, inFlight: false, visible: true, retryable: false });
+    this.publish(session);
+    return true;
+  }
 
   begin(sessionId: string, draft: string, files: readonly Attachment[], nativeTaskId?: string): PendingChatSubmission | undefined {
     if (this.hasInFlight(sessionId) || (!draft.trim() && !files.length)) return undefined;
@@ -135,9 +163,17 @@ export class ChatSubmissionState {
   }
 
   reconcile(sessionId: string, queue?: ChatQueueSnapshot, messages?: readonly ChatMessage[]): void {
-    const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!this.allowed(sessionId)) return;
+    const session = this.session(sessionId);
     for (const message of messages ?? []) if (message.role === 'user' && message.submissionId) remember(session.canonicalIds, message.submissionId);
+    // 首条消息的 ACK 交接可能晚于第一次权威快照，仅保留有界的身份信息。
+    const receipts = [...(queue?.receipts ?? []), ...(queue?.items.flatMap(item => item.clientRequestId
+      ? [{ requestId: item.clientRequestId, messageId: item.id }] : []) ?? [])];
+    for (const receipt of receipts) {
+      session.receipts.delete(receipt.requestId); session.receipts.set(receipt.requestId, receipt.messageId);
+      if (session.receipts.size > maxRememberedIds) session.receipts.delete(session.receipts.keys().next().value!);
+      remember(session.observedIds, receipt.requestId);
+    }
     for (const record of session.records.values()) {
       const queued = queue?.items.find(item => item.clientRequestId === record.value.requestId
         || (record.value.messageId !== undefined && item.id === record.value.messageId));
@@ -153,12 +189,15 @@ export class ChatSubmissionState {
 
   /** 删除会话时释放数据；旧 Promise 的迟到回执不会创建或恢复已删除记录。 */
   clear(sessionId: string): void {
+    remember(this.clearedScopes, sessionId);
     if (this.sessions.delete(sessionId)) this.emit();
   }
 
   /** App 只传入仍存在的会话与上下文代次，清除删除或重建前的临时内容。 */
   retain(scopes: readonly string[]): void {
     const keep = new Set(scopes);
+    this.retainedScopes = keep;
+    for (const scope of keep) this.clearedScopes.delete(scope);
     let changed = false;
     for (const scope of this.sessions.keys()) if (!keep.has(scope)) { this.sessions.delete(scope); changed = true; }
     if (changed) this.emit();
@@ -167,7 +206,7 @@ export class ChatSubmissionState {
   private session(sessionId: string): SessionSubmissions {
     let session = this.sessions.get(sessionId);
     if (!session) {
-      session = { records: new Map(), canonicalIds: new Set(), observedIds: new Set(), snapshot: empty };
+      session = { records: new Map(), canonicalIds: new Set(), observedIds: new Set(), receipts: new Map(), snapshot: empty };
       this.sessions.set(sessionId, session);
     }
     return session;
@@ -196,6 +235,7 @@ export class ChatSubmissionState {
   }
 
   private emit(): void { for (const listener of this.listeners) listener(); }
+  private allowed(scope: string): boolean { return !this.clearedScopes.has(scope) && (!this.retainedScopes || this.retainedScopes.has(scope)); }
 }
 
 export const chatSubmissionState = new ChatSubmissionState();

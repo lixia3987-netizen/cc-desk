@@ -59,6 +59,8 @@ test('first send snapshots its input, gates repeated clicks synchronously and st
   assert.equal(fixture.controller.session, session);
   assert.deepEqual(created, [session]);
   assert.equal(fixture.controller.accepted, false);
+  const unacknowledgedReceipt = fixture.controller.receipt;
+  assert.equal(unacknowledgedReceipt, undefined, 'an unacknowledged send cannot seed an accepted message');
   assert.deepEqual(fixture.drafts, ['  first message\n']);
   assert.deepEqual(fixture.stages, [['/source/a.txt']]);
   assert.equal(fixture.submissions[0].text, 'first message');
@@ -67,6 +69,9 @@ test('first send snapshots its input, gates repeated clicks synchronously and st
   assert.equal(await pending, session);
   assert.equal(fixture.controller.pending, false);
   assert.equal(fixture.controller.accepted, true);
+  assert.deepEqual(fixture.controller.receipt, { requestId: fixture.submissions[0].requestId, messageId: 'message' });
+  fixture.controller.receipt!.messageId = 'renderer-copy-change';
+  assert.equal(fixture.controller.receipt!.messageId, 'message', 'the handoff receipt cannot be changed by callers');
   assert.equal(await fixture.controller.submit(input, 'anything else', []), session);
   assert.equal(fixture.submissions.length, 1);
 });

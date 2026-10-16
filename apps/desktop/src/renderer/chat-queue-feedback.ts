@@ -22,6 +22,9 @@ export function queueActionConfirmed(action: PendingChatAction, queue: ChatSnaps
   if (!chatActionHasFreshSnapshot(action, version) || !queue) return false;
   const target = queue.items.find(item => item.id === action.target);
   if (action.kind === 'remove') return !target;
+  // 立即发送等待旧回合结束期间，后来的明确停止会保留目标并暂停队列。
+  // 新鲜的受理后快照确认该覆盖决定；无需伪造错误或等待目标再派发。
+  if (action.kind === 'now' && queue.paused) return true;
   // 任务可在两次快照间完成或再次失败，不要求一定观察到中间的 unpaused/sending。
   if (queue.paused && queue.error) return true;
   if (action.kind === 'resume') return !queue.paused || !queue.items.length;

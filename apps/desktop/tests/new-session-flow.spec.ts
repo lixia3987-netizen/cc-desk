@@ -27,6 +27,9 @@ interface FlowFixture {
   holdSubmission(): void;
   submissionEntered(): boolean;
   releaseSubmission(): void;
+  holdSnapshots(): void;
+  snapshotEntered(): boolean;
+  releaseSnapshots(): void;
   failNextSubmission(): void;
   loseNextAcknowledgement(): void;
   records(): { creates: number; submissions: Submission[]; acceptedMessages: number; createFeedback: FeedbackObservation[]; submissionFeedback: FeedbackObservation[] };
@@ -62,10 +65,12 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
     type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
     const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
     const original = handlers?.get('session:create');
-    if (!original) throw new Error('Expected the real session:create handler');
+    const snapshot = handlers?.get('chat:snapshot');
+    if (!original || !snapshot) throw new Error('Expected the real session:create and chat:snapshot handlers');
     let creates = 0, fail = false, loseAcknowledgement = false;
     let gate: { entered: boolean; resolve?: () => void; reject?: (error: Error) => void } | undefined;
     let submissionGate: typeof gate;
+    let snapshotGate: { entered: boolean; promise: Promise<void>; resolve(): void; reject(error: Error): void } | undefined;
     const submissions: Submission[] = [];
     const accepted = new Map<string, string>();
     const acceptedPayloads = new Map<string, string>();
@@ -94,6 +99,12 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
       return original(event, input);
     });
     ipcMain.removeHandler('chat:submit');
+    ipcMain.removeHandler('chat:snapshot');
+    ipcMain.handle('chat:snapshot', async (event, ...args: unknown[]) => {
+      const pending = snapshotGate;
+      if (pending) { pending.entered = true; await pending.promise; }
+      return snapshot(event, ...args);
+    });
     ipcMain.handle('chat:submit', async (event, input: Submission) => {
       submissions.push(input);
       submissionFeedback.push(await observeFeedback(event));
@@ -116,10 +127,18 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
       holdSubmission: () => { submissionGate = { entered: false }; },
       submissionEntered: () => !!submissionGate?.entered,
       releaseSubmission: () => { const current = submissionGate; submissionGate = undefined; if (!current?.resolve) throw new Error('No pending submission'); current.resolve(); },
+      holdSnapshots: () => {
+        let resolve!: () => void, reject!: (error: Error) => void;
+        const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+        void promise.catch(() => {});
+        snapshotGate = { entered: false, promise, resolve, reject };
+      },
+      snapshotEntered: () => !!snapshotGate?.entered,
+      releaseSnapshots: () => { const current = snapshotGate; snapshotGate = undefined; current?.resolve(); },
       failNextSubmission: () => { fail = true; },
       loseNextAcknowledgement: () => { loseAcknowledgement = true; },
       records: () => ({ creates, submissions, acceptedMessages: accepted.size, createFeedback, submissionFeedback }),
-      dispose: () => { gate?.reject?.(new Error('Fixture disposed')); submissionGate?.reject?.(new Error('Fixture disposed')); },
+      dispose: () => { gate?.reject?.(new Error('Fixture disposed')); submissionGate?.reject?.(new Error('Fixture disposed')); snapshotGate?.reject(new Error('Fixture disposed')); },
     };
   });
   return { app, page, existing, project, projectPath, data, git, close: async () => {
@@ -237,6 +256,7 @@ test('new session feedback rejection preserves the original draft and a lost ack
     await sessionRow(page, f.existing.title).click(); await openNew(page);
     await expect(form.getByLabel('提示词编辑器', { exact: true })).toHaveValue(text);
     await expect(form.getByText('失败后仍保留.txt', { exact: true })).toBeVisible();
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.holdSnapshots());
     await form.getByRole('button', { name: '发送任务', exact: true }).click();
     await expect(form).toHaveCount(0);
     const after = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
@@ -245,6 +265,14 @@ test('new session feedback rejection preserves the original draft and a lost ack
     expect(after.submissions[0].attachments).toHaveLength(1);
     expect(after.submissions.every(item => JSON.stringify(item.attachments) === JSON.stringify(after.submissions[0].attachments))).toBe(true);
     expect(after.submissions.every(item => item.text === text)).toBe(true);
+    await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.snapshotEntered())).toBe(true);
+    const handoff = page.getByLabel('消息提交状态', { exact: true });
+    await expect(handoff).toContainText(text);
+    await expect(handoff).toContainText('失败后仍保留.txt');
+    await expect(handoff).toContainText('正在等待会话启动…');
+    await expect(handoff.locator('[data-submission-request-id]')).toHaveAttribute('data-submission-request-id', after.submissions[0].requestId!);
+    await expect(page.locator('.chat-empty')).toHaveCount(0);
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseSnapshots());
     await expect(page.locator('.error-banner')).toHaveCount(0);
   } finally { await f.close(); }
 });

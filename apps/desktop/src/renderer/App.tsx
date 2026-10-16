@@ -315,6 +315,7 @@ export function App() {
     try {
       await paintActionFeedback();
       const session = await owner.submission.submit(input, text, files);
+      const receipt = owner.submission.receipt;
       clearSentDraft(session.id, text);
       // 即使后续读取快照失败，接收结果也已确定；应在
       // 防抖状态广播到达前，让已确认的会话可用。
@@ -325,6 +326,10 @@ export function App() {
         retainSessions(next.sessions.map(item => item.id));
         sessionReadLifecycle.retain(next.sessions.map(item => item.id));
       }
+      chatSubmissionState.retain((latestState.current?.sessions ?? []).map(item => JSON.stringify([item.id, item.execution.conversationId ?? ''])));
+      if (receipt) chatSubmissionState.adoptAccepted(JSON.stringify([session.id, session.execution.conversationId ?? '']), {
+        ...receipt, draft: text, files: files.map(({ path, name, bytes }) => ({ path, name, bytes })),
+      });
       if (latestBlankKey.current === owner.key && blankSessions.current.get(owner.key) === owner) {
         latestBlankKey.current = undefined; setBlankKey(undefined);
         setProjectId('all'); setSearch(''); setArchived(false); selectSession(session.id);

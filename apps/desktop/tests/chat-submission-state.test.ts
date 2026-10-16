@@ -267,3 +267,65 @@ test('historical hidden retry payloads and observed identity tombstones are boun
   assert.equal(state.isObserved('session', earliestProof), false);
   assert.equal(state.isObserved('session', latestProof), true);
 });
+
+test('adoptAccepted bridges first-message ACK without replay and retains the full card through empty snapshots', () => {
+  const state = new ChatSubmissionState(), files = [{ ...file }];
+  state.retain(['session']);
+  const input = { requestId: 'first-request', messageId: 'first-message', draft: '  first message  ', files };
+  assert.equal(state.adoptAccepted('session', input), true);
+  const adopted = state.getSnapshot('session');
+  assert.equal(adopted.length, 1);
+  assert.equal(adopted[0].status, 'accepted');
+  assert.equal(adopted[0].text, 'first message');
+  assert.equal(adopted[0].messageId, input.messageId);
+  assert.equal(state.hasInFlight('session'), false, 'adoption neither submits nor acquires an IPC gate');
+  files[0].path = '/changed-after-ACK.txt';
+  assert.deepEqual(adopted[0].files, [file]);
+  assert.equal(Object.isFrozen(adopted[0].files[0]), true);
+  state.reconcile('session', { items: [], paused: false }, []);
+  assert.equal(state.getSnapshot('session'), adopted, 'an empty initial projection cannot acknowledge display');
+  assert.equal(state.adoptAccepted('session', { ...input, files: [file] }), true);
+  assert.equal(state.getSnapshot('session'), adopted, 'repeated handoff is idempotent');
+  state.reconcile('session', { items: [], paused: false, receipts: [{ requestId: 'wrong-request', messageId: 'wrong-message' }] }, [message('wrong-message')]);
+  assert.equal(state.getSnapshot('session'), adopted);
+  state.reconcile('session', undefined, [message('first-message')]);
+  assert.deepEqual(state.getSnapshot('session'), []);
+  assert.equal(state.adoptAccepted('session', { ...input, files: [file] }), true);
+  assert.deepEqual(state.getSnapshot('session'), [], 'a late repeated handoff cannot restore an observed card');
+});
+
+for (const proof of ['queue', 'receipt', 'canonical'] as const) {
+  test(`adoptAccepted respects ${proof} proof that arrives before or after handoff`, () => {
+    const input = { requestId: 'first-request', messageId: 'first-message', draft: 'first draft', files: [] };
+    for (const timing of ['before', 'after']) {
+      const state = new ChatSubmissionState(); state.retain(['session']);
+      const reconcile = () => state.reconcile('session', proof === 'queue' ? queue(input.requestId, input.messageId)
+        : proof === 'receipt' ? { items: [], paused: false, receipts: [{ requestId: input.requestId, messageId: input.messageId }] }
+          : undefined, proof === 'canonical' ? [message(input.messageId)] : []);
+      if (timing === 'before') reconcile();
+      assert.equal(state.adoptAccepted('session', input), true);
+      if (timing === 'after') reconcile();
+      assert.deepEqual(state.getSnapshot('session'), []);
+      assert.equal(state.isObserved('session', input.requestId), true);
+      assert.equal(state.hasInFlight('session'), false);
+    }
+  });
+}
+
+test('adoptAccepted rejects removed contexts and does not duplicate an existing request', () => {
+  const state = new ChatSubmissionState(); state.retain(['current']);
+  const pending = state.begin('current', 'existing draft', [])!;
+  const input = { requestId: pending.requestId, messageId: 'first-message', draft: pending.draft, files: [] };
+  assert.equal(state.adoptAccepted('current', input), true);
+  assert.equal(state.getSnapshot('current').length, 1);
+  assert.equal(state.hasInFlight('current'), false);
+  assert.equal(state.adoptAccepted('current', { ...input, messageId: 'different-host-message' }), false);
+  state.retain(['new-context']);
+  assert.equal(state.adoptAccepted('current', input), false);
+  assert.deepEqual(state.getSnapshot('current'), []);
+  state.reconcile('current', queue(input.requestId, input.messageId));
+  assert.equal(state.hasScope('current'), false, 'late evidence cannot recreate a retired context');
+  assert.equal(state.adoptAccepted('new-context', input), true);
+  state.clear('new-context');
+  assert.equal(state.adoptAccepted('new-context', input), false, 'explicit deletion also rejects late first-message handoff');
+});

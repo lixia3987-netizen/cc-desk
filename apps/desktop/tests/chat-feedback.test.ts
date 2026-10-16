@@ -63,6 +63,20 @@ test('action tokens remain locked across subscriptions and stale callbacks canno
   assert.ok(state.begin('other-session', 'stop'));
 });
 
+test('send-now feedback settles when a later explicit stop leaves its target queued without an error', () => {
+  const state = new ChatActionState();
+  const waiting: ChatQueueSnapshot = { items: [{ ...item, status: 'queued' }], paused: false };
+  const action = state.begin('session', 'now', item.id, queueFeedbackVersion(waiting, version(1)))!;
+  state.accepted('session', action.token);
+  const stopped: ChatQueueSnapshot = { ...waiting, paused: true };
+  assert.equal(queueActionConfirmed(state.getSnapshot('session')!, stopped, [], version(2)), false, 'IPC acceptance still needs a fresh observation');
+  state.synchronized('session', action.token, version(3));
+  assert.equal(queueActionConfirmed(state.getSnapshot('session')!, stopped, [], version(2)), false);
+  assert.equal(queueActionConfirmed(state.getSnapshot('session')!, stopped, [], version(3)), true, 'explicit stop supersedes send-now and releases controls for removing or manually resuming the retained target');
+  assert.equal(stopped.items[0].status, 'queued');
+  assert.equal(stopped.error, undefined);
+});
+
 function submissionFixture() {
   const state = new ChatSubmissionState(), scope = 'session-context';
   let current = true, draft = 'original prompt', sent = 0, accepted = 0, errors = 0, refreshes = 0;

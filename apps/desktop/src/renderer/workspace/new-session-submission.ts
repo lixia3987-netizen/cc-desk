@@ -24,6 +24,7 @@ export interface NewSessionSubmissionPorts {
 export class NewSessionSubmission {
   private createdSession?: Session;
   private wasAccepted = false;
+  private acceptedReceipt?: ChatSubmission & { requestId: string };
   private inFlight?: Promise<Session>;
   private attachmentChange?: Promise<void>;
   private readonly staged = new Map<string, { sourcePath: string; owned: Attachment }>();
@@ -33,6 +34,7 @@ export class NewSessionSubmission {
 
   get session(): Session | undefined { return this.createdSession; }
   get accepted(): boolean { return this.wasAccepted; }
+  get receipt(): (ChatSubmission & { requestId: string }) | undefined { return this.acceptedReceipt ? { ...this.acceptedReceipt } : undefined; }
   get pending(): boolean { return this.inFlight !== undefined; }
 
   submit(input: NewSession, text: string, files: NewSessionAttachment[]): Promise<Session> {
@@ -116,7 +118,8 @@ export class NewSessionSubmission {
     const trimmed = text.trim(), key = JSON.stringify({ text: trimmed, attachments: paths });
     let requestId = this.requestIds.get(key);
     if (!requestId) { requestId = crypto.randomUUID(); this.requestIds.set(key, requestId); }
-    await this.ports.submitChat(session.id, trimmed, paths, requestId);
+    const receipt = await this.ports.submitChat(session.id, trimmed, paths, requestId);
+    this.acceptedReceipt = { requestId, messageId: receipt.messageId };
     this.wasAccepted = true;
     return session;
   }
