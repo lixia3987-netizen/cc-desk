@@ -48,6 +48,28 @@ async function fixture(t, options = {}) {
   } };
 }
 
+test('journal cursors preserve exact page boundaries and independent copies before and after restart', async t => {
+  const f = await fixture(t), req = request(f.conversationId);
+  await f.store.beginRun(req);
+  await f.store.append(req.identity, modelResponse());
+  await f.store.append(req.identity, { type: 'tool_prepared', prepared, approval: approval(req.identity) });
+  await f.store.append(req.identity, completion());
+  await finish(f.store, req);
+  const expected = f.store.replay(0, 1000);
+  for (const restart of [false, true]) {
+    if (restart) await f.reopen();
+    for (let cursor = 0; cursor <= expected.length + 1; cursor++) {
+      for (const limit of [1, 2, 1000]) assert.deepEqual(f.store.replay(cursor, limit), expected.slice(cursor, cursor + limit));
+    }
+    const copy = f.store.replay(expected.length - 1, 1);
+    copy[0].hash = 'changed outside the store';
+    assert.deepEqual(f.store.replay(expected.length - 1, 1), expected.slice(-1));
+    assert.deepEqual(f.store.replay(Number.MAX_SAFE_INTEGER, 1000), []);
+    assert.throws(() => f.store.replay(-1, 1));
+    assert.throws(() => f.store.replay(0, 10001));
+  }
+});
+
 test('complete provider items, continuation and tool results survive clean restart and a second turn', async t => {
   const f = await fixture(t);
   const req = request(f.conversationId);

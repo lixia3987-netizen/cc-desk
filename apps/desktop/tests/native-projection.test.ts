@@ -29,6 +29,35 @@ async function fixture() {
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
+test('cold history replay keeps the starting state of a newly admitted request until its own run starts', async () => {
+  const f = await fixture();
+  const restored = f.create();
+  try {
+    await f.store.beginRun(f.req); await f.finish(); await f.reopen();
+    const next = { ...f.req, identity: { ...f.req.identity, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 2 }, input: 'Continue the restored conversation' };
+    restored.state(f.id, 'starting', undefined, next.identity.requestId);
+    await restored.hydrate(f.id, f.store);
+    assert.equal(restored.snapshot(f.id).taskState, 'starting', 'an old completed receipt must not finish the newly admitted request');
+    assert.equal(restored.snapshot(f.id).nativeRun?.runId, f.req.identity.runId, 'display history still belongs to the old run');
+    await f.store.beginRun(next); await restored.hydrate(f.id, f.store);
+    assert.equal(restored.snapshot(f.id).nativeRun?.runId, next.identity.runId);
+    assert.equal(restored.snapshot(f.id).taskState, 'thinking', 'the new durable run takes over its startup state');
+  } finally { restored.flush(); await f.dispose(); }
+});
+
+test('a restored completed run cannot clear a newly admitted startup approval', async () => {
+  const f = await fixture(), restored = f.create();
+  try {
+    await f.store.beginRun(f.req); await f.finish(); await f.reopen();
+    const requestId = randomUUID();
+    restored.state(f.id, 'waiting_approval', undefined, requestId);
+    restored.approval(f.id, { requestId: 'new-startup-approval', kind: 'permission', toolName: 'mcp_stdio_startup', input: {}, createdAt: new Date().toISOString() });
+    await restored.hydrate(f.id, f.store);
+    assert.equal(restored.snapshot(f.id).taskState, 'waiting_approval');
+    assert.deepEqual(restored.snapshot(f.id).pending.map(item => item.requestId), ['new-startup-approval']);
+  } finally { restored.flush(); await f.dispose(); }
+});
+
 test('single request, peak and cumulative usage survive replay without counting diagnostic phases twice', async () => {
   const f = await fixture();
   try {

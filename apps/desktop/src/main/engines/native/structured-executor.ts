@@ -141,7 +141,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     return parseNativeConfig(resolveNativeRuntimeConfig(config, defaults));
   }
   private changed(id: string, taskState: TaskState, error?: string) {
-    this.projection.state(id, taskState, error);
+    this.projection.state(id, taskState, error, this.active.get(id)?.requestId);
     this.store.change(state => {
       const session = state.sessions.find(item => item.id === id)!;
       session.taskState = taskState;
@@ -354,6 +354,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   snapshot(id: string): ChatSnapshot {
     this.session(id);
     const snapshot = this.projection.snapshot(id), operation = this.contextOperations.get(id), active = this.active.get(id);
+    // 新请求已被接收但历史、凭据或能力元数据尚在读取时，旧完成回执只属于历史。
+    if (active && !active.cleanupUnconfirmed && !this.recovery.has(id)
+        && (!active.identity || !snapshot.nativeRun || !sameRun(active.identity, snapshot.nativeRun))) {
+      snapshot.taskState = active.abort.signal.aborted ? 'interrupted' : 'starting';
+      snapshot.error = undefined;
+    }
     const view = this.contextViews.get(id), recovery = this.recoveryViews.get(id);
     const runtimeConfig = view ? active?.runtimeConfig ?? operation?.runtimeConfig ?? this.runtimeConfig(this.session(id).engineConfig) : undefined;
     if (this.recovery.has(id)) snapshot.nativeRecovery = { ...(recovery ?? { status: 'blocked', headHash: view?.headHash ?? '', tools: { completed: 0, notExecuted: 0, unknown: 0 } }), ...(this.acknowledged.has(id) ? { status: 'acknowledged' as const } : {}), reason: this.recoveryMessage(id) };
@@ -473,6 +479,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
+      this.changed(id, 'starting');
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
       const metadataTime = Math.floor(config.maxActiveMs - (performance.now() - startedAt));
       if (metadataTime < 1) throw new Error('本次执行时长预算已耗尽，未发起模型请求。');

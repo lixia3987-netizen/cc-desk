@@ -1459,7 +1459,9 @@ export class NativeRunStore implements RunStore {
   /** 稳定的 seq 支持宿主及 UI 的幂等投影。 */
   replay(afterSeq = 0, limit = 1000): RunStoreRecord[] {
     if (!Number.isSafeInteger(afterSeq) || afterSeq < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) fail('invalid_limits', 'Invalid replay range');
-    return clone(this.records.filter(record => record.seq > afterSeq).slice(0, limit));
+    // 加载及追加均验证 seq 从 1 连续递增。按游标直接分页，避免恢复长历史时
+    // 每取一页或查询末条记录都扫描整份账本；对外仍返回独立副本。
+    return clone(this.records.slice(afterSeq, afterSeq + limit));
   }
   get recoveryRequired(): boolean { return this.poisoned || this.recoveredStartupRequests.size > 0 || [...this.runs.values()].some(run => run.status === 'recovery_required'); }
   get usage(): { journalBytes: number; records: number } { return { journalBytes: this.journalBytes, records: this.records.length }; }

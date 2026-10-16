@@ -88,6 +88,28 @@ test('denied write is a persisted tool result with no filesystem mutation', asyn
   } finally { unsubscribe(); await f.dispose(); }
 });
 
+test('the first send after restart reports starting immediately while the old completed history is inspected', async () => {
+  const f = await fixture(); const unsubscribe = f.approve();
+  let sending: ReturnType<typeof f.executor.send> | undefined;
+  try {
+    assert.equal((await f.executor.send(f.id, 'first', [], undefined, { requestId: 'resume-first' })).success, true);
+    // 重启后内存凭据重新设置；模型历史与原会话保持不变。
+    const current = await f.restart();
+    const view = current.list().connections[0];
+    current.setCredential({ id: view.id, revision: view.revision, mode: 'memory', secret: sentinel });
+    const previous = f.executor.snapshot(f.id).nativeRun!;
+    assert.equal(f.executor.snapshot(f.id).taskState, 'completed');
+    sending = f.executor.send(f.id, 'continue', [], undefined, { requestId: 'resume-next' });
+    assert.equal(f.executor.isBusy(f.id), true);
+    assert.equal(f.executor.snapshot(f.id).taskState, 'starting');
+    assert.equal(f.executor.snapshot(f.id).nativeRun?.runId, previous.runId, 'startup feedback does not invent a worker generation');
+    assert.equal((await sending).success, true);
+    assert.equal(f.executor.snapshot(f.id).taskState, 'completed');
+    assert.notEqual(f.executor.snapshot(f.id).nativeRun?.runId, previous.runId);
+    assert.equal(f.server.requests.length, 5, 'the resumed turn must run once without replaying earlier tools');
+  } finally { await sending?.catch(() => {}); unsubscribe(); await f.dispose(); }
+});
+
 test('native config updates persist across store restart and change next-run budgets without replacing full context', async () => {
   const f = await fixture(); const unsubscribe = f.approve();
   const readLedger = async () => {
