@@ -220,9 +220,10 @@ test('cancelling the summary stops the same run and never resumes its ordinary m
   } finally { await f.dispose(); }
 });
 
-test('the last model slot cannot be consumed by an in-turn summary', { timeout: 20000 }, async () => {
+test('child model slots cannot restrict the parent in-turn summary or continuation', { timeout: 20000 }, async () => {
   const f = await fixture('responses', { maxModelRequests: 5 });
-  try { const result = await f.send(); assert.equal(result.success, false); assert.equal(f.summaries, 0); assert.ok(f.ordinary <= 5); }
+  try { const result = await f.send(); assert.equal(result.success, true, JSON.stringify(result)); assert.equal(f.summaries, 1); assert.equal(f.ordinary, 6);
+    assert.equal((await f.ledger()).runs[0].result!.modelRequests, 7); }
   finally { await f.dispose(); }
 });
 

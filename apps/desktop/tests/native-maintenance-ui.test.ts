@@ -75,7 +75,7 @@ test('native automatic compaction explains opt-in billing, limits and cancellati
   const enabled: NativeContextMaintenance = { ...maintenance, autoCompact: { enabled: true, thresholdPercent: 90 } };
   const ready = renderContext(enabled);
   assert.match(ready, /自动压缩已开启：仅发送新指令前，达到本地预算 90% 时尝试，每次提交最多一次/);
-  assert.match(ready, /摘要请求可能计费，并计入本回合模型请求次数和运行时长/);
+  assert.match(ready, /摘要请求可能计费；主 Agent 不限模型请求次数和运行时长，子 Agent 的摘要计入其独立预算/);
   assert.match(ready, /摘要会省略细节，原始记录保留/);
   assert.match(renderContext({ ...maintenance, autoCompact: { enabled: false, thresholdPercent: 90 } }), /自动压缩已关闭/);
   const busy = renderContext({ ...enabled, compacting: true, compactionTrigger: 'automatic', canCompact: false });
@@ -99,13 +99,13 @@ test('blocked automatic compaction gives manual recovery guidance and retains th
   assert.match(renderContext({ ...maintenance, lastCompaction: result }), /· 手动 · 上下文/);
 });
 
-test('in-turn maintenance distinguishes the running task from a pending send and explains shared limits', () => {
+test('in-turn maintenance distinguishes the running task from a pending send and explains independent subagent limits', () => {
   const enabled: NativeContextMaintenance = { ...maintenance, autoCompact: { enabled: true, mode: 'before_send_and_during_run', thresholdPercent: 90 } };
   const ready = renderContext(enabled);
   assert.match(ready, /发送前与回合内达到本地预算 90%/);
   assert.match(ready, /发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次/);
-  assert.match(ready, /需保留摘要与继续执行的请求额度/);
-  assert.match(ready, /长命令运行中或结果未知时暂缓。超出预算仍会停止/);
+  assert.match(ready, /子 Agent 回合内压缩需保留自身摘要与继续执行的请求额度/);
+  assert.match(ready, /长命令运行中或结果未知时暂缓。子 Agent 超出自身预算时停止，主任务可继续/);
   assert.doesNotMatch(ready, /仅发送新指令前/);
   const busy = renderContext({ ...enabled, compacting: true, canCompact: false, compactionTrigger: 'in_turn',
     inTurn: { runId: 'run-1', status: 'attempted', createdAt: '2026-09-29T00:00:00Z' } });

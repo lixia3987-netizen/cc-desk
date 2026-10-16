@@ -32,6 +32,8 @@ export async function autoCompactBeforeSend(options: {
   forbiddenValues?: readonly (string | undefined)[];
   startedAt: number; assertOwnership(): Promise<void>; onCompacting(): void; onCommitted(): Promise<void>;
   worker?: typeof runNativeWorker;
+  /** 主 Agent 无累计调用/时长上限，摘要请求仍保留自身的传输超时。 */
+  unlimited?: boolean;
 }): Promise<{ compacted: boolean; remainingRequests: number }> {
   const { ledger, config, identity, input, model, images } = options;
   const inputDigest = nativeSubmissionInputDigest(input, options.imageAttachments as unknown as JsonValue), configurationDigest = digest(canonicalJson(config as JsonValue));
@@ -71,8 +73,8 @@ export async function autoCompactBeforeSend(options: {
     throw new Error('必须保留的上下文、本次输入、项目指令与工具定义已超过运行预算，未调用自动摘要；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
   }
   prepareNativeContextSummary({ context: source.context, model, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, forbiddenValues: options.forbiddenValues });
-  if (config.maxModelRequests < 2) throw new Error('自动压缩需要为摘要和本次任务各保留一次请求；请提高模型请求次数上限，或关闭自动压缩后重新发送。');
-  const remainingMs = Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
+  if (!options.unlimited && config.maxModelRequests < 2) throw new Error('自动压缩需要为摘要和本次任务各保留一次请求；请提高模型请求次数上限，或关闭自动压缩后重新发送。');
+  const remainingMs = options.unlimited ? 60_000 : Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
   if (remainingMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');
   options.onCompacting();
   await options.assertOwnership();
@@ -81,7 +83,7 @@ export async function autoCompactBeforeSend(options: {
   // 预留操作本身会推进日志；计划只能绑定推进后的日志头。
   source = ledger.getCompactionSource();
   await options.assertOwnership();
-  const summaryMs = Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
+  const summaryMs = options.unlimited ? 60_000 : Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
   if (summaryMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');
   const result = await summarizeNativeContext({ identity: { ...identity, runId: randomUUID(), requestId: `auto-compact:${identity.requestId}` },
     context: source.context, model, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens,

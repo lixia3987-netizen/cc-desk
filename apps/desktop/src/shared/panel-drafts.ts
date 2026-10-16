@@ -8,6 +8,7 @@ export interface WorkflowDraft {
   allRuns: boolean;
   stageGates?: Record<string, WorkflowGate>;
   stageToolPolicies?: Record<string, WorkflowToolPolicy>;
+  /** @deprecated 兼容旧版草稿；不再提交累计预算。 */
   budget?: WorkflowBudget;
 }
 

@@ -46,7 +46,7 @@ function delegation(cwd: string, runChild: (input: NativeAgentChildInput) => Pro
   const abort = new AbortController(), identity = { sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 };
   const tools = createAgentDelegationTools({ identity, parentTaskId: randomUUID(), cwd, policy: 'workspace_write', signal: abort.signal,
     forbiddenValues: [], storeDirectory: path.join(cwd, '..', 'records'), worktreeRoot: path.join(cwd, '..', 'worktrees'),
-    budget: { consume: async () => true, remainingMs: () => 60000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) },
+    createChildBudget: () => ({ consume: async () => true, remainingMs: () => 60000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) }),
     assertOwnership: async () => {}, runChild });
   const context: ToolExecutionContext = { identity, policyRevision: 'audit-policy', signal: abort.signal, maxOutputBytes: 65536 };
   return { tools, context, prepare: () => tools.prepare({ id: randomUUID(), name: 'delegate_review', arguments: JSON.stringify({ tasks: [{ title: 'Audit', goal: 'Inspect cancellation and durable evidence' }] }) }, context) };
@@ -136,7 +136,7 @@ test('closeAll aborts children and waits for settled cleanup rather than equatin
     const pending = d.tools.execute(await d.prepare(), d.context); await started;
     let closed = false; const closing = d.tools.closeAll().then(() => { closed = true; });
     await new Promise(resolve => setImmediate(resolve)); assert.equal(sawAbort, true); assert.equal(closed, false);
-    release(); assert.equal((await pending).status, 'unknown'); await closing;
+    release(); assert.equal((await pending).status, 'cancelled'); await closing;
     const saved = await receipts(f.storeDirectory); assert.equal(saved[0].status, 'unknown'); assert.equal(saved[0].error, 'child_run_unconfirmed');
   } finally { release?.(); await d.tools.closeAll(); }
 });
@@ -179,9 +179,10 @@ const unknownChildWorker: NonNullable<NativeExecutorOptions['worker']> = options
 
 test('actual Native unknown child worktree remains quarantined across restart and cross-provider admission until explicit parent confirmation', async t => {
   const f = await repository(t), dataDirectory = path.join(f.directory, 'data'), expectedHash = createHash('sha256').update('original\n').digest('hex');
-  const server = await startResponsesFixture({ assertReplay: false, handler: ({ body }: { body: { input: Array<{ type: string; role?: string; content?: string | Array<{ text?: string }> }> } }) => {
+  const server = await startResponsesFixture({ assertReplay: false, handler: ({ body }: { body: { input: Array<{ type: string; role?: string; content?: string | Array<{ text?: string }>; call_id?: string }> } }) => {
     const goal = body.input.filter(item => item.role === 'user').map(item => typeof item.content === 'string' ? item.content : item.content?.map(part => part.text ?? '').join('')).join('\n');
     return { output: [goal.includes('Independent child write') ? functionCall('child-write', 'apply_patch', { path: 'nested/source.txt', content: 'actual child side effect\n', expectedHash })
+      : body.input.some(item => item.type === 'function_call_output' && item.call_id === 'parent-delegate') ? assistantMessage('parent-observed', 'The isolated child result is unknown; preserve its workspace and do not retry it.')
       : goal.includes('Parent dispatch') ? functionCall('parent-delegate', 'delegate_implement', { baseline: 'head', tasks: [{ title: 'Isolated change', goal: 'Independent child write' }] })
       : assistantMessage('unexpected', 'Unexpected fixture input')] };
   } });
@@ -203,12 +204,12 @@ test('actual Native unknown child worktree remains quarantined across restart an
     await executor.initialize(); const failed = await executor.send(parentId, 'Parent dispatch', []);
     assert.equal(failed.success, false); assert.equal(executor.activeCount, 1, 'unknown child settlement keeps the old parent ownership barrier even after the returned promise settles');
     const saved = await receipts(path.join(dataDirectory, 'native')); assert.equal(saved.length, 1); assert.equal(saved[0].status, 'unknown');
-    assert.equal(server.requests.length, 2, JSON.stringify({ failed, receipt: saved[0] }));
+    assert.equal(server.requests.length, 3, JSON.stringify({ failed, receipt: saved[0] }));
     const childRoot = saved[0].workspace!.path; assert.equal(childRoot, path.join(dataDirectory, 'native', 'agent-worktrees', saved[0].childId));
     assert.equal(await fs.readFile(path.join(childRoot, 'nested', 'source.txt'), 'utf8'), 'actual child side effect\n');
     assert.equal(await fs.readFile(path.join(f.cwd, 'nested', 'source.txt'), 'utf8'), 'original\n');
     assert.ok(saved[0].artifact?.changedFiles.some(file => file.path === 'nested/source.txt')); assert.ok(await fs.stat(saved[0].artifact!.patchPath));
-    const requests = server.requests.length; assert.equal(requests, 2, 'unknown child must stop parent before another model request');
+    const requests = server.requests.length; assert.equal(requests, 3, 'parent may inspect the failed child result while unknown cleanup remains quarantined');
     await assert.rejects(executor.shutdown(), /尚未完全释放/, 'the old process must not claim it has released unknown child resources');
     executor = new NativeStructuredExecutor(store, connections, events, { worker: unknownChildWorker }); await executor.initialize();
     assert.equal(executor.recoveryRequired(parentId), true); assert.deepEqual(await executor.recoveryDirectories(parentId), [childRoot]);
@@ -246,7 +247,7 @@ process.parentPort=port;process.on('message',data=>port.emit('message',{data}));
   return options => runNativeWorker({ ...options, fork: physicalFork });
 }
 
-test('actual Native parent and independent physical child worker exclude long nested approval from the shared active deadline', async t => {
+test('unlimited Native parent and independently timed physical child survive a long nested approval', async t => {
   const f = await repository(t), dataDirectory = path.join(f.directory, 'data'), ceilingMs = 8000, approvalWaitMs = 8500;
   const expectedHash = createHash('sha256').update('original\n').digest('hex'), worker = await physicalWorker(f.directory);
   const server = await startResponsesFixture({ assertReplay: false, handler: ({ body }: { body: { input: Array<{ type: string; role?: string; content?: string | Array<{ text?: string }>; call_id?: string }> } }) => {
@@ -277,8 +278,8 @@ test('actual Native parent and independent physical child worker exclude long ne
   try {
     await executor.initialize(); const start = performance.now(), result = await executor.send(id, 'Delegate one approved physical child', []);
     await Promise.all(approvals); assert.equal(result.success, true, JSON.stringify(result)); assert.equal(childApprovalWaited, true);
-    assert.ok(performance.now() - start > ceilingMs, 'wall time must actually exceed the full parent active allowance');
-    assert.ok(result.nativeReceipt!.usage.activeMs < ceilingMs, 'manual waiting is excluded from the parent execution receipt');
+    assert.ok(performance.now() - start > ceilingMs, 'wall time must actually exceed the child active allowance');
+    assert.ok(result.nativeReceipt!.usage.activeMs >= approvalWaitMs, 'unlimited parent observes elapsed child approval waiting without consuming a parent deadline');
     const saved = await receipts(path.join(dataDirectory, 'native')); assert.equal(saved[0].status, 'completed'); assert.equal(saved[0].result!.committed, true);
     assert.equal(await fs.readFile(path.join(saved[0].workspace!.path, 'nested', 'source.txt'), 'utf8'), 'approved physical child write\n');
     assert.equal(await fs.readFile(path.join(f.cwd, 'nested', 'source.txt'), 'utf8'), 'original\n');

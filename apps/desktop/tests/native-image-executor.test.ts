@@ -295,8 +295,9 @@ for (const protocol of ['responses', 'chat-completions'] as const) {
   });
 
   for (const mode of ['manual-retained', 'automatic-retained', 'automatic-source'] as const) test(`${protocol}: ${mode} budget rejection creates no summary call or reservation`, async () => {
-    const f = await fixture(protocol, undefined, { firstPadding: mode === 'automatic-source' ? 2000 : 400 });
+    const f = await fixture(protocol, undefined, { firstPadding: mode === 'automatic-source' ? 8000 : 400 });
     try {
+      if (mode === 'automatic-source') await f.configure({ maxInputTokens: 200_000 });
       assert.equal((await f.executor.send(f.id, 'original text goal')).success, true);
       assert.equal((await f.executor.send(f.id, 'image retained', [f.imagePath])).success, true);
       const before = await f.ledger(), model = createNativeModel(f.requests.at(-1)!.model);

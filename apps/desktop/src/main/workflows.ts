@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED } from '../shared/workflows';
 import type { NewWorkflow, WorkflowBinding, WorkflowRun, WorkflowStage, WorkflowStageResult } from '../shared/workflows';
-import type { WorkflowBudget, WorkflowConfirmation, WorkflowNativeReceipt, WorkflowVerification } from '../shared/workflows';
+import type { WorkflowConfirmation, WorkflowNativeReceipt, WorkflowVerification } from '../shared/workflows';
 import { getNativeTaskCriterionVerification, type NativeTaskView } from '@cc-desk/contracts/native-task';
 import { MAX_STORED_RUNS, newWorkflowSchema, validateGraph, workflowBindingSchema, workflowNativeReceiptSchema } from './workflow-schema';
 import type { WorkflowState } from './workflow-schema';
@@ -89,8 +89,8 @@ export class WorkflowEngine {
     if (binding.sessionId !== parsed.sessionId) throw new Error('工作流会话绑定不匹配');
     const definitions = parsed.stages ?? DEFAULT_WORKFLOW_STAGES;
     const policiesEnabled = this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED;
-    if (!policiesEnabled && (parsed.budget || parsed.stages?.some(stage => stage.toolPolicy === 'read_only'))) throw new Error('阶段只读权限和累计预算尚未启用。');
-    if (binding.providerId !== 'native' && (parsed.budget || definitions.some(stage => stage.gate === 'native_task') || parsed.stages?.some(stage => stage.toolPolicy === 'read_only'))) throw new Error('严格只读、任务证据门槛和累计预算仅支持自研 Agent；请使用普通阶段或切换执行器。');
+    if (!policiesEnabled && parsed.stages?.some(stage => stage.toolPolicy === 'read_only')) throw new Error('阶段只读权限尚未启用。');
+    if (binding.providerId !== 'native' && (parsed.budget || definitions.some(stage => stage.gate === 'native_task') || parsed.stages?.some(stage => stage.toolPolicy === 'read_only'))) throw new Error('严格只读、任务证据门槛和旧版累计预算仅支持自研 Agent；请使用普通阶段或切换执行器。');
     const stages: WorkflowStage[] = definitions.map(stage => ({
       ...stage, dependsOn: [...(stage.dependsOn ?? [])], status: 'pending', attempts: 0,
       maxAttempts: parsed.maxAttempts, artifacts: [],
@@ -102,7 +102,6 @@ export class WorkflowEngine {
       ...binding, id: randomUUID(), title: parsed.title ?? parsed.goal.slice(0, 80),
       goal: parsed.goal, status: 'draft', stages, pauseAfterEachStage: parsed.pauseAfterEachStage,
       createdAt: now, updatedAt: now,
-      ...(parsed.budget ? { budget: parsed.budget } : {}),
       ...(binding.providerId === 'native' ? { usage: { modelRequests: 0, toolCalls: 0, activeMs: 0, recordedExecutionIds: [], complete: true } } : {}),
     };
     this.commit(state => state.runs.unshift(run));
@@ -201,15 +200,6 @@ export class WorkflowEngine {
   private completeGatedStage(run: WorkflowRun, stage: WorkflowStage): void {
     stage.status = 'completed'; delete stage.gateReason;
     run.status = run.stages.every(item => item.status === 'completed') ? 'completed' : 'paused';
-  }
-
-  private remainingBudget(run: WorkflowRun): WorkflowBudget | undefined {
-    if (!run.budget) return undefined;
-    if (!run.usage?.complete) throw new Error('累计用量记录不完整；请核查现有执行，不能自动重试此工作流。');
-    const remaining = { maxModelRequests: run.budget.maxModelRequests - run.usage.modelRequests,
-      maxToolCalls: run.budget.maxToolCalls - run.usage.toolCalls, maxActiveMs: run.budget.maxActiveMs - run.usage.activeMs };
-    if (Object.values(remaining).some(value => value <= 0)) throw new Error('工作流累计预算已耗尽；已产生的操作保留，请检查结果后新建工作流。');
-    return remaining;
   }
 
   private recordReceipt(run: WorkflowRun, stage: WorkflowStage, receipt?: WorkflowNativeReceipt): void {
@@ -368,7 +358,6 @@ export class WorkflowEngine {
       }
       if (stage.attempts >= stage.maxAttempts) throw new Error('阶段已达到执行次数上限');
       this.assertBinding(run);
-      const remaining = this.remainingBudget(run);
       this.update(id, draft => {
         const current = draft.stages.find(item => item.id === stage.id)!;
         current.status = 'running'; current.attempts += 1; current.startedAt = new Date().toISOString();
@@ -379,7 +368,7 @@ export class WorkflowEngine {
       try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage), run.goal, {
         requestId: `workflow:${run.id}:${stage.id}:${stage.attempts + 1}`,
         source: 'workflow', workflowRunId: run.id, stageId: stage.id, attempt: stage.attempts + 1,
-        ...(run.providerId === 'native' && (this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED) ? { nativeExecutionPolicy: { toolPolicy: stage.toolPolicy ?? 'standard', ...(remaining ? { budget: remaining } : {}) } } : {}),
+        ...(run.providerId === 'native' && (this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED) ? { nativeExecutionPolicy: { toolPolicy: stage.toolPolicy ?? 'standard' } } : {}),
       }); }
       catch (error) { result = { success: false, summary: '', error: errorText(error) }; }
       if (!result || typeof result.success !== 'boolean' || typeof result.summary !== 'string') {

@@ -28,6 +28,7 @@ const receiptSchema = z.object({ version: z.literal(1), batchId: uuid, childId: 
   artifact: z.object({ patchPath: location, changedFiles: files, head: commit, baseCommit: commit,
     sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), bytes: z.number().int().nonnegative().safe().optional(),
   }).strict().refine(value => (value.sha256 === undefined) === (value.bytes === undefined)).optional(),
+  recovery: z.object({ previousChildId: uuid, previousRunId: identifier, attempt: z.number().int().positive(), workspaceOwnerChildId: uuid.optional() }).strict().optional(),
   result: result.optional(), error: z.string().max(256).optional(),
 }).strict();
 const sameIdentity = (a: RunIdentity, b: RunIdentity) => (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).every(key => a[key] === b[key]);
@@ -41,7 +42,7 @@ export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIde
   const value = receiptSchema.parse(receipt);
   if (!sameIdentity(value.parentIdentity, parent) || value.identity.sessionId === parent.sessionId || value.identity.conversationId === parent.conversationId || value.identity.runId === parent.runId ||
       value.result && (!sameIdentity(value.result.identity, value.identity) || value.result.taskId !== value.taskId) ||
-      value.workspace && (value.mode !== 'implement' || value.workspace.branch !== `codex/native-agent-${value.childId}`)) throw new Error('Native child receipt identity mismatch.');
+      value.workspace && (value.mode !== 'implement' || value.workspace.branch !== `codex/native-agent-${value.recovery?.workspaceOwnerChildId ?? value.childId}`)) throw new Error('Native child receipt identity mismatch.');
   const view: NativeAgentView = { childId: value.childId, batchId: value.batchId, taskId: value.taskId, parentTaskId: value.parentTaskId,
     identity: structuredClone(value.identity), parentIdentity: structuredClone(parent), toolCallId: value.toolCallId,
     title: value.title, mode: value.mode, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt, cwd: value.cwd, receiptPath: value.receiptPath };
@@ -70,10 +71,10 @@ function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receipt
   });
   all.sort((a, b) => Number(['prepared', 'running'].includes(b.status)) - Number(['prepared', 'running'].includes(a.status)) ||
     b.createdAt.localeCompare(a.createdAt) || b.batchId.localeCompare(a.batchId) || a.childId.localeCompare(b.childId));
-  return { parentRunId: parent.runId, items: all.slice(0, 16), omitted: Math.max(0, all.length - 16), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
+  return { parentRunId: parent.runId, items: all.slice(0, 30), omitted: Math.max(0, all.length - 30), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
 }
 
-/** 保留并展示父任务运行的全部回执，最多十六条。 */
+/** 保留并展示父任务运行的全部回执，展示最近三十条，保留全部历史回执。 */
 export class NativeAgentProjection {
   private items = new Map<string, NativeAgentView>();
   private retained = new Map<string, NativeDelegationReceipt>();
@@ -92,7 +93,6 @@ export class NativeAgentProjection {
     const previous = this.items.get(view.childId);
     if (previous && (previous.batchId !== view.batchId || previous.taskId !== view.taskId || !sameIdentity(previous.identity, view.identity))) throw new Error('Native child identity changed.');
     if (previous && previous.updatedAt > view.updatedAt) return;
-    if (this.items.size >= 16 && !previous) { this.incomplete = true; return; }
     this.items.set(view.childId, view);
     this.retained.set(view.childId, structuredClone(receipt));
   }
@@ -121,12 +121,11 @@ export async function loadNativeAgents(dataDirectory: string, parent: RunIdentit
       const stat = await fs.lstat(current); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe Native child receipt directory.');
     }
     const batches = await fs.readdir(directory, { withFileTypes: true });
-    if (batches.length > 32) projection.markIncomplete();
-    for (const batch of batches.slice(0, 32)) {
+    for (const batch of batches) {
       if (!batch.isDirectory() || batch.isSymbolicLink() || !uuid.safeParse(batch.name).success) { projection.markIncomplete(); continue; }
       const batchPath = path.join(directory, batch.name), children = await fs.readdir(batchPath, { withFileTypes: true });
-      if (children.length > 4) projection.markIncomplete();
-      for (const child of children.slice(0, 4)) {
+      if (children.length > 30) projection.markIncomplete();
+      for (const child of children.slice(0, 30)) {
         try {
           if (!child.isDirectory() || child.isSymbolicLink() || !uuid.safeParse(child.name).success) throw new Error('Unsafe Native child directory.');
           const file = path.join(batchPath, child.name, 'receipt.json'), stat = await fs.lstat(file);

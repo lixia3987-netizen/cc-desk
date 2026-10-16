@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, Check, ChevronRight, Loader2, Play, Plus, RefreshCw, Square, Trash2 } from 'lucide-react';
 import type { Session } from '../shared/types';
-import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED, type WorkflowBudget, type WorkflowGate, type WorkflowNativeReceipt, type WorkflowRun, type WorkflowToolPolicy } from '../shared/workflows';
+import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED, type WorkflowGate, type WorkflowNativeReceipt, type WorkflowRun, type WorkflowToolPolicy } from '../shared/workflows';
 import { MessageText } from './MessageText';
 import type { UpdateDraft, WorkflowDraft } from '../shared/panel-drafts';
 
 const labels: Record<string, string> = { draft: '待开始', running: '执行中', paused: '等待继续', waiting_verification: '等待验收', waiting_confirmation: '等待确认', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', pending: '待执行' };
 const gates: Record<WorkflowGate, string> = { none: '执行结束后继续', manual: '人工确认产出', native_task: '检查任务验收条件' };
-const defaultBudget: WorkflowBudget = { maxModelRequests: 90, maxToolCalls: 180, maxActiveMs: 1_800_000 };
 
 export function WorkflowReceiptDetails({ receipt }: { receipt: WorkflowNativeReceipt }) {
   return <details><summary>执行成果与验证记录</summary>
@@ -29,7 +28,6 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
   const { goal, pauseAfterEachStage: pause, maxAttempts: attempts, editing, instructions, allRuns } = draft;
   const instruction = instructions[editing] ?? '';
   const native = session.execution.providerId === 'native';
-  const budget = draft.budget ?? defaultBudget;
   const setInstruction = (value: string) => onDraft(current => ({ ...current, instructions: { ...current.instructions, [editing]: value } }));
   const editStage = (key: string, fallback: string) => onDraft(current => ({ ...current, editing: key, instructions: { ...current.instructions, [key]: current.instructions[key] ?? fallback } }));
   const saveInstruction = async (runId: string, stageId: string) => {
@@ -45,10 +43,6 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
   const load = useCallback(async () => { const request = ++seq.current; const value = await window.desktop.workflows(allRuns ? undefined : session.id); if (request === seq.current) setRuns(value); }, [session.id, allRuns]);
   useEffect(() => { void load().catch(onError); const off = window.desktop.onWorkflows(() => void load().catch(onError)); return () => { seq.current++; off(); }; }, [load, onError]);
   const act = async (action: () => Promise<unknown>) => { setBusy(true); try { await action(); await load(); } catch (error) { onError(error); } finally { setBusy(false); } };
-  const updateBudget = (key: keyof WorkflowBudget, value: number) => {
-    const [minimum, maximum] = key === 'maxModelRequests' ? [1, 1000] : key === 'maxToolCalls' ? [1, 2000] : [1000, 7_200_000];
-    if (Number.isSafeInteger(value) && value >= minimum && value <= maximum) onDraft(current => ({ ...current, budget: { ...(current.budget ?? defaultBudget), [key]: value } }));
-  };
   const stageDefinitions = DEFAULT_WORKFLOW_STAGES.map(stage => ({ ...stage,
     gate: draft.stageGates?.[stage.id] ?? 'none' as WorkflowGate,
     toolPolicy: native && NATIVE_WORKFLOW_POLICIES_ENABLED ? draft.stageToolPolicies?.[stage.id] ?? stage.toolPolicy ?? 'standard' : 'standard' as WorkflowToolPolicy,
@@ -66,7 +60,6 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
       <form className="workflow-create" onSubmit={event => { event.preventDefault(); if (disabled || busy) return; void act(async () => {
         await window.desktop.createWorkflow({ sessionId: session.id, goal, pauseAfterEachStage: pause, maxAttempts: attempts,
           ...(native || Object.values(draft.stageGates ?? {}).some(value => value !== 'none') ? { stages: stageDefinitions } : {}),
-          ...(native && NATIVE_WORKFLOW_POLICIES_ENABLED ? { budget } : {}),
         }); onDraft(current => current.goal === goal ? { ...current, goal: '' } : current); setCreating(false); setShowHistory(false);
       }); }}>
         <textarea aria-label="工作流目标" placeholder="这次工作要交付什么？" value={goal} onChange={event => onDraft(current => ({ ...current, goal: event.target.value }))} maxLength={20000} />
@@ -78,12 +71,7 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
         </div></div>)}
         <label className="inline-checkbox"><input type="checkbox" checked={pause} onChange={event => onDraft(current => ({ ...current, pauseAfterEachStage: event.target.checked }))} />每阶段结束后由我确认继续</label>
         <label>每阶段最多尝试<select aria-label="最大尝试次数" value={attempts} onChange={event => onDraft(current => ({ ...current, maxAttempts: Number(event.target.value) }))}><option value={1}>1 次</option><option value={2}>2 次</option><option value={3}>3 次</option></select></label>
-        {native && NATIVE_WORKFLOW_POLICIES_ENABLED && <details className="workflow-budget"><summary>高级预算设置</summary><fieldset><legend>整个工作流预算（含失败与重试）</legend>
-          <label>模型请求总上限<input aria-label="模型请求总上限" type="number" min={1} max={1000} value={budget.maxModelRequests} onChange={event => updateBudget('maxModelRequests', Number(event.target.value))} /></label>
-          <label>工具调用总上限<input aria-label="工具调用总上限" type="number" min={1} max={2000} value={budget.maxToolCalls} onChange={event => updateBudget('maxToolCalls', Number(event.target.value))} /></label>
-          <label>执行总时长（分钟）<input aria-label="执行总时长" type="number" min={1} max={120} value={budget.maxActiveMs / 60_000} onChange={event => updateBudget('maxActiveMs', Number(event.target.value) * 60_000)} /></label>
-          <p className="panel-note">累计阶段实际执行用量；暂停、等待确认与排队等待不计入执行时长，也不会恢复已用额度。</p>
-        </fieldset></details>}
+        {native && <p className="panel-note">主 Agent 不限制执行时长、模型请求或工具调用次数。每个子 Agent 独立使用设置中的执行限制。</p>}
         <button className="primary compact full" disabled={disabled || busy || !goal.trim() || session.archived}>创建工作流</button>
         <p className="panel-note">规划 → 实现 → 审阅。执行成功与验收通过分别记录；验收等待不会重新执行。失败后由你发起重试。{native && NATIVE_WORKFLOW_POLICIES_ENABLED ? '规划与审阅默认严格只读。' : '阶段继承当前会话权限，规划指令不会强制只读。'}</p>
         <button type="button" className="secondary compact full" disabled={busy} onClick={() => setCreating(false)}>返回列表并保留草稿</button>
@@ -92,7 +80,8 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
     {!creating && visibleRuns.map(run => <section className="workflow-run" key={run.id}>
       <header><strong>{run.title}</strong><span className={'status-tag ' + (run.status === 'running' ? 'running' : '')}>{labels[run.status] ?? run.status}</span></header><p className="workflow-goal">{run.goal}</p>
       {run.error && <p className="chat-error">{run.error}</p>}
-      {run.usage && <p className="panel-note">累计模型请求 {run.usage.modelRequests}{run.budget ? ` / ${run.budget.maxModelRequests}` : ''} · 工具调用 {run.usage.toolCalls}{run.budget ? ` / ${run.budget.maxToolCalls}` : ''} · 执行 {(run.usage.activeMs / 60_000).toFixed(1)}{run.budget ? ` / ${(run.budget.maxActiveMs / 60_000).toFixed(1)}` : ''} 分钟{!run.usage.complete ? ' · 用量不完整，需核查执行记录' : ''}</p>}
+      {run.usage && <p className="panel-note">累计模型请求 {run.usage.modelRequests} · 工具调用 {run.usage.toolCalls} · 执行 {(run.usage.activeMs / 60_000).toFixed(1)} 分钟{!run.usage.complete ? ' · 用量不完整，需核查执行记录' : ''}</p>}
+      {run.providerId === 'native' && run.budget && <p className="panel-note">此记录中的旧版工作流累计预算已停用；主 Agent 不再受其限制。</p>}
       <div className="workflow-stages">{run.stages.map((stage, index) => {
         const key = run.id + ':' + stage.id, reason = confirmationReasons[key] ?? '';
         const blocked = disabled || busy || executionBlocked?.(run);

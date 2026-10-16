@@ -7,12 +7,13 @@ import type { Session, Settings } from '../src/shared/types';
 import { EngineConfigFields } from '../src/renderer/EngineConfiguration';
 import { EngineDefaultsGroup, SettingsPanel, type SettingsPanelProps } from '../src/renderer/SettingsPanel';
 import { engineFieldsForGroup, type EngineSettingsGroup } from '../src/renderer/settings-organization';
+import { createNativeDefaultConfig, NATIVE_SUBAGENT_FIELDS } from '../src/main/engines/native/config';
 
 const fail = () => { throw new Error('Initial settings rendering must not read, save or generate'); };
 const nativeConfig: EngineConfig = { schemaVersion: 1, options: { connectionId: 'saved-connection', model: 'saved-model',
   permissionMode: 'default', inputBudgetMode: 'model', maxInputTokens: 64000, maxOutputTokens: 4096, autoCompact: 'before_send', modelRetry: 'off',
-  maxModelRequests: 12, maxToolCalls: 20, maxActiveMs: 300000, runtimePolicy: 'custom', mcpConnections: ['saved-service'], projectSkills: ['.agents/skills/read'] } };
-const fieldLabels: Record<string, string> = { connectionId: '模型连接', model: '模型覆盖', inputBudgetMode: '输入预算模式', maxInputTokens: '输入预算', maxOutputTokens: '输出上限', autoCompact: '自动压缩', modelRetry: '模型重试', maxModelRequests: '请求上限', maxToolCalls: '工具上限', maxActiveMs: '时长上限', runtimePolicy: '内部策略', permissionMode: '权限模式', effort: '强度' };
+  maxModelRequests: 12, maxToolCalls: 20, maxActiveMs: 300000, maxSubagents: 4, runtimePolicy: 'custom', mcpConnections: ['saved-service'], projectSkills: ['.agents/skills/read'] } };
+const fieldLabels: Record<string, string> = { connectionId: '模型连接', model: '模型覆盖', inputBudgetMode: '输入预算模式', maxInputTokens: '输入预算', maxOutputTokens: '输出上限', autoCompact: '自动压缩', modelRetry: '模型重试', maxModelRequests: '请求上限', maxToolCalls: '工具上限', maxActiveMs: '时长上限', maxSubagents: '子 Agent 并发上限', runtimePolicy: '内部策略', permissionMode: '权限模式', effort: '强度' };
 function descriptor(providerId = 'native', keys = Object.keys(nativeConfig.options)): ExecutionDescriptor {
   const fields: EngineConfigField[] = keys.map(key => ({ key, label: fieldLabels[key] ?? key, type: key.startsWith('max') ? 'number' : 'text', apply: 'stopped' }));
   return { providerId, mode: 'structured', displayName: providerId === 'native' ? '自研 Agent' : providerId,
@@ -48,7 +49,7 @@ test('configuration groups separate model, budget, compaction and execution poli
   const config = { ...nativeConfig, options: { ...nativeConfig.options, inputBudgetMode: 'custom' } };
   const groups: EngineSettingsGroup[] = ['model', 'context', 'compaction', 'limits', 'recovery', 'permissions', 'tools'];
   const keys = groups.map(group => engineFieldsForGroup(descriptor(), group, config).map(field => field.key));
-  assert.deepEqual(keys, [['connectionId', 'model'], ['inputBudgetMode', 'maxInputTokens', 'maxOutputTokens'], ['autoCompact'], ['maxModelRequests', 'maxToolCalls', 'maxActiveMs'], ['modelRetry'], ['permissionMode'], ['mcpConnections', 'projectSkills']]);
+  assert.deepEqual(keys, [['connectionId', 'model'], ['inputBudgetMode', 'maxInputTokens', 'maxOutputTokens'], ['autoCompact'], ['maxModelRequests', 'maxToolCalls', 'maxActiveMs', 'maxSubagents'], ['modelRetry'], ['permissionMode'], ['mcpConnections', 'projectSkills']]);
   assert.equal(new Set(keys.flat()).size, keys.flat().length);
   assert.ok(!keys.flat().includes('runtimePolicy'));
 });
@@ -160,4 +161,34 @@ test('permission settings contain defaults only even when opened with a current-
   assert.match(current, /消息发送框旁切换权限/);
   assert.match(current, /保存设置/);
   assert.doesNotMatch(current, /aria-label="会话权限模式"|aria-label="设置作用范围"|保存配置/);
+});
+
+test('independent subagent limits are discoverable in default and current-session runtime settings with minute units', () => {
+  const nativeDescriptor = descriptor();
+  nativeDescriptor.configuration = { schemaVersion: 1, defaults: createNativeDefaultConfig(), fields: NATIVE_SUBAGENT_FIELDS };
+  const value = settings();
+  delete value.engineDefaults.native;
+  const options = { page: 'sessions' as const, initialGroup: 'limits' as const, value, saved: value, executors: [nativeDescriptor] };
+  const defaults = renderPanel(options);
+  assert.match(defaults, /id="settings-subtab-sessions-limits"[^>]*aria-selected="true"/);
+  assert.match(defaults, /主 Agent 不限制执行时长、模型请求次数和工具调用次数/);
+  assert.match(defaults, /aria-label="默认单个子 Agent 模型请求上限"[^>]*max="200"[^>]*value="60"/);
+  assert.match(defaults, /aria-label="默认单个子 Agent 工具调用上限"[^>]*max="400"[^>]*value="120"/);
+  assert.match(defaults, /aria-label="默认单个子 Agent 运行时长上限（分钟）"[^>]*max="300"[^>]*value="30"/);
+  assert.match(defaults, /aria-label="默认子 Agent 并发上限"[^>]*max="30"[^>]*value="4"/);
+  const active: Session = { id: 'independent-limits', projectId: 'fixture', title: '子任务预算', cwd: '/fixture', kind: 'agent',
+    execution: { providerId: 'native', mode: 'structured' },
+    engineConfig: { schemaVersion: 1, options: { ...createNativeDefaultConfig().options, runtimePolicy: 'custom', maxActiveMs: 45 * 60_000, maxSubagents: 30 } },
+    started: false, status: 'idle', archived: false, createdAt: '', updatedAt: '' };
+  const current = renderPanel({ ...options, initialScope: 'session', activeSession: active });
+  assert.match(current, /aria-label="会话单个子 Agent 运行时长上限（分钟）"[^>]*value="45"/);
+  assert.match(current, /aria-label="会话子 Agent 并发上限"[^>]*value="30"/);
+  assert.match(current, /子任务之间不累计共享/);
+  const legacy = { ...active, engineConfig: { schemaVersion: 1, options: { runtimePolicy: 'custom', maxActiveMs: 10 * 60_000 } } };
+  value.engineDefaults.native = { schemaVersion: 1, options: { maxSubagents: 30 } };
+  const legacyMarkup = renderPanel({ ...options, initialScope: 'session', activeSession: legacy });
+  assert.match(legacyMarkup, /aria-label="会话单个子 Agent 模型请求上限"[^>]*value="60"/);
+  assert.match(legacyMarkup, /aria-label="会话单个子 Agent 运行时长上限（分钟）"[^>]*value="10"/);
+  assert.match(legacyMarkup, /aria-label="会话子 Agent 并发上限"[^>]*value="4"/);
+  assert.deepEqual(legacy.engineConfig.options, { runtimePolicy: 'custom', maxActiveMs: 10 * 60_000 }, 'rendering absent per-child defaults must not rewrite the legacy session');
 });

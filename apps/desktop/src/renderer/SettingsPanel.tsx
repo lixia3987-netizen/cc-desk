@@ -22,7 +22,7 @@ const pages = [
   { id: 'models', title: '模型与上下文', icon: Bot, description: '配置自研 Agent 的模型连接、上下文预算与自动压缩。Claude Code 的模型由 CLI 配置管理，导入后创建自研 Agent 连接。' },
   { id: 'terminal', title: '终端与CLI', icon: Terminal, description: '设置 Claude Code 与 Shell 路径，调整终端显示并检测 CLI。' },
   { id: 'mcp', title: '工具与扩展', icon: Plug, description: '管理全局 MCP 连接，以及当前自研 Agent 会话启用的工具与项目 Skills。' },
-  { id: 'sessions', title: '运行与权限', icon: Layers, description: '设置并发数量、运行限制、失败恢复与权限策略。' },
+  { id: 'sessions', title: '运行与权限', icon: Layers, description: '设置会话与子 Agent 并发数量、子 Agent 独立运行限制、失败恢复与权限策略。' },
   { id: 'workspace', title: '工作区与IDE', icon: FolderCog, description: '选择 Worktree 位置，以及打开项目的编辑器。' },
   { id: 'system', title: '应用与数据', icon: Bell, description: '设置通知、窗口关闭行为，并查看本机数据位置。' },
 ] as const;
@@ -67,7 +67,7 @@ export function EngineDefaultsGroup({ value, onChange, executors, group, disable
     const fields = engineFieldsForGroup(descriptor, group, config);
     if (!fields.length) return null;
     const controls = configurationSupported(descriptor, config) ? <EngineConfigFields value={config} fields={fields} prefix="默认" disabled={disabled || descriptor.maintenance} onChange={engineConfig => onChange({ ...value, engineDefaults: { ...value.engineDefaults, [descriptor.providerId]: engineConfig } })} /> : <p className="hint">已保存的默认配置版本暂不受支持，原值已保留。</p>;
-    return <div className="settings-engine-defaults" key={descriptor.providerId}><h5>{descriptor.displayName ?? descriptor.providerId}</h5>{group === 'context' && <NativeContextSettingsInfo config={config}/>} {controls}
+    return <div className="settings-engine-defaults" key={descriptor.providerId}><h5>{descriptor.displayName ?? descriptor.providerId}</h5>{group === 'context' && <NativeContextSettingsInfo config={config}/>} {group === 'limits' && descriptor.providerId === 'native' && <p className="hint">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。</p>}{controls}
       {group === 'context' && config.options.inputBudgetMode === 'model' && <p className="hint">自动使用已知模型窗口，并为输出预留空间；窗口未知时采用 {Number(config.options.maxInputTokens ?? 64000).toLocaleString()} tokens 输入上限。实际预算不会超过模型输入限制。</p>}
     </div>;
   })}</>;

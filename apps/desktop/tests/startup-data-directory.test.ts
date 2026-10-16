@@ -40,7 +40,7 @@ function delegation(store: StateStore, cwd: string, runChild: (input: NativeAgen
   const signal = new AbortController().signal, receipts = new Map<string, NativeDelegationReceipt>();
   const tools = createAgentDelegationTools({ identity, parentTaskId: randomUUID(), cwd, policy: 'workspace_write', signal,
     forbiddenValues: [], storeDirectory: path.join(store.directory, 'native'), worktreeRoot: path.join(store.directory, 'native', 'agent-worktrees'),
-    budget: { consume: async () => true, remainingMs: () => 60000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) },
+    createChildBudget: () => ({ consume: async () => true, remainingMs: () => 60000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) }),
     assertOwnership: async () => {}, runChild, requiresApproval: false, record: async receipt => { receipts.set(receipt.childId, receipt); } });
   const context: ToolExecutionContext = { identity, policyRevision: 'startup-profile', signal, maxOutputBytes: 65536 };
   return { identity, receipts, tools, async run() {
@@ -209,7 +209,7 @@ for (const descendant of ['delegations', 'agent-worktrees'] as const) {
     const f = delegation(store, cwd, async input => { launches++; return completed(input); });
     try {
       const result = await f.run();
-      assert.equal(result.status, descendant === 'delegations' ? 'unknown' : 'failed');
+      assert.equal(result.status, descendant === 'delegations' ? 'unknown' : 'completed');
       assert.match(JSON.stringify(result.output), descendant === 'delegations' ? /delegation_intent_unconfirmed/ : /baseline_materialization_failed/);
       assert.equal(launches, 0);
       assert.deepEqual(await fs.readdir(outside), []);

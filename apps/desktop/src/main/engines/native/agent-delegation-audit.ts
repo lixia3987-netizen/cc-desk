@@ -27,7 +27,7 @@ const executionSchema = z.object({ version: z.literal(1), batchId: z.string().uu
   toolCallId: z.string().min(1).max(256), mode: z.enum(['review', 'implement']),
   clock: z.object({ id: z.string().uuid(), timeOrigin: z.number().finite().nonnegative() }).strict(),
   children: z.array(z.object({ childId: z.string().uuid(), identity: z.object({ sessionId: identifier, conversationId: identifier, runId: identifier,
-    requestId: z.string().min(1).max(256), workerGeneration: z.number().int().positive() }).strict(), started: instant.optional(), settled: instant.optional() }).strict()).min(1).max(4),
+    requestId: z.string().min(1).max(256), workerGeneration: z.number().int().positive() }).strict(), started: instant.optional(), settled: instant.optional() }).strict()).min(1).max(30),
 }).strict();
 export interface NativeDelegationAudit {
   version: 1;
@@ -133,17 +133,30 @@ export function auditNativeDelegation(input: { run: StoredRun; receipts: readonl
   childRuns?: ReadonlyMap<string, StoredRun>; incomplete?: boolean }): NativeDelegationAudit {
   const { run } = input, intent = nativeParallelReviewIntent(run.input), required = intent.mode === 'explicit_parallel_review';
   const audit: NativeDelegationAudit = { version: 1, parentRunId: run.identity.runId, intent, status: required ? 'unmet' : 'not_required',
-    scope: 'host_execution_and_handoff', issues: [], attempts: run.tools.filter(tool => tool.call.name.startsWith('delegate_')).map(tool => ({
+    scope: 'host_execution_and_handoff', issues: [], attempts: run.tools.filter(tool => tool.call.name.startsWith('delegate_') || tool.call.name === 'recover_agent').map(tool => ({
       toolCallId: tool.call.id, tool: tool.call.name, status: tool.completed?.result.status ?? tool.state,
       batchIds: [...new Set(input.receipts.filter(receipt => receipt.toolCallId === tool.call.id && sameIdentity(receipt.parentIdentity, run.identity)).map(receipt => receipt.batchId))],
     })), batches: [] };
   let validParallelBatch = false, unknownEvidence = input.incomplete === true, uninspectedResults = false;
   const reviewCalls = run.tools.filter(tool => tool.call.name === 'delegate_review' && tool.prepared && tool.completed);
   for (const call of reviewCalls) {
-    const receipts = input.receipts.filter(receipt => receipt.mode === 'review' && receipt.toolCallId === call.call.id && sameIdentity(receipt.parentIdentity, run.identity));
-    if (!receipts.length) continue;
-    const batchId = receipts[0].batchId, execution = input.executions.find(value => value.batchId === batchId && value.parentRunId === run.identity.runId && value.toolCallId === call.call.id &&
-      value.mode === 'review' && value.children.length === receipts.length && value.children.every(row => receipts.some(receipt => receipt.childId === row.childId && sameIdentity(receipt.identity, row.identity))));
+    const originalReceipts = input.receipts.filter(receipt => receipt.mode === 'review' && receipt.toolCallId === call.call.id && sameIdentity(receipt.parentIdentity, run.identity));
+    if (!originalReceipts.length) continue;
+    // 恢复是同一工作交接的新执行，不重放旧账本；保留原批次并行证据并核对实际完成的最后尝试。
+    const receipts = originalReceipts.map(original => {
+      let current = original; const seen = new Set([original.childId]);
+      while (['failed', 'cancelled'].includes(current.status) && current.result?.committed && current.result.status !== 'recovery_required' &&
+          nativeDelegationChildTerminalMatches(current, input.childRuns?.get(current.childId))) {
+        const next = input.receipts.filter(candidate => candidate.mode === current.mode && sameIdentity(candidate.parentIdentity, run.identity) &&
+          candidate.recovery?.previousChildId === current.childId && candidate.recovery.previousRunId === current.identity.runId &&
+          candidate.recovery.attempt === (current.recovery?.attempt ?? 0) + 1 && candidate.identity.runId !== current.identity.runId && candidate.taskId !== current.taskId);
+        if (next.length !== 1 || seen.has(next[0].childId)) break;
+        current = next[0]; seen.add(current.childId);
+      }
+      return current;
+    });
+    const batchId = originalReceipts[0].batchId, execution = input.executions.find(value => value.batchId === batchId && value.parentRunId === run.identity.runId && value.toolCallId === call.call.id &&
+      value.mode === 'review' && value.children.length === originalReceipts.length && value.children.every(row => originalReceipts.some(receipt => receipt.childId === row.childId && sameIdentity(receipt.identity, row.identity))));
     const inspected = receipts.filter(receipt => run.tools.some(tool => {
       const result = tool.completed?.result, output = result?.output;
       if (tool.call.name !== 'read_agent_result' || result?.status !== 'completed' || result.truncated || !output || typeof output !== 'object' || Array.isArray(output)) return false;
@@ -262,5 +275,7 @@ const issueMessages: Record<string, string> = {
 /** 宿主执行完成与用户请求完成分开；失败摘要优先展示核验缺口，不能沿用模型的成功宣称。 */
 export function nativeDelegationAuditFailure(audit: NativeDelegationAudit, run: Pick<RunResult, 'status'>): string | undefined {
   if (run.status !== 'completed' || audit.status === 'not_required' || audit.status === 'satisfied') return undefined;
+  // 子任务失败或未知保留在独立审计中供父任务处理，不能反向把已结算父回合改成失败。
+  if (audit.intent.mode !== 'single_agent' && audit.batches.length > 0 && audit.issues.includes('child_execution_incomplete')) return undefined;
   return `${audit.intent.mode === 'single_agent' ? '单 Agent 要求' : '并行审阅要求'}未满足：${audit.issues.map(issue => issueMessages[issue] ?? issue).join('；')}。宿主未将本轮标为成功。`;
 }

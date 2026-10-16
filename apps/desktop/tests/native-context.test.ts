@@ -4,7 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { ContextMeter } from '../src/renderer/ContextMeter';
 import { EngineConfigFields, parseEngineConfigNumber } from '../src/renderer/EngineConfiguration';
-import { parseNativeConfig } from '../src/main/engines/native/config';
+import { NATIVE_SUBAGENT_FIELDS, parseNativeConfig } from '../src/main/engines/native/config';
 import { nativeRunError } from '../src/main/engines/native/run-errors';
 import type { ContextUsage, EngineConfigField } from '../src/shared/execution';
 
@@ -60,6 +60,23 @@ test('integer budget controls preserve invalid drafts and enforce renderer/host 
   assert.equal(parseNativeConfig(config).maxInputTokens, 64000);
   const preserved = renderToStaticMarkup(createElement(EngineConfigFields, { value: { schemaVersion: 1, options: { maxInputTokens: 'future-value' } }, fields: [field], onChange: () => { throw new Error('must preserve unknown value'); } }));
   assert.match(preserved, /disabled=""/); assert.match(preserved, /原始配置已保留/);
+});
+
+test('subagent duration edits use minutes and round-trip existing millisecond values without truncation', () => {
+  const field = NATIVE_SUBAGENT_FIELDS.find(item => item.key === 'maxActiveMs')!;
+  assert.equal(parseEngineConfigNumber('30', field), 30 * 60_000);
+  assert.equal(parseEngineConfigNumber('300', field), 300 * 60_000);
+  assert.equal(parseEngineConfigNumber('0.5', field), 30_000);
+  for (const milliseconds of [1000, 12345, 5 * 60_000]) {
+    assert.equal(parseEngineConfigNumber(String(milliseconds / 60_000), field), milliseconds);
+  }
+  for (const invalid of ['', ' ', 'NaN', 'Infinity', '301', '0', '0.00001']) assert.equal(parseEngineConfigNumber(invalid, field), undefined, invalid);
+  const config = { schemaVersion: 1, options: { maxActiveMs: 30 * 60_000 } };
+  const markup = renderToStaticMarkup(createElement(EngineConfigFields, { value: config, fields: [field], onChange: () => { throw new Error('render must not mutate stored milliseconds'); } }));
+  assert.match(markup, /运行时长上限（分钟）/);
+  assert.match(markup, /max="300"/);
+  assert.match(markup, /value="30"/);
+  assert.equal(config.options.maxActiveMs, 30 * 60_000);
 });
 
 test('native auto compaction stays off for existing configurations and requires an explicit supported opt-in', () => {

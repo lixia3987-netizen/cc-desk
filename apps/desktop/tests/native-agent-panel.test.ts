@@ -29,10 +29,10 @@ test('child completion renders retained references and review semantics without 
 });
 
 test('the panel initially exposes four children while keeping the complete bounded list available', () => {
-  const agents = { ...snapshot, items: Array.from({ length: 16 }, (_, index) => ({ ...child, childId: `child-${index}` })) };
+  const agents = { ...snapshot, items: Array.from({ length: 30 }, (_, index) => ({ ...child, childId: `child-${index}` })) };
   const markup = render(agents);
   assert.equal((markup.match(/data-agent-id=/g) ?? []).length, 4);
-  assert.match(markup, /查看全部子 Agent（16）/);
+  assert.match(markup, /查看全部子 Agent（30）/);
   assert.equal((markup.match(/查看保存成果/g) ?? []).length, 4);
 });
 

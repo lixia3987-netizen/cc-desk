@@ -33,9 +33,9 @@ test('newly selected tools can reach the auto-compaction threshold even when his
   } as unknown as NativeRunStore;
   const common = { ledger, identity, input: '继续', config: config(2048), instructions: '', signal: new AbortController().signal,
     startedAt: performance.now(), assertOwnership: async () => {}, onCompacting: () => { assert.fail('No complete prefix is available.'); }, onCommitted: async () => {} };
-  assert.deepEqual(await autoCompactBeforeSend({ ...common, model }), { compacted: false, remainingRequests: 30 });
+  assert.deepEqual(await autoCompactBeforeSend({ ...common, model }), { compacted: false, remainingRequests: 60 });
   assert.equal(considered, 0);
-  assert.deepEqual(await autoCompactBeforeSend({ ...common, model: { ...model, toolDefinitions: [definition(800)] } }), { compacted: false, remainingRequests: 30 });
+  assert.deepEqual(await autoCompactBeforeSend({ ...common, model: { ...model, toolDefinitions: [definition(800)] } }), { compacted: false, remainingRequests: 60 });
   assert.equal(considered, 1, 'the actual Responses tool schemas participate in the before-send threshold');
 });
 

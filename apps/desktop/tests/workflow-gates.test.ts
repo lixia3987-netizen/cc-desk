@@ -185,7 +185,7 @@ test('bounded Native results survive restart and enter dependent stages as host 
   } finally { f.dispose(); }
 });
 
-test('overall budgets retain failed-attempt usage and dispatch remaining limits after restart', async () => {
+test('failed-attempt usage survives restart without applying obsolete overall budgets to retries', async () => {
   const submissions: ExecutionSubmission[] = [];
   const f = fixture({ nativePoliciesEnabled: true, runStage: async (_id, _prompt, _title, submission) => {
     submissions.push(submission!); const value = receipt(f.binding, submission!);
@@ -196,30 +196,36 @@ test('overall budgets retain failed-attempt usage and dispatch remaining limits 
     f.engine.start(run.id);
     const failed = await f.engine.wait(run.id);
     assert.equal(failed.status, 'failed'); assert.equal(failed.usage?.modelRequests, 2);
+    // A persisted pre-upgrade budget must load without reviving the old limit.
+    const stored = JSON.parse(fs.readFileSync(f.engine.file, 'utf8'));
+    stored.runs[0].budget = { maxModelRequests: 1, maxToolCalls: 1, maxActiveMs: 1000 };
+    fs.writeFileSync(f.engine.file, JSON.stringify(stored));
     const restored = new WorkflowEngine(f.directory, f.options);
     restored.retry(run.id);
     const done = await restored.wait(run.id);
     assert.equal(done.status, 'completed'); assert.equal(done.usage?.modelRequests, 4);
-    assert.deepEqual(submissions[1].nativeExecutionPolicy, { toolPolicy: 'read_only', budget: { maxModelRequests: 3, maxToolCalls: 3, maxActiveMs: 1800 } });
+    assert.deepEqual(submissions[1].nativeExecutionPolicy, { toolPolicy: 'read_only' });
     assert.equal(done.stages[0].nativeReceipts?.length, 2);
     assert.equal(new Set(done.usage?.recordedExecutionIds).size, 2);
   } finally { f.dispose(); }
 });
 
-test('exhausted or incomplete overall budgets block later stages without replaying effects', async () => {
+test('high or incomplete cumulative usage does not block later Native stages', async () => {
   for (const missingReceipt of [false, true]) {
     let calls = 0;
     const f = fixture({ nativePoliciesEnabled: true, runStage: async (_id, _prompt, _title, submission) => {
-      calls++; return { success: true, summary: 'effect exists', ...(missingReceipt ? {} : { nativeReceipt: receipt(f.binding, submission!) }) };
+      calls++; assert.equal(submission!.nativeExecutionPolicy?.budget, undefined);
+      return { success: true, summary: 'effect exists', ...(missingReceipt ? {} : { nativeReceipt: receipt(f.binding, submission!, { modelRequests: 100_001, toolCalls: 200_001, activeMs: 86_400_001 }) }) };
     } });
     try {
       const run = f.engine.create({ sessionId: f.binding.sessionId, goal: 'Ship', stages: steps, budget: { maxModelRequests: 2, maxToolCalls: 4, maxActiveMs: 2000 } });
-      f.engine.start(run.id); const stopped = await f.engine.wait(run.id);
-      assert.equal(stopped.status, 'interrupted'); assert.equal(calls, 1);
-      assert.equal(stopped.stages[0].status, 'completed'); assert.equal(stopped.stages[1].attempts, 0);
-      assert.match(stopped.error!, missingReceipt ? /用量记录不完整/ : /累计预算已耗尽/);
-      f.engine.continue(run.id); await f.engine.wait(run.id);
-      assert.equal(calls, 1);
+      f.engine.start(run.id); const done = await f.engine.wait(run.id);
+      assert.equal(done.status, 'completed'); assert.equal(calls, 2);
+      assert.deepEqual(done.stages.map(stage => stage.attempts), [1, 1]);
+      assert.equal(done.usage?.complete, !missingReceipt);
+      assert.equal(done.usage?.modelRequests, missingReceipt ? 0 : 200_002);
+      assert.equal(done.usage?.activeMs, missingReceipt ? 0 : 172_800_002);
+      assert.equal(new WorkflowEngine(f.directory, f.options).list()[0].status, 'completed');
     } finally { f.dispose(); }
   }
 });
@@ -271,7 +277,7 @@ test('unsupported strict policies reject explicitly and legacy records keep thei
   } finally { f.dispose(); }
 });
 
-test('invalid receipt identities leave cumulative usage unknown and prevent later budgeted execution', async () => {
+test('invalid receipt identities leave usage unknown and cannot dispatch downstream stages', async () => {
   let calls = 0;
   const f = fixture({ nativePoliciesEnabled: true, runStage: async (_id, _prompt, _title, submission) => {
     calls++; const invalid = receipt(f.binding, submission!); invalid.identity.requestId = 'different-submission';
@@ -283,7 +289,8 @@ test('invalid receipt identities leave cumulative usage unknown and prevent late
     assert.equal(stopped.status, 'interrupted'); assert.equal(stopped.usage?.complete, false);
     assert.match(stopped.error!, /提交身份不匹配/);
     f.engine.continue(run.id); await f.engine.wait(run.id);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
+    assert.equal(f.engine.list()[0].stages[1].attempts, 0);
   } finally { f.dispose(); }
 });
 
@@ -301,7 +308,8 @@ test('reusing an execution ID for a different stage leaves accounting unknown in
     assert.equal(stopped.usage?.modelRequests, 2); assert.match(stopped.error!, /重复执行标识/);
     const restored = new WorkflowEngine(f.directory, f.options);
     restored.continue(run.id); await restored.wait(run.id);
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
+    assert.equal(restored.list()[0].stages[1].status, 'interrupted');
   } finally { f.dispose(); }
 });
 

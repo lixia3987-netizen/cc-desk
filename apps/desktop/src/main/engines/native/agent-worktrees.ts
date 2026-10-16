@@ -162,6 +162,18 @@ export async function createAgentWorktree(baseline: NativeAgentBaseline, root: s
     parentHead: baseline.parentHead, baseline: baseline.mode };
 }
 
+/** 恢复前确认保留工作区仍指向原来的 linked worktree 和分支；从不切换或重置文件。 */
+export async function verifyAgentWorkspace(worktree: NativeAgentWorktree, root: string): Promise<void> {
+  const canonicalRoot = await fs.realpath(root), stat = await fs.lstat(worktree.path);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || await fs.realpath(worktree.path) !== worktree.path ||
+      !containsPath(canonicalRoot, worktree.path) || canonicalRoot === worktree.path || !containsPath(worktree.path, await fs.realpath(worktree.cwd)) ||
+      (await git(worktree.path, ['rev-parse', '--show-toplevel'])).trim() !== worktree.path ||
+      (await git(worktree.path, ['symbolic-ref', '--short', 'HEAD'])).trim() !== worktree.branch) {
+    throw new NativeAgentWorktreeError('worktree_identity_changed', '保留的子 Agent 工作区归属已改变。');
+  }
+  await git(worktree.path, ['merge-base', '--is-ancestor', worktree.baseCommit, 'HEAD']);
+}
+
 /** 保留所有工作树和分支；集成必须显式执行审查、cherry-pick 或补丁操作。 */
 export async function collectAgentWorkspaceEvidence(worktree: NativeAgentWorktree, root: string): Promise<NativeAgentWorkspaceEvidence> {
   const canonical = await independentRoot(root, worktree.path), indices = path.join(canonical, '.indices');

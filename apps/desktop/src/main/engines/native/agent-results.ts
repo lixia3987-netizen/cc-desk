@@ -6,7 +6,7 @@ import { z } from 'zod';
 import type { RunIdentity } from '@cc-desk/agent-core';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import type { NativeAgentResult, NativeAgentResultRequest } from '../../../shared/chat';
-import { loadNativeAgents, nativeAgentReceiptDirectory } from './agent-projection';
+import { loadNativeAgents, nativeAgentReceiptDirectory, nativeAgentView } from './agent-projection';
 
 export const MAX_NATIVE_AGENT_PATCH_BYTES = 16 * 1024 * 1024;
 const requestSchema = z.object({
@@ -104,8 +104,8 @@ export async function readNativeAgentResult(dataDirectory: string, parent: RunId
   const projection = await loadNativeAgents(dataDirectory, parent), snapshot = projection.snapshot(false);
   const receipt = projection.receipts().find(value => value.childId === input.childId);
   if (!receipt) failure(snapshot.incomplete ? 'receipt_invalid' : 'result_not_found');
-  const agent = snapshot.items.find(value => value.childId === input.childId);
-  if (!agent) failure('receipt_invalid');
+  const agent = nativeAgentView(receipt, parent);
+  if (['prepared', 'running'].includes(agent.status)) { agent.status = 'unknown'; agent.missingTerminal = true; }
   const forbidden = options.forbiddenValues ?? [];
   try { assertNoModelCredential(receipt, forbidden); } catch { failure('protected_value'); }
   const result: NativeAgentResult = { agent, goal: receipt.goal, acceptance: 'not_assessed' };

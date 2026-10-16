@@ -145,7 +145,7 @@ test('Anthropic: a saved thinking/tool conversation resumes after restart with i
 for (const [label, scenario, options, count] of [
   ['default off', 'unavailable', {}, 1],
   ['authentication is not retryable', 'authentication', { modelRetry: 'safe_transient' }, 1],
-  ['request budget blocks retry', 'unavailable', { modelRetry: 'safe_transient', maxModelRequests: 1 }, 1],
+  ['child request budget does not block the unlimited parent retry allowance', 'unavailable', { modelRetry: 'safe_transient', maxModelRequests: 1 }, 3],
   ['whole-run retry allowance is bounded', 'unavailable', { modelRetry: 'safe_transient' }, 3],
 ] as const) test(label, async () => {
   const f = await fixture('responses', scenario, options);

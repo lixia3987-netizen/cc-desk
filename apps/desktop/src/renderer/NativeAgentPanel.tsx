@@ -38,7 +38,7 @@ function Agent({ agent, loadError, onRead }: { agent: NativeAgentView; loadError
     {agent.summary && <p className="native-agent-summary">{agent.summary}</p>}
     {agent.reason && <p>结束原因：<code>{agent.reason}</code></p>}
     {agent.error && <p className="native-agent-warning">宿主记录：<code>{agent.error}</code></p>}
-    {agent.usage && <p>模型请求 {agent.usage.modelRequests} 次 · 工具调用 {agent.usage.toolCalls} 次（计入父回合总额度）</p>}
+    {agent.usage && <p>本次子任务独立用量：模型请求 {agent.usage.modelRequests} 次 · 工具调用 {agent.usage.toolCalls} 次</p>}
     <p>更新时间：<time dateTime={agent.updatedAt}>{agent.updatedAt}</time></p>
     <Reference id={referenceId(agent.childId, 'task')} label="子任务 ID" value={agent.taskId}/>
     <Reference id={referenceId(agent.childId, 'run')} label="子执行回合 ID" value={agent.identity.runId}/>
@@ -76,7 +76,7 @@ export function NativeAgentSavedResult({ result }: { result: NativeAgentResult }
     <section aria-label="子任务结果摘要"><h3>结果摘要</h3><p className="native-agent-result-text">{agent.summary || '没有保存的结果摘要。'}</p></section>
     {agent.reason && <p>结束原因：<code>{agent.reason}</code></p>}
     {agent.error && <p className="native-agent-warning">宿主记录：<code>{agent.error}</code></p>}
-    {agent.usage && <p>模型请求 {agent.usage.modelRequests} 次 · 工具调用 {agent.usage.toolCalls} 次（计入原父回合总额度）</p>}
+    {agent.usage && <p>保存的子任务用量：模型请求 {agent.usage.modelRequests} 次 · 工具调用 {agent.usage.toolCalls} 次</p>}
     <section aria-label="保存补丁"><h3>保存补丁</h3>
       <p className="native-agent-note">以下为成果保存时的补丁，当前父工作区或隔离工作区可能已变化；读取补丁不会执行写入。</p>
       {patch ? <>
@@ -165,8 +165,8 @@ export function NativeAgentPanel({ sessionId, agents, loadError, readOnly = fals
   const [expanded, setExpanded] = useState(false), [selection, setSelection] = useState<{ sessionId: string; parentRunId: string; childId: string }>();
   useEffect(() => { setSelection(undefined); setExpanded(false); }, [sessionId, agents?.parentRunId]);
   if (!agents?.items.length && !agents?.incomplete) return null;
-  const retained = agents.items.slice(0, 16), visible = expanded ? retained : retained.slice(0, 4);
-  const omitted = agents.omitted + Math.max(0, agents.items.length - 16);
+  const retained = agents.items.slice(0, 30), visible = expanded ? retained : retained.slice(0, 4);
+  const omitted = agents.omitted + Math.max(0, agents.items.length - 30);
   const selected = selection?.sessionId === sessionId && selection.parentRunId === agents.parentRunId ? retained.find(agent => agent.childId === selection.childId) : undefined;
   return <section className="native-agent-panel" aria-label="Native Agent 协作">
     {selected && <ResultDialog key={`${sessionId}:${agents.parentRunId}:${selected.childId}`} sessionId={sessionId} agent={selected} readOnly={readOnly || !!loadError} onReviewPrompt={onReviewPrompt} onClose={() => setSelection(undefined)}/>}

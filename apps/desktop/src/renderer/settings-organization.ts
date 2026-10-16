@@ -7,7 +7,7 @@ const groupKeys: Record<EngineSettingsGroup, ReadonlySet<string>> = {
   model: new Set(['connectionId', 'model']),
   context: new Set(['inputBudgetMode', 'maxInputTokens', 'maxOutputTokens']),
   compaction: new Set(['autoCompact']),
-  limits: new Set(['maxModelRequests', 'maxToolCalls', 'maxActiveMs']),
+  limits: new Set(['maxModelRequests', 'maxToolCalls', 'maxActiveMs', 'maxSubagents']),
   recovery: new Set(['modelRetry']),
   permissions: new Set(['permissionMode']),
   tools: new Set(['projectSkills', 'mcpConnections']),

@@ -234,6 +234,8 @@ export interface RunStore {
   checkpoint(identity: RunIdentity, context: ModelContext): Promise<void>
 }
 export interface RunBudget {
+  /** 主任务可不设执行时长、模型请求及工具调用上限；其他资源保护仍然生效。 */
+  unlimited?: boolean
   maxModelRequests: number
   maxToolCalls: number
   maxActiveMs: number
@@ -285,6 +287,7 @@ export interface ContextMaintenanceRequest {
   /** 发起本次维护请求之前已消耗的请求数。 */
   modelRequests: number
   toolCalls: number
+  /** unlimited 运行没有截止时间；此时该有限值只用于兼容序列化，不应创建计时器。 */
   remainingActiveMs: number
   signal: AbortSignal
 }

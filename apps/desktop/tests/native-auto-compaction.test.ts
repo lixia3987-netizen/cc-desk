@@ -198,7 +198,7 @@ test('automatic compaction rereads selected Skills changed during the summary be
   } finally { await f.dispose(); }
 });
 
-test('automatic compaction preserves the original goal and latest tool pair, debits task budgets and persists one attempt before network', async () => {
+test('automatic compaction preserves the original goal and latest tool pair, records usage and persists one attempt before network', async () => {
   let f: Awaited<ReturnType<typeof fixture>>;
   f = await fixture({ worker: async options => {
     if (options.request.configuration.purpose === 'context_summary') {
@@ -220,8 +220,13 @@ test('automatic compaction preserves the original goal and latest tool pair, deb
     const after = await f.readLedger();
     assert.equal(f.server.requests.length, 6); assert.equal(f.calls.filter(call => call.summary).length, 1);
     const summaryCall = f.calls.find(call => call.summary)!; const taskCall = f.calls.at(-1)!;
-    assert.equal(summaryCall.budget!.maxModelRequests, 1); assert.equal(taskCall.budget!.maxModelRequests, 4);
-    assert.ok(taskCall.budget!.maxActiveMs! <= 4975, 'the ordinary task receives only the remaining active time');
+    assert.equal(summaryCall.budget!.maxModelRequests, 1);
+    assert.notEqual(summaryCall.budget!.unlimited, true, 'summary transport keeps its own finite request and time caps');
+    assert.equal(summaryCall.budget!.maxActiveMs, 60_000);
+    assert.equal(taskCall.budget!.unlimited, true);
+    assert.equal(taskCall.budget!.maxModelRequests, 5);
+    assert.equal(taskCall.budget!.maxActiveMs, 5000, 'child limits are metadata and are not debited from the unlimited parent');
+    assert.equal(result.nativeReceipt?.usage.modelRequests, 2, 'summary and task usage are still reported exactly once');
     assert.deepEqual(f.server.requests[4].tools, []); assert.ok(f.server.requests[4].max_output_tokens <= 4096);
     const sent = f.server.requests[5].input;
     assert.deepEqual(sent[0], before.context!.items[0]);
@@ -245,29 +250,35 @@ test('automatic compaction preserves the original goal and latest tool pair, deb
   } finally { await f.dispose(); }
 });
 
-test('automatic summary cannot increase the configured total model request budget', async () => {
+test('automatic summary is counted without capping the parent at the configured child request allowance', async () => {
   let seeded = false;
-  const f = await fixture({ handler: request => seeded && request.body.tools.length
-    ? { output: [functionCall('budget-read', 'read_file', { path: 'fixture.txt' })] }
-    : defaultHandler(request) });
+  const f = await fixture({ handler: request => {
+    if (!seeded || !request.body.tools.length) return defaultHandler(request);
+    return { output: request.body.input.some(item => item.type === 'function_call_output' && item.call_id === 'budget-read')
+      ? [assistantMessage('budget-finished', 'The parent can continue after its read.')]
+      : [functionCall('budget-read', 'read_file', { path: 'fixture.txt' })] };
+  } });
   try {
-    await f.seed(); seeded = true; const input = '只允许剩余一次模型请求';
-    await f.enableAtThreshold(input, { maxModelRequests: 2 });
+    await f.seed(); seeded = true; const input = '摘要后继续读取并汇总';
+    await f.enableAtThreshold(input, { maxModelRequests: 1, maxToolCalls: 1 });
     const result = await f.executor.send(f.id, input);
-    assert.equal(result.success, false, 'a tool loop cannot send a third request after summary + task');
-    assert.equal(f.server.requests.length, 6); assert.equal(f.calls.at(-1)!.budget!.maxModelRequests, 1);
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(f.server.requests.length, 7, 'one summary plus two ordinary model requests are permitted');
+    assert.equal(f.calls.at(-1)!.budget!.unlimited, true);
     const run = (await f.readLedger()).runs.at(-1)!;
-    assert.equal(run.result!.status, 'budget_exhausted'); assert.equal(run.result!.modelRequests, 1);
-    assert.equal(run.tools[0].completed?.result.status, 'completed', 'the one permitted task response can still execute its safe local tool');
+    assert.equal(run.result!.status, 'completed'); assert.equal(run.result!.modelRequests, 2);
+    assert.equal(run.tools[0].completed?.result.status, 'completed');
+    assert.equal(result.nativeReceipt?.usage.modelRequests, 3);
+    assert.equal(result.nativeReceipt?.usage.toolCalls, 1);
   } finally { await f.dispose(); }
 });
 
-for (const reason of ['single_request_budget', 'new_input_exceeds_budget'] as const) test(`automatic compaction avoids a billable summary when ${reason}`, async () => {
+test('automatic compaction avoids a billable summary when new input exceeds the context budget', async () => {
   const f = await fixture();
   try {
     await f.seed(); const before = await f.readLedger(); let input = '本次请求无法完整执行';
-    const limit = await f.enableAtThreshold(input, reason === 'single_request_budget' ? { maxModelRequests: 1 } : {});
-    if (reason === 'new_input_exceeds_budget') input = 'x'.repeat(limit + 1);
+    const limit = await f.enableAtThreshold(input);
+    input = 'x'.repeat(limit + 1);
     const result = await f.executor.send(f.id, input);
     assert.equal(result.success, false); assert.equal(f.server.requests.length, 4);
     assert.equal(f.calls.some(call => call.summary), false, 'unusable request budgets cannot spend a summary request');
@@ -321,29 +332,36 @@ for (const mode of ['invalid_tool', 'not_smaller'] as const) test(`failed automa
   } finally { await f.dispose(); }
 });
 
-test('retrying a failed summary with automatic compaction disabled still debits its model request from the same submission', async () => {
+test('resuming after a failed summary preserves its usage without capping the unlimited parent or repeating the summary', async () => {
   let retrying = false;
   const f = await fixture({ handler: request => {
     if (!request.body.tools.length) return { output: [functionCall('invalid-summary-tool', 'read_file', { path: 'fixture.txt' })] };
     if (!retrying) return defaultHandler(request);
     return { output: request.body.input.some(item => item.type === 'function_call_output' && item.call_id === 'retry-read')
-      ? [assistantMessage('retry-finished', 'This reply would exceed the original two-request submission budget.')]
+      ? [assistantMessage('retry-finished', 'The continued parent completed after inspecting the saved result.')]
       : [functionCall('retry-read', 'read_file', { path: 'fixture.txt' })] };
   } });
   try {
-    await f.seed(); const input = '失败摘要后保留本次总请求预算';
+    await f.seed(); const input = '失败摘要后继续检查已保存的结果';
     await f.enableAtThreshold(input, { maxModelRequests: 2 });
     assert.equal((await f.executor.send(f.id, input, [], undefined, { requestId: 'failed-summary-budget' })).success, false);
     assert.equal(f.server.requests.length, 5);
     await f.restart(); retrying = true;
     await f.configure({ autoCompact: 'off', maxInputTokens: 64_000 });
     const result = await f.executor.send(f.id, input, [], undefined, { requestId: 'failed-summary-budget' });
-    assert.equal(result.success, false, 'the retained submission cannot use summary + two ordinary requests');
-    assert.equal(f.server.requests.length, 6, 'only the one remaining ordinary model request may be sent');
-    assert.equal(f.calls.at(-1)!.budget!.maxModelRequests, 1);
+    assert.equal(result.success, true, JSON.stringify(result));
+    assert.equal(f.server.requests.length, 7, 'the failed summary does not prevent two ordinary model requests');
+    assert.equal(f.calls.at(-1)!.budget!.maxModelRequests, 2);
+    assert.equal(f.calls.at(-1)!.budget!.unlimited, true);
     const run = (await f.readLedger()).runs.at(-1)!;
-    assert.equal(run.result!.status, 'budget_exhausted'); assert.equal(run.result!.modelRequests, 1);
+    assert.equal(run.result!.status, 'completed'); assert.equal(run.result!.modelRequests, 2);
     assert.equal(run.tools[0].completed?.result.status, 'completed');
+    assert.equal(result.nativeReceipt?.usage.modelRequests, 3, 'the saved failed summary is still counted once');
+    const duplicate = await f.executor.send(f.id, input, [], undefined, { requestId: 'failed-summary-budget' });
+    assert.equal(duplicate.success, true);
+    assert.equal(f.server.requests.length, 7);
+    assert.equal(f.calls.filter(call => call.summary).length, 1);
+    assert.deepEqual(duplicate.nativeReceipt, result.nativeReceipt);
     assert.deepEqual(f.server.errors, []);
   } finally { await f.dispose(); }
 });
@@ -416,7 +434,9 @@ test('cancellation after durable automatic compaction preserves the summary and 
     const retried = await f.executor.send(f.id, input, [], undefined, { requestId: 'commit-then-cancel' });
     assert.equal(retried.success, true, JSON.stringify(retried));
     assert.equal(f.server.requests.length, 6); assert.equal(f.calls.filter(call => call.summary).length, 1);
-    assert.ok(f.server.requests[5].tools.length > 0); assert.equal(f.calls.at(-1)!.budget!.maxModelRequests, 2);
+    assert.ok(f.server.requests[5].tools.length > 0); assert.equal(f.calls.at(-1)!.budget!.maxModelRequests, 3);
+    assert.equal(f.calls.at(-1)!.budget!.unlimited, true);
+    assert.equal(retried.nativeReceipt?.usage.modelRequests, 2, 'committed summary usage remains accounted once on continuation');
     assert.deepEqual(f.server.requests[5].input.slice(0, compacted.context!.items.length), compacted.context!.items);
     assert.equal((await f.readLedger()).records.filter(record => record.event.type === 'context_compacted').length, 1);
   } finally { release.resolve(); NativeRunStore.prototype.commitContextCompaction = original; await f.dispose(); }

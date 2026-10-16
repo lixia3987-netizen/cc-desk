@@ -73,10 +73,8 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
     await expect(page.getByLabel('分析与计划工具权限', { exact: true })).toHaveValue('read_only');
     await expect(page.getByLabel('实现与验证工具权限', { exact: true })).toHaveValue('standard');
     await expect(page.getByLabel('审查与交付工具权限', { exact: true })).toHaveValue('read_only');
-    await page.getByText('高级预算设置', { exact: true }).click();
-    await page.getByLabel('模型请求总上限', { exact: true }).fill('6');
-    await page.getByLabel('工具调用总上限', { exact: true }).fill('3');
-    await page.getByLabel('执行总时长', { exact: true }).fill('1');
+    await expect(page.getByText('高级预算设置', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('主 Agent 不限制执行时长、模型请求或工具调用次数。每个子 Agent 独立使用设置中的执行限制。', { exact: true })).toBeVisible();
     const run = await create(page, 'manual');
     await expect(run.locator('> header .status-tag')).toHaveText('等待确认');
     await expect(run.locator('.workflow-stage.waiting_confirmation')).toHaveCount(1);
@@ -104,7 +102,7 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
     await expect(run.locator('> header .status-tag')).toHaveText('已完成');
     await expect(run.locator('.workflow-stage.completed')).toHaveCount(3);
     const completed = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
-    expect(completed.budget).toEqual({ maxModelRequests: 6, maxToolCalls: 3, maxActiveMs: 60000 });
+    expect(completed.budget).toBeUndefined();
     expect(completed.usage?.modelRequests).toBe(6); expect(completed.usage?.toolCalls).toBe(3);
     expect(completed.stages.map(stage => stage.attempts)).toEqual([1, 1, 1]);
     expect(completed.stages.flatMap(stage => stage.nativeReceipts ?? []).map(receipt => receipt.usage.toolCalls)).toEqual([1, 1, 1]);
@@ -116,7 +114,7 @@ test('real Native workflow UI keeps manual rejection and confirmation separate f
   } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });
 
-test('workflow active-time budget survives manual gate waiting and a long automatically queued ordinary turn', async () => {
+test('workflow usage remains separate from manual gate waiting and a long automatically queued ordinary turn', async () => {
   let releaseFirst!: () => void, enteredFirst!: () => void;
   const firstRequest = new Promise<void>(resolve => { enteredFirst = resolve; });
   const firstRelease = new Promise<void>(resolve => { releaseFirst = resolve; });
@@ -160,7 +158,7 @@ test('workflow active-time budget survives manual gate waiting and a long automa
   } finally { releaseFirst(); try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });
 
-test('workflow UI retries preserve consumed model budget and never dispatch a downstream stage after exhaustion', async () => {
+test('workflow UI retries preserve usage and complete downstream work beyond an obsolete model allowance', async () => {
   const f = await workspace(false, ({ index }) => index === 0
     ? { httpStatus: 400, raw: JSON.stringify({ error: { message: 'Intentional fixture validation failure', type: 'invalid_request_error' } }) }
     : { output: [assistantMessage(`workflow-retry-${index}`, '手动重试当前阶段完成。')] });
@@ -178,16 +176,14 @@ test('workflow UI retries preserve consumed model budget and never dispatch a do
     expect(f.fixture.requests).toHaveLength(1);
     expect((await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id)).usage?.modelRequests).toBe(1);
     await run.getByRole('button', { name: '重试失败阶段', exact: true }).click();
-    await expect(run.locator('> header .status-tag')).toHaveText('已中断');
-    await expect(run).toContainText('工作流累计预算已耗尽');
-    const stopped = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
-    expect(stopped.usage?.modelRequests).toBe(2); expect(stopped.usage?.recordedExecutionIds).toHaveLength(2);
-    expect(stopped.stages.map(stage => stage.attempts)).toEqual([2, 0]);
-    expect(f.fixture.requests).toHaveLength(2); expect(f.fixture.errors).toEqual([]);
-    await run.getByRole('button', { name: '继续', exact: true }).click();
-    await expect(run.locator('> header .status-tag')).toHaveText('已中断');
-    expect(f.fixture.requests).toHaveLength(2);
-    await page.screenshot({ path: test.info().outputPath('workflow-retry-budget-exhausted.png') });
+    await page.getByRole('button', { name: /^已结束（/ }).click();
+    await expect(run.locator('> header .status-tag')).toHaveText('已完成');
+    await expect(run).not.toContainText('工作流累计预算已耗尽');
+    const done = await page.evaluate(async id => (await window.desktop.workflows(id))[0], session.id);
+    expect(done.usage?.modelRequests).toBe(3); expect(done.usage?.recordedExecutionIds).toHaveLength(3);
+    expect(done.stages.map(stage => stage.attempts)).toEqual([2, 1]);
+    expect(f.fixture.requests).toHaveLength(3); expect(f.fixture.errors).toEqual([]);
+    await page.screenshot({ path: test.info().outputPath('workflow-retry-unlimited-main.png') });
   } finally { try { if (app) await closeNativeApp(app); } finally { await f.dispose(); } }
 });
 
