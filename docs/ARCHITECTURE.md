@@ -165,3 +165,11 @@ SQLite 持久化全文索引、MCP 配置编辑/验证、后台服务、签名�
 ## Native Alpha
 
 `agent-core` 不依赖 Node/Electron；`agent-node` 提供 Responses、持久记录、工具和监管；desktop main 拥有权限、目录与副作用。每回合真实 utilityProcess 执行 core/模型，使用带 run/generation/seq 的受限 RPC。完整模型上下文位于 native 账本，ChatHistory 仅是可重建展示投影。`ExecutionSubmission` 贯通直接提交、队列消息及 workflow attempt，`stopAndWait/whenReleased` 等待物理清理，`recoveryRequired` 阻断跨引擎冲突目录。设计和数据路径见 [操作与实现说明](NATIVE-AGENT-ALPHA.md)，实际验证范围见 [阶段三验收](NATIVE-AGENT-PHASE-3-VALIDATION.md)。
+
+## 操作反馈
+
+用户点击发送、停止、恢复或重试后，渲染进程同步锁住本次操作并显示具体进度，再通过 `paintActionFeedback` 让出绘制机会后调用宿主。隐藏窗口使用有界回退，避免等待动画帧使操作永久挂起。反馈只表示请求正在处理，执行结果仍以宿主快照为准；错误保留用户输入并恢复明确的重试入口。
+
+消息提交分别显示“正在提交”、持久队列的等待或启动状态、正式对话记录。只有持久接收确认后才清理对应原稿与附件，发送期间的新草稿不受旧确认影响。队列 `clientRequestId` 关联确认前的临时卡，正式用户消息的 `submissionId` 关联队列消息 ID；相同文本的不同请求不能合并。提交记录按会话与上下文身份管理，面板切换不丢重试 ID，删除会话或重建上下文时清理旧记录。
+
+控制请求的接收确认不代表任务已经停止，也不代表状态已经同步。队列和停止操作等待对应权威状态再解锁；工作流操作已提交但同步失败时，先刷新确认结果再允许再次变更。所有新增异步用户操作应沿用这些规则，并用延迟接收、延迟启动和失败回执验证反馈先于执行出现。

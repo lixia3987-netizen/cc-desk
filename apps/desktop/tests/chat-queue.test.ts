@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { ChatQueue } from '../src/main/chat-queue';
-import type { ChatQueueStorage } from '../src/main/chat-queue-storage';
+import { ChatQueueStorage } from '../src/main/chat-queue-storage';
 import type { ChatTurnResult, QueuedChatMessage } from '../src/shared/chat';
 
 type Options = ConstructorParameters<typeof ChatQueue>[1];
@@ -91,6 +91,56 @@ test('explicit native continuation survives queue persistence and participates i
     f.queue.pauseAll();
     if (restored) await restored.close(); else await f.close();
   }
+});
+
+test('client request identity is visible before submission ACK and survives persistence without merging equal text', async () => {
+  const committed = deferred<void>(), releaseAck = deferred<void>();
+  const sessionId = randomUUID(), firstRequest = randomUUID(), secondRequest = randomUUID();
+  const f = fixture({ blocked: () => true, acceptAttachments: async (_id, _files, commit) => {
+    commit(); committed.resolve(); await releaseAck.promise;
+  } });
+  try {
+    let acknowledged = false;
+    const pending = f.queue.submit(sessionId, 'same text', [], firstRequest).then(result => { acknowledged = true; return result; });
+    await committed.promise;
+    assert.equal(acknowledged, false, 'the host projection may arrive before the IPC reply');
+    const early = f.queue.snapshot(sessionId).items[0];
+    assert.equal(early.clientRequestId, firstRequest);
+    assert.notEqual(early.id, firstRequest, 'queue execution identity remains independent of the client retry identity');
+    assert.equal(new ChatQueueStorage(f.directory).load(sessionId).items[0].clientRequestId, firstRequest);
+    releaseAck.resolve();
+    const accepted = await pending;
+    assert.equal(accepted.messageId, early.id);
+    assert.deepEqual(await f.queue.submit(sessionId, 'same text', [], firstRequest), accepted);
+    const distinct = await f.queue.submit(sessionId, 'same text', [], secondRequest);
+    assert.notEqual(distinct.messageId, accepted.messageId);
+    const persisted = new ChatQueueStorage(f.directory).load(sessionId);
+    assert.deepEqual(persisted.items.map(item => item.clientRequestId), [firstRequest, secondRequest]);
+    const reloaded = new ChatQueue(f.directory, { assertAvailable: () => {}, blocked: () => true,
+      acceptAttachments: async (_id, _files, commit) => commit(), run: async () => assert.fail('restored queue must remain paused'),
+      interrupt: async () => {}, changed: () => {} });
+    assert.deepEqual(reloaded.snapshot(sessionId).items.map(item => [item.id, item.clientRequestId]),
+      [[accepted.messageId, firstRequest], [distinct.messageId, secondRequest]]);
+    assert.equal(reloaded.snapshot(sessionId).paused, true);
+  } finally { releaseAck.resolve(); await f.close(); }
+});
+
+test('legacy queued messages without a client request identity remain readable and dispatch unchanged', async () => {
+  const f = fixture(), sessionId = randomUUID();
+  const item: QueuedChatMessage = { id: randomUUID(), text: 'old queued request', attachments: [], createdAt: new Date().toISOString(), status: 'queued' };
+  fs.mkdirSync(path.join(f.directory, 'chat-queue'), { recursive: true });
+  fs.writeFileSync(path.join(f.directory, 'chat-queue', sessionId + '.json'), JSON.stringify({ version: 1, items: [item], paused: false, receipts: [] }));
+  try {
+    assert.deepEqual(new ChatQueueStorage(f.directory).load(sessionId).items, [item]);
+    assert.deepEqual(f.queue.snapshot(sessionId).items, [item]);
+    assert.equal(f.queue.snapshot(sessionId).paused, true);
+    await f.queue.resume(sessionId);
+    const dispatched = await f.waitForRun(item.text);
+    assert.deepEqual(dispatched.item, item);
+    assert.equal(dispatched.item.clientRequestId, undefined);
+    dispatched.result.resolve(success);
+    await until(() => !f.queue.hasPending(sessionId));
+  } finally { await f.close(); }
 });
 
 test('queue accepts messages before turn completion and executes accepted messages once in FIFO order', async () => {
@@ -404,16 +454,55 @@ test('submission receipts deduplicate IPC retries even after completion, while d
     assert.equal(first.messageId, duplicate.messageId);
     await tick();
     assert.equal(f.runs.length, 1);
+    assert.equal(f.runs[0].item.clientRequestId, requestId);
     f.runs[0].result.resolve(success);
     await until(() => !f.queue.hasActive(sessionId));
     assert.equal((await f.queue.submit(sessionId, 'same text', [], requestId)).messageId, first.messageId);
     await tick();
     assert.equal(f.runs.length, 1);
-    const distinct = await f.queue.submit(sessionId, 'same text', [], randomUUID());
+    const distinctRequest = randomUUID();
+    const distinct = await f.queue.submit(sessionId, 'same text', [], distinctRequest);
     await until(() => f.runs.length === 2);
     assert.notEqual(distinct.messageId, first.messageId);
+    assert.equal(f.runs[1].item.clientRequestId, distinctRequest);
     assert.equal(f.runs.length, 2);
   } finally { await f.close(); }
+});
+
+test('durable reception proof survives completion and restart without exposing content or allowing a changed retry', async () => {
+  const f = fixture(), sessionId = randomUUID(), requestId = randomUUID();
+  let restored: ReturnType<typeof fixture> | undefined;
+  try {
+    const accepted = await f.queue.submit(sessionId, 'private original task', [], requestId);
+    await until(() => f.runs.length === 1);
+    assert.deepEqual(f.queue.snapshot(sessionId).receipts, [{ requestId, messageId: accepted.messageId }]);
+    f.runs[0].result.resolve(success);
+    await until(() => !f.queue.hasActive(sessionId));
+    const completed = f.queue.snapshot(sessionId);
+    assert.deepEqual(completed.items, []);
+    assert.deepEqual(completed.receipts, [{ requestId, messageId: accepted.messageId }], 'completion does not discard the identity needed when the user message is outside the UI window');
+    assert.deepEqual(Object.keys(completed.receipts![0]).sort(), ['messageId', 'requestId']);
+    assert.doesNotMatch(JSON.stringify(completed.receipts), /digest|private original task/);
+    completed.receipts![0].requestId = randomUUID();
+    assert.equal(f.queue.snapshot(sessionId).receipts![0].requestId, requestId);
+    restored = fixture({}, f.directory);
+    assert.deepEqual(restored.queue.snapshot(sessionId).receipts, [{ requestId, messageId: accepted.messageId }]);
+    assert.deepEqual(await restored.queue.submit(sessionId, 'private original task', [], requestId), accepted);
+    await tick();
+    assert.equal(restored.runs.length, 0, 'a retried ACK never reruns the completed task');
+    await assert.rejects(restored.queue.submit(sessionId, 'different content', [], requestId), /不同内容/);
+    const nextRequestId = randomUUID();
+    const next = await restored.queue.submit(sessionId, 'private original task', [], nextRequestId);
+    await until(() => restored!.runs.length === 1);
+    assert.notEqual(next.messageId, accepted.messageId);
+    assert.deepEqual(restored.queue.snapshot(sessionId).receipts, [{ requestId, messageId: accepted.messageId },
+      { requestId: nextRequestId, messageId: next.messageId }]);
+    restored.runs[0].result.resolve(success);
+    await until(() => !restored!.queue.hasActive(sessionId));
+  } finally {
+    f.queue.pauseAll();
+    if (restored) await restored.close(); else await f.close();
+  }
 });
 
 test('removing a queued message leaves the active turn and remaining FIFO order intact', async () => {

@@ -1,6 +1,7 @@
 import type { ChatSnapshot, ChatSnapshotVersion } from '../shared/chat';
 
 export interface ChatSyncState { loading: boolean; failures: number; error?: string }
+interface ChatReadOutcome { snapshot?: ChatSnapshot; error?: unknown }
 
 /** 完整快照是权威状态，通知仅标记其需要更新。 */
 export class ChatSnapshotSync {
@@ -9,6 +10,7 @@ export class ChatSnapshotSync {
   private notificationGeneration = 0;
   private retiredEpochs = new Set<string>();
   private inFlight?: Promise<void>;
+  private inFlightOutcome?: ChatReadOutcome;
   private requested = false;
   private disposed = false;
   private deferred?: ReturnType<typeof setTimeout>;
@@ -60,17 +62,33 @@ export class ChatSnapshotSync {
     if (this.disposed) return Promise.resolve();
     if (this.inFlight) { this.requested = true; return this.inFlight; }
     clearTimeout(this.deferred); this.deferred = undefined;
-    const operation = this.readCurrent();
+    const outcome: ChatReadOutcome = {};
+    const operation = this.readCurrent(outcome);
     this.inFlight = operation;
+    this.inFlightOutcome = outcome;
     void operation.finally(() => {
       if (this.inFlight !== operation) return;
       this.inFlight = undefined;
+      this.inFlightOutcome = undefined;
       // 批次之间让出执行权，避免流式数据生产方独占 IPC。
       if (this.requested && !this.disposed && this.failures < 2) this.deferred = setTimeout(() => { void this.refresh(); }, 80);
     });
     return operation;
   }
-  private async readCurrent(): Promise<void> {
+  /** 操作已受理后，必须用调用后发起的读取确认结果，不能复用受理前的响应。 */
+  async refreshFresh(): Promise<ChatSnapshot | undefined> {
+    if (this.disposed) return undefined;
+    // 等待整个旧批次；其中的重读也可能早于本次操作受理。
+    if (this.inFlight) await this.inFlight;
+    if (this.disposed) return undefined;
+    const operation = this.refresh();
+    const outcome = this.inFlightOutcome;
+    await operation;
+    if (this.disposed) return undefined;
+    if (outcome && 'error' in outcome) throw outcome.error;
+    return outcome?.snapshot;
+  }
+  private async readCurrent(outcome: ChatReadOutcome): Promise<void> {
     this.ports.state({ loading: true, failures: this.failures, ...(this.lastError ? { error: this.lastError } : {}) });
     for (let attempt = 0; attempt < 2 && !this.disposed; attempt++) {
       this.requested = false;
@@ -81,6 +99,7 @@ export class ChatSnapshotSync {
         // 正在删除或已移除的会话会主动禁止被动读取。
         // 不要将这种失效记为快照读取失败，也不要重试。
         if (!value) {
+          outcome.snapshot = undefined;
           this.ports.state({ loading: false, failures: this.failures, ...(this.lastError ? { error: this.lastError } : {}) });
           return;
         }
@@ -91,9 +110,12 @@ export class ChatSnapshotSync {
         }
         this.failures = 0;
         this.lastError = undefined;
+        outcome.snapshot = value;
         this.ports.state({ loading: false, failures: 0 });
       } catch (error) {
         if (this.disposed) return;
+        outcome.snapshot = undefined;
+        outcome.error = error;
         this.failures++;
         this.lastError = error instanceof Error ? error.message : String(error);
         this.requested = false;

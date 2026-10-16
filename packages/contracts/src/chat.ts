@@ -30,6 +30,8 @@ export function isNativeImageAttachments(value: unknown): value is NativeImageAt
 }
 export interface ChatMessage {
   id: string; turnId: string; role: 'user' | 'assistant' | 'tool' | 'system';
+  /** 宿主执行提交标识；队列发送时等于队列消息 id，与 CLI 消息 id 独立。 */
+  submissionId?: string;
   text: string; createdAt: string;
   toolName?: string; toolUseId?: string; input?: Record<string, unknown>;
   isError?: boolean; parentToolUseId?: string;
@@ -163,6 +165,8 @@ export interface ChatSnapshot {
 }
 export interface QueuedChatMessage {
   id: string; text: string; attachments: string[]; createdAt: string;
+  /** 客户端 queue.submit 请求标识，用于接收确认返回前精确关联本次提交。 */
+  clientRequestId?: string;
   attachmentNames?: string[];
   /** 显式提交时选定的字节数据，将后续 Native 派发绑定到同一图像版本。 */
   nativeImageAttachments?: NativeImageAttachment[];
@@ -171,7 +175,11 @@ export interface QueuedChatMessage {
 }
 /** 只有用户显式选择时才延续已有的原生任务。 */
 export interface ChatSendOptions { nativeTaskId?: string }
-export interface ChatQueueSnapshot { items: QueuedChatMessage[]; paused: boolean; error?: string }
+export interface ChatQueueSnapshot {
+  items: QueuedChatMessage[]; paused: boolean; error?: string;
+  /** 有界的持久接收证明；消息出队后仍可关联原提交，不代表执行或验收成功。 */
+  receipts?: { requestId: string; messageId: string }[];
+}
 export interface ChatSubmission { messageId: string }
 export interface ChatTurnResult { success: boolean; summary: string; error?: string; interrupted?: boolean; nativeReceipt?: import('./native-task.js').NativeExecutionReceipt }
 

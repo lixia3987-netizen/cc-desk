@@ -14,7 +14,7 @@ import './new-session.css';
 
 interface Props {
   state: AppState; executors: ExecutionDescriptor[]; draft: SessionDraft; setDraft: Dispatch<SetStateAction<SessionDraft>>;
-  busy: boolean; text: string; onText: (value: string) => void; onSend: () => void; onChooseDirectory: () => void;
+  busy: boolean; submitting?: boolean; text: string; onText: (value: string) => void; onSend: () => void; onChooseDirectory: () => void;
   onOpenSettings: () => void;
   created?: boolean; attachments: Attachment[]; attachmentBusy: boolean;
   onPreviewAttachment?: (file: Attachment) => void;
@@ -22,7 +22,7 @@ interface Props {
   onAttach: () => void; onDropFiles: (files: File[]) => void; onRemoveAttachment: (path: string) => void;
 }
 
-export function NewSessionForm({ state, executors, draft, setDraft, busy, text, onText, onSend, onChooseDirectory, onOpenSettings, created = false, attachments, attachmentBusy, onAttach, onDropFiles, onRemoveAttachment, onPasteImages, onPreviewAttachment }: Props) {
+export function NewSessionForm({ state, executors, draft, setDraft, busy, submitting = false, text, onText, onSend, onChooseDirectory, onOpenSettings, created = false, attachments, attachmentBusy, onAttach, onDropFiles, onRemoveAttachment, onPasteImages, onPreviewAttachment }: Props) {
   const root = useRef<HTMLDivElement>(null);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
@@ -130,6 +130,13 @@ export function NewSessionForm({ state, executors, draft, setDraft, busy, text, 
       {!descriptor && <p className="new-session-note">所选执行引擎尚未安装，请选择已安装的引擎。</p>}
       {descriptor && !supported && <p className="new-session-note">此引擎不支持当前配置版本，原配置已保留。</p>}
       {descriptor?.maintenance ? <p className="new-session-note">{descriptor.displayName ?? descriptor.providerId} 正在维护，请等待完成后再发送。</p> : descriptor && !descriptor.capabilities.available && <p className="new-session-note">尚未连接 {descriptor.displayName ?? descriptor.providerId}。消息可以提交到队列；执行前请在设置中连接，失败后可重试。</p>}
+      {submitting && <section className="new-session-submission" aria-label="首条消息提交状态" aria-busy="true">
+        <article className="chat-message user">
+          <header>你 <span role="status"><Loader2 size={13} className="spin" />{created ? '正在提交首条消息…' : '正在创建会话并提交消息…'}</span></header>
+          {text && <p className="new-session-submitted-text">{text}</p>}
+          {attachments.length > 0 && <ul aria-label="正在提交的附件">{attachments.map(file => <li key={file.path}><Paperclip size={12} />{file.name}</li>)}</ul>}
+        </article>
+      </section>}
       <div className="composer chat-composer new-session-composer">
         <ChatAttachmentChips attachments={attachments} isNative={isNative} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={isNative ? onPreviewAttachment : undefined} previewTitle="本地预览当前选择版本（尚未保存）" />
         {attachmentBusy && <p className="attachment-import-status" role="status"><Loader2 size={12} className="spin" />正在添加待发送附件…可以继续编辑消息。</p>}

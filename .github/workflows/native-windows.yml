@@ -38,6 +38,9 @@ on:
       - 'apps/desktop/tests/windows-pty-resources.test.ts'
       - 'apps/desktop/tests/native-agent.spec.ts'
       - 'apps/desktop/tests/native-multi-agent.spec.ts'
+      - 'apps/desktop/src/renderer/**'
+      - 'apps/desktop/tests/chat-queue.spec.ts'
+      - 'apps/desktop/tests/new-session-flow.spec.ts'
       - 'apps/desktop/tests/helpers/**'
   workflow_dispatch:
 
@@ -138,6 +141,20 @@ jobs:
         run: |
           npm run typecheck --workspace claude-workbench 2>&1 | Tee-Object -FilePath test-results/windows-native/typecheck.log
           exit $LASTEXITCODE
+      - name: 构建生产桌面入口
+        id: production
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          npm run build --workspace claude-workbench 2>&1 | Tee-Object -FilePath test-results/windows-native/production-build.log
+          exit $LASTEXITCODE
+      - name: 验证发送与操作的即时反馈
+        id: immediate_feedback
+        if: ${{ !cancelled() && steps.production.outcome == 'success' }}
+        timeout-minutes: 8
+        run: |
+          npm run test:e2e -- tests/new-session-flow.spec.ts tests/chat-queue.spec.ts --grep "feedback" 2>&1 | Tee-Object -FilePath test-results/windows-native/immediate-feedback.log
+          exit $LASTEXITCODE
       - name: 验证完成校验和持久化回放
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         timeout-minutes: 3
@@ -157,18 +174,11 @@ jobs:
           node --test --test-concurrency=1 --test-reporter=tap packages/engine-claude/tests/connection-windows.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/engine-claude.tap
           exit $LASTEXITCODE
       - name: 验证全部桌面单元测试与真实 PTY 运行时
-        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' && steps.immediate_feedback.outcome != 'failure' }}
         working-directory: apps/desktop
         timeout-minutes: 30
         run: |
           node --import tsx --test --test-concurrency=1 --test-reporter=tap tests/*.test.ts 2>&1 | Tee-Object -FilePath ../../test-results/windows-native/desktop-runtime.tap
-          exit $LASTEXITCODE
-      - name: 构建生产桌面入口
-        id: production
-        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
-        timeout-minutes: 5
-        run: |
-          npm run build --workspace claude-workbench 2>&1 | Tee-Object -FilePath test-results/windows-native/production-build.log
           exit $LASTEXITCODE
       - name: 验证物理 Electron Worker、委派、取消与命令审批
         if: ${{ !cancelled() && steps.production.outcome == 'success' }}

@@ -178,7 +178,7 @@ export class NativeProjection {
         add({ type: 'metadata', resetUsage: true, ...(typeof model === 'string' ? { model } : {}) });
         const images = configuration.imageAttachments;
         if (images !== undefined && !isNativeImageAttachments(images)) throw new Error('Native 图片记录元数据损坏，原始记录已保留。');
-        add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', ...bounded(event.request.input), createdAt,
+        add({ type: 'message', message: { id: `${runId}:user`, turnId: runId, role: 'user', submissionId: event.request.identity.requestId, ...bounded(event.request.input), createdAt,
           ...(images === undefined ? {} : { nativeImageAttachments: clone(images) }) } });
         add({ type: 'state', taskState: 'thinking' });
       } else if (event.type === 'model_request_started') {

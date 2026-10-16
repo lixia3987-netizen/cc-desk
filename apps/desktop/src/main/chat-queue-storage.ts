@@ -6,6 +6,7 @@ import type { ChatQueueSnapshot } from '../shared/chat';
 
 const itemSchema = z.object({
   id: z.string().uuid(), text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8),
+  clientRequestId: z.string().max(200).optional(),
   createdAt: z.string().max(100), status: z.enum(['queued', 'sending']),
   attachmentNames: z.array(z.string().max(1024)).max(8).optional(),
   nativeTaskId: z.string().uuid().optional(),

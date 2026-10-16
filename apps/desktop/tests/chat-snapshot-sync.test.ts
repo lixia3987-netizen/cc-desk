@@ -7,7 +7,7 @@ import { ChatSnapshotSync, type ChatSyncState } from '../src/renderer/chat-snaps
 const version=(revision:number,eventSequence=revision,hostEpoch='host-a'):ChatSnapshotVersion=>({hostEpoch,revision,eventSequence,conversationId:'conversation'});
 const snapshot=(revision:number,taskState:ChatSnapshot['taskState']='thinking',hostEpoch='host-a'):ChatSnapshot=>({sessionId:'session',taskState,messages:[],pending:[],version:version(revision,revision,hostEpoch)});
 const deferred=<T>()=>{let resolve!:(value:T)=>void,reject!:(error:unknown)=>void;const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no;});return {promise,resolve,reject};};
-function fixture(read:()=>Promise<ChatSnapshot>){
+function fixture(read:()=>Promise<ChatSnapshot|undefined>){
   const applied:ChatSnapshot[]=[],states:ChatSyncState[]=[];
   const sync=new ChatSnapshotSync('session',{read,apply:value=>applied.push(value),state:value=>states.push(value)});
   return {sync,applied,states};
@@ -108,4 +108,88 @@ test('wrong-session snapshots cannot reconcile pending approvals or clear an exi
 test('legacy Claude snapshots remain supported until the host provides a version',async()=>{
   const f=fixture(async()=>({sessionId:'session',taskState:'idle',messages:[],pending:[]}));
   await f.sync.refresh();assert.equal(f.sync.snapshot?.taskState,'idle');f.sync.dispose();
+});
+
+test('an acknowledged operation waits for a new read after an already-issued retry applies',async()=>{
+  const first=deferred<ChatSnapshot>(),beforeAck=deferred<ChatSnapshot>(),afterAck=deferred<ChatSnapshot>();let reads=0;
+  const f=fixture(()=>[first,beforeAck,afterAck][reads++].promise);
+  const oldBatch=f.sync.refresh();
+  assert.equal(f.sync.refresh(),oldBatch);
+  first.resolve(snapshot(1));
+  await Promise.resolve();
+  assert.equal(reads,2,'the old batch has already issued its second read before acknowledgment');
+  let confirmed=false;
+  const confirmation=f.sync.refreshFresh().then(value=>{confirmed=true;return value;});
+  beforeAck.resolve(snapshot(2));
+  await oldBatch;
+  assert.equal(reads,3,'confirmation starts a read after acknowledgment');
+  assert.equal(confirmed,false,'applying the pre-acknowledgment reply cannot settle the operation');
+  assert.equal(f.sync.snapshot?.version?.revision,2);
+  const authority=snapshot(3,'completed');
+  afterAck.resolve(authority);
+  assert.equal(await confirmation,authority);
+  assert.equal(f.sync.snapshot,authority);
+  assert.equal(confirmed,true);
+  f.sync.dispose();
+});
+
+test('fresh confirmation returns the newly applied snapshot even without a version change',async()=>{
+  let reads=0;const initial=snapshot(1),authority={...snapshot(1,'completed')};
+  const f=fixture(async()=>++reads===1?initial:authority);
+  await f.sync.refresh();
+  assert.equal(await f.sync.refreshFresh(),authority);
+  assert.equal(f.applied.at(-1),authority);
+  assert.equal(reads,2);
+  f.sync.dispose();
+});
+
+test('fresh confirmation throws a read failure instead of returning cached authority and can retry',async()=>{
+  let reads=0;const initial=snapshot(1),authority=snapshot(3,'completed');
+  const f=fixture(async()=>{reads++;if(reads===2)throw new Error('confirmation unavailable');return reads===1?initial:authority;});
+  await f.sync.refresh();
+  await assert.rejects(f.sync.refreshFresh(),/confirmation unavailable/);
+  assert.equal(f.sync.snapshot,initial);
+  assert.equal(f.states.at(-1)?.error,'confirmation unavailable');
+  assert.equal(await f.sync.refreshFresh(),authority);
+  assert.equal(f.sync.error,undefined);
+  f.sync.dispose();
+});
+
+test('fresh confirmation rejects snapshots that cannot be applied instead of returning the cached snapshot',async()=>{
+  let reads=0;const initial=snapshot(5);
+  const f=fixture(async()=>++reads===1?initial:snapshot(2));
+  await f.sync.refresh();
+  await assert.rejects(f.sync.refreshFresh(),/状态仍在变化/);
+  assert.equal(f.sync.snapshot,initial);
+  assert.equal(f.applied.length,1);
+  f.sync.dispose();
+});
+
+test('a lifecycle-blocked fresh read provides no confirmation and does not count as a failure',async()=>{
+  let reads=0;const initial=snapshot(1);
+  const f=fixture(async()=>++reads===1?initial:undefined);
+  await f.sync.refresh();
+  assert.equal(await f.sync.refreshFresh(),undefined);
+  assert.equal(f.sync.snapshot,initial);
+  assert.equal(f.applied.length,1);
+  assert.deepEqual(f.states.at(-1),{loading:false,failures:0});
+  f.sync.dispose();
+});
+
+test('disposing while waiting for an old read or a fresh reply never confirms the operation',async()=>{
+  const old=deferred<ChatSnapshot>();let oldReads=0;
+  const waiting=fixture(()=>{oldReads++;return old.promise;});
+  const batch=waiting.sync.refresh();
+  const confirmation=waiting.sync.refreshFresh();
+  waiting.sync.dispose();old.resolve(snapshot(1));
+  await batch;
+  assert.equal(await confirmation,undefined);
+  assert.equal(oldReads,1,'a disposed reader never starts confirmation');
+  assert.equal(waiting.applied.length,0);
+
+  const reply=deferred<ChatSnapshot>();const active=fixture(()=>reply.promise);
+  const fresh=active.sync.refreshFresh();active.sync.dispose();reply.resolve(snapshot(2));
+  assert.equal(await fresh,undefined);
+  assert.equal(active.applied.length,0);
+  assert.equal(await active.sync.refreshFresh(),undefined);
 });

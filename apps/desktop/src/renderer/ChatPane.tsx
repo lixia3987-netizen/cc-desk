@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { Check, CornerDownLeft, File, Loader2, MessageSquare, Paperclip, Search, ShieldCheck, Square, X } from 'lucide-react';
 import type { ExecutionDescriptor } from '../shared/execution';
 import type { Attachment, Session } from '../shared/types';
@@ -18,7 +18,9 @@ import { ComposerPermissionMode } from './ComposerPermissionMode';
 import { hasActiveSubtasks, isTaskBusy } from '../shared/session-activity';
 import { ContextMeter } from './ContextMeter';
 import { NativeRecoveryPanel } from './NativeRecoveryPanel';
-import { ChatQueue } from './ChatQueue';
+import { ChatQueue, PendingChatMessages, startingQueueMessages } from './ChatQueue';
+import { chatActionHasFreshSnapshot, chatActionState } from './chat-action-state';
+import { paintActionFeedback } from './action-feedback';
 import { useChatSubmission } from './useChatSubmission';
 import { useChatFileDrop } from './useChatFileDrop';
 import { Dialog } from './Dialog';
@@ -94,6 +96,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   onPasteImages?:(files:File[],canContinue:()=>boolean)=>void;
 }) {
   const engineName=session.execution.providerId==='claude'?'Claude':descriptor?.displayName??session.execution.providerId;
+  const sourceConversation=session.execution.conversationId??'';
+  const currentConversation=useRef(sourceConversation);currentConversation.current=sourceConversation;
   const reviewDraft=useRef(draft);reviewDraft.current=draft;
   const permissionPending=useRef(false);
   const [permissionSaving,setPermissionSaving]=useState(false);
@@ -109,7 +113,14 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const [continuationTaskId,setContinuationTaskId]=useState<string>();
   const [reviewingTask,setReviewingTask]=useState(false);
   const [assistance,setAssistance]=useState<'agents'|'task'|null>(null);
-  const [confirmRecovery,setConfirmRecovery]=useState(false),[recovering,setRecovering]=useState(false);
+  const [confirmRecovery,setConfirmRecovery]=useState(false);
+  const interruptKey=JSON.stringify([session.id,session.execution.conversationId??'','interrupt']);
+  const recoveryKey=JSON.stringify([session.id,'recover-context']);
+  const readInterrupt=useCallback(()=>chatActionState.getSnapshot(interruptKey),[interruptKey]);
+  const readRecovery=useCallback(()=>chatActionState.getSnapshot(recoveryKey),[recoveryKey]);
+  const interruptAction=useSyncExternalStore(chatActionState.subscribe,readInterrupt,readInterrupt);
+  const recoveryAction=useSyncExternalStore(chatActionState.subscribe,readRecovery,readRecovery);
+  const recovering=!!recoveryAction;
   const [confirmingNativeRecovery,setConfirmingNativeRecovery]=useState(false);
   const [compactingNativeContext,setCompactingNativeContext]=useState(false),[nativeNotice,setNativeNotice]=useState('');
   const nativeOperation=useRef(false);
@@ -152,6 +163,15 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     window.addEventListener('keydown',key);return()=>window.removeEventListener('keydown',key);
   },[]);
   const load=useCallback(async()=>{await snapshotSync.current?.refresh();},[]);
+  const loadFresh=useCallback(async()=>await snapshotSync.current?.refreshFresh(),[]);
+  const synchronizeAction=async(key:string,token:number)=>{
+    if(!chatActionState.beginSync(key,token))return;
+    try{
+      const fresh=await loadFresh();
+      if(fresh?.sessionId===session.id)chatActionState.synchronized(key,token,fresh.version);
+      else chatActionState.syncFailed(key,token);
+    }catch(error){chatActionState.syncFailed(key,token);if(mounted.current&&currentConversation.current===sourceConversation)onError(error);}
+  };
   const prepareCommands=useCallback(()=>{
     if(disabled||readOnly||!descriptor?.capabilities.commands)return Promise.resolve();
     if(commandsLoading.current)return commandsLoading.current;
@@ -214,9 +234,28 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const compacting=compactingNativeContext||!!nativeMaintenance?.compacting;
   const sessionStatus=snapshot?.sessionStatus??session.status;
   const nativeOwned=session.execution.providerId==='native'&&sessionStatus==='running';
-  const task=snapshot?.taskState??session.taskState??'idle', running=isTaskBusy(task)||hasActiveSubtasks(session)||nativeOwned||sessionStatus==='stopping'||compacting;
-  const taskLabel=syncState.error?'状态未知':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
-  const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error;
+  const task=snapshot?.taskState??session.taskState??'idle', queueSending=!!snapshot?.queue?.items.some(item=>item.status==='sending');
+  const running=isTaskBusy(task)||hasActiveSubtasks(session)||nativeOwned||sessionStatus==='stopping'||compacting||queueSending;
+  const stopping=!!interruptAction||sessionStatus==='stopping';
+  const starting=startingQueueMessages(snapshot?.queue,snapshot?.messages,JSON.stringify([session.id,session.execution.conversationId??''])).length>0;
+  const taskLabel=stopping?'正在停止':syncState.error?'状态未知':starting&&!isTaskBusy(task)?'正在启动':compacting?(nativeMaintenance?.compactionTrigger==='in_turn'?'正在回合内压缩上下文':nativeMaintenance?.compactionTrigger==='automatic'?'正在自动压缩上下文':'正在压缩上下文'):hasActiveSubtasks(session)&&!isTaskBusy(task)?'子任务执行中':nativeOwned&&!isTaskBusy(task)?'正在结束本轮执行':task==='completed'&&session.execution.providerId==='native'?'本轮执行已结束':taskLabels[task]??task;
+  const composerDisabled=disabled||permissionSaving||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||recovering||!!syncState.error;
+  useEffect(()=>{
+    if(interruptAction&&chatActionHasFreshSnapshot(interruptAction,snapshot?.version)&&snapshot&&(!running||sessionStatus==='stopping'))chatActionState.clear(interruptKey,interruptAction.token);
+  },[interruptAction,interruptKey,snapshot,running,sessionStatus]);
+  useEffect(()=>{
+    if(!recoveryAction||!chatActionHasFreshSnapshot(recoveryAction,snapshot?.version))return;
+    const changed=(session.execution.conversationId??'')!==recoveryAction.target
+      ||!!snapshot?.version?.conversationId&&snapshot.version.conversationId!==recoveryAction.target;
+    if(changed){chatActionState.clear(recoveryKey,recoveryAction.token);setConfirmRecovery(false);jumpToLatest();}
+  },[recoveryAction,recoveryKey,session.execution.conversationId,snapshot?.version]);
+  const interruptCurrent=async(kind:'turn'|'compaction')=>{
+    const operation=chatActionState.begin(interruptKey,kind);
+    if(!operation)return;
+    try{await paintActionFeedback();if(currentConversation.current!==sourceConversation){chatActionState.clear(interruptKey,operation.token);return;}await window.desktop.interruptSession(session.id);chatActionState.accepted(interruptKey,operation.token);}
+    catch(error){chatActionState.clear(interruptKey,operation.token);if(mounted.current&&currentConversation.current===sourceConversation)onError(error);}
+    finally{if(mounted.current&&currentConversation.current===sourceConversation){if(chatActionState.getSnapshot(interruptKey)?.accepted)await synchronizeAction(interruptKey,operation.token);else void load().catch(error=>{if(mounted.current&&currentConversation.current===sourceConversation)onError(error);});}}
+  };
   useEffect(()=>{
     // 最终通知可能丢失，且后续没有序号缺口；仅当面板
     // 处于活动或状态不确定时才定期检查，两次失败后暂停自动重试。
@@ -228,6 +267,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(nativeOperation.current||running||readOnly||session.archived||!nativeRecovery||descriptor?.maintenance)return;
     nativeOperation.current=true;setConfirmingNativeRecovery(true);setNativeNotice('');
     try {
+      await paintActionFeedback();
       if(resume)await window.desktop.resumeNativeRecovery(session.id,nativeRecovery.headHash);
       else await window.desktop.confirmNativeRecovery(session.id);
       if(mounted.current){await load();if(resume&&mounted.current)setNativeNotice('记录已恢复；请发送新指令继续。已完成工具不会重放，排队消息保持暂停。');}
@@ -238,22 +278,24 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const compactNative=async()=>{
     if(nativeOperation.current||running||composerDisabled||readOnly||!nativeMaintenance?.canCompact||descriptor?.maintenance||snapshot?.queue?.items.length)return;
     nativeOperation.current=true;setCompactingNativeContext(true);setNativeNotice('');
-    try { await window.desktop.compactNativeContext(session.id,nativeMaintenance.headHash);if(mounted.current)await load(); }
+    try { await paintActionFeedback();await window.desktop.compactNativeContext(session.id,nativeMaintenance.headHash);if(mounted.current)await load(); }
     catch(error){onError(error);if(mounted.current)await load().catch(onError);}
     finally{nativeOperation.current=false;if(mounted.current)setCompactingNativeContext(false);}
   };
   const recoveryAvailable=!!descriptor?.capabilities.recoverContext&&!readOnly&&session.started&&[snapshot?.error,session.error].some(isMissingTranscriptError);
   const recoverContext=async()=>{
-    if(recovering)return;
-    setRecovering(true);
-    try { await window.desktop.recoverChatContext(session.id);if(mounted.current){setConfirmRecovery(false);await load();jumpToLatest();} }
-    catch(error){onError(error);}finally{if(mounted.current)setRecovering(false);}
+    const operation=chatActionState.begin(recoveryKey,'recover',session.execution.conversationId??'');
+    if(!operation)return;
+    try { await paintActionFeedback();if(currentConversation.current!==sourceConversation){chatActionState.clear(recoveryKey,operation.token);return;}await window.desktop.recoverChatContext(session.id);chatActionState.accepted(recoveryKey,operation.token); }
+    catch(error){chatActionState.clear(recoveryKey,operation.token);if(mounted.current&&currentConversation.current===sourceConversation)onError(error);}
+    finally{if(mounted.current){if(chatActionState.getSnapshot(recoveryKey)?.accepted)await synchronizeAction(recoveryKey,operation.token);else void load().catch(error=>{if(mounted.current)onError(error);});}}
   };
   const queued=running||!!snapshot?.queue?.items.length;
   const visibleAttachments=descriptor?.capabilities.attachments?attachments:[];
   const currentImagePreview=imagePreview&&session.execution.providerId==='native'&&isNativeImagePreviewCurrent(imagePreview,session.id,session.execution.conversationId,visibleAttachments)?imagePreview:undefined;
   useEffect(()=>{if(imagePreview&&!currentImagePreview)setImagePreview(undefined);},[imagePreview,currentImagePreview]);
-  const {submitting,isSubmitting,submit:send}=useChatSubmission({sessionId:session.id,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:()=>isAttachmentImporting()||permissionPending.current,
+  const {submitting,submissions,isSubmitting,submit:send}=useChatSubmission({sessionId:session.id,conversationId:session.execution.conversationId,snapshot,draft,attachments:visibleAttachments,nativeTaskId:session.execution.providerId==='native'?continuationTaskId:undefined,disabled:composerDisabled||attachmentBusy,isBlocked:()=>isAttachmentImporting()||permissionPending.current,
+    onSubmitting:jumpToLatest,
     onAccepted:()=>{setNativeNotice('');setContinuationTaskId(undefined);jumpToLatest();},onSent,onAttachmentsSent,onError,refresh:load});
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const pasteAvailable=useRef(false);
@@ -270,17 +312,18 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
     {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setPaging(false);setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
     <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={onScroll}><div className="chat-scroll-content" ref={content}>
-      {!visible?.messages.length&&!snapshot?.queue?.items.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
+      {!visible?.messages.length&&!snapshot?.queue?.items.length&&!submissions.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
       {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
       {visible?.messages.map(message=><ChatMessageRow key={message.id} message={message} engineName={engineName} isNative={session.execution.providerId==='native'} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>)}
+      {!archive&&<PendingChatMessages submissions={submissions}/>}
       {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
       {!archive&&snapshot?.error&&<p className="chat-error" role="alert">{snapshot.error}</p>}
       {!archive&&nativeRecovery&&<NativeRecoveryPanel recovery={nativeRecovery} disabled={running||readOnly||session.archived||!!descriptor?.maintenance} pending={confirmingNativeRecovery} onResume={()=>void recoverNative(true)} onConfirm={()=>void recoverNative(false)}/>}
       {!archive&&nativeNotice&&<p className="panel-note" role="status">{nativeNotice}</p>}
       {!archive&&recoveryAvailable&&<div className="chat-recovery"><p className="panel-note">如已确认无需恢复原来的引擎上下文，可以保留本地聊天和工作目录，重新开始空白上下文。</p><button className="secondary compact" disabled={composerDisabled||running||recovering} onClick={()=>setConfirmRecovery(true)}>重建空白上下文</button></div>}
-      {!archive&&running&&!syncState.error&&<div className="thinking-indicator"><Loader2 size={13} className="spin"/>{sessionStatus==='stopping'?'正在停止':taskLabel}</div>}
-      {!archive&&<ChatQueue sessionId={session.id} queue={snapshot?.queue} disabled={composerDisabled} onError={onError} refresh={load}/>}
+      {!archive&&(running||interruptAction)&&!syncState.error&&<div className="thinking-indicator" role="status"><Loader2 size={13} className="spin"/>{interruptAction?.kind==='compaction'?'正在停止压缩…':taskLabel}</div>}
+      {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
     </div></div>
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
@@ -300,7 +343,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       historical={!!snapshot?.nativeRun&&snapshot.nativeRun.runId!==snapshot.nativeTask?.identity.runId}
       disabled={readOnly||composerDisabled||running||submitting||!!descriptor?.maintenance} busy={reviewingTask}
       onRefresh={()=>void load()} onContinue={setContinuationTaskId}
-      onReview={async input=>{setReviewingTask(true);try{await window.desktop.nativeTaskReview(session.id,input);await load();}finally{if(mounted.current)setReviewingTask(false);}}}/></div>
+      onReview={async input=>{setReviewingTask(true);try{await paintActionFeedback();await window.desktop.nativeTaskReview(session.id,input);await load();}finally{if(mounted.current)setReviewingTask(false);}}}/></div>
     </div>}
     {continuationTaskId&&<div className="panel-note" role="status">下一条消息将继续任务 {continuationTaskId}。<button className="text-button" disabled={submitting} onClick={()=>setContinuationTaskId(undefined)}>取消关联</button></div>}
     <div className="chat-meta"><span className={'dot '+(syncState.error||task==='error'?'error':running?'running':'idle')}/>{!syncState.error&&sessionStatus==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'当前父回合的累计用量，包含回合内摘要；子代理、发送前及手动摘要另计。输入总量已含缓存分项，不能重复相加。估价按本回合保存的用户费率，未知计数或费率不作为零，实际账单为准。':'引擎实际返回的用量与费用估算'}>{chatUsageLabel(snapshot.usage, session.execution.providerId==='native')}</span>}</div>
@@ -310,15 +353,17 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       previewBlockedReason={syncState.error?'unavailable':nativeRecovery?'recovery_required':running||submitting||reviewingTask||confirmingNativeRecovery||!!descriptor.maintenance?'busy':undefined}
       compactDisabled={running||composerDisabled||readOnly||!!descriptor.maintenance||!!snapshot?.queue?.items.length}
       onCompact={session.execution.providerId==='native'&&descriptor.capabilities.compactContext?()=>void compactNative():undefined}
-      onCancelCompact={readOnly||session.archived||sessionStatus==='stopping'?undefined:()=>void window.desktop.interruptSession(session.id).catch(onError)}/>}
+      onCancelCompact={readOnly||session.archived||stopping?undefined:()=>void interruptCurrent('compaction')}/>}
     {confirmRecovery&&<Dialog label="重建空白上下文" onClose={()=>setConfirmRecovery(false)} closeDisabled={recovering}>
       <h2>重建空白上下文</h2>
       <p>此操作不能恢复原来的引擎上下文。将创建新的引擎会话标识，之前的聊天不会自动发送给引擎。</p>
       <p>本地聊天记录、草稿、附件和独立 worktree 都会保留。排队消息将保持暂停，需检查后手动继续。</p>
       <p className="panel-note">如果需要找回原上下文，请取消并检查此引擎的配置目录或重新导入历史记录。</p>
+      {recoveryAction?.accepted&&!recoveryAction.synchronized&&<p className="panel-note" role="status">重建请求已受理，等待同步结果。<button className="secondary compact" disabled={recoveryAction.synchronizing} onClick={()=>void synchronizeAction(recoveryKey,recoveryAction.token)}>{recoveryAction.synchronizing?'正在核实…':'核实操作结果'}</button></p>}
       <div className="modal-actions"><button className="secondary" disabled={recovering} onClick={()=>setConfirmRecovery(false)}>取消</button><button className="primary" disabled={recovering||composerDisabled||running||!recoveryAvailable} onClick={()=>void recoverContext()}>{recovering?'重建中…':'确认重建'}</button></div>
     </Dialog>}
     <div className="composer chat-composer">
+      {interruptAction?.accepted&&!interruptAction.synchronized&&<p className="panel-note" role="status">停止请求已受理，等待同步执行状态。<button className="secondary compact" disabled={interruptAction.synchronizing} onClick={()=>void synchronizeAction(interruptKey,interruptAction.token)}>{interruptAction.synchronizing?'正在核实…':'核实操作结果'}</button></p>}
       {unavailable&&<p className="inline-warning engine-unavailable" role="status">{unavailable}</p>}
       <ChatAttachmentChips attachments={visibleAttachments} isNative={session.execution.providerId==='native'} disabled={attachmentsBlocked} onRemove={onRemoveAttachment} onPreview={session.execution.providerId==='native'&&session.execution.conversationId?file=>setImagePreview({request:{sessionId:session.id,conversationId:session.execution.conversationId!,source:{kind:'draft',path:file.path}},expected:{name:file.name,bytes:file.bytes}}):undefined}/>
       {attachmentBusy&&<p className="attachment-import-status" role="status"><Loader2 size={12} className="spin"/>正在添加待发送附件…可以继续编辑消息。</p>}
@@ -326,7 +371,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
         onPasteFiles={pasteAvailable.current&&!attachmentsBlocked&&onPasteImages?files=>onPasteImages(files,()=>mounted.current&&!nativeOperation.current&&pasteAvailable.current):undefined}
         commands={descriptor?.capabilities.commands?snapshot?.commands:undefined} commandOwner={engineName} loadCommands={!composerDisabled&&descriptor?.capabilities.commands?prepareCommands:undefined}/>
       {descriptor?.configuration?.fields.some(field=>field.key==='permissionMode'&&field.type==='select')&&<div className="chat-composer-permissions"><ComposerPermissionMode session={session} descriptor={descriptor} running={running} disabled={readOnly||session.archived||!!nativeRecovery||compacting||confirmingNativeRecovery||!!syncState.error||!!descriptor?.maintenance||reviewingTask||submitting} onError={onError} onBusyChange={permissionBusy} isBlocked={isSubmitting}/></div>}
-      <div className="chat-composer-actions">{descriptor?.capabilities.attachments&&<button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button>}<button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title={'Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；'+(descriptor?.capabilities.attachments?'文件可拖入聊天区成为待发送附件；':'')+'草稿自动保存'}>Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{visibleAttachments.length>0&&' · '+visibleAttachments.length+' 个附件 · '+(visibleAttachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{running&&<button className="secondary compact" title="停止当前回合，保留已有消息与操作记录" disabled={readOnly||session.archived||sessionStatus==='stopping'} onClick={()=>void window.desktop.interruptSession(session.id).catch(onError)}><Square size={12}/>{sessionStatus==='stopping'?'正在停止':'停止本轮'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!visibleAttachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
+      <div className="chat-composer-actions">{descriptor?.capabilities.attachments&&<button className="icon-button" title="添加附件，也可将文件拖入聊天区；发送前仅保留为待发送附件" aria-label="添加附件" disabled={attachmentsBlocked} onClick={onAttach}><Paperclip size={16}/></button>}<button className="icon-button" title="引用项目文件" aria-label="引用项目文件" disabled={composerDisabled} onClick={onProjectFiles}><File size={16}/></button><span title={'Enter 发送；执行中发送将加入队列；Ctrl / ⌘ + Enter 或 Shift + Enter 换行；'+(descriptor?.capabilities.attachments?'文件可拖入聊天区成为待发送附件；':'')+'草稿自动保存'}>Enter {queued?'加入队列':'发送'} · Ctrl / ⌘ + Enter 换行{visibleAttachments.length>0&&' · '+visibleAttachments.length+' 个附件 · '+(visibleAttachments.reduce((sum,file)=>sum+file.bytes,0)/1024).toFixed(1)+' KB'}</span>{(running||interruptAction)&&<button className="secondary compact" title="停止当前回合，保留已有消息与操作记录" disabled={readOnly||session.archived||stopping} onClick={()=>void interruptCurrent('turn')}><Square size={12}/>{stopping?'正在停止…':'停止本轮'}</button>}<button className="primary compact" disabled={submitting||attachmentBusy||(!draft.trim()&&!visibleAttachments.length)||composerDisabled} onClick={()=>void send()}>{submitting||attachmentBusy?<Loader2 size={14} className="spin"/>:<CornerDownLeft size={14}/>} {attachmentBusy?'添加附件中…':submitting?'提交中…':queued?'加入队列':'发送任务'}</button></div>
     </div>
   </div>;
 }

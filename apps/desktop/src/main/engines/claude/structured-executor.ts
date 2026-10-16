@@ -40,9 +40,9 @@ export class ClaudeStructuredExecutor implements StructuredExecutor {
   page(id: string, options?: ChatPageOptions) { return this.runtime.page(id, options); }
   search(id: string, query: string, before?: string) { return this.runtime.search(id, query, before); }
   attention() { return this.runtime.attention(); }
-  send(id: string, text: string, attachments?: string[], titlePrompt?: string, _submission?: ExecutionSubmission) {
+  send(id: string, text: string, attachments?: string[], titlePrompt?: string, submission?: ExecutionSubmission) {
     validateClaudeSession(this.session(id));
-    return this.runtime.send(id, text, this.capabilities(), attachments, titlePrompt);
+    return this.runtime.send(id, text, this.capabilities(), attachments, titlePrompt, submission?.requestId);
   }
   prepareCommands(id: string) { validateClaudeSession(this.session(id)); return this.runtime.prepareCommands(id, this.capabilities()); }
   recoverContext(id: string) { return this.runtime.recoverContext(id); }

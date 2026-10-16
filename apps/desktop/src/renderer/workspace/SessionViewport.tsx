@@ -1,4 +1,4 @@
-import { Copy, CornerDownLeft, TerminalSquare } from 'lucide-react';
+import { Copy, CornerDownLeft, Loader2, TerminalSquare } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { isSessionBusy } from '../../shared/session-activity';
 import type { ThemeId } from '../../shared/theme';
@@ -9,6 +9,7 @@ import { PromptEditor } from '../PromptEditor';
 import { ComposerPermissionMode } from '../ComposerPermissionMode';
 import { SubtaskPanel } from '../SubtaskPanel';
 import { TerminalPane, type TerminalHandle } from '../TerminalPane';
+import { paintActionFeedback } from '../action-feedback';
 import type { ReportError } from './types';
 
 interface Props {
@@ -26,7 +27,7 @@ export function SessionViewport({ state, active, executors, descriptor, disabled
   const latestState = useRef(state); latestState.current = state;
   const handles = useRef(new Map<string, TerminalHandle>());
   const nativePending = useRef(new Set<string>());
-  const [nativeSending, setNativeSending] = useState('');
+  const [nativeSending, setNativeSending] = useState<Set<string>>(() => new Set());
   const [mounted, setMounted] = useState<string[]>([]);
   useEffect(() => {
     const sessions = state?.sessions ?? [];
@@ -46,10 +47,10 @@ export function SessionViewport({ state, active, executors, descriptor, disabled
     if (composer.length > 60000) { report(new Error('单次提示词请控制在 60,000 个字符以内。')); return; }
     const handle = handles.current.get(active.id);
     if (!handle) { report(new Error('终端尚未就绪，请稍后再试。')); return; }
-    nativePending.current.add(active.id); setNativeSending(active.id); onClearError();
-    try { await handle.submit(composer); onSent(composer); }
+    nativePending.current.add(active.id); setNativeSending(new Set(nativePending.current)); onClearError();
+    try { await paintActionFeedback(); await handle.submit(composer); onSent(composer); }
     catch (error) { report(error); }
-    finally { nativePending.current.delete(active.id); setNativeSending(value => value === active.id ? '' : value); }
+    finally { nativePending.current.delete(active.id); setNativeSending(new Set(nativePending.current)); }
   };
   return <section className="terminal-section">
     {children}
@@ -67,10 +68,10 @@ export function SessionViewport({ state, active, executors, descriptor, disabled
       <SubtaskPanel key={active.id} session={active} />
       <div className="composer">
         <PromptEditor key={active.id} placeholder={active.terminalSync === 'synced' ? '描述任务… Enter 发送，Ctrl / ⌘ + Enter 换行' : '准备提示词… Ctrl / ⌘ + Enter 换行，或直接在终端输入'} value={composer} disabled={active.archived} onChange={onDraft} onSend={() => void sendNative()} />
-        <div className="chat-composer-permissions"><ComposerPermissionMode session={active} descriptor={descriptor} running={activeBusy||active.status==='running'} disabled={readOnly||nativeSending===active.id} onError={report} onBusyChange={permissionBusy} isBlocked={()=>nativePending.current.has(active.id)}/></div>
+        <div className="chat-composer-permissions"><ComposerPermissionMode session={active} descriptor={descriptor} running={activeBusy||active.status==='running'} disabled={readOnly||nativeSending.has(active.id)} onError={report} onBusyChange={permissionBusy} isBlocked={()=>nativePending.current.has(active.id)}/></div>
         <div>
-          <span title="Ctrl / ⌘ + Enter 或 Shift + Enter 换行">{active.terminalSync === 'synced' ? 'Enter 发送 · Ctrl / ⌘ + Enter 换行' : '状态未同步：粘贴后请在终端确认并按 Enter 发送。'}</span>{active.terminalSync === 'synced' ? <button className="primary compact" disabled={disabled || permissionSaving || active.status !== 'running' || activeBusy || nativeSending === active.id || active.archived || !composer.trim()} onClick={() => void sendNative()}>
-            <CornerDownLeft size={13} />发送任务</button> : <button className="secondary compact" disabled={disabled || active.status !== 'running' || active.archived || !composer.trim()} onClick={() => { if (composer.length > 60000) { report(new Error('单次提示词请控制在 60,000 个字符以内。')); return; } const handle = handles.current.get(active.id); if (!handle) { report(new Error('终端尚未就绪，请稍后再试。')); return; } handle.paste(composer); handle.focus(); onDraft(''); }}>
+          <span title="Ctrl / ⌘ + Enter 或 Shift + Enter 换行">{active.terminalSync === 'synced' ? 'Enter 发送 · Ctrl / ⌘ + Enter 换行' : '状态未同步：粘贴后请在终端确认并按 Enter 发送。'}</span>{active.terminalSync === 'synced' ? <button className="primary compact" disabled={disabled || permissionSaving || active.status !== 'running' || activeBusy || nativeSending.has(active.id) || active.archived || !composer.trim()} onClick={() => void sendNative()}>
+            {nativeSending.has(active.id) ? <Loader2 size={13} className="spin" /> : <CornerDownLeft size={13} />}{nativeSending.has(active.id) ? '正在提交…' : '发送任务'}</button> : <button className="secondary compact" disabled={disabled || active.status !== 'running' || active.archived || !composer.trim()} onClick={() => { if (composer.length > 60000) { report(new Error('单次提示词请控制在 60,000 个字符以内。')); return; } const handle = handles.current.get(active.id); if (!handle) { report(new Error('终端尚未就绪，请稍后再试。')); return; } handle.paste(composer); handle.focus(); onDraft(''); }}>
             <Copy size={13} />粘贴到终端</button>}</div>
       </div>
     </>}

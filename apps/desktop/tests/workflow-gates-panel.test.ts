@@ -17,6 +17,8 @@ test('workflow creation exposes explicit gates and does not advertise unsupporte
   const native = render('native'), claude = render('claude');
   assert.match(native, /class="workflow-create-view" hidden=""/);
   assert.match(native, /新建工作流/);
+  assert.match(native, /正在读取工作流…/);
+  assert.doesNotMatch(native, /暂无正在运行或等待处理的工作流/);
   assert.match(native, /进行中与待处理/);
   assert.match(native, /检查任务验收条件/);
   assert.match(native, /人工确认产出/);

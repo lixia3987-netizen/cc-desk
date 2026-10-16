@@ -308,7 +308,7 @@ export class ClaudeRuntime {
     this.notifications.delete(id); this.hydrator.forget(id); this.history.delete(id); this.archive.forget(id);
   }
 
-  async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = [], titlePrompt = text): Promise<ChatTurnResult> {
+  async send(id: string, text: string, capabilities: Capabilities, attachments: string[] = [], titlePrompt = text, submissionId?: string): Promise<ChatTurnResult> {
     if (this.shuttingDown) throw new Error('工作台正在退出。');
     if (this.maintenance) throw new Error('Claude Code 正在更新，暂时不能发送任务。');
     const session = this.session(id);
@@ -338,7 +338,7 @@ export class ClaudeRuntime {
       entry.subtaskTools.clear(); entry.approvalTasks.clear(); entry.finishedTasks.clear(); entry.backgroundTaskTools.clear();
       this.subtasks.begin(id, entry.turn!.id);
       const userId = randomUUID();
-      this.message(id, { id: userId, sourceId: userId, turnId: entry.turn!.id, role: 'user', text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
+      this.message(id, { id: userId, sourceId: userId, turnId: entry.turn!.id, role: 'user', ...(submissionId === undefined ? {} : { submissionId }), text: text + (attachments.length ? '\n\n附件：\n' + attachments.join('\n') : ''), createdAt: now() });
       this.state(id, 'thinking');
       try {
         // 内置命令解析需要提示词字符串；普通多模态

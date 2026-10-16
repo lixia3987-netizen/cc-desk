@@ -29,6 +29,32 @@ async function fixture() {
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
 
+test('Native user messages retain the host submission identity across identical text, paging and cold replay', async () => {
+  const f = await fixture();
+  const restored = f.create();
+  try {
+    await f.store.beginRun(f.req); await f.finish();
+    const next = { ...f.req, identity: { ...f.req.identity, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 2 } };
+    await f.store.beginRun(next);
+    await f.store.append(next.identity, { type: 'run_finished', result: { identity: next.identity, status: 'completed', reason: 'model_completed',
+      modelRequests: 0, toolCalls: 0, usage: null, context: f.store.loadContext()!, committed: true } });
+    await f.projection.hydrate(f.id, f.store);
+    const users = f.projection.snapshot(f.id).messages.filter(message => message.role === 'user');
+    assert.deepEqual(users.map(message => message.submissionId), [f.req.identity.requestId, next.identity.requestId]);
+    assert.equal(users[0].text, users[1].text, 'repeated text remains two separate host submissions');
+    assert.notEqual(users[0].id, users[1].id);
+    assert.notEqual(users[0].turnId, users[0].submissionId);
+    assert.deepEqual((await f.projection.page(f.id)).messages.filter(message => message.role === 'user'), users);
+    f.projection.flush();
+    const persisted = f.create();
+    assert.deepEqual(persisted.snapshot(f.id).messages.filter(message => message.role === 'user'), users, 'display persistence retains the correlation without loading model history');
+    persisted.flush();
+    await f.reopen();
+    await restored.hydrate(f.id, f.store);
+    assert.deepEqual(restored.snapshot(f.id).messages.filter(message => message.role === 'user'), users);
+  } finally { restored.flush(); await f.dispose(); }
+});
+
 test('cold history replay keeps the starting state of a newly admitted request until its own run starts', async () => {
   const f = await fixture();
   const restored = f.create();
