@@ -21,6 +21,7 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
     const seq = ++request.current;
     lastRead.current = { options, direction };
     loadingPage.current = true;
+    setLoading(true);
     if (direction !== 'replace') setPaging(true);
     setError('');
     try {
@@ -29,7 +30,7 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
       if (!page) { setError('会话记录尚未确认，请重试读取。'); return undefined; }
       if (page.sessionId !== sessionId || (page.conversationId ?? '') !== (conversationId ?? '')) throw new Error('会话上下文已变化，请重新读取记录。');
       let next = mergeDisplayPage(pageRef.current, page, direction);
-      if (authority.current) next = mergeDisplaySnapshot(next, authority.current.messages, history.current);
+      if (authority.current) next = mergeDisplaySnapshot(next, authority.current.messages, history.current, authority.current.sourceIncomplete);
       publish(next); setLoading(false);
       return next;
     } catch (reason) {
@@ -42,7 +43,7 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
   const stored = value.scope === scope ? value.page : chatDisplayCache.get(sessionId, conversationId);
   const page = useMemo(() => {
     if (!snapshot) return stored;
-    if (stored) return mergeDisplaySnapshot(stored, snapshot.messages, protectHistory);
+    if (stored) return mergeDisplaySnapshot(stored, snapshot.messages, protectHistory, snapshot.sourceIncomplete);
     if (!snapshot.messages.length) return stored;
     const messages = snapshot.messages.slice(-50);
     return { sessionId, conversationId, messages, before: snapshot.truncated || snapshot.messages.length > messages.length ? messages[0].id : null,

@@ -27,6 +27,18 @@ import { reportNativeDiagnostic, type NativeDiagnosticStage } from './diagnostic
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
 
+/** Windows 扫描器可短暂占用目标；始终保留旧文件，重试耗尽仍返回原始发布错误。 */
+export async function renameNativeProjection(source: string, target: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  const delays = [10, 25, 50];
+  for (let attempt = 0; ; attempt++) {
+    try { await fsp.rename(source, target); return; }
+    catch (error) {
+      if (platform !== 'win32' || !['EPERM', 'EACCES', 'EBUSY'].includes((error as NodeJS.ErrnoException)?.code ?? '') || attempt >= delays.length) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, delays[attempt]));
+    }
+  }
+}
+
 const MAX_TEXT = 256 * 1024;
 const MAX_INPUT = 64 * 1024;
 const MAX_PROJECTION = 256 * 1024 * 1024;
@@ -68,6 +80,7 @@ interface ProjectionEntry {
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string; requestId?: string };
   missingSource?: string;
+  projectionFailed?: boolean;
 }
 
 /** 可重建的界面投影；原生账本是模型上下文的唯一来源。 */
@@ -108,7 +121,10 @@ export class NativeProjection {
   hydrate(id: string, store: NativeRunStore): Promise<void> {
     this.validId(id);
     const previous = this.serial.get(id) ?? Promise.resolve();
-    const pending = previous.catch(() => {}).then(() => this.rebuild(id, store)).catch(error => {
+    const pending = previous.catch(() => {}).then(() => this.rebuild(id, store)).then(() => {
+      this.entry(id).projectionFailed = false;
+    }).catch(error => {
+      this.entry(id).projectionFailed = true;
       const failure = error instanceof Error ? error : new Error(String(error));
       this.onError(id, failure); throw failure;
     });
@@ -384,7 +400,7 @@ export class NativeProjection {
       // 可使两种崩溃结果都能通过重放恢复。
       await fsp.rm(path.join(this.directory, `${id}.json`), { force: true });
       diagnosticStage = 'rename';
-      await fsp.rename(temporary, file);
+      await renameNativeProjection(temporary, file);
       if (process.platform !== 'win32') {
         diagnosticStage = 'sync';
         const directoryHandle = await fsp.open(this.directory, 'r');
@@ -484,6 +500,7 @@ export class NativeProjection {
   snapshot(id: string): ChatSnapshot {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
+    if (entry.projectionFailed) snapshot.sourceIncomplete = true;
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
     // 活动条目可能仅因清理未确认或日志失败而保留，
     // 以便隔离其目录；这并不能证明工作仍在运行。
@@ -499,10 +516,15 @@ export class NativeProjection {
     if (entry.stream?.text) snapshot.messages.push({ id: `${entry.stream.identity.runId}:stream:${entry.stream.responseNumber}`, turnId: entry.stream.identity.runId, role: 'assistant', text: entry.stream.text, createdAt: entry.stream.createdAt });
     return snapshot;
   }
-  page(id: string, options?: ChatPageOptions) { return this.archive.page(id, clone(this.entry(id).history.get(id)), options); }
-  readDisplay(id: string, options?: ChatPageOptions) {
+  page(id: string, options?: ChatPageOptions) {
+    const entry = this.entry(id), snapshot = clone(entry.history.get(id));
+    if (entry.projectionFailed) snapshot.sourceIncomplete = true;
+    return this.archive.page(id, snapshot, options);
+  }
+  async readDisplay(id: string, options?: ChatPageOptions) {
     this.validId(id);
-    return this.display.page(id, options, { conversationId: this.getSession(id).execution.conversationId, requireConversationMatch: true });
+    const page = await this.display.page(id, options, { conversationId: this.getSession(id).execution.conversationId, requireConversationMatch: true });
+    return this.entries.get(id)?.projectionFailed ? { ...page, incomplete: true } : page;
   }
   search(id: string, query: string, before?: string) { return this.archive.search(id, clone(this.entry(id).history.get(id)), query, before); }
   event(id: string, event: AgentEvent): void {

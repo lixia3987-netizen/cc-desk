@@ -49,7 +49,7 @@ export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming:
   const page: ChatDisplayPage = { ...incoming, messages,
     before: direction === 'after' && current ? current.before : incoming.before,
     after: direction === 'before' && current ? current.after : incoming.after,
-    incomplete: incoming.incomplete || current?.incomplete || false };
+    incomplete: direction === 'replace' ? incoming.incomplete : incoming.incomplete || current?.incomplete || false };
   while (messages.length > 1 && (messages.length > maxMessages || bytes > maxPageBytes)) {
     const trimEnd = direction === 'before' || preserveStart;
     const removed = trimEnd ? messages.pop()! : messages.shift()!;
@@ -63,7 +63,8 @@ export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming:
 }
 
 /** Authority updates the displayed tail; a detached historical page never grows across an unknown gap. */
-export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly ChatMessage[], protectHistory = false): ChatDisplayPage {
+export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly ChatMessage[], protectHistory = false, sourceIncomplete = false): ChatDisplayPage {
+  if (sourceIncomplete && !page.incomplete) page = { ...page, incomplete: true };
   if (!messages.length) return page; // An initial empty projection cannot erase a saved display page.
   const authorityIds = new Set(messages.map(message => message.id));
   const retained = page.messages.filter(message => {

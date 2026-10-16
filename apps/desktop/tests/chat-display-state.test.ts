@@ -16,6 +16,26 @@ test('display reconciliation retains unchanged message references and includes a
   assert.equal(sameChatMessage(input, { ...input, input: { nested: [1, 3] } }), false);
 });
 
+test('incomplete authority marks an existing display page even with no messages and ordinary complete snapshots cannot clear it', () => {
+  const current = page(['saved']);
+  const partial = mergeDisplaySnapshot(current, [], false, true);
+  assert.equal(partial.incomplete, true); assert.equal(current.incomplete, false);
+  assert.equal(partial.messages, current.messages, 'flag propagation neither deletes nor replaces the displayed records');
+  assert.equal(mergeDisplaySnapshot(partial, [message('saved'), message('new')], false, false).incomplete, true);
+  assert.equal(mergeDisplaySnapshot(partial, [], false, false), partial);
+});
+
+test('only a complete replacement read clears a previous incomplete display page', () => {
+  const partial = page(['saved'], { incomplete: true });
+  const complete = mergeDisplayPage(partial, page(['saved']));
+  assert.equal(complete.incomplete, false); assert.equal(complete.messages[0], partial.messages[0]);
+  assert.equal(mergeDisplayPage(partial, page(['saved'], { incomplete: true })).incomplete, true);
+  for (const direction of ['before', 'after'] as const) {
+    assert.equal(mergeDisplayPage(partial, page(['other']), direction).incomplete, true);
+    assert.equal(mergeDisplayPage(page(['saved']), page(['other'], { incomplete: true }), direction).incomplete, true);
+  }
+});
+
 test('earlier pages prepend without duplicate IDs and retain the latest cursor', () => {
   const current = page(['three', 'four'], { after: 'newer' });
   const next = mergeDisplayPage(current, page(['one', 'two', 'three'], { before: null, after: 'three' }), 'before');

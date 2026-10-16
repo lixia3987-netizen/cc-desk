@@ -80,16 +80,17 @@ async function cleanupFixture(root, directory) {
 test('Windows cleanup uses the production filtered environment and stdin identities through physical helper close', { skip: process.platform !== 'win32', timeout: 20000 }, async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-win-filtered-'));
   const ready = path.join(directory, 'ready');
-  const spawnStartedAt = Date.now();
   const root = spawn(process.execPath, ['-e', `require('node:fs').writeFileSync(${JSON.stringify(ready)},'ready');setInterval(()=>{},1000);`], { cwd: directory, stdio: 'ignore', windowsHide: true });
-  const spawnCompletedAt = Date.now();
   let helper, helperClosed = false;
   try {
     await until(() => exists(ready), 'fixture process must start');
+    // 本项验证过滤环境、stdin 身份传输和辅助进程物理关闭。
+    // 使用原 ChildProcess 仍持有的精确身份，避免 JS 毫秒窗遮住这些断言。
+    const { created } = await fixtureIdentity(root);
     const environment = commandEnvironment(process.env);
     assert.equal(Object.keys(environment).some(key => key.toUpperCase() === 'PSMODULEPATH'), false);
     const result = await runWindowsTreeCleanup({
-      anchors: [{ pid: root.pid, spawnStartedAt, spawnCompletedAt }], environment, timeoutMs: 8000,
+      anchors: [{ pid: root.pid, created }], environment, timeoutMs: 8000,
       onHelper: (child, whenClosed) => { helper = child; void whenClosed.then(() => { helperClosed = true; }); },
     });
     assert.equal(result.released, true, JSON.stringify(result.diagnostic));

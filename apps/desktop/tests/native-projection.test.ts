@@ -7,7 +7,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { BeginRunRequest, RunResult, ToolCall, PreparedTool, ApprovalDecision, ModelRequestDiagnostic } from '@cc-desk/agent-core';
 import { estimateResponsesInputTokens } from '@cc-desk/agent-node/responses-model';
-import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from '../src/main/engines/native/projection';
+import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE, renameNativeProjection } from '../src/main/engines/native/projection';
 import { ExecutionEvents } from '../src/main/execution/events';
 import type { Session } from '../src/shared/types';
 
@@ -28,6 +28,33 @@ async function fixture() {
   }, dispose: async () => { projection.flush(); await store.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+
+test('Windows display rename retries a transient sharing error and bounds persistent failures without removing the old target', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-rename-'));
+  const source = path.join(directory, 'next.jsonl'), target = path.join(directory, 'current.jsonl');
+  const rename = fs.rename;
+  let calls = 0, blocked = true;
+  const error = Object.assign(new Error('sharing failure'), { code: 'EPERM' });
+  t.mock.method(fs, 'rename', async (...args: Parameters<typeof fs.rename>) => {
+    calls++;
+    if (blocked || calls === 1) throw error;
+    return rename(...args);
+  });
+  try {
+    await fs.writeFile(source, 'new'); await fs.writeFile(target, 'old');
+    await assert.rejects(renameNativeProjection(source, target, 'win32'), problem => problem === error);
+    assert.equal(calls, 4);
+    assert.equal(await fs.readFile(target, 'utf8'), 'old');
+    assert.equal(await fs.readFile(source, 'utf8'), 'new');
+    calls = 0; blocked = false;
+    await renameNativeProjection(source, target, 'win32');
+    assert.equal(calls, 2);
+    assert.equal(await fs.readFile(target, 'utf8'), 'new');
+    calls = 0; blocked = true;
+    await assert.rejects(renameNativeProjection(source, target, 'linux'), problem => problem === error);
+    assert.equal(calls, 1, 'non-Windows failures retain their original immediate rejection');
+  } finally { await fs.rm(directory, { recursive: true, force: true }); }
+});
 
 test('repeated identical host state emits once while changed status, error or request identity still publishes', async () => {
   const f = await fixture();

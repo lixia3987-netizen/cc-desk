@@ -148,6 +148,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const display=useChatDisplay(session.id,session.execution.conversationId,snapshot,initialReading.current,readingPositions.get(session.id)?.follow===false);
   const [readingArchive,setReadingArchive]=useState(!!initialReading.current&&!initialReading.current.follow),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
   const archive=readingArchive?display.page:undefined,paging=display.paging;
+  const displayRetryScope=JSON.stringify([session.id,sourceConversation]);
+  const displayRetryGate=useRef<{scope:string} | undefined>(undefined);
+  const [displayRetry,setDisplayRetry]=useState<{scope:string}>();
+  const retryingDisplay=displayRetry?.scope===displayRetryScope;
   const [historyNotice,setHistoryNotice]=useState(''),[exhaustedBefore,setExhaustedBefore]=useState('');
   const visible=useMemo(()=>({sessionId:session.id,taskState:snapshot?.taskState??'idle',...snapshot,messages:display.page?.messages??[],pending:archive?[]:snapshot?.pending??[]}),[session.id,snapshot,display.page,archive]);
   const messageList=useRef<VirtualChatMessagesHandle>(null);
@@ -186,6 +190,25 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     const fresh=await sharedChatSnapshots.refreshFresh(session.id);
     return mounted.current&&currentConversation.current===sourceConversation?fresh:undefined;
   },[session.id,sourceConversation]);
+  const retryDisplay=async()=>{
+    if(displayRetryGate.current?.scope===displayRetryScope)return;
+    const operation={scope:displayRetryScope};displayRetryGate.current=operation;setDisplayRetry(operation);
+    const current=()=>mounted.current&&currentConversation.current===sourceConversation&&displayRetryGate.current===operation;
+    const saved=readingPositions.get(session.id),anchor=saved?.messageId??visible.messages[0]?.id;
+    try{
+      await paintActionFeedback();if(!current())return;
+      const fresh=await loadFresh();if(!current())return;
+      if(!fresh)throw new Error('尚未读取到最新会话状态，请稍后重试。');
+      // The authoritative read rebuilds derived files. Let its completeness flag
+      // reach React before reading the newly published, read-only display page.
+      await paintActionFeedback();if(!current())return;
+      if(archive&&anchor)await openPage({around:anchor},saved?.messageId?saved:undefined);
+      else await display.read();
+    }catch(error){if(current())onError(error);}
+    finally{
+      if(displayRetryGate.current===operation){displayRetryGate.current=undefined;if(mounted.current&&currentConversation.current===sourceConversation)setDisplayRetry(value=>value===operation?undefined:value);}
+    }
+  };
   useEffect(()=>{if(snapshot)approvalDrafts.reconcile(session.id,snapshot.pending);},[snapshot,session.id,approvalDrafts]);
   useEffect(()=>{
     if(!display.page||snapshot)return;
@@ -357,9 +380,9 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
     <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={handleScroll}><div className="chat-scroll-content" ref={content}>
       {display.loading&&!visible.messages.length&&!submissions.length&&<p className="panel-note chat-history-loading" role="status"><Loader2 size={14} className="spin"/>正在读取会话记录…</p>}
-      {display.error&&<div className="chat-error" role="alert"><p>{display.error}</p><button className="secondary compact" onClick={()=>void display.read()}>重试读取记录</button></div>}
+      {display.error&&<div className="chat-error" role="alert"><p>{display.error}</p><button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button></div>}
       {!display.loading&&!display.error&&!visible.messages.length&&!snapshot?.queue?.items.length&&!submissions.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
-      {archive?.incomplete&&<p className="panel-note">部分原始记录未导入、损坏或过长，可导出原始记录进一步查看。</p>}
+      {(display.page?.incomplete||snapshot?.sourceIncomplete)&&<div className="panel-note" role="status"><p>部分会话记录暂时无法完整显示，可重试读取或导出原始记录。</p>{!display.error&&<button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button>}</div>}
       {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
       <VirtualChatMessages ref={messageList} items={visible.messages} renderMessage={renderMessage} scrollRef={scroll} initialAnchorId={initialReading.current?.follow?undefined:initialReading.current?.messageId} initialFollow={initialReading.current?.follow}/>
       {!archive&&<PendingChatMessages submissions={displaySubmissions}/>}

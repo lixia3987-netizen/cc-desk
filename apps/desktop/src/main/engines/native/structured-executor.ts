@@ -221,7 +221,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     void operation.finally(() => { if (this.hydration.get(id) === operation) this.hydration.delete(id); }).catch(() => {});
     return operation;
   }
-  private async refreshProjection(id: string, ledger: NativeRunStore) {
+  private async refreshProjection(id: string, ledger: NativeRunStore, bestEffortDisplay = false) {
     const runs = ledger.listRuns();
     this.agentResultParents.set(id, new Map(runs.filter(run => run.identity.sessionId === id &&
       run.identity.conversationId === this.session(id).execution.conversationId).map(run => [run.identity.runId, structuredClone(run.identity)])));
@@ -250,7 +250,12 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       ...(attempt.usage ? { summaryUsage: { ...(attempt.usage.inputTokens === undefined ? {} : { inputTokens: attempt.usage.inputTokens }), ...(attempt.usage.outputTokens === undefined ? {} : { outputTokens: attempt.usage.outputTokens }) } } : {}),
       ...(summaryCostUSD === undefined ? {} : { summaryCostUSD }) } : undefined;
     this.contextViews.set(id, { headHash, canCompact, preview, ...(last ? { lastCompaction: { beforeBytes: last.beforeBytes, afterBytes: last.afterBytes, createdAt: last.createdAt, trigger: last.automaticRequestId ? 'automatic' : 'manual' } } : {}), ...(inTurn ? { inTurn } : {}) });
-    await this.projection.hydrate(id, ledger);
+    // 只有已确认提交后的显示发布和关闭前的显示修复允许退化。
+    // 上方账本/恢复读取仍必须成功；默认路径保留严格的执行前屏障。
+    if (bestEffortDisplay) {
+      try { await this.projection.hydrate(id, ledger); }
+      catch { /* 投影已标记不完整并报告原错误，下次 hydrate 从权威账本修复。 */ }
+    } else await this.projection.hydrate(id, ledger);
   }
   private async openTaskSession(id: string, forbiddenValues: string[] = []) {
     const session = this.session(id);
@@ -717,7 +722,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         beginRun: async request => { const accepted = await ledger.beginRun(request); if (accepted.kind === 'accepted') {
           this.store.change(state => { state.sessions.find(session => session.id === id)!.started = true; });
           if (active.continuedTaskId) { await assertTaskOwnership(); await active.tasks!.continueTask(active.continuedTaskId, identity, assertTaskOwnership); }
-        } await this.refreshProjection(id, ledger); return accepted; },
+        } await this.refreshProjection(id, ledger, true); return accepted; },
         append: async (run, event) => {
           // 模型完成不会释放仍在运行的命令。提交模型结果前，所有管理的
           // 进程树和终态回执必须先结束。
@@ -728,7 +733,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           const accepted = await ledger.append(run, event);
           try { if (!this.taskErrors.has(id)) await active.tasks!.committed(active.taskId, identity, event); }
           catch { this.taskErrors.set(id, '执行回执已保存，但任务证据暂不可用；验收状态未知，请结束后刷新核查。'); this.projection.notifyTask(id); }
-          await this.refreshProjection(id, ledger); return accepted;
+          await this.refreshProjection(id, ledger, true); return accepted;
         },
         ensureCapacity: (run, bytes) => ledger.ensureCapacity(run, bytes),
         checkpoint: (run, context) => ledger.checkpoint(run, context),
@@ -762,7 +767,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       });
       if (run.status === 'recovery_required' || !run.committed) { this.recovery.add(id); this.acknowledged.delete(id); }
       if (run.projectionError) this.options.onError?.(new Error('Native result was committed but its UI projection needs repair.'));
-      await this.refreshProjection(id, ledger);
+      await this.refreshProjection(id, ledger, true);
       try { if (!this.taskErrors.has(id)) await active.tasks.refresh(ledger); }
       catch { this.taskErrors.set(id, '本轮执行已结束，但任务记录未能完成核查，验收状态未知。'); this.projection.notifyTask(id); }
       const parentCounts = parentBudget.snapshot();
@@ -800,8 +805,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       try {
         if (active.store) {
           // 工作进程崩溃可能留下活动账本；下方重新打开并标记为 interrupted/unknown。
-          await this.refreshProjection(id, active.store);
-          await active.store.close(); active.store = undefined;
+          try { await this.refreshProjection(id, active.store, true); }
+          finally { await active.store.close(); active.store = undefined; }
         }
         this.projection.flush();
       } catch { this.recovery.add(id); active.cleanupUnconfirmed = true; }
