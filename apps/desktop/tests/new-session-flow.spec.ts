@@ -11,13 +11,28 @@ import type { AppState, Session } from '../src/shared/types';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { sessionRow, submitNewSession } from './helpers/session-ui';
 
-interface Submission { id: string; text: string; requestId?: string }
+interface Submission { id: string; text: string; attachments?: string[]; requestId?: string }
+interface FeedbackObservation {
+  enteredAt: number;
+  visible: boolean;
+  busy: string | null;
+  text: string;
+  paintedAt?: number;
+  paintedText?: string;
+}
 interface FlowFixture {
   holdCreate(): void;
   createEntered(): boolean;
   releaseCreate(): void;
+  holdSubmission(): void;
+  submissionEntered(): boolean;
+  releaseSubmission(): void;
+  holdSnapshots(): void;
+  snapshotEntered(): boolean;
+  releaseSnapshots(): void;
   failNextSubmission(): void;
-  records(): { creates: number; submissions: Submission[] };
+  loseNextAcknowledgement(): void;
+  records(): { creates: number; submissions: Submission[]; acceptedMessages: number; createFeedback: FeedbackObservation[]; submissionFeedback: FeedbackObservation[] };
   dispose(): void;
 }
 type FlowGlobal = typeof globalThis & { firstSendFixture: FlowFixture };
@@ -50,13 +65,33 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
     type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
     const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
     const original = handlers?.get('session:create');
-    if (!original) throw new Error('Expected the real session:create handler');
-    let creates = 0, fail = false;
+    const snapshot = handlers?.get('chat:snapshot');
+    if (!original || !snapshot) throw new Error('Expected the real session:create and chat:snapshot handlers');
+    let creates = 0, fail = false, loseAcknowledgement = false;
     let gate: { entered: boolean; resolve?: () => void; reject?: (error: Error) => void } | undefined;
+    let submissionGate: typeof gate;
+    let snapshotGate: { entered: boolean; promise: Promise<void>; resolve(): void; reject(error: Error): void } | undefined;
     const submissions: Submission[] = [];
+    const accepted = new Map<string, string>();
+    const acceptedPayloads = new Map<string, string>();
+    const createFeedback: FeedbackObservation[] = [], submissionFeedback: FeedbackObservation[] = [];
+    const observeFeedback = async (event: IpcMainInvokeEvent): Promise<FeedbackObservation> => {
+      // Capture the IPC entry time before querying the renderer. The frame marker
+      // must predate entry, so a later DOM update cannot make this assertion pass.
+      const enteredAt = Date.now();
+      const observed = await event.sender.executeJavaScript(`(() => {
+        const card = document.querySelector('[aria-label="首条消息提交状态"]');
+        const painted = window.firstSendPaintedFeedback;
+        return { visible: !!card && card.getBoundingClientRect().height > 0,
+          busy: card?.getAttribute('aria-busy') ?? null, text: card?.textContent ?? '',
+          ...(painted ? { paintedAt: painted.at, paintedText: painted.text } : {}) };
+      })()`);
+      return { enteredAt, ...observed };
+    };
     ipcMain.removeHandler('session:create');
     ipcMain.handle('session:create', async (event, input: unknown) => {
       creates++;
+      createFeedback.push(await observeFeedback(event));
       if (gate) {
         gate.entered = true;
         await new Promise<void>((resolve, reject) => { gate!.resolve = resolve; gate!.reject = reject; });
@@ -64,18 +99,46 @@ async function workspace(withExisting = false, engineDefaults: AppState['setting
       return original(event, input);
     });
     ipcMain.removeHandler('chat:submit');
-    ipcMain.handle('chat:submit', (_event, input: Submission) => {
+    ipcMain.removeHandler('chat:snapshot');
+    ipcMain.handle('chat:snapshot', async (event, ...args: unknown[]) => {
+      const pending = snapshotGate;
+      if (pending) { pending.entered = true; await pending.promise; }
+      return snapshot(event, ...args);
+    });
+    ipcMain.handle('chat:submit', async (event, input: Submission) => {
       submissions.push(input);
+      submissionFeedback.push(await observeFeedback(event));
+      if (submissionGate) {
+        submissionGate.entered = true;
+        await new Promise<void>((resolve, reject) => { submissionGate!.resolve = resolve; submissionGate!.reject = reject; });
+      }
       if (fail) { fail = false; throw new Error('测试首次提交失败，请重试'); }
-      return { messageId: input.requestId ?? 'fixture-submission' };
+      const key = input.requestId ?? 'fixture-submission';
+      const payload = JSON.stringify({ id: input.id, text: input.text, attachments: input.attachments });
+      if (acceptedPayloads.has(key) && acceptedPayloads.get(key) !== payload) throw new Error('Same request ID cannot submit a changed payload');
+      if (!accepted.has(key)) { accepted.set(key, `accepted-${accepted.size + 1}`); acceptedPayloads.set(key, payload); }
+      if (loseAcknowledgement) { loseAcknowledgement = false; throw new Error('测试接收成功但确认丢失，请原样重试'); }
+      return { messageId: accepted.get(key)! };
     });
     (globalThis as FlowGlobal).firstSendFixture = {
       holdCreate: () => { gate = { entered: false }; },
       createEntered: () => !!gate?.entered,
       releaseCreate: () => { const current = gate; gate = undefined; if (!current?.resolve) throw new Error('No pending create request'); current.resolve(); },
+      holdSubmission: () => { submissionGate = { entered: false }; },
+      submissionEntered: () => !!submissionGate?.entered,
+      releaseSubmission: () => { const current = submissionGate; submissionGate = undefined; if (!current?.resolve) throw new Error('No pending submission'); current.resolve(); },
+      holdSnapshots: () => {
+        let resolve!: () => void, reject!: (error: Error) => void;
+        const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+        void promise.catch(() => {});
+        snapshotGate = { entered: false, promise, resolve, reject };
+      },
+      snapshotEntered: () => !!snapshotGate?.entered,
+      releaseSnapshots: () => { const current = snapshotGate; snapshotGate = undefined; current?.resolve(); },
       failNextSubmission: () => { fail = true; },
-      records: () => ({ creates, submissions }),
-      dispose: () => gate?.reject?.(new Error('Fixture disposed')),
+      loseNextAcknowledgement: () => { loseAcknowledgement = true; },
+      records: () => ({ creates, submissions, acceptedMessages: accepted.size, createFeedback, submissionFeedback }),
+      dispose: () => { gate?.reject?.(new Error('Fixture disposed')); submissionGate?.reject?.(new Error('Fixture disposed')); snapshotGate?.reject(new Error('Fixture disposed')); },
     };
   });
   return { app, page, existing, project, projectPath, data, git, close: async () => {
@@ -98,6 +161,121 @@ async function openNew(page: Page) {
   await expect(page.locator('#root')).toHaveJSProperty('inert', false);
   return form;
 }
+
+async function observePaintedFeedback(page: Page) {
+  await page.evaluate(() => {
+    const scope = window as typeof window & { firstSendPaintedFeedback?: { at: number; text: string } };
+    delete scope.firstSendPaintedFeedback;
+    const observe = () => {
+      const card = document.querySelector('[aria-label="首条消息提交状态"]');
+      if (card && card.getBoundingClientRect().height > 0) {
+        scope.firstSendPaintedFeedback ??= { at: Date.now(), text: card.textContent ?? '' };
+      }
+      requestAnimationFrame(observe);
+    };
+    requestAnimationFrame(observe);
+  });
+}
+
+function expectPaintedBeforeIpc(observation: FeedbackObservation, text: string) {
+  expect(observation.visible).toBe(true);
+  expect(observation.busy).toBe('true');
+  expect(observation.text).toContain(text);
+  expect(observation.paintedAt).toBeDefined();
+  expect(observation.paintedAt!).toBeLessThanOrEqual(observation.enteredAt);
+  expect(observation.paintedText).toContain(text);
+}
+
+test('new session feedback is painted before delayed create and submit, repeated clicks dispatch once and late completion preserves selection', async () => {
+  const f = await workspace(true);
+  try {
+    const { page, app } = f, form = await openNew(page);
+    const text = '首条任务必须立即显示，后台创建与接收可以继续等待';
+    const file = path.join(f.projectPath, '待提交说明.txt');
+    await fs.writeFile(file, 'retained attachment');
+    await picker(app, file); await form.getByRole('button', { name: '添加附件', exact: true }).click();
+    await expect(form.getByText('待提交说明.txt', { exact: true })).toBeVisible();
+    await form.getByLabel('提示词编辑器', { exact: true }).fill(text);
+    await observePaintedFeedback(page);
+    await app.evaluate(() => { const fixture = (globalThis as FlowGlobal).firstSendFixture; fixture.holdCreate(); fixture.holdSubmission(); });
+    await form.getByRole('button', { name: '发送任务', exact: true }).evaluate(button => { (button as HTMLButtonElement).click(); (button as HTMLButtonElement).click(); });
+    await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.createEntered())).toBe(true);
+    const card = form.getByRole('region', { name: '首条消息提交状态', exact: true });
+    await expect(card).toBeVisible(); await expect(card).toHaveAttribute('aria-busy', 'true');
+    await expect(card).toContainText(text); await expect(card).toContainText('待提交说明.txt');
+    await expect(card).toContainText('正在创建会话并提交消息…');
+    await expect(form.getByRole('button', { name: '提交中…', exact: true })).toBeDisabled();
+    const creating = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(creating.creates).toBe(1); expect(creating.submissions).toHaveLength(0);
+    expectPaintedBeforeIpc(creating.createFeedback[0], text);
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseCreate());
+    await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.submissionEntered())).toBe(true);
+    await expect(card).toContainText('正在提交首条消息…');
+    const submitting = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(submitting.creates).toBe(1); expect(submitting.submissions).toHaveLength(1);
+    expect(submitting.acceptedMessages).toBe(0); expectPaintedBeforeIpc(submitting.submissionFeedback[0], text);
+    await sessionRow(page, f.existing.title).click();
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseSubmission());
+    await expect.poll(async () => (await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records())).acceptedMessages).toBe(1);
+    await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    await expect(page.getByRole('heading', { name: f.existing.title, exact: true })).toBeVisible();
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.selectedSessionId).toBe(f.existing.id);
+    const done = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(done.creates).toBe(1); expect(done.submissions).toHaveLength(1);
+    await expect(page.getByRole('region', { name: '首条消息提交状态', exact: true })).toHaveCount(0);
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  } finally { await f.close(); }
+});
+
+test('new session feedback rejection preserves the original draft and a lost acknowledgement retries the same accepted message', async () => {
+  const f = await workspace(true);
+  try {
+    const { page, app } = f, form = await openNew(page), text = '失败和确认丢失都不能丢掉这段原稿';
+    const editor = form.getByLabel('提示词编辑器', { exact: true });
+    const file = path.join(f.projectPath, '失败后仍保留.txt');
+    await fs.writeFile(file, 'same source, same staged owned attachment');
+    await picker(app, file); await form.getByRole('button', { name: '添加附件', exact: true }).click();
+    await expect(form.getByText('失败后仍保留.txt', { exact: true })).toBeVisible();
+    await editor.fill(text); await observePaintedFeedback(page);
+    await app.evaluate(() => { const fixture = (globalThis as FlowGlobal).firstSendFixture; fixture.holdSubmission(); fixture.failNextSubmission(); });
+    await form.getByRole('button', { name: '发送任务', exact: true }).click();
+    await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.submissionEntered())).toBe(true);
+    await expect(form.getByRole('region', { name: '首条消息提交状态', exact: true })).toContainText(text);
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseSubmission());
+    await expect(page.locator('.error-banner')).toContainText('测试首次提交失败');
+    await expect(form.getByRole('region', { name: '首条消息提交状态', exact: true })).toHaveCount(0);
+    await expect(editor).toHaveValue(text); await expect(editor).toBeEnabled();
+    await expect(form.getByText('失败后仍保留.txt', { exact: true })).toBeVisible();
+    await expect(form.getByRole('button', { name: '发送任务', exact: true })).toBeEnabled();
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.loseNextAcknowledgement());
+    await form.getByRole('button', { name: '发送任务', exact: true }).click();
+    await expect(page.locator('.error-banner')).toContainText('测试接收成功但确认丢失');
+    await expect(editor).toHaveValue(text);
+    const before = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(before.creates).toBe(1); expect(before.submissions).toHaveLength(2); expect(before.acceptedMessages).toBe(1);
+    await sessionRow(page, f.existing.title).click(); await openNew(page);
+    await expect(form.getByLabel('提示词编辑器', { exact: true })).toHaveValue(text);
+    await expect(form.getByText('失败后仍保留.txt', { exact: true })).toBeVisible();
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.holdSnapshots());
+    await form.getByRole('button', { name: '发送任务', exact: true }).click();
+    await expect(form).toHaveCount(0);
+    const after = await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.records());
+    expect(after.creates).toBe(1); expect(after.submissions).toHaveLength(3); expect(after.acceptedMessages).toBe(1);
+    expect(new Set(after.submissions.map(item => item.requestId)).size).toBe(1);
+    expect(after.submissions[0].attachments).toHaveLength(1);
+    expect(after.submissions.every(item => JSON.stringify(item.attachments) === JSON.stringify(after.submissions[0].attachments))).toBe(true);
+    expect(after.submissions.every(item => item.text === text)).toBe(true);
+    await expect.poll(() => app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.snapshotEntered())).toBe(true);
+    const handoff = page.getByLabel('消息提交状态', { exact: true });
+    await expect(handoff).toContainText(text);
+    await expect(handoff).toContainText('失败后仍保留.txt');
+    await expect(handoff).toContainText('正在等待会话启动…');
+    await expect(handoff.locator('[data-submission-request-id]')).toHaveAttribute('data-submission-request-id', after.submissions[0].requestId!);
+    await expect(page.locator('.chat-empty')).toHaveCount(0);
+    await app.evaluate(() => (globalThis as FlowGlobal).firstSendFixture.releaseSnapshots());
+    await expect(page.locator('.error-banner')).toHaveCount(0);
+  } finally { await f.close(); }
+});
 
 test('new session: choose or reuse a directory without an empty record, and first send groups sessions by workspace', async () => {
   const f = await workspace();

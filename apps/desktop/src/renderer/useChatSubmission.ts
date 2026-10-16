@@ -1,43 +1,41 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { Attachment } from '../shared/types';
+import type { ChatSnapshot } from '../shared/chat';
+import { paintActionFeedback } from './action-feedback';
+import { chatSubmissionState, visibleChatSubmissions } from './chat-submission-state';
+import { runChatSubmission } from './chat-submission-runner';
 
-/** 消息被持久接收后，提交即完成；当前轮次独立继续执行。 */
-export function useChatSubmission({ sessionId, draft, attachments, nativeTaskId, disabled, isBlocked, onAccepted, onSent, onAttachmentsSent, onError, refresh }: {
-  sessionId: string; draft: string; attachments: Attachment[]; disabled: boolean;
+/** 接收前保留草稿，接收后保留消息反馈，直到持久队列或正式用户消息接管。 */
+export function useChatSubmission({ sessionId, conversationId, snapshot, draft, attachments, nativeTaskId, disabled, isBlocked, onSubmitting, onAccepted, onSent, onAttachmentsSent, onError, refresh }: {
+  sessionId: string; conversationId?: string; snapshot?: Pick<ChatSnapshot, 'queue' | 'messages'>;
+  draft: string; attachments: Attachment[]; disabled: boolean;
   nativeTaskId?: string;
   isBlocked?: () => boolean;
+  onSubmitting?: () => void;
   onAccepted: () => void; onSent: (expectedDraft: string) => void;
   onAttachmentsSent: (files: Attachment[]) => void; onError: (error: unknown) => void;
   refresh: () => Promise<void>;
 }) {
-  const [submitting, setSubmitting] = useState(false);
-  const inFlight = useRef(false), mounted = useRef(true);
-  const retry = useRef<{ draft: string; files: Attachment[]; requestId: string; nativeTaskId?: string } | undefined>(undefined);
+  const key = JSON.stringify([sessionId, conversationId ?? '']);
+  const read = useCallback(() => chatSubmissionState.getSnapshot(key), [key]);
+  const records = useSyncExternalStore(chatSubmissionState.subscribe, read, read);
+  const mounted = useRef(true), currentScope = useRef(key);
+  currentScope.current = key;
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => { chatSubmissionState.reconcile(key, snapshot?.queue, snapshot?.messages); }, [key, snapshot?.queue, snapshot?.messages]);
 
   const submit = async () => {
-    if (disabled || isBlocked?.() || inFlight.current || (!draft.trim() && !attachments.length)) return;
+    if (disabled || isBlocked?.() || chatSubmissionState.hasInFlight(key) || (!draft.trim() && !attachments.length)) return;
     if (draft.length > 60000) { onError(new Error('单次提示词请控制在 60,000 个字符以内。')); return; }
-    // 即使用户在 IPC 等待期间编辑内容，或在收到确认前
-    // 切换到其他会话，也要保留已接收草稿与附件的标识。
-    const submittedDraft = draft, submittedFiles = [...attachments], submittedTaskId = nativeTaskId;
-    if (!retry.current || retry.current.draft !== submittedDraft || retry.current.nativeTaskId !== submittedTaskId || retry.current.files.length !== submittedFiles.length
-      || retry.current.files.some((file, index) => file.path !== submittedFiles[index].path)) {
-      retry.current = { draft: submittedDraft, files: submittedFiles, requestId: crypto.randomUUID(), nativeTaskId: submittedTaskId };
-    }
-    const requestId = retry.current.requestId;
-    inFlight.current = true; setSubmitting(true);
-    try {
-      await window.desktop.submitChat(sessionId, submittedDraft.trim(), submittedFiles.map(file => file.path), requestId, { nativeTaskId: submittedTaskId });
-      retry.current = undefined;
-      onSent(submittedDraft);
-      onAttachmentsSent(submittedFiles);
-      if (mounted.current) onAccepted();
-    } catch (error) { onError(error); }
-    finally {
-      inFlight.current = false;
-      if (mounted.current) { setSubmitting(false); void refresh().catch(onError); }
-    }
+    const submission = chatSubmissionState.begin(key, draft, attachments, nativeTaskId);
+    if (!submission) return;
+    onSubmitting?.();
+    await runChatSubmission({ scope: key, state: chatSubmissionState, submission,
+      paint: paintActionFeedback,
+      send: () => window.desktop.submitChat(sessionId, submission.text, submission.files.map(file => file.path), submission.requestId, { nativeTaskId: submission.nativeTaskId }),
+      isCurrent: () => mounted.current && currentScope.current === key,
+      onSent, onAttachmentsSent, onAccepted, onError, refresh });
   };
-  return { submitting, submit, isSubmitting: () => inFlight.current };
+  return { submitting: chatSubmissionState.hasInFlight(key), submissions: visibleChatSubmissions(records, snapshot?.queue, snapshot?.messages), submit,
+    isSubmitting: () => chatSubmissionState.hasInFlight(key) };
 }

@@ -48,8 +48,8 @@ export class ChatQueue {
     return state;
   }
   snapshot(id: string): ChatQueueSnapshot {
-    const { items, paused, error } = this.state(id);
-    return structuredClone({ items, paused, error });
+    const { items, paused, error, receipts } = this.state(id);
+    return structuredClone({ items, paused, error, receipts: receipts.map(({ requestId, messageId }) => ({ requestId, messageId })) });
   }
   private commit(id: string, mutate: (next: StoredChatQueue) => void) {
     const next = structuredClone(this.state(id)); mutate(next);
@@ -85,7 +85,7 @@ export class ChatQueue {
       }
       if (state.items.length >= 100) throw new Error('最多保留 100 条排队消息，请先移除部分消息。');
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
-      const item: QueuedChatMessage = { id: randomUUID(), text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments: structuredClone(nativeImageAttachments) } : {}) };
+      const item: QueuedChatMessage = { id: randomUUID(), clientRequestId: requestId, text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments: structuredClone(nativeImageAttachments) } : {}) };
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
         assertAdmission();
         item.attachmentNames = attachmentNames;

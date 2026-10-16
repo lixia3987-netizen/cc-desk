@@ -1,4 +1,4 @@
-import { Check, Command, X } from 'lucide-react';
+import { Check, Command, Loader2, X } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { version as appVersion } from '../../package.json';
 import { cliUpdateBusy, type CLIUpdateState } from '../shared/cli-update';
@@ -35,6 +35,8 @@ import { currentEngineStatus } from './workspace/engine-status';
 import { useNativeConnectionReadiness } from './useNativeConnectionReadiness';
 import { importNativePastedImages, nativePasteTargetAvailable, withAttachmentImport } from './native-image-paste';
 import { sessionReadLifecycle } from './session-read-lifecycle';
+import { paintActionFeedback } from './action-feedback';
+import { chatSubmissionState } from './chat-submission-state';
 
 type Modal = 'continuation' | 'settings' | 'history' | 'palette' | null;
 interface BlankSession {
@@ -73,7 +75,7 @@ export function App() {
   const [notice, setNotice] = useState('');
   const [operationBusy, setBusy] = useState(false);
   const busy = operationBusy;
-  const latestBusy = useRef(busy); latestBusy.current = busy;
+  const latestBusy = useRef(false);
   const latestState = useRef(state); latestState.current = state;
   const selection = useRef(new SessionSelection());
   const stateEvents = useRef(0);
@@ -139,6 +141,7 @@ export function App() {
   const project = state?.projects.find(p => p.id === (active?.projectId ?? blank?.input.projectId ?? projectId));
   const applyState = useCallback((value: AppState) => {
     latestState.current = value; setState(value); retainSessions(value.sessions.map(session => session.id));
+    chatSubmissionState.retain(value.sessions.map(session => JSON.stringify([session.id, session.execution.conversationId ?? ''])));
     sessionReadLifecycle.retain(value.sessions.map(session => session.id));
     const id = selection.current.receive(value.selectedSessionId);
     setProjectId(current => current === 'all' || value.projects.some(project => project.id === current) ? current : 'all');
@@ -158,8 +161,9 @@ export function App() {
     setDataPath(snapshot.dataPath); setPlatform(snapshot.platform);
   }, [applyState]);
   const perform = useCallback(async (action: () => Promise<unknown>) => {
+    if (latestBusy.current) return;
     setError(''); latestBusy.current = true; setBusy(true);
-    try { await action(); } catch (error) { report(error); } finally { latestBusy.current = false; setBusy(false); }
+    try { await paintActionFeedback(); await action(); } catch (error) { report(error); } finally { latestBusy.current = false; setBusy(false); }
   }, [report]);
   const preferences = useWorkspacePreferences({ settings: state?.settings, open: modal === 'settings', refresh, perform, report, notify: setNotice });
   const { themeId, value: draftSettings } = preferences;
@@ -305,11 +309,13 @@ export function App() {
   };
   const sendBlank = async (owner: BlankSession) => {
     if (latestBusy.current || owner.sending || owner.importing) return;
-    const text = owner.text, files = [...owner.files];
+    const input = structuredClone(owner.input), text = owner.text, files = structuredClone(owner.files);
     if (!text.trim() && !files.length) return;
     owner.sending = true; owner.error = ''; setError(''); changedBlank();
     try {
-      const session = await owner.submission.submit(owner.input, text, files);
+      await paintActionFeedback();
+      const session = await owner.submission.submit(input, text, files);
+      const receipt = owner.submission.receipt;
       clearSentDraft(session.id, text);
       // 即使后续读取快照失败，接收结果也已确定；应在
       // 防抖状态广播到达前，让已确认的会话可用。
@@ -320,6 +326,10 @@ export function App() {
         retainSessions(next.sessions.map(item => item.id));
         sessionReadLifecycle.retain(next.sessions.map(item => item.id));
       }
+      chatSubmissionState.retain((latestState.current?.sessions ?? []).map(item => JSON.stringify([item.id, item.execution.conversationId ?? ''])));
+      if (receipt) chatSubmissionState.adoptAccepted(JSON.stringify([session.id, session.execution.conversationId ?? '']), {
+        ...receipt, draft: text, files: files.map(({ path, name, bytes }) => ({ path, name, bytes })),
+      });
       if (latestBlankKey.current === owner.key && blankSessions.current.get(owner.key) === owner) {
         latestBlankKey.current = undefined; setBlankKey(undefined);
         setProjectId('all'); setSearch(''); setArchived(false); selectSession(session.id);
@@ -345,7 +355,7 @@ export function App() {
     if (!state.settings.idePath?.trim()) {
       setError(''); setSettingsTarget({ scope: 'defaults', subpage: 'ide' }); preferences.begin('workspace', true); setModal('settings'); return;
     }
-    void perform(async () => { await window.desktop.openIde(target); setNotice('已发送到指定 IDE'); });
+    return perform(async () => { await window.desktop.openIde(target); setNotice('已发送到指定 IDE'); });
   };
   const openHistory = () => perform(async () => {
     let id = projectId === 'all' ? (blank?.input.projectId || active?.projectId || state?.projects[0]?.id) : projectId;
@@ -395,6 +405,7 @@ export function App() {
   const taskCount = state.sessions.filter(isSessionBusy).length;
 
   return <div className="app">
+    {operationBusy && <div className="operation-feedback" role="status" aria-live="polite"><Loader2 size={14} className="spin" />正在处理操作…</div>}
     <SessionSidebar state={state} cap={cap} historyAvailable={!!historySources.length} activeId={activeId} projectId={projectId} archived={archived} search={search} collapsedGroups={collapsedGroups}
       openNew={openNew} selectSession={selectSession} executors={executors} busy={busy || [...blankSessions.current.values()].some(item => item.sending)} perform={perform} report={report} flushDrafts={flushDrafts} setNotice={setNotice}
       onSessionHidden={id => {
@@ -426,7 +437,7 @@ export function App() {
           else if (next.engineConfig.options.permissionMode !== blank.input.engineConfig.options.permissionMode) blank.permissionOverridden = true;
           blank.input = next; changedBlank();
         } }}
-        busy={busy || blank.sending} created={!!blank.submission.session} text={blank.text}
+        busy={busy || blank.sending} submitting={blank.sending} created={!!blank.submission.session} text={blank.text}
         onText={text => { blank.text = text; if (blank.submission.session) saveDraftFor(blank.submission.session.id, text); changedBlank(); }}
         onSend={() => void sendBlank(blank)} onChooseDirectory={() => void chooseBlankDirectory(blank)} onOpenSettings={blank.input.providerId === 'native' ? openDefaultContextSettings : openSettings}
         attachments={blank.files} attachmentBusy={blank.importing}

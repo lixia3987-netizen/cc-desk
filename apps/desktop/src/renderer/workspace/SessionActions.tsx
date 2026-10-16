@@ -1,9 +1,10 @@
-import { Archive, ArrowDownToLine, Copy, FolderOpen, GitBranch, Pencil, Square, Trash2, X } from 'lucide-react';
+import { Archive, ArrowDownToLine, Copy, FolderOpen, GitBranch, Loader2, Pencil, Square, Trash2, X } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ExecutionDescriptor } from '../../shared/execution';
 import { sessionActionAvailability } from './session-action-availability';
 import type { Project, Session } from '../../shared/types';
 import { Dialog } from '../Dialog';
+import { PendingAction, type PendingActionState } from '../pending-action';
 import { sessionReadLifecycle } from '../session-read-lifecycle';
 import { RenameSession } from './RenameSession';
 import { SessionActionMenu, type SessionActionMenuAnchor, type SessionActionMenuItem } from './SessionActionMenu';
@@ -50,6 +51,8 @@ export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew,
   const [renameTarget, setRenameTarget] = useState<Session>();
   const [forceText, setForceText] = useState(''), [actionError, setActionError] = useState(''), [submitting, setSubmitting] = useState(false);
   const pending = useRef(false), mounted = useRef(true), targetRef = useRef(confirmation), renameRef = useRef(renameTarget);
+  const operation = useRef(new PendingAction());
+  const [menuPending, setMenuPending] = useState<PendingActionState>();
   const cancelButton = useRef<HTMLButtonElement>(null), forceInput = useRef<HTMLInputElement>(null);
   targetRef.current = confirmation; renameRef.current = renameTarget;
   const targetSession = sessions.find(session => session.id === confirmation?.id);
@@ -57,18 +60,23 @@ export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew,
   const matchingMenuTarget = !!menu && !!menuSession && menu.archived === menuSession.archived && menu.worktreePath === menuSession.worktree;
   const matchingTarget = !!confirmation && !!targetSession && confirmation.worktreePath === targetSession.worktree && confirmation.archived === targetSession.archived;
   const availability = (session: Session) => sessionActionAvailability(session, executors.find(item => item.providerId === session.execution.providerId && item.mode === session.execution.mode));
-  const actionBlocked = busy || submitting || !targetSession || !availability(targetSession).manage;
-  const run = (action: () => Promise<unknown>) => { void perform(action).catch(report); };
+  const actionBlocked = busy || submitting || !!menuPending || !targetSession || !availability(targetSession).manage;
+  const run = (action: () => Promise<unknown>, label = '正在处理会话操作…', paint = true) => {
+    if (busy || pending.current || operation.current.state) return;
+    void operation.current.run({ key: menuSession?.id ?? '', label }, () => perform(action), value => {
+      if (mounted.current) { setMenuPending(value); }
+    }, paint ? undefined : () => Promise.resolve()).catch(report);
+  };
   const closeConfirmation = () => {
-    if (pending.current || busy) return;
+    if (pending.current || operation.current.state || busy) return;
     setConfirmation(undefined); setForceText(''); setActionError('');
   };
   const closeRename = () => {
-    if (pending.current || busy) return;
+    if (pending.current || operation.current.state || busy) return;
     setRenameTarget(undefined); setActionError('');
   };
   const openConfirmation = (session: Session, action: 'archive' | 'delete') => {
-    if (pending.current || busy || !availability(session).manage) return;
+    if (pending.current || operation.current.state || busy || !availability(session).manage) return;
     setConfirmation({ action, id: session.id, title: session.title, archived: session.archived, worktreePath: session.worktree });
     setForceText(''); setActionError('');
   };
@@ -137,7 +145,7 @@ export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew,
     const target = menuSession;
     const allowed = availability(target);
     const taskBusy = allowed.taskBusy;
-    const blocked = busy || submitting;
+    const blocked = busy || submitting || !!menuPending;
     const descriptor = executors.find(item => item.providerId === target.execution.providerId && item.mode === target.execution.mode);
     const providerName = descriptor?.displayName ?? target.execution.providerId;
     items.push({ id: 'rename', label: '重命名会话', icon: <Pencil size={15} />, disabled: blocked,
@@ -156,14 +164,14 @@ export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew,
       { id: 'open-folder', label: '打开工作目录', icon: <FolderOpen size={15} />, disabled: blocked,
         onSelect: () => run(() => window.desktop.openFolder(target.id)) },
       { id: 'export', label: '导出会话记录', icon: <ArrowDownToLine size={15} />, disabled: blocked || !allowed.export,
-        onSelect: () => run(async () => { const file = await window.desktop.exportTranscript(target.id); if (file) setNotice('会话记录已导出'); }) },
+        onSelect: () => run(async () => { const file = await window.desktop.exportTranscript(target.id); if (file) setNotice('会话记录已导出'); }, `正在导出「${target.title}」…`, false) },
     );
     if (taskBusy) items.push({ id: 'interrupt', label: '中断任务', icon: <Square size={15} />, separatorBefore: true,
-      disabled: blocked || !allowed.stop || target.status === 'stopping', onSelect: () => run(() => window.desktop.interruptSession(target.id)) });
+      disabled: blocked || !allowed.stop || target.status === 'stopping', onSelect: () => run(() => window.desktop.interruptSession(target.id), `正在中断「${target.title}」…`) });
     if (taskBusy || target.status === 'running') items.push({ id: 'stop',
       label: taskBusy ? '停止会话进程' : target.execution.mode === 'structured' ? '关闭空闲会话进程' : '关闭终端',
       icon: <X size={15} />, separatorBefore: !taskBusy, disabled: blocked || !allowed.stop || target.status === 'stopping',
-      onSelect: () => run(() => window.desktop.stopSession(target.id)) });
+      onSelect: () => run(() => window.desktop.stopSession(target.id), `正在关闭「${target.title}」…`) });
     items.push(
       { id: 'archive', label: target.archived ? '取消归档' : '归档会话', icon: <Archive size={15} />, separatorBefore: true,
         disabled: blocked || !allowed.manage, onSelect: () => openConfirmation(target, 'archive') },
@@ -172,6 +180,7 @@ export function SessionActions({ sessions, projects, menu, onCloseMenu, openNew,
     );
   }
   return <>
+    {menuPending && <p className="panel-note session-action-progress" role="status" aria-live="polite"><Loader2 size={13} className="spin" />{menuPending.label}</p>}
     {menu && menuSession && matchingMenuTarget && <SessionActionMenu key={menu.sessionId} anchor={menu} title={menuSession.title} items={items} onClose={onCloseMenu} />}
     {renameTarget && sessions.some(session => session.id === renameTarget.id) && <Dialog label="重命名会话" onClose={closeRename} closeDisabled={busy || submitting}>
       <RenameSession key={renameTarget.id} target={renameTarget} busy={busy || submitting} error={actionError} onSave={saveRename} onClose={closeRename} />

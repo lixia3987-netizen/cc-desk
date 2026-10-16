@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ChatRuntime } from '../src/main/chat-runtime';
+import { ChatHistory } from '../src/main/chat-history';
 import { ClaudeStructuredExecutor } from '../src/main/engines/claude/structured-executor';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { StateStore } from '../src/main/store';
@@ -112,6 +113,42 @@ test('Claude public executor preserves local identity and rejects sessions owned
     assert.throws(() => executor.hydrate(s.session.id), /只支持.*Claude/);
     assert.throws(() => executor.send(s.session.id, 'foreign session'), /只支持.*Claude/);
     assert.deepEqual(executor.attention(), []);
+  } finally { await executor.shutdown(); await s.cleanup(); }
+});
+
+test('Claude executor persists host submission IDs independently from wire IDs and identical message text', async () => {
+  const s = setup(), events = new ExecutionEvents(), submissionIds = [randomUUID(), randomUUID()];
+  const executor = new ClaudeStructuredExecutor(s.store, () => capabilities, events, {
+    transcriptExists: async () => false, initializationTimeoutMs: 2000,
+    invocation: () => ({ file: process.execPath, args: [path.join(s.directory, 'fixture.cjs'), s.session.execution.conversationId!] }),
+  });
+  try {
+    for (const requestId of submissionIds) {
+      const turn = executor.send(s.session.id, 'identical user text', [], undefined, { requestId });
+      const deadline = Date.now() + 3000;
+      while (!executor.snapshot(s.session.id).pending.length) {
+        if (Date.now() > deadline) throw new Error('Timed out waiting for approval');
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      const user = executor.snapshot(s.session.id).messages.filter(message => message.role === 'user').at(-1)!;
+      assert.equal(user.submissionId, requestId, 'host correlation is visible while the actual turn is still pending');
+      assert.notEqual(user.id, requestId); assert.notEqual(user.sourceId, requestId);
+      executor.respond(s.session.id, executor.snapshot(s.session.id).pending[0].requestId, { behavior: 'allow' });
+      assert.equal((await turn).success, true);
+    }
+    const users = executor.snapshot(s.session.id).messages.filter(message => message.role === 'user');
+    assert.deepEqual(users.map(message => message.submissionId), submissionIds);
+    assert.equal(users[0].text, users[1].text);
+    assert.notEqual(users[0].id, users[1].id);
+    const journal = fs.readFileSync(path.join(s.directory, 'chat', s.session.id + '.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.deepEqual(journal.filter(event => event.type === 'message' && event.message.role === 'user').map(event => event.message.submissionId), submissionIds);
+    await executor.shutdown();
+    const restored = new ChatHistory(s.directory, () => false);
+    assert.deepEqual(restored.get(s.session.id).messages.filter(message => message.role === 'user'), users);
+    const legacyId = randomUUID(), legacy = { id: randomUUID(), turnId: randomUUID(), role: 'user', text: 'legacy user record', createdAt: new Date().toISOString() };
+    fs.writeFileSync(path.join(s.directory, 'chat', legacyId + '.jsonl'), JSON.stringify({ type: 'message', message: legacy }) + '\n');
+    assert.deepEqual(restored.get(legacyId).messages, [legacy], 'existing user records without submission IDs remain readable');
+    restored.flush();
   } finally { await executor.shutdown(); await s.cleanup(); }
 });
 

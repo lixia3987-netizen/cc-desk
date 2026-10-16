@@ -12,6 +12,9 @@
 .queued-chat-attachments{list-style:none;display:flex;flex-wrap:wrap;gap:6px;padding:0;margin:8px 0 0;color:var(--text-muted)}
 .queued-chat-attachments>li{display:flex;align-items:center;gap:4px;overflow-wrap:anywhere;max-width:100%}
 .queued-chat-attachments svg{flex-shrink:0}
+.chat-submission-feedback{margin:18px 0;font-size:calc(11px * var(--ui-font-scale))}
+.pending-chat-message>header>span:last-child,.queued-chat-message>header>span[role=status],.chat-operation-feedback{display:flex;align-items:center;gap:6px}
+.chat-operation-feedback{color:var(--text-secondary);margin:8px 0}
 .chat-composer>.chat-composer-actions{flex-wrap:wrap}
 .chat-composer-actions>span{min-width:0}
 .chat-composer-actions>.primary{margin-left:auto}

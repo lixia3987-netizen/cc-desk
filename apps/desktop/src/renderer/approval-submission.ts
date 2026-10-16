@@ -1,3 +1,5 @@
+import { paintActionFeedback } from './action-feedback';
+
 export type ApprovalBehavior = 'allow' | 'deny';
 export interface ApprovalSubmissionState { behavior: ApprovalBehavior; accepted: boolean }
 
@@ -28,6 +30,4 @@ export class ApprovalSubmission {
   }
 }
 
-export const paintApprovalFeedback = () => new Promise<void>(resolve => {
-  requestAnimationFrame(() => { setTimeout(resolve, 0); });
-});
+export const paintApprovalFeedback = paintActionFeedback;

@@ -35,3 +35,10 @@
 .new-session-attachment-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media(max-width:1050px){.new-session-page{padding:24px 20px}.new-session-heading{margin-bottom:20px}.new-session-heading h1{font-size:calc(24px * var(--ui-font-scale))}}
 @media(max-width:700px){.new-session-extra-options{grid-template-columns:minmax(0,1fr)}.new-session-page{padding:20px 14px}}
+.new-session-submission { width: 100%; }
+.new-session-submission .chat-message { max-width: 100%; }
+.new-session-submission header { display: flex; align-items: center; gap: 12px; }
+.new-session-submission [role="status"] { display: inline-flex; align-items: center; gap: 5px; color: var(--text-muted); font-weight: normal; }
+.new-session-submitted-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 8px 0 0; }
+.new-session-submission ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.new-session-submission li { display: flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
