@@ -53,6 +53,24 @@ test('canonical completion retires the precise temporary stream ID while retaini
   assert.ok(mergeDisplaySnapshot(ordinary, [message('user'), message('result')]).messages.some(item => item.id === 'other:stream:1'));
 });
 
+test('non-following short conversations still append canonical replies and remain attached to the live tail', () => {
+  const current = page(['user']);
+  const first = mergeDisplaySnapshot(current, [message('user'), message('result-1')], true);
+  assert.deepEqual(first.messages.map(item => item.id), ['user', 'result-1']);
+  assert.equal(first.after, null, 'scrolling or an approval jump is not a detached history page');
+  const second = mergeDisplaySnapshot(first, [message('user'), message('result-1'), message('result-2')], true);
+  assert.deepEqual(second.messages.map(item => item.id), ['user', 'result-1', 'result-2']);
+  assert.equal(second.after, null);
+});
+
+test('non-following stream completion removes the temporary row and adds its canonical assistant result', () => {
+  const current = page(['user', 'turn:stream:1']);
+  const next = mergeDisplaySnapshot(current, [message('user'), message('canonical-result')], true);
+  assert.deepEqual(next.messages.map(item => item.id), ['user', 'canonical-result']);
+  assert.equal(next.after, null);
+  assert.equal(next.messages[0], current.messages[0], 'the original reading anchor stays the same object');
+});
+
 test('normal authority updates retain a display receipt bridge only for the same canonical user submission', () => {
   const user: ChatMessage = { ...message('canonical'), role: 'user', submissionId: 'durable-item', clientRequestId: 'client-request' };
   const current = page([], { messages: [user] });

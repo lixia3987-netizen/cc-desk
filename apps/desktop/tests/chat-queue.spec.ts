@@ -324,7 +324,15 @@ test('chat queue feedback: raw display takes over an exact persisted submission 
     expect((await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.records())).interrupts).toBe(1);
     await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.releaseSnapshot());
     await expect(stopping).toHaveCount(0);
-    await expect.poll(async () => (await snapshot(page, a.id)).queue?.items ?? []).toEqual([]);
+    // An interrupted turn retains the exact accepted message for deliberate
+    // recovery. Its presence is not a second submission or automatic retry.
+    await expect.poll(async () => {
+      const queue = (await snapshot(page, a.id)).queue;
+      return { paused: queue?.paused, items: queue?.items.map(item => ({
+        id: item.id, clientRequestId: item.clientRequestId, text: item.text, status: item.status,
+      })) };
+    }).toEqual({ paused: true, items: [{ id: messageId, clientRequestId: requestId, text, status: 'queued' }] });
+    expect((await snapshot(page, a.id)).queue?.error).toContain('消息已保留');
     expect((await app.evaluate(() => (globalThis as ChatFeedbackGlobal).chatQueueFeedbackFixture.records())).submissions).toHaveLength(1);
     expect(await f.prompts(a)).toEqual([text]);
     expect((await f.records()).filter(record => record.event === 'violation')).toEqual([]);

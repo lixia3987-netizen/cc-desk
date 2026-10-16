@@ -34,7 +34,7 @@ function keepDisplayIdentity(previous: ChatMessage | undefined, incoming: ChatMe
     ? { ...incoming, clientRequestId: previous.clientRequestId } : incoming;
 }
 
-export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming: ChatDisplayPage, direction: 'replace' | 'before' | 'after' = 'replace'): ChatDisplayPage {
+export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming: ChatDisplayPage, direction: 'replace' | 'before' | 'after' = 'replace', preserveStart = false): ChatDisplayPage {
   const previous = new Map(current?.messages.map(message => [message.id, message]));
   const fresh = incoming.messages.map(value => {
     const old = previous.get(value.id), message = keepDisplayIdentity(old, value);
@@ -51,9 +51,10 @@ export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming:
     after: direction === 'before' && current ? current.after : incoming.after,
     incomplete: incoming.incomplete || current?.incomplete || false };
   while (messages.length > 1 && (messages.length > maxMessages || bytes > maxPageBytes)) {
-    const removed = direction === 'before' ? messages.pop()! : messages.shift()!;
+    const trimEnd = direction === 'before' || preserveStart;
+    const removed = trimEnd ? messages.pop()! : messages.shift()!;
     bytes -= messageSize(removed);
-    if (direction === 'before') page.after = messages.at(-1)!.id;
+    if (trimEnd) page.after = messages.at(-1)!.id;
     else page.before = messages[0].id;
   }
   if (current && page.before === current.before && page.after === current.after && page.incomplete === current.incomplete
@@ -84,10 +85,11 @@ export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly C
     const value = changed.get(message.id), next = value && keepDisplayIdentity(message, value);
     return next && !sameChatMessage(message, next) ? next : message;
   });
-  const newer = lastOverlap < 0 || lastOverlap < messages.length - 1;
-  if (page.after === null && !protectHistory && lastOverlap >= 0) updated.push(...messages.slice(lastOverlap + 1));
+  if (page.after === null && lastOverlap >= 0) updated.push(...messages.slice(lastOverlap + 1));
+  // Reading above the bottom changes which edge may be discarded at the cap.
+  // It must not hide normal live replies, including a canonical stream replacement.
   return mergeDisplayPage(page, { ...page, messages: updated,
-    after: protectHistory && newer && updated.length ? page.after ?? updated.at(-1)!.id : page.after });
+    after: protectHistory && lastOverlap < 0 && updated.length ? page.after ?? updated.at(-1)!.id : page.after }, 'replace', protectHistory);
 }
 
 /** Read-only message pages, explicitly separate from running state, approvals and operation receipts. */
