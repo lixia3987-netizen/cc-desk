@@ -245,6 +245,190 @@ test('only the exact trusted managed root may read inside the protected applicat
   assert.equal(childExcluded.entries.length, 0);
 });
 
+test('exact project access reads a protected worktree without granting user or custom sources the exception', async t => {
+  const { parent, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const worktree = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  const managed = path.join(store, 'native', 'skills');
+  const privateRoot = path.join(worktree, '.agents', 'skills', 'private');
+  await writeAt(worktree, '.agents/skills/review/SKILL.md', standard('review', 'Project guide.'));
+  await writeAt(worktree, '.agents/skills/private/SKILL.md', standard('private'));
+  await writeAt(managed, 'managed/SKILL.md', standard('managed'));
+  let authorizations = 0;
+  const registry = new SkillRegistry({ ...options([
+    projectSource(),
+    userSource(store, { id: 'data-custom', kind: 'custom', explicitPaths: ['native/agent-worktrees/child-a/.agents/skills/review/SKILL.md'] }),
+    userSource(parent, { id: 'ancestor-custom', kind: 'custom', explicitPaths: ['host-store/native/agent-worktrees/child-a/.agents/skills/review/SKILL.md'] }),
+    userSource(worktree, { id: 'project-as-user', kind: 'custom', explicitPaths: ['.agents/skills/review/SKILL.md'] }),
+    userSource(managed, { id: 'managed', kind: 'managed' }),
+  ]), projectRoot: worktree, excludedRoots: [store, privateRoot], managedRoot: managed,
+  projectAccess: { rootPath: worktree, excludedRoots: [privateRoot], assertCurrent: async () => { authorizations++; } } });
+  const catalog = await registry.discover();
+  assert.deepEqual(catalog.entries.map(item => item.sourceId).sort(), ['agents', 'managed']);
+  assert.ok(authorizations > 0);
+  assert.equal((await registry.loadCatalogSkill(catalog.entries.find(item => item.sourceId === 'agents'))).body, 'Project guide.');
+  for (const sourceId of ['data-custom', 'ancestor-custom', 'project-as-user']) assert.ok(catalog.issues.some(issue => issue.sourceId === sourceId && issue.code === 'source_protected'));
+  assert.ok(catalog.issues.some(issue => issue.sourceId === 'agents' && issue.path === 'private/SKILL.md' && issue.code === 'source_protected'));
+  assert.ok(!JSON.stringify(catalog).includes(store));
+  const userOnly = await discoverSkillCatalog({ ...options([userSource(managed, { id: 'managed', kind: 'managed' })]), projectRoot: worktree,
+    excludedRoots: [store], managedRoot: managed, projectAccess: { rootPath: worktree, excludedRoots: [], assertCurrent: () => { throw new Error('Project authorization changed.'); } } });
+  assert.deepEqual(userOnly.entries.map(item => item.sourceId), ['managed'], 'user sources do not invoke or inherit project access');
+});
+
+test('project access is optional and rejects malformed, mismatched or unbounded host capabilities', async t => {
+  const { parent, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const root = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  await writeAt(root, '.agents/skills/review/SKILL.md', standard('review'));
+  const base = { ...options(), projectRoot: root, excludedRoots: [store] };
+  const missing = await discoverSkillCatalog(base);
+  assert.deepEqual(missing.entries, []);
+  assert.ok(missing.issues.some(issue => issue.code === 'source_protected'));
+  const capability = { rootPath: root, excludedRoots: [], assertCurrent() {} };
+  for (const invalid of [null, {}, { ...capability, rootPath: parent }, { ...capability, rootPath: 'relative' },
+    { ...capability, rootPath: `${root}\n` }, { ...capability, rootPath: path.join(parent, 'x'.repeat(4097)) },
+    { ...capability, assertCurrent: undefined }, { ...capability, excludedRoots: undefined }, { ...capability, excludedRoots: ['relative'] },
+    { ...capability, excludedRoots: [`${store}\0`] }, { ...capability, excludedRoots: [path.join(parent, 'x'.repeat(4097))] },
+    { ...capability, excludedRoots: Array(65).fill(store) }]) assert.throws(() => new SkillRegistry({ ...base, projectAccess: invalid }), /Project skill access/);
+});
+
+test('project access clones registration fields and does not transfer to a different rebound root', async t => {
+  const { parent, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const firstRoot = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  const secondRoot = path.join(store, 'native', 'agent-worktrees', 'child-b');
+  for (const root of [firstRoot, secondRoot]) await writeAt(root, '.agents/skills/review/SKILL.md', standard('review'));
+  let authorizations = 0;
+  const capability = { rootPath: firstRoot, excludedRoots: [], assertCurrent: () => { authorizations++; } };
+  const registry = new SkillRegistry({ ...options(), projectRoot: firstRoot, excludedRoots: [store], projectAccess: capability });
+  capability.rootPath = secondRoot;
+  capability.excludedRoots.push(store);
+  capability.assertCurrent = () => { throw new Error('Caller mutated the registration.'); };
+  assert.equal((await registry.discover()).entries.length, 1);
+  assert.equal((await registry.rebindProject(path.join(firstRoot, '.')).discover()).entries.length, 1);
+  const beforeRebind = authorizations;
+  const newExclusions = await registry.rebindProject(firstRoot, [store, path.join(firstRoot, '.agents/skills/review')]).discover();
+  assert.equal(newExclusions.entries.length, 0);
+  assert.ok(newExclusions.issues.some(issue => issue.code === 'source_protected'));
+  assert.equal(authorizations, beforeRebind, 'explicit replacement exclusions clear the old project capability even for the same root');
+  const rebound = await registry.rebindProject(secondRoot).discover();
+  assert.equal(rebound.entries.length, 0);
+  assert.ok(rebound.issues.some(issue => issue.code === 'source_protected'));
+  assert.equal(authorizations, beforeRebind, 'a different root receives no project capability');
+});
+
+test('project access checks revocation before disk reads and after metadata or full-body reads', async t => {
+  const { parent, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const root = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  await writeAt(root, '.agents/skills/review/SKILL.md', standard('review', 'Do not return after revocation.'));
+  let revoked = false;
+  const config = { ...options(), projectRoot: root, excludedRoots: [store], projectAccess: {
+    rootPath: root, excludedRoots: [], assertCurrent: async () => { if (revoked) throw new Error('Project authorization changed.'); },
+  } };
+  const originalSnapshot = ProjectFiles.prototype.snapshot;
+  const originalPrefix = ProjectFiles.prototype.readPrefix;
+  const originalRead = ProjectFiles.prototype.read;
+  t.after(() => { ProjectFiles.prototype.snapshot = originalSnapshot; ProjectFiles.prototype.readPrefix = originalPrefix; ProjectFiles.prototype.read = originalRead; });
+  let snapshots = 0;
+  ProjectFiles.prototype.snapshot = async function (...args) { snapshots++; return originalSnapshot.apply(this, args); };
+  revoked = true;
+  const denied = await discoverSkillCatalog(config);
+  assert.deepEqual(denied.entries, []);
+  assert.ok(denied.issues.some(issue => issue.code === 'source_changed'));
+  assert.equal(snapshots, 0, 'the revoked capability is checked before ProjectFiles access');
+  revoked = false;
+  const descriptor = (await discoverSkillCatalog(config)).entries[0];
+  ProjectFiles.prototype.readPrefix = async function (...args) { const result = await originalPrefix.apply(this, args); revoked = true; return result; };
+  const revokedMetadata = await discoverSkillCatalog(config);
+  assert.deepEqual(revokedMetadata.entries, []);
+  assert.ok(revokedMetadata.issues.some(issue => issue.code === 'source_changed'));
+  ProjectFiles.prototype.readPrefix = originalPrefix;
+  revoked = false;
+  ProjectFiles.prototype.read = async function (...args) { const result = await originalRead.apply(this, args); revoked = true; return result; };
+  await assert.rejects(loadCatalogSkill(config, descriptor), /changed|refresh/i);
+  ProjectFiles.prototype.read = originalRead;
+  for (const operation of ['metadata', 'body']) {
+    revoked = false;
+    let finalChecks = 0;
+    let readCompleted = false;
+    ProjectFiles.prototype.snapshot = async function (...args) {
+      const result = await originalSnapshot.apply(this, args);
+      if (readCompleted && args[0] === '.agents/skills/review/SKILL.md' && ++finalChecks === 2) revoked = true;
+      return result;
+    };
+    const markCompleted = original => async function (...args) { const result = await original.apply(this, args); readCompleted = true; return result; };
+    ProjectFiles.prototype.readPrefix = operation === 'metadata' ? markCompleted(originalPrefix) : originalPrefix;
+    ProjectFiles.prototype.read = operation === 'body' ? markCompleted(originalRead) : originalRead;
+    if (operation === 'metadata') {
+      const result = await discoverSkillCatalog(config);
+      assert.deepEqual(result.entries, []);
+      assert.ok(result.issues.some(issue => issue.code === 'source_changed'));
+    } else await assert.rejects(loadCatalogSkill(config, descriptor), /changed|refresh/i);
+    assert.equal(finalChecks, 2, `${operation} checks capability after the last async file snapshot`);
+  }
+});
+
+test('project access retains file and root identity protections inside a protected worktree', async t => {
+  const { parent, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const root = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  const relative = '.agents/skills/review/SKILL.md';
+  const content = standard('review', 'Original body.');
+  await writeAt(root, relative, content);
+  const config = { ...options(), projectRoot: root, excludedRoots: [store], projectAccess: { rootPath: root, excludedRoots: [], assertCurrent() {} } };
+  const descriptor = (await discoverSkillCatalog(config)).entries[0];
+  await writeAt(root, relative, standard('review', 'Changed body.'));
+  await assert.rejects(loadCatalogSkill(config, descriptor), /changed|refresh/i);
+  const refreshed = (await discoverSkillCatalog(config)).entries[0];
+  await fs.rename(root, `${root}-old`);
+  await writeAt(root, relative, standard('review', 'Changed body.'));
+  await assert.rejects(loadCatalogSkill(config, refreshed), /changed|refresh/i);
+  const current = (await discoverSkillCatalog(config)).entries[0];
+  const originalRead = ProjectFiles.prototype.read;
+  ProjectFiles.prototype.read = async function (...args) {
+    const result = await originalRead.apply(this, args);
+    await writeAt(root, 'replacement.tmp', standard('review', 'Changed body.'));
+    await fs.rename(path.join(root, 'replacement.tmp'), path.join(root, relative));
+    return result;
+  };
+  t.after(() => { ProjectFiles.prototype.read = originalRead; });
+  await assert.rejects(loadCatalogSkill(config, current), /changed|refresh/i);
+});
+
+test('catalog rechecks project access after other source workers settle', async t => {
+  const { parent, user, writeAt, options } = await fixture(t);
+  const store = path.join(parent, 'host-store');
+  const root = path.join(store, 'native', 'agent-worktrees', 'child-a');
+  await writeAt(root, '.agents/skills/review/SKILL.md', standard('review'));
+  await writeAt(user, 'personal/SKILL.md', standard('personal'));
+  let revoked = false;
+  let projectReadCompleted = false;
+  let finalChecks = 0;
+  let releaseUser;
+  const projectReturned = new Promise(resolve => { releaseUser = resolve; });
+  const originalSnapshot = ProjectFiles.prototype.snapshot;
+  const originalPrefix = ProjectFiles.prototype.readPrefix;
+  t.after(() => { ProjectFiles.prototype.snapshot = originalSnapshot; ProjectFiles.prototype.readPrefix = originalPrefix; });
+  ProjectFiles.prototype.snapshot = async function (...args) {
+    const result = await originalSnapshot.apply(this, args);
+    if (projectReadCompleted && result.absolute === path.join(root, '.agents/skills/review/SKILL.md')) finalChecks++;
+    return result;
+  };
+  ProjectFiles.prototype.readPrefix = async function (...args) {
+    const result = await originalPrefix.apply(this, args);
+    if (result.snapshot.absolute === path.join(root, '.agents/skills/review/SKILL.md')) projectReadCompleted = true;
+    else { await projectReturned; revoked = true; }
+    return result;
+  };
+  await assert.rejects(discoverSkillCatalog({ ...options([projectSource(), userSource(user)]), projectRoot: root, excludedRoots: [store], projectAccess: {
+    rootPath: root, excludedRoots: [], assertCurrent: () => {
+      if (revoked) throw new Error('Project authorization changed.');
+      if (finalChecks >= 2) releaseUser();
+    },
+  } }), /Project authorization changed/);
+});
+
 test('managed exceptions and ordinary user sources cannot bypass protected paths through a symlink parent', async t => {
   const { parent, writeAt, options } = await fixture(t);
   const store = path.join(parent, 'host-store');

@@ -8,6 +8,8 @@ interface QueueOptions {
   assertAvailable(id: string): void;
   /** 在队列操作开始等待之前，捕获宿主准入代次。 */
   captureAdmission?(id: string): () => void;
+  /** Internal Native Skills preparation keeps its cancellation/scope check through the final queue commit. */
+  captureNativeSkillAdmission?(id: string): () => void;
   blocked(id: string): boolean;
   /** 确认队列所有权之前，将 Native 图片绑定到显式提交。 */
   attachmentMetadata?(id: string, files: string[]): Promise<NativeImageAttachment[] | undefined>;
@@ -78,7 +80,14 @@ export class ChatQueue {
     const nativeTaskId = options.nativeTaskId;
     if (nativeTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(nativeTaskId)) throw new Error('无效任务标识。');
     const nativeSkills = options.nativeSkills === undefined ? undefined : normalizeNativeSkillSubmission(options.nativeSkills);
-    const assertAdmission = this.captureAdmission(id);
+    const assertBaseAdmission = this.captureAdmission(id);
+    let assertNativeSkillAdmission: (() => void) | undefined, nativeSkillAdmissionActive = false;
+    if (nativeSkills && this.options.captureNativeSkillAdmission) {
+      // Capture before serial/metadata waits, but neither reject nor validate a renewed scope until after receipt lookup.
+      try { assertNativeSkillAdmission = this.options.captureNativeSkillAdmission(id); }
+      catch (error) { assertNativeSkillAdmission = () => { throw error; }; }
+    }
+    const assertAdmission = () => { assertBaseAdmission(); if (nativeSkillAdmissionActive) assertNativeSkillAdmission?.(); };
     const epoch = this.generation.get(id) ?? 0;
     return this.serial(id, async () => {
       assertAdmission();
@@ -97,6 +106,9 @@ export class ChatQueue {
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
       if (nativeSkills) {
         if (!this.options.prepareNativeSkills) throw new Error('当前引擎未开放技能调用。');
+        // Accepted receipts above never activate the captured check or reacquire source capabilities.
+        nativeSkillAdmissionActive = true;
+        assertAdmission();
         const prepared = normalizeNativeSkillSubmission(await this.options.prepareNativeSkills(id, structuredClone(nativeSkills)));
         assertAdmission();
         if (JSON.stringify(prepared) !== JSON.stringify(nativeSkills)) throw new Error('技能提交版本已变化，请重新选择后发送。');
