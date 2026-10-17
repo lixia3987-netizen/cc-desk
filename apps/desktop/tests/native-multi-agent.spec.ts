@@ -401,8 +401,16 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       return parentResponse(body, 'implement');
     }
     const name = userGoal(body).startsWith('IMPLEMENT_A') ? 'a' : 'b', done = toolResults(body), content = `child ${name} implementation\n`;
-    if (!done.has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
-    if (!done.has(`child-${name}-patch`)) return responseCall(`child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content, expectedHash: done.get(`child-${name}-read`)!.output.hash });
+    if (!done.has(`child-${name}-read`)) return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' });
+    if (!done.has(`child-${name}-patch`)) {
+      const read = done.get(`child-${name}-read`)!;
+      expect(read.status).toBe('completed'); expect(read.output.hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(started.has(name)).toBe(false); started.add(name);
+      // Hold both actual write responses after their real reads. The existing
+      // child-readiness wait covers this stage before any approval timer starts.
+      await barrier.promise;
+      return responseCall(`child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content, expectedHash: read.output.hash });
+    }
     if (!done.has(`child-${name}-command`)) return responseCall(`child-${name}-command`, 'run_command', { executable: process.execPath, cwd: '.',
       argv: ['-e', `const fs=require('node:fs');if(fs.readFileSync('fixture.txt','utf8')!==${JSON.stringify(content)})process.exitCode=9;else process.stdout.write('child-${name}-verified')`], timeoutMs: 10000, maxOutputBytes: 4096 });
     return final(`child-${name}-done`, `隔离实现 ${name} 与命令检查已完成，等待审阅。`);
@@ -473,22 +481,14 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       readyCallsAtPollStart?: Array<{ callId: string; responseReadyAt: string }>; pendingFirstSeenAt?: string; pendingCount?: number;
       callId?: string; responseReadyAt?: string }> = [];
     for (let i = 0; i < 4; i++) {
-      let phase = 'child_model_response';
+      const phase = 'child_host_approval';
       let childApproval: Awaited<ReturnType<typeof snapshot>>['pending'][number] | undefined;
       const timing: typeof approvalTimings[number] = { iteration: i, waitStartedAt: new Date().toISOString(), requestsAtWaitStart: fixture.requests.length };
       approvalTimings.push(timing);
       try {
-        // The first read and its durable result precede the model's write call.
-        // Wait for that actual fixture response separately; the 5s UI approval
-        // requirement below starts only once a write/command has been returned.
-        // Calls remain concurrent and approvals may arrive in either child order.
-        await expect.poll(() => {
-          expect(fixture.errors).toEqual([]);
-          if (parentCompletion.settled) throw new Error('Parent settled before all child approvals: ' + JSON.stringify(parentCompletion));
-          return requestDiagnostics.some(record => record.actor !== 'parent' && record.responseReadyAt && record.callId &&
-            ['apply_patch', 'run_command'].includes(record.branch) && !approvedCalls.has(record.callId));
-        }, { timeout: 15000 }).toBe(true);
-        phase = 'child_host_approval';
+        // Both first write responses have reached the existing readiness gate.
+        // Keep the original 5s approval wait for every write/command, without
+        // adding another model-response allowance between approval iterations.
         timing.approvalPollStartedAt = new Date().toISOString();
         timing.readyCallsAtPollStart = requestDiagnostics.filter(record => record.actor !== 'parent' && record.responseReadyAt && record.callId &&
           ['apply_patch', 'run_command'].includes(record.branch) && !approvedCalls.has(record.callId))
