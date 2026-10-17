@@ -525,9 +525,11 @@ export async function runNativeWorker(options: NativeWorkerOptions): Promise<Run
             if (state?.executed && !state.result && state.prepared.definition.risk !== 'read') invalid();
             if (state?.result ? !equal(state.result, event.result) : event.result.status === 'completed') invalid();
             const output = event.result.output;
-            if (!state?.result && isObject(output) && (['task_revision_changed', 'code_location_line_range_invalid'].includes(output.error as string) ||
-                ['currentRevision', 'lineCount', 'readTask', 'readFile'].some(key => Object.hasOwn(output, key)))) {
-              const feedback = preparationFailures.get(event.call.id);
+            const feedback = preparationFailures.get(event.call.id);
+            if (!state?.result && (feedback || isObject(output) && (['task_revision_changed', 'code_location_line_range_invalid', 'skill_precondition_failed'].includes(output.error as string) ||
+                ['currentRevision', 'lineCount', 'readTask', 'readFile'].some(key => Object.hasOwn(output, key))))) {
+              // A recorded preparation failure cannot be laundered into a different generic result.
+              // Ordinary business code/action fields do not on their own claim preparation authority.
               if (state || !feedback || !equal(event.result, { status: 'failed', output: { ...feedback, executed: false } })) invalid();
             }
             if (!equal(event.resultItems, adapter.toolResultItems(event.call, event.result))) invalid();

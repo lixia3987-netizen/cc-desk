@@ -32,6 +32,10 @@
       "types": "./dist/native-changes.d.ts",
       "default": "./dist/native-changes.js"
     },
+    "./native-skills": {
+      "types": "./dist/native-skills.d.ts",
+      "default": "./dist/native-skills.js"
+    },
     "./native-commands": {
       "types": "./dist/native-commands.d.ts",
       "default": "./dist/native-commands.js"
@@ -40,7 +44,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --test tests/public-exports.test.mjs"
+    "test": "node --test tests/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "5.9.3"

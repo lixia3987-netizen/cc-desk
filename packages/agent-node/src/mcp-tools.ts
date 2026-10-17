@@ -48,9 +48,11 @@ export interface ManagedMcpToolPort extends ToolPort { close(): Promise<void> }
 export interface McpToolOptions {
   connections: McpToolConnection[];
   /** 仅在宿主批准并持久化预留本地启动资源之后提供。 */
-  stdio?: { supervisor: ProcessSupervisor; ownerId: string; cwd: string; assertStartupCurrent(): void | Promise<void> };
+  stdio?: { supervisor: ProcessSupervisor; ownerId: string; cwd: string; assertStartupCurrent(): void | Promise<void>; beforeLaunch?(): void | Promise<void> };
   forbiddenValues?: readonly (string | undefined)[];
   assertOwnership?: () => void | Promise<void>;
+  /** Separate from discovery/read ownership; checked after final catalog I/O. */
+  assertSideEffectsCurrent?: (signal: AbortSignal) => void | Promise<void>;
   assertConnectionCurrent?: (id: string, revision: number) => void;
 }
 interface Entry {
@@ -188,6 +190,7 @@ class McpToolPort implements ManagedMcpToolPort {
       // 此检查避免使用已知发生变更的目录，但不保证服务端原子性。
       await this.validate(prepared, context);
       await this.options.assertOwnership?.();
+      if (prepared.definition.risk !== 'read') await this.options.assertSideEffectsCurrent?.(context.signal);
       this.state(prepared, context);
       this.assertCurrent(state.entry);
       stopped(context.signal);

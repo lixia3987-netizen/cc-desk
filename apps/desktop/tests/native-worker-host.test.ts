@@ -172,6 +172,79 @@ test('worker cannot invent or alter preparation feedback without matching host f
   }
 });
 
+test('all fixed skill preparation actions cross RPC only with matching recorded host evidence', async () => {
+  for (const feedback of [
+    { error: 'skill_precondition_failed', code: 'context_unconfirmed', action: 'continue_model' },
+    { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' },
+    { error: 'skill_precondition_failed', code: 'activation_changed', action: 'prepare_again' },
+    { error: 'skill_precondition_failed', code: 'activation_blocked', action: 'settle_operations' },
+    { error: 'skill_precondition_failed', code: 'output_limit', action: 'adjust_skill_limits' },
+    { error: 'skill_precondition_failed', code: 'skill_limit', action: 'adjust_skill_limits' },
+  ] as const) {
+    const h = harness(async worker => {
+      const context = await begin(worker);
+      await assert.rejects(prepare(worker, context), /Native host operation failed/);
+      const reply = worker.sent.find(message => message.preparationFailure)!;
+      assert.deepEqual(checkedPreparationFailure(reply.preparationFailure, requestCall.id), feedback);
+      const result: ToolResult = { status: 'failed', output: { ...feedback, executed: false } };
+      const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }];
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+      context.items.push(...resultItems);
+      await worker.rpc('store.checkpoint', { identity: run.identity, context });
+      await finish(worker, context, { toolCalls: 1 });
+    });
+    h.options.tools.prepare = async () => {
+      const error = new ToolPreparationError(feedback);
+      error.message = 'secret-key-sentinel source-path'; error.stack = 'secret-key-sentinel source-stack';
+      throw error;
+    };
+    assert.equal((await h.promise).status, 'completed');
+    assert.equal(JSON.stringify([h.worker.sent.filter(message => message.type === 'reply'), h.journal]).includes('secret-key-sentinel'), false);
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_prepared'), false);
+  }
+});
+
+test('worker cannot forge, change or erase a recorded skill preparation failure', async () => {
+  for (const fault of ['unbranded', 'different_pair', 'wrong_action', 'laundered', 'extra_field']) {
+    const feedback = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' } as const;
+    const h = harness(async worker => {
+      const context = await begin(worker);
+      await assert.rejects(prepare(worker, context));
+      const reply = worker.sent.filter(message => message.type === 'reply').at(-1)!;
+      assert.equal(Boolean(reply.preparationFailure), fault !== 'unbranded');
+      const output = fault === 'different_pair' ? { error: feedback.error, code: 'context_unconfirmed', action: 'continue_model', executed: false }
+        : fault === 'wrong_action' ? { ...feedback, action: 'continue_model', executed: false }
+        : fault === 'laundered' ? { error: 'invalid_tool_input', executed: false }
+        : fault === 'extra_field' ? { ...feedback, detail: 'private-path', executed: false }
+        : { ...feedback, executed: false };
+      const result = { status: 'failed', output };
+      await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result,
+        resultItems: [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }] } });
+    });
+    h.options.tools.prepare = async () => {
+      if (fault !== 'unbranded') throw new ToolPreparationError(feedback);
+      throw Object.assign(new Error('private failure'), { feedback });
+    };
+    await assert.rejects(h.promise, { code: 'protocol' });
+    assert.equal(h.journal.some(event => (event as { type: string }).type === 'tool_completed'), false);
+  }
+});
+
+test('business output code and action fields do not claim skill preparation authority', async () => {
+  const h = harness(async worker => {
+    const context = await begin(worker);
+    await assert.rejects(prepare(worker, context));
+    const result: ToolResult = { status: 'failed', output: { error: 'dependency_unavailable', code: 'ENOENT', action: 'retry_later', executed: false } };
+    const resultItems = [{ type: 'function_call_output', call_id: requestCall.id, output: JSON.stringify(result) }];
+    await worker.rpc('store.append', { identity: run.identity, event: { type: 'tool_completed', call: requestCall, result, resultItems } });
+    context.items.push(...resultItems);
+    await worker.rpc('store.checkpoint', { identity: run.identity, context });
+    await finish(worker, context, { toolCalls: 1 });
+  });
+  h.options.tools.prepare = async () => { throw new Error('ordinary non-preparation failure'); };
+  assert.equal((await h.promise).status, 'completed');
+});
+
 test('RPC cancellation takes priority over a late trusted preparation failure', async () => {
   let entered!: () => void;
   const preparing = new Promise<void>(resolve => { entered = resolve; });
@@ -206,6 +279,33 @@ test('worker reply feedback rejects extra fields, wrong calls and invalid unions
   const accessor = Object.defineProperty({ callId: 'call' }, 'feedback', { enumerable: true, get: () => { accessed = true; return feedback; } });
   assert.throws(() => checkedPreparationFailure(accessor, 'call'), /Invalid tool preparation reply/);
   assert.equal(accessed, false);
+});
+
+test('skill preparation replies enforce paired actions without reading nested accessors', () => {
+  const feedback = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' } as const;
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback }, 'call'), feedback);
+  for (const raw of [
+    { callId: 'other', feedback }, { callId: 'call', feedback: { ...feedback, code: 'unknown' } },
+    { callId: 'call', feedback: { ...feedback, action: 'continue_model' } }, { callId: 'call', feedback: { ...feedback, reloadSkill: true } },
+    { callId: 'call', feedback: { ...feedback, [Symbol('private')]: 'private-path' } },
+  ]) assert.throws(() => checkedPreparationFailure(raw, 'call'), /Invalid tool preparation reply/);
+  let accessed = 0;
+  for (const key of ['code', 'action']) {
+    const value = Object.defineProperty({ ...feedback }, key, { enumerable: true, get() { accessed++; throw new Error('private-path'); } });
+    assert.throws(() => checkedPreparationFailure({ callId: 'call', feedback: value }, 'call'), /Invalid tool preparation reply/);
+  }
+  assert.equal(accessed, 0);
+});
+
+test('preparation reply snapshots descriptors instead of spreading a hostile Proxy', () => {
+  const feedback = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' } as const;
+  let reads = 0;
+  const proxy = new Proxy({ ...feedback }, { get() { reads++; throw new Error('private-proxy-value'); } });
+  assert.deepEqual(checkedPreparationFailure({ callId: 'call', feedback: proxy }, 'call'), feedback);
+  assert.equal(reads, 0);
+  const hostile = new Proxy({}, { ownKeys() { throw new Error('private-proxy-value'); } });
+  assert.throws(() => checkedPreparationFailure({ callId: 'call', feedback: hostile }, 'call'), { message: 'Invalid tool preparation reply.' });
+  assert.throws(() => checkedPreparationFailure(hostile, 'call'), { message: 'Invalid tool preparation reply.' });
 });
 
 test('execute-phase feedback stays bound to the actual host result and cannot be rewritten by the worker', async () => {

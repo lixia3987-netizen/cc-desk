@@ -1,7 +1,23 @@
+const SKILL_ACTIONS = Object.freeze({
+  context_unconfirmed: 'continue_model',
+  source_changed: 'restart_turn',
+  activation_changed: 'prepare_again',
+  activation_blocked: 'settle_operations',
+  output_limit: 'adjust_skill_limits',
+  skill_limit: 'adjust_skill_limits',
+} as const)
+
+export type SkillPreparationFeedback = {
+  [Code in keyof typeof SKILL_ACTIONS]: {
+    error: 'skill_precondition_failed'; code: Code; action: typeof SKILL_ACTIONS[Code]
+  }
+}[keyof typeof SKILL_ACTIONS]
+
 /** 仅允许工具准备阶段公开的固定纠正提示；不能携带异常原文或任意字符串。 */
 export type ToolPreparationFeedback =
   | { error: 'task_revision_changed'; currentRevision: number; readTask: true }
   | { error: 'code_location_line_range_invalid'; lineCount: number; readFile: true }
+  | SkillPreparationFeedback
 
 const trustedErrors = new WeakSet<object>()
 
@@ -25,6 +41,13 @@ function copyFeedback(value: unknown): ToolPreparationFeedback | null {
       const lineCount: unknown = descriptors.lineCount?.value
       if (typeof lineCount === 'number' && Number.isSafeInteger(lineCount) && lineCount >= 0 && descriptors.readFile?.value === true) {
         return { error: 'code_location_line_range_invalid', lineCount, readFile: true }
+      }
+    } else if (error === 'skill_precondition_failed' && keys.every(key => ['error', 'code', 'action'].includes(key as string))) {
+      const code: unknown = descriptors.code?.value
+      if (typeof code === 'string' && Object.hasOwn(SKILL_ACTIONS, code)) {
+        const checkedCode = code as keyof typeof SKILL_ACTIONS
+        const action = SKILL_ACTIONS[checkedCode]
+        if (descriptors.action?.value === action) return { error: 'skill_precondition_failed', code: checkedCode, action } as SkillPreparationFeedback
       }
     }
   } catch { /* 无法安全检查的对象按普通异常处理，不能透传其内容。 */ }

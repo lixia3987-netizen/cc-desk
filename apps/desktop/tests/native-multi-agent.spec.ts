@@ -76,6 +76,44 @@ async function receipts(directory: string): Promise<NativeDelegationReceipt[]> {
   }
   return results;
 }
+/** Failure-only metadata: never attach model output, tool arguments or checkpoint context. */
+async function childJournalDiagnostics(dataDirectory: string, children: NativeDelegationReceipt[]) {
+  return Promise.all(children.map(async child => {
+    const directory = path.join(dataDirectory, 'native', 'conversations', child.identity.conversationId);
+    const summary = { childId: child.childId, runId: child.identity.runId, status: child.status,
+      actor: child.goal.startsWith('IMPLEMENT_A') ? 'child-a' : child.goal.startsWith('IMPLEMENT_B') ? 'child-b' : 'unknown-child' };
+    const token = (value: unknown) => typeof value === 'string' && /^[a-zA-Z0-9_:-]{1,160}$/.test(value) ? value : undefined;
+    const time = (value: unknown) => typeof value === 'string' && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(value) ? value : undefined;
+    const checkpointSeq = await fs.readFile(path.join(directory, 'checkpoint.json'), 'utf8').then(raw => {
+      const seq: unknown = JSON.parse(raw).seq; return Number.isSafeInteger(seq) ? seq as number : null;
+    }).catch(() => null);
+    try {
+      const handle = await fs.open(path.join(directory, 'journal.jsonl'), 'r');
+      let raw: string;
+      try {
+        const size = (await handle.stat()).size, start = Math.max(0, size - 128 * 1024), buffer = Buffer.alloc(size - start);
+        let offset = 0;
+        while (offset < buffer.length) {
+          const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, start + offset);
+          if (!bytesRead) break;
+          offset += bytesRead;
+        }
+        raw = buffer.subarray(0, offset).toString('utf8');
+        if (start) raw = raw.slice(raw.indexOf('\n') + 1);
+      } finally { await handle.close(); }
+      const tail = raw.trimEnd().split('\n').filter(Boolean).slice(-10).map(line => {
+        try {
+          const record = JSON.parse(line), event = record.event ?? {};
+          const call = event.call ?? event.prepared?.call ?? event.response?.toolCalls?.[0];
+          return { seq: Number.isSafeInteger(record.seq) ? record.seq as number : undefined, type: token(event.type),
+            callId: token(call?.id), toolName: token(call?.name), status: token(event.result?.status ?? event.response?.finishReason ?? event.diagnostic?.phase),
+            at: time(record.committedAt) };
+        } catch { return { type: 'incomplete_record' }; }
+      });
+      return { ...summary, checkpointSeq, tail };
+    } catch { return { ...summary, checkpointSeq, unavailable: true }; }
+  }));
+}
 async function childrenMetrics(app: ElectronApplication) {
   return app.evaluate(({ app }) => app.getAppMetrics().filter(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent').length);
 }
@@ -333,7 +371,7 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
   await fs.writeFile(path.join(f.cwd, 'fixture.txt'), 'unstaged parent draft\n');
   await fs.writeFile(path.join(f.cwd, 'parent-untracked.txt'), 'user-owned parent file\n');
   const parentIndex = await fs.readFile(path.join(f.cwd, '.git', 'index')), parentHead = (await execute('git', ['-C', f.cwd, 'rev-parse', 'HEAD'])).stdout.trim();
-  const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body }: { body: Body }) => {
+  const implementationResponse = async ({ body }: { body: Body }): Promise<Response> => {
     if (!body.instructions.includes('independent delegated Native agent')) {
       const done = toolResults(body), latestUser = body.input.filter(item => item.role === 'user').at(-1)?.content;
       const latestGoal = typeof latestUser === 'string' ? latestUser : latestUser?.map(item => item.text ?? '').join('') ?? '';
@@ -367,13 +405,51 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     if (!done.has(`child-${name}-command`)) return responseCall(`child-${name}-command`, 'run_command', { executable: process.execPath, cwd: '.',
       argv: ['-e', `const fs=require('node:fs');if(fs.readFileSync('fixture.txt','utf8')!==${JSON.stringify(content)})process.exitCode=9;else process.stdout.write('child-${name}-verified')`], timeoutMs: 10000, maxOutputBytes: 4096 });
     return final(`child-${name}-done`, `隔离实现 ${name} 与命令检查已完成，等待审阅。`);
+  };
+  const requestDiagnostics: Array<{ index: number; actor: string; toolResultIds: string[]; branch: string; receivedAt: string; responseReadyAt?: string }> = [];
+  const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body, index }: { body: Body; index: number }) => {
+    const child = body.instructions.includes('independent delegated Native agent');
+    const record = { index, actor: child ? userGoal(body).startsWith('IMPLEMENT_A') ? 'child-a' : 'child-b' : 'parent',
+      toolResultIds: body.input.filter(item => item.type === 'function_call_output').map(item => item.call_id).filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_:-]{1,160}$/.test(id)),
+      branch: 'handler_pending', receivedAt: new Date().toISOString(), responseReadyAt: undefined as string | undefined };
+    requestDiagnostics.push(record);
+    try {
+      const response = await implementationResponse({ body });
+      const call = response.output?.find((item): item is { type: string; name: string } => Boolean(item && typeof item === 'object' && 'type' in item && item.type === 'function_call' && 'name' in item && typeof item.name === 'string'));
+      record.branch = call?.name ?? 'final';
+      return response;
+    } catch (error) { record.branch = 'handler_failed'; throw error; }
+    finally { record.responseReadyAt = new Date().toISOString(); }
   } });
   const app = await f.launch();
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '从当前未提交修改快照委派两个独立实现，不自动合并', [], 'multi-implement-request'), session.id);
-    await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => item.toolName === 'delegate_implement')?.requestId).toBeTruthy();
-    await expect(page.getByRole('region', { name: '工具审批' })).toContainText('snapshot');
+    let parentCompletion: { settled: boolean; success?: boolean; interrupted?: boolean; error?: string } = { settled: false };
+    void pending.then(result => { parentCompletion = { settled: true, success: result.success, interrupted: result.interrupted, error: result.error }; },
+      error => { parentCompletion = { settled: true, error: String(error) }; });
+    let initialApprovalId: string | undefined, phase = 'initial_host_approval';
+    try {
+      // #21's trace returned a valid approval at send+6.119s, after the generic
+      // 5s poll expired. This phase includes worker startup, two responses and
+      // the dirty baseline's Git checks; readiness is not a snapshot-I/O timer.
+      await expect.poll(async () => {
+        initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
+          .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
+        if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
+        return initialApprovalId;
+      }, { timeout: 15000 }).toBeTruthy();
+      phase = 'initial_ui_approval';
+      const approval = page.getByRole('region', { name: '工具审批' });
+      await expect(approval).toHaveAttribute('data-request-id', initialApprovalId!);
+      await expect(approval).toContainText('snapshot');
+    } catch (error) {
+      const diagnostic = JSON.stringify({ phase, parentCompletion, initialApprovalId, requests: fixture.requests.length,
+        fixtureErrors: fixture.errors.length, requestDiagnostics: requestDiagnostics.slice(-64),
+        omittedRequests: Math.max(0, requestDiagnostics.length - 64) }, null, 2).replaceAll(secret, '[redacted]');
+      await test.info().attach('native-initial-delegation-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
+      throw error;
+    }
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     await waitForChildren(started, page, session.id, fixture, f.data, pending); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n'); barrier.release();
@@ -381,8 +457,19 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     for (let i = 0; i < 4; i++) {
       try { await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => ['apply_patch', 'run_command'].includes(item.toolName ?? '') && !approvedRequests.has(item.requestId))?.requestId).toBeTruthy(); }
       catch (error) {
-        const diagnostic = JSON.stringify({ approved: approvals, requests: fixture.requests.length, fixtureErrors: fixture.errors.map(String),
-          snapshot: await snapshot(page, session.id), receipts: await receipts(f.data) }, null, 2).replaceAll(secret, '[redacted]');
+        const live = await page.evaluate(async id => {
+          const [snapshot, attention] = await Promise.all([window.desktop.chatSnapshot(id), window.desktop.chatAttention()]);
+          return { at: new Date().toISOString(), attention: attention.filter(item => item.sessionId === id)
+            .map(item => ({ sessionId: item.sessionId, requestId: item.requestId, kind: item.kind, toolName: item.toolName, createdAt: item.createdAt })),
+            snapshot: { taskState: snapshot.taskState, sessionStatus: snapshot.sessionStatus, version: snapshot.version,
+              pending: snapshot.pending.map(item => ({ requestId: item.requestId, toolUseId: item.toolUseId, toolName: item.toolName, kind: item.kind, createdAt: item.createdAt,
+                ...(item.nativeDelegation ? { childRunId: item.nativeDelegation.runId } : {}) })),
+              children: snapshot.nativeAgents?.items.map(item => ({ childId: item.childId, runId: item.identity.runId, status: item.status, updatedAt: item.updatedAt })) } };
+        }, session.id).catch(() => ({ unavailable: true }));
+        const children = await receipts(f.data).catch(() => []);
+        const diagnostic = JSON.stringify({ approved: approvals, requests: fixture.requests.length, fixtureErrors: fixture.errors.length,
+          requestDiagnostics: requestDiagnostics.slice(-64), omittedRequests: Math.max(0, requestDiagnostics.length - 64),
+          live, children: await childJournalDiagnostics(f.data, children) }, null, 2).replaceAll(secret, '[redacted]');
         await test.info().attach('native-child-approval-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
         throw error;
       }

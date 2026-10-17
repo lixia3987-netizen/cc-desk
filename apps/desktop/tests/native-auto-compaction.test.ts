@@ -4,14 +4,16 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { runAgent, type ModelContext, type ToolDefinition } from '@cc-desk/agent-core';
-import { NativeRunStore } from '@cc-desk/agent-node/run-store';
+import { runAgent, type JsonValue, type ModelContext, type ToolDefinition } from '@cc-desk/agent-core';
+import { NativeRunStore, nativeSubmissionInputDigest } from '@cc-desk/agent-node/run-store';
+import type { NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
 import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
-import { createNativeConfig } from '../src/main/engines/native/config';
+import { createNativeConfig, parseNativeConfig } from '../src/main/engines/native/config';
+import { autoCompactBeforeSend } from '../src/main/engines/native/automatic-compaction';
 // 模型由本地 HTTP/SSE 服务器模拟，不使用远端模型或凭据。
 // @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
@@ -54,6 +56,39 @@ const defaultHandler: Handler = ({ body, index }) => {
   }
   return { output: [assistantMessage(`answer-${index}`, `已记录结果 ${index}。` + 'historical verified fixture details. '.repeat(120))] };
 };
+
+test('an existing automatic-summary reservation binds exact skill refs even when pre-send compaction is disabled', async () => {
+  const f = await fixture();
+  let ledger: NativeRunStore | undefined;
+  try {
+    await f.seed();
+    ledger = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: f.conversationId });
+    const input = 'Continue the captured submission', requestId = 'skill-aware-auto-reservation';
+    const identity = { sessionId: f.id, conversationId: f.conversationId, runId: randomUUID(), requestId, workerGeneration: 4 };
+    const ref = (letter: string) => {
+      const skillId = `skill:${letter.repeat(64)}`;
+      return { skillId, catalogRevision: digest('catalog'), version: { skillId, sourceRevision: 1,
+        sourceFingerprint: digest('source'), fullFileHash: digest(letter), bodyHash: digest(letter), bytes: 1, format: 'standard' as const } };
+    };
+    const nativeSkills: NativeSkillSubmission = { schemaVersion: 1, explicitSkillRefs: [ref('a'), ref('b')], excludedSkillIds: [] };
+    const config = parseNativeConfig(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig);
+    const source = ledger.getCompactionSource();
+    await ledger.reserveAutoCompaction({ requestId, inputDigest: nativeSubmissionInputDigest(input, [], nativeSkills as unknown as JsonValue),
+      configurationDigest: digest('captured configuration'), expectedHash: source.expectedHash });
+    const head = ledger.head;
+    const invoke = (selection: NativeSkillSubmission) => autoCompactBeforeSend({ ledger: ledger!, identity, input, nativeSkills: selection,
+      config: { ...config, autoCompact: 'off' }, model: { protocol: 'responses', baseURL: f.server.baseURL, model: 'auto-compaction-fixture', allowLoopbackHttp: true },
+      instructions: '', signal: new AbortController().signal, startedAt: performance.now(), unlimited: true,
+      assertOwnership: async () => {}, onCompacting: () => assert.fail('No summary may start.'), onCommitted: async () => assert.fail('No context may be replaced.') });
+    const equivalent = { ...nativeSkills, explicitSkillRefs: [...nativeSkills.explicitSkillRefs].reverse() };
+    assert.equal((await invoke(equivalent)).compacted, false);
+    const changed = structuredClone(nativeSkills); changed.explicitSkillRefs[0].version.fullFileHash = digest('changed version');
+    await assert.rejects(invoke(changed), /不同的输入/);
+    await assert.rejects(invoke({ schemaVersion: 1, explicitSkillRefs: [], excludedSkillIds: [nativeSkills.explicitSkillRefs[0].skillId] }), /不同的输入/);
+    assert.deepEqual(ledger.head, head);
+    assert.equal(f.server.requests.length, 4, 'identity checks do not call the summary or ordinary model');
+  } finally { await ledger?.close(); await f.dispose(); }
+});
 async function fixture(options: { worker?: Worker; handler?: Handler } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-auto-compaction-'));
   const data = path.join(directory, 'data'), project = path.join(directory, 'project');

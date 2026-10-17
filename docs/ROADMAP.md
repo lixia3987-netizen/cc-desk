@@ -1,5 +1,7 @@
 # 开发进度与剩余路线
 
+2026-10-17：[Native Skills 能力补齐计划](NATIVE-AGENT-SKILLS-PLAN.md)已补充 20 项开发任务和验收矩阵；M1 的契约、元数据、多来源目录、来源存储和迁移预览已实现，见 [实施记录](NATIVE-AGENT-SKILLS-IMPLEMENTATION.md)。新运行链路和 v2 保存仍关闭，现有显式项目 Skills 行为保持；调用、自动匹配和连续性将在后续批次补齐。
+
 2026-09-30：用户明确要求整理本轮修改，在独立集成分支吸收最新 main、解决接口与行为差异、验证固定候选后合入 main；本次目标覆盖此前仅集成 dev/native-agent 的限制。过程与结果见 [集成记录](NATIVE-AGENT-MAIN-INTEGRATION.md)。Claude 默认、兼容性及 Windows/真实模型验收后置，不触发 CI、安装包构建或 Release。
 
 2026-09-29：[Native 状态与提交预算稳固](NATIVE-AGENT-STATE-BUDGET-FIX.md)修复历史回执覆盖当前状态，以及准备/启动耗时漏计；本地回归与正式待验收分别登记。

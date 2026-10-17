@@ -3,6 +3,7 @@ import type { NativeChangeSetPreview, NativeChangeSetResult } from './native-cha
 import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
 import type { NativeAgentSnapshot, NativeAgentApprovalScope } from './native-agents.js';
+import type { NativeSkillSubmission } from './native-skills.js';
 export type { NativeAgentView, NativeAgentSnapshot, NativeAgentApprovalScope, NativeAgentResultRequest, NativeAgentResult, NativeAgentPatchPage } from './native-agents.js';
 /** 一轮交互的状态，与 CLI 进程的生命周期无关。 */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
@@ -109,7 +110,7 @@ export interface NativeContextMaintenance {
   preview?: NativeContextCompactionPreview;
   compacting?: boolean;
   compactionTrigger?: 'manual' | 'automatic' | 'in_turn';
-  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' };
+  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' | 'during_run' };
   lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' | 'in_turn' };
   /** 宿主管理的回执。仅收到摘要响应并不代表压缩已提交。 */
   inTurn?: {
@@ -174,9 +175,11 @@ export interface QueuedChatMessage {
   nativeImageAttachments?: NativeImageAttachment[];
   status: 'queued' | 'sending';
   nativeTaskId?: string;
+  /** 宿主接收前已持久保存的确切技能版本；排队与恢复不重新解析名称。 */
+  nativeSkills?: NativeSkillSubmission;
 }
 /** 只有用户显式选择时才延续已有的原生任务。 */
-export interface ChatSendOptions { nativeTaskId?: string }
+export interface ChatSendOptions { nativeTaskId?: string; nativeSkills?: NativeSkillSubmission }
 export interface ChatQueueSnapshot {
   items: QueuedChatMessage[]; paused: boolean; error?: string;
   /** 有界的持久接收证明；消息出队后仍可关联原提交，不代表执行或验收成功。 */

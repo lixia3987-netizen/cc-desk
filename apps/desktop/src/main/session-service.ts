@@ -117,7 +117,7 @@ export class SessionService {
       attachmentMetadata: async (id, files) => this.session(id).execution.providerId === 'native' && files.length
         ? (await readNativeImageAttachments(store.directory, id, files)).metadata : undefined,
       acceptAttachments: (id, files, commit) => this.attachments.acceptQueued(id, files, commit),
-      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}), ...(item.nativeImageAttachments ? { imageAttachments: item.nativeImageAttachments } : {}) }),
+      run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}), ...(item.nativeImageAttachments ? { imageAttachments: item.nativeImageAttachments } : {}), ...(item.nativeSkills === undefined ? {} : { nativeSkills: item.nativeSkills }) }),
       settled:id => this.refreshDirectoryRelease(id),
       interrupt: id => this.interruptForQueue(id),
       changed: id => {
@@ -542,6 +542,7 @@ export class SessionService {
   private async runChat(id: string, text: string, attachments: string[] = [], titlePrompt?: string, queued = false, submission: ExecutionSubmission = { requestId: randomUUID(), source: 'direct' }) {
     const epoch = this.cancellations.get(id) ?? 0;
     const s = this.structured(id);
+    if (submission.nativeSkills !== undefined && s.execution.providerId !== 'native') throw new Error('此引擎不支持 Native 技能引用。');
     const checkAdmission = this.captureEngineAdmission(s.execution.providerId);
     if(s.archived) throw new Error('请先取消会话归档。');
     if(this.runtime.has(id)) throw new Error('此会话已有终端进程。');
@@ -595,7 +596,7 @@ export class SessionService {
       requireCommands: id => { this.execution.require(id, 'commands'); },
       reserve: id => this.reserve(id), releaseAdmission: async id => { this.admissions.delete(id); await this.refreshDirectoryRelease(id); this.queue.wake(id); },
       manage: (id, action) => this.manage(id, action),
-      runChat: (id, text, attachments, requestId, nativeTaskId) => this.runChat(id, text, attachments, undefined, false, { requestId: requestId ?? randomUUID(), source: 'direct', ...(nativeTaskId ? { nativeTaskId } : {}) }), getWindow: this.getWindow,
+      runChat: (id, text, attachments, requestId, nativeTaskId, nativeSkills) => this.runChat(id, text, attachments, undefined, false, { requestId: requestId ?? randomUUID(), source: 'direct', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeSkills === undefined ? {} : { nativeSkills }) }), getWindow: this.getWindow,
     });
     registerWorkspaceHandlers(handle, {
       store: this.store, queries: this.queries, session: id => this.session(id), project: id => this.project(id),

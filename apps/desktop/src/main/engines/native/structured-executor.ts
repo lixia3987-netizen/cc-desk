@@ -59,6 +59,8 @@ import type { NativeAgentResultRequest, NativeAgentResult } from '../../../share
 import { buildNativeParentInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativeParallelReviewIntent, nativePromptInstructionSections } from './agent-prompts';
 import { nativeDelegationAuditFailure, saveNativeDelegationAudit } from './agent-delegation-audit';
 import { reportNativeDiagnostic } from './diagnostic';
+import { normalizeNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
+import type { NativeSkillRuntime } from './skill-runtime';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
 const RECOVERY_ACK = '已核查执行现场并解除目录隔离。此会话只读，原始记录继续保留；请新建会话继续，不会重放未知工具。';
@@ -76,6 +78,7 @@ interface ActiveRun {
   store?: NativeRunStore; cleanupUnconfirmed: boolean; released: boolean;
   phase?: 'compacting' | 'compacting_in_turn';
   executionPolicy?: NativeExecutionPolicy;
+  nativeSkills?: NativeSkillSubmission;
   delegation?: NativeAgentDelegationTools;
   children?: Map<string, NativeAgentChildInput>;
   childApprovalQueue?: Promise<void>;
@@ -92,6 +95,8 @@ interface ContextOperation {
   identity?: RunIdentity; cleanupUnconfirmed: boolean; released: boolean;
 }
 export interface NativeExecutorOptions {
+  /** Internal M2 gate. Ordinary executor construction leaves this absent. */
+  skills?: NativeSkillRuntime;
   mcpConnections?: NativeMcpConnectionStore;
   modelCapabilities?: NativeModelCapabilityService;
   worker?: typeof runNativeWorker;
@@ -108,6 +113,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   private recoveryViews = new Map<string, NonNullable<ChatSnapshot['nativeRecovery']>>();
   private contextViews = new Map<string, NonNullable<ChatSnapshot['nativeContextMaintenance']>>();
   private autoCompactionBlocked = new Set<string>();
+  private skillContinuityBlocked = new Set<string>();
   private recovery = new Set<string>();
   private acknowledged = new Set<string>();
   private maintenance = false;
@@ -191,6 +197,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     // 退出开始后，渲染进程刷新请求仍可能到达。保留现有
     // 投影，但绝不在关闭屏障后打开另一个写入器。
     if (this.hydrationClosed) return Promise.resolve();
+    // Active execution publishes committed changes itself. A presentation read
+    // must not join disk/projection or task-workspace work; execute() still
+    // awaits any existing hydration before acquiring its ledger and starting.
+    const live = this.active.get(id);
+    if (live && !live.cleanupUnconfirmed && !this.recovery.has(id) && !this.taskLeaseFailures.has(id)) return Promise.resolve();
     const pending = this.hydration.get(id); if (pending) return pending;
     const operation = (async () => {
       const active = this.active.get(id) ?? this.contextOperations.get(id);
@@ -223,6 +234,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async refreshProjection(id: string, ledger: NativeRunStore, bestEffortDisplay = false) {
     const runs = ledger.listRuns();
+    if (runs.some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) this.skillContinuityBlocked.add(id);
+    else this.skillContinuityBlocked.delete(id);
     this.agentResultParents.set(id, new Map(runs.filter(run => run.identity.sessionId === id &&
       run.identity.conversationId === this.session(id).execution.conversationId).map(run => [run.identity.runId, structuredClone(run.identity)])));
     const headHash = ledger.head?.hash ?? '';
@@ -370,12 +383,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const view = this.contextViews.get(id), recovery = this.recoveryViews.get(id);
     const runtimeConfig = view ? active?.runtimeConfig ?? operation?.runtimeConfig ?? this.runtimeConfig(this.session(id).engineConfig) : undefined;
     if (this.recovery.has(id)) snapshot.nativeRecovery = { ...(recovery ?? { status: 'blocked', headHash: view?.headHash ?? '', tools: { completed: 0, notExecuted: 0, unknown: 0 } }), ...(this.acknowledged.has(id) ? { status: 'acknowledged' as const } : {}), reason: this.recoveryMessage(id) };
-    if (view) snapshot.nativeContextMaintenance = { ...view, canCompact: view.canCompact && !this.has(id) && !this.recovery.has(id),
+    const skillsContinuityBlocked = this.skillContinuityBlocked.has(id);
+    const skillInRunMaintenance = Boolean(this.options.skills && active?.identity && runtimeConfig?.autoCompact === 'before_send_and_during_run');
+    const automaticMode = skillInRunMaintenance ? 'during_run' as const
+      : this.options.skills || skillsContinuityBlocked ? 'off' as const : runtimeConfig?.autoCompact ?? 'off';
+    if (view) snapshot.nativeContextMaintenance = { ...view, canCompact: view.canCompact && !this.has(id) && !this.recovery.has(id) && !skillsContinuityBlocked,
       preview: this.recovery.has(id) ? { status: 'unavailable', reason: 'recovery_required' }
+        : skillsContinuityBlocked ? { status: 'unavailable', reason: 'unsupported_context' }
         : this.has(id) || this.maintenance || this.sessionMaintenance.has(id) ? { status: 'unavailable', reason: 'busy' } : view.preview ? { ...view.preview } : undefined,
       compacting: operation?.kind === 'compact' || active?.phase === 'compacting' || active?.phase === 'compacting_in_turn',
       ...(active?.phase === 'compacting' ? { compactionTrigger: 'automatic' as const } : active?.phase === 'compacting_in_turn' ? { compactionTrigger: 'in_turn' as const } : operation?.kind === 'compact' ? { compactionTrigger: 'manual' as const } : {}),
-      autoCompact: { enabled: runtimeConfig!.autoCompact !== 'off', mode: runtimeConfig!.autoCompact, thresholdPercent: 90, ...(this.autoCompactionBlocked.has(id) && active?.phase !== 'compacting' ? { blocked: true } : {}) } };
+      autoCompact: { enabled: automaticMode !== 'off', mode: automaticMode, thresholdPercent: 90, ...(this.autoCompactionBlocked.has(id) && active?.phase !== 'compacting' ? { blocked: true } : {}) } };
     if (operation && !operation.abort.signal.aborted) snapshot.taskState = operation.kind === 'compact' ? 'thinking' : 'starting';
     if (active?.phase === 'compacting' || active?.phase === 'compacting_in_turn') { snapshot.taskState = active.abort.signal.aborted ? 'interrupted' : 'thinking'; snapshot.error = undefined; }
     const task = this.taskViews.get(id);
@@ -399,6 +417,10 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (!requestId || requestId.length > 256 || requestId.includes('\0')) return Promise.reject(new Error('无效提交标识。'));
     const continuedTaskId = submission?.nativeTaskId;
     const executionPolicy = parseNativeExecutionPolicy(submission?.nativeExecutionPolicy);
+    let nativeSkills: NativeSkillSubmission | undefined;
+    try { nativeSkills = submission?.nativeSkills === undefined ? undefined : normalizeNativeSkillSubmission(submission.nativeSkills); }
+    catch { return Promise.reject(new Error('无效技能引用，请重新选择。')); }
+    if (nativeSkills !== undefined && !this.options.skills) return Promise.reject(new Error('当前执行器尚未启用新版技能运行能力，无法接受技能引用。'));
     if (continuedTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(continuedTaskId)) return Promise.reject(new Error('无效任务标识。'));
     const expectedImageAttachments = submission?.imageAttachments;
     if (expectedImageAttachments !== undefined && !isNativeImageAttachments(expectedImageAttachments) ||
@@ -406,7 +428,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const sourceOptions = canonicalJson(json(sourceConfig));
     const previous = this.active.get(id);
     if (previous) {
-      if (previous.requestId !== requestId || previous.input !== text || previous.sourceOptions !== sourceOptions || previous.continuedTaskId !== continuedTaskId || canonicalJson(json(previous.executionPolicy ?? null)) !== canonicalJson(json(executionPolicy ?? null)) || canonicalJson(json(previous.expectedImageAttachments ?? [])) !== canonicalJson(json(expectedImageAttachments ?? []))) return Promise.reject(new Error('此会话仍持有执行资源，请等待停止完成。'));
+      if (previous.requestId !== requestId || previous.input !== text || previous.sourceOptions !== sourceOptions || previous.continuedTaskId !== continuedTaskId || canonicalJson(json(previous.nativeSkills ?? null)) !== canonicalJson(json(nativeSkills ?? null)) || canonicalJson(json(previous.executionPolicy ?? null)) !== canonicalJson(json(executionPolicy ?? null)) || canonicalJson(json(previous.expectedImageAttachments ?? [])) !== canonicalJson(json(expectedImageAttachments ?? []))) return Promise.reject(new Error('此会话仍持有执行资源，请等待停止完成。'));
       if (!previous.attachmentPaths.length && !attachments.length) return previous.promise;
       // 重复提交时重新读取所选清单条目。正在运行的
       // 请求保留原始快照，即使文件已变化。
@@ -422,7 +444,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const config = this.runtimeConfig(session.engineConfig), encoded = canonicalJson(json(config));
     let resolve!: (value: ChatTurnResult) => void, reject!: (error: unknown) => void;
     const promise = new Promise<ChatTurnResult>((yes, no) => { resolve = yes; reject = no; });
-    const active: ActiveRun = { executionPolicy, ...(expectedImageAttachments === undefined ? {} : { expectedImageAttachments: json(expectedImageAttachments) }), attachmentPaths: [...attachments], images: [], imageAttachments: [], requestId, input: text, options: encoded, sourceOptions, runtimeConfig: config, connectionId: config.connectionId, mcpConnections: executionPolicy?.toolPolicy === 'read_only' ? [] : config.mcpConnections, abort: new AbortController(), promise, cleanupUnconfirmed: false, released: false, taskId: continuedTaskId ?? randomUUID(), continuedTaskId };
+    const active: ActiveRun = { executionPolicy, ...(nativeSkills === undefined ? {} : { nativeSkills }), ...(expectedImageAttachments === undefined ? {} : { expectedImageAttachments: json(expectedImageAttachments) }), attachmentPaths: [...attachments], images: [], imageAttachments: [], requestId, input: text, options: encoded, sourceOptions, runtimeConfig: config, connectionId: config.connectionId, mcpConnections: executionPolicy?.toolPolicy === 'read_only' ? [] : config.mcpConnections, abort: new AbortController(), promise, cleanupUnconfirmed: false, released: false, taskId: continuedTaskId ?? randomUUID(), continuedTaskId };
     this.active.set(id, active);
     void this.execute(id, active).then(resolve, reject);
     return promise;
@@ -451,10 +473,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.hydration.get(id);
       this.assertActive(id, active);
       const session = this.session(id), requestedConfig = active.runtimeConfig;
-      // 这些已保存的限制现在只应用于每个子 Agent；父任务不受旧工作流累计预算约束。
+      // The internal skill path now supports in-run maintenance. Pre-send,
+      // manual, cross-turn and delegated continuity remain separately gated.
       const boundedConfig = requestedConfig;
       let config = boundedConfig;
-      const optionsDigest = digest(active.options + (active.executionPolicy ? canonicalJson(json(active.executionPolicy)) : ''));
+      const optionsDigest = digest(active.options + (active.executionPolicy ? canonicalJson(json(active.executionPolicy)) : '') + (active.nativeSkills ? canonicalJson(json(active.nativeSkills)) : ''));
       // 先查回执，再解析凭据并创建工作进程；重试不得再次执行。
       let ledger = await NativeRunStore.open({ rootDirectory: path.join(this.store.directory, 'native', 'conversations'), conversationId: session.execution.conversationId! });
       active.store = ledger;
@@ -470,11 +493,11 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.images = selected.images; active.imageAttachments = selected.metadata;
       if (active.expectedImageAttachments !== undefined && canonicalJson(json(active.imageAttachments)) !== canonicalJson(json(active.expectedImageAttachments))) throw new Error('图片附件内容与已接受的队列记录不一致，请重新选择并发送。');
       this.assertActive(id, active);
-      const submissionDigest = nativeSubmissionInputDigest(active.input, json(active.imageAttachments));
+      const submissionDigest = nativeSubmissionInputDigest(active.input, json(active.imageAttachments), active.nativeSkills === undefined ? undefined : json(active.nativeSkills));
       if (duplicate) {
         receiptOnly = true;
         const priorOptions = parseNativeConfig({ schemaVersion: 1, options: duplicate.request.configuration.sessionOptions as EngineConfig['options'] });
-        if (duplicate.request.input !== active.input || canonicalJson(duplicate.request.configuration.imageAttachments ?? []) !== canonicalJson(json(active.imageAttachments)) || canonicalJson(json(priorOptions)) !== active.options || canonicalJson(duplicate.request.configuration.nativeExecutionPolicy ?? null) !== canonicalJson(json(active.executionPolicy ?? null)) || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
+        if (duplicate.request.input !== active.input || canonicalJson(duplicate.request.configuration.imageAttachments ?? []) !== canonicalJson(json(active.imageAttachments)) || canonicalJson(duplicate.request.configuration.nativeSkills ?? null) !== canonicalJson(json(active.nativeSkills ?? null)) || canonicalJson(json(priorOptions)) !== active.options || canonicalJson(duplicate.request.configuration.nativeExecutionPolicy ?? null) !== canonicalJson(json(active.executionPolicy ?? null)) || duplicate.request.configuration.continuedTaskId !== active.continuedTaskId) throw new Error('此提交标识已用于不同的输入或配置。');
         await this.refreshProjection(id, ledger);
         if (!duplicate.result) throw new Error(RECOVERY);
         result = await this.turnResult(duplicate.result, ledger);
@@ -484,6 +507,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
+      // M2 is internal-only: a later new turn cannot silently drop prior active
+      // skill constraints before M3 implements full version continuity.
+      if (ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) throw new Error('新版技能会话的跨回合连续性尚未开放，请新建会话；原提交仍可查询回执。');
       this.changed(id, 'starting');
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
       const capabilitySnapshot = await this.options.modelCapabilities?.resolve(connection, { timeoutMs: 3000 });
@@ -514,8 +540,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.changed(id, 'starting');
       let instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
       this.assertActive(id, active);
-      let modelInstructions = buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text });
       const assertOwnership = async () => { this.assertActive(id, active); await this.options.assertOwnership?.(id, identity); this.assertActive(id, active); };
+      const skillRun = await this.options.skills?.createRun({ sessionId: id, identity, submission: active.nativeSkills, signal: active.abort.signal,
+        baseInstructionBytes: 2 + Buffer.byteLength(buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text })),
+        forbiddenValues, assertOwnership, canActivate: () => {
+          if (active.approval || active.cleanupUnconfirmed) return false;
+          return !(ledger.getRun(identity.runId)?.tools ?? []).some(tool => tool.prepared &&
+            (tool.prepared.prepared.definition.risk !== 'read' && (!tool.completed || tool.completed.result.status === 'unknown') ||
+              tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished'));
+        } });
+      let modelInstructions = buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode),
+        projectInstructions: [instructions.text, skillRun?.initialInstructions].filter(Boolean).join('\n\n') });
       const parentBudget = new NativeAggregateBudget({ ...config, unlimited: true }, active.abort.signal, () => Number.POSITIVE_INFINITY,
         { modelRequests: ledger.lookupAutoCompaction(identity.requestId) ? 1 : 0, toolCalls: 0 });
       const childBudgets = new Map<string, { budget: ReturnType<typeof createNativeChildBudget>; modelRequests: number; toolCalls: number }>();
@@ -580,11 +615,13 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (stdioConnections.length) {
         const metadata = await mcpStartupMetadata(mcpConnections, session.cwd);
         for (const secret of forbiddenValues) assertNoModelCredential(metadata, secret);
-        const policyRevision = digest(canonicalJson(json({ instructions: instructions.digest, launch: metadata })));
+        const policyRevision = digest(canonicalJson(json({ instructions: instructions.digest, launch: metadata,
+          ...(skillRun ? { nativeSkillCatalog: skillRun.catalogRevision, initialSkills: skillRun.tools.snapshot() } : {}) })));
         const request: ApprovalRequest = {
           binding: { ...identity, toolCallId: 'mcp_stdio_startup', inputDigest: digest(canonicalJson(metadata)), policyRevision },
           tool: { name: 'mcp_stdio_startup', description: '启动所选本地 MCP 服务。程序可访问当前用户资源；启动及后续工具调用分别审批。', risk: 'command', inputSchema: { type: 'object' } },
-          input: metadata, preconditions: { instructions: instructions.digest }, expiresAt: Date.now() + 5 * 60_000,
+          input: metadata, preconditions: { instructions: instructions.digest,
+            ...(skillRun ? { nativeSkillCatalog: skillRun.catalogRevision, initialSkills: json(skillRun.tools.snapshot()) } : {}) }, expiresAt: Date.now() + 5 * 60_000,
         };
         const resume = activePause.pause();
         let approval: ApprovalDecision;
@@ -593,6 +630,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         if (approval.decision !== 'approved' || approval.expiresAt <= Date.now()) throw new Error('本地 MCP 服务启动未获批准，未启动服务。');
         const recheck = async () => {
           await assertOwnership();
+          await skillRun?.assertInitialCurrent();
           const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
           if (current.digest !== instructions.digest) throw new Error('项目指令或 Skills 已改变，本地 MCP 启动审批失效。');
           for (const selected of stdioConnections) {
@@ -614,7 +652,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       // 工具目录发现保留自己的传输超时，不占用子 Agent 的时长。
       if (mcpConnections.length) {
         mcpTools = await createMcpToolPort({ connections: mcpConnections, forbiddenValues,
-          ...(stdioConnections.length ? { stdio: { supervisor: this.supervisor, ownerId: identity.runId, cwd: session.cwd, assertStartupCurrent: assertStartupCurrent! } } : {}),
+          ...(skillRun ? { assertSideEffectsCurrent: (signal: AbortSignal) => skillRun.tools.assertSideEffectsCurrent(signal) } : {}),
+          ...(stdioConnections.length ? { stdio: { supervisor: this.supervisor, ownerId: identity.runId, cwd: session.cwd,
+            assertStartupCurrent: assertStartupCurrent!, ...(skillRun ? { beforeLaunch: assertStartupCurrent! } : {}) } } : {}),
           assertOwnership: async () => {
             await assertOwnership();
             const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
@@ -644,6 +684,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills,
         forbiddenValues, assertOwnership: assertTaskOwnership });
       commandTools = createCommandTools({ identity, taskId: active.taskId, supervisor: this.supervisor, signal: active.abort.signal, forbiddenValues,
+        ...(skillRun ? { assertSideEffectsCurrent: () => skillRun.tools.assertSideEffectsCurrent(active.abort.signal) } : {}),
         remainingMs: () => Number.POSITIVE_INFINITY, assertOwnership,
         record: async (call, progress) => {
           if (progress.status === 'prepared') await assertOwnership();
@@ -658,7 +699,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         },
       });
       const createTools = (): ToolPort => {
-        const local = composeToolPorts([questions, taskTools, locationTools, commandTools!, createLocalToolPort({ startCommand: (prepared, context, command) => commandTools!.start(prepared, context, command), projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills, assertOwnership: async run => {
+        const local = composeToolPorts([questions, taskTools, locationTools, commandTools!, createLocalToolPort({ startCommand: (prepared, context, command) => commandTools!.start(prepared, context, command), projectRoot: session.cwd, excludedRoots: [this.store.directory], supervisor: this.supervisor, ownerId: identity.runId, forbiddenValues, initialInstructions: instructions, projectSkills: config.projectSkills,
+          ...(skillRun ? { assertSideEffectsCurrent: (signal: AbortSignal) => skillRun.tools.assertSideEffectsCurrent(signal) } : {}), assertOwnership: async run => {
           if (!sameRun(run, identity)) throw new Error('工具运行归属已失效。');
           await assertOwnership();
         }, recordChangeSetEvent: async (run, call, progress) => {
@@ -694,19 +736,26 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         assertOwnership, resolveParent: parentRunId => ledger.listRuns().find(run => run.identity.runId === parentRunId &&
           run.identity.sessionId === identity.sessionId && run.identity.conversationId === identity.conversationId)?.identity });
       // 单 Agent 或明确禁止委派的请求在宿主侧不注册委派工具，不能靠模型自律放宽。
-      const stageTools = () => restrictNativeTools(active.tasks!.wrapTools(composeToolPorts([createTools(),
-        ...(nativeParallelReviewIntent(active.input).mode === 'single_agent' ? [] : [active.delegation!]), resultTools]), active.taskId, identity), active.executionPolicy);
+      const stageTools = () => {
+        const ordinary = active.tasks!.wrapTools(composeToolPorts([createTools(),
+          ...(skillRun || nativeParallelReviewIntent(active.input).mode === 'single_agent' ? [] : [active.delegation!]), resultTools]), active.taskId, identity);
+        const combined = skillRun ? composeToolPorts([skillRun.tools.guard(ordinary), ...(skillRun.catalog.entries.some(entry => entry.autoMatchable) ? [skillRun.tools] : [])]) : ordinary;
+        return restrictNativeTools(combined, active.executionPolicy);
+      };
       let tools = stageTools();
       const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp, toolDefinitions: tools.definitions };
       for (const secret of forbiddenValues) assertNoModelCredential({ input: active.input, instructions: modelInstructions, tools: tools.definitions, context: ledger.loadContext() }, secret);
-      const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, images: active.images, imageAttachments: active.imageAttachments, config, model, instructions: modelInstructions, forbiddenValues,
+      const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, images: active.images, imageAttachments: active.imageAttachments,
+        ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}),
+        config: skillRun ? { ...config, autoCompact: 'off' } : config, model, instructions: modelInstructions, forbiddenValues,
         signal: active.abort.signal, startedAt, assertOwnership, worker, unlimited: true,
         onCompacting: () => { active.phase = 'compacting'; this.changed(id, 'thinking'); },
         onCommitted: () => this.refreshProjection(id, ledger) });
       if (automatic.compacted) {
         // 摘要请求进行期间，项目指令可能发生变化。
         instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
-        modelInstructions = buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text });
+        modelInstructions = buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode),
+          projectInstructions: [instructions.text, skillRun?.initialInstructions].filter(Boolean).join('\n\n') });
         tools = stageTools();
         model.toolDefinitions = tools.definitions;
         assertNativeInputBudget(ledger.loadContext()!, active.input, modelInstructions, config, model, active.images);
@@ -716,6 +765,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const maxActiveMs = config.maxActiveMs;
       const mcpMetadata = mcpConnections.map(mcpConnectionMetadata);
       const policyRevision = digest(canonicalJson(json({ version: 1, cwd: session.cwd, instructions: instructions.digest,
+        ...(skillRun ? { nativeSkillCatalog: skillRun.catalogRevision, initialSkills: skillRun.tools.snapshot() } : {}),
         ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}),
         ...(mcpMetadata.length ? { mcpConnections: mcpMetadata, mcpTools: mcpTools!.definitions } : {}) })));
       const durable: RunStore = {
@@ -731,6 +781,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             catch (error) { active.cleanupUnconfirmed = true; throw error; }
           }
           const accepted = await ledger.append(run, event);
+          // UI projection events cannot activate guides. Only the actual durable
+          // append receipt may advance the per-run observation barrier.
+          skillRun?.tools.observeCommitted(event, accepted.seq);
           try { if (!this.taskErrors.has(id)) await active.tasks!.committed(active.taskId, identity, event); }
           catch { this.taskErrors.set(id, '执行回执已保存，但任务证据暂不可用；验收状态未知，请结束后刷新核查。'); this.projection.notifyTask(id); }
           await this.refreshProjection(id, ledger, true); return accepted;
@@ -740,8 +793,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       };
       active.phase = undefined;
       this.changed(id, 'starting');
+      await skillRun?.assertInitialCurrent();
       const run = await worker({
-        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))) }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n') }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}), ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated }, initialNativeSkills: skillRun.tools.snapshot(), effectiveAutoCompact: config.autoCompact === 'before_send_and_during_run' ? 'during_run' : 'off' } : {}), ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const resume = activePause.pause();
@@ -755,12 +809,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             await assertOwnership();
             const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, signal);
             if (current.digest !== instructions.digest) throw new Error('项目指令或 Skills 已改变，请结束当前回合后重新发送。');
+            await skillRun?.tools.assertSourcesCurrent(signal);
             await assertOwnership();
           }, continuity: async () => {
             await active.tasks!.settled();
             return buildNativeContextContinuity({ identity, taskId: active.taskId, task: active.tasks!.store.read(active.taskId),
               run: ledger.listRuns().find(item => sameRun(item.identity, identity)), issues: this.taskErrors.has(id) ? [this.taskErrors.get(id)!] : [] });
-          }, onCompacting: async () => { active.phase = 'compacting_in_turn'; this.changed(id, 'thinking'); await this.refreshProjection(id, ledger); },
+          }, ...(skillRun ? { skills: {
+            prepare: retainedContext => skillRun.prepareContinuity(ledger, retainedContext),
+            onCommitted: (seq, section) => skillRun.tools.observeContextReplacement(seq, section.manifest),
+          } } : {}),
+          onCompacting: async () => { active.phase = 'compacting_in_turn'; this.changed(id, 'thinking'); await this.refreshProjection(id, ledger); },
           onSettled: async () => { active.phase = undefined; await this.refreshProjection(id, ledger); }, worker,
         }) } : {}),
         onEvent: event => this.projection.event(id, event),
@@ -1004,7 +1063,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     if (!active.released) throw new Error('执行资源清理尚未确认，不能释放目录占用。');
   }
   async stopIdle(id: string) { if (this.has(id)) throw new Error('会话仍在执行或清理。'); }
-  forget(id: string) { if (this.has(id) || this.recoveryRequired(id)) throw new Error('请先确认会话资源与恢复状态。'); this.projection.forget(id); this.recoveryViews.delete(id); this.contextViews.delete(id); this.autoCompactionBlocked.delete(id); this.taskViews.delete(id); this.taskErrors.delete(id); this.agentResultParents.delete(id); }
+  forget(id: string) { if (this.has(id) || this.recoveryRequired(id)) throw new Error('请先确认会话资源与恢复状态。'); this.projection.forget(id); this.recoveryViews.delete(id); this.contextViews.delete(id); this.autoCompactionBlocked.delete(id); this.skillContinuityBlocked.delete(id); this.taskViews.delete(id); this.taskErrors.delete(id); this.agentResultParents.delete(id); }
   private assertContextOperation(id: string, operation: ContextOperation) {
     if (this.contextOperations.get(id) !== operation || operation.abort.signal.aborted || this.maintenance || this.sessionMaintenance.has(id)) throw new Error('恢复或压缩操作已取消。');
   }
@@ -1076,6 +1135,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   compactContext(id: string, expectedHead: string): Promise<void> {
     return this.contextOperation(id, 'compact', expectedHead, async operation => {
       let ledger = operation.store!;
+      if (ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) throw new Error('新版技能的压缩连续性尚未开放，当前会话不能压缩；原始上下文保持不变。');
       const previousCompaction = ledger.getLastCompaction();
       if (previousCompaction?.expectedHash === expectedHead) return;
       // 手动摘要诊断推进日志头后，提交计划绑定的是诊断后的头。

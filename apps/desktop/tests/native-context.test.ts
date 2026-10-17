@@ -97,6 +97,15 @@ test('native auto compaction stays off for existing configurations and requires 
   }
 });
 
+test('an effective in-run-only scope does not advertise pre-send or child compaction', () => {
+  const html = renderToStaticMarkup(createElement(ContextMeter, { native: true,
+    maintenance: { headHash: 'a'.repeat(64), canCompact: false,
+      autoCompact: { enabled: true, thresholdPercent: 90, mode: 'during_run' } } }));
+  assert.match(html, /回合内自动压缩已开启/);
+  assert.match(html, /技能正文完整保留/);
+  assert.doesNotMatch(html, /发送前与回合内|仅发送新指令前|子 Agent 回合内压缩/);
+});
+
 test('budget failure explanations remain distinct and keep unknown runtime reasons intact', () => {
   assert.match(nativeRunError('context_budget'), /下一次模型请求/);
   assert.match(nativeRunError('model_request_budget'), /模型请求次数上限/);

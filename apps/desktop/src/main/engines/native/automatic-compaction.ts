@@ -4,6 +4,7 @@ import { nativeSubmissionInputDigest, type NativeRunStore } from '@cc-desk/agent
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { contextSummaryItem } from '@cc-desk/agent-node/context-maintenance';
 import type { NativeImageAttachment } from '@cc-desk/contracts/chat';
+import type { NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import type { parseNativeConfig } from './config';
 import { prepareNativeContextSummary, summarizeNativeContext } from './context-summary';
 import type { runNativeWorker } from './worker-host';
@@ -27,7 +28,7 @@ export function assertNativeInputBudget(context: ModelContext, input: string, in
 
 /** 一次发送独占整个操作；模型请求前完成预留，绝不重试结果不确定的尝试。 */
 export async function autoCompactBeforeSend(options: {
-  ledger: NativeRunStore; identity: RunIdentity; input: string; images?: UserImage[]; imageAttachments?: NativeImageAttachment[]; config: Config;
+  ledger: NativeRunStore; identity: RunIdentity; input: string; images?: UserImage[]; imageAttachments?: NativeImageAttachment[]; nativeSkills?: NativeSkillSubmission; config: Config;
   model: NativeModelOptions; instructions: string; signal: AbortSignal;
   forbiddenValues?: readonly (string | undefined)[];
   startedAt: number; assertOwnership(): Promise<void>; onCompacting(): void; onCommitted(): Promise<void>;
@@ -36,7 +37,7 @@ export async function autoCompactBeforeSend(options: {
   unlimited?: boolean;
 }): Promise<{ compacted: boolean; remainingRequests: number }> {
   const { ledger, config, identity, input, model, images } = options;
-  const inputDigest = nativeSubmissionInputDigest(input, options.imageAttachments as unknown as JsonValue), configurationDigest = digest(canonicalJson(config as JsonValue));
+  const inputDigest = nativeSubmissionInputDigest(input, options.imageAttachments as unknown as JsonValue, options.nativeSkills as unknown as JsonValue), configurationDigest = digest(canonicalJson(config as JsonValue));
   const previous = ledger.lookupAutoCompaction(identity.requestId);
   if (previous && previous.inputDigest !== inputDigest) {
     throw new Error('此提交标识已用于不同的输入；请重新发送一条消息。');

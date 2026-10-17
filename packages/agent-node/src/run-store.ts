@@ -9,15 +9,20 @@ import type {
 import { contextHasUserImages, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
+import { isNativeSkillSubmission, normalizeNativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { readStoreSnapshot } from './store-read.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeCompletionFeedbackItems, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
+import { readSkillContinuityEvidence, skillContinuityItems, validateSkillContinuitySection, type SkillContinuitySection } from './skill-continuity.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
 
 /** 确保引入图像之前的请求标识与现有日志逐字节兼容。 */
-export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue): string {
+export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue, nativeSkills?: JsonValue): string {
+  if (nativeSkills !== undefined) return createHash('sha256').update(canonical({ input,
+    ...(Array.isArray(imageAttachments) && imageAttachments.length ? { imageAttachments } : {}),
+    nativeSkills: normalizeNativeSkillSubmission(nativeSkills) })).digest('hex');
   const value = Array.isArray(imageAttachments) && imageAttachments.length ? canonical({ input, imageAttachments }) : input;
   return createHash('sha256').update(value).digest('hex');
 }
@@ -138,6 +143,8 @@ export interface AutoCompactionAttempt extends AutoCompactionRequest {
 }
 export interface RunCompactionSource extends ContextCompactionSource {
   contextHash: string;
+  /** Number of exact goal items before the retained suffix; preserves native wire order. */
+  retainedPrefixItems: number;
 }
 export interface RunCompactionRequest { requestId: string; contextHash: string }
 export interface RunCompactionAttempt extends RunCompactionRequest {
@@ -156,6 +163,8 @@ export interface RunCompactionInput extends RunCompactionRequest {
   summary: string;
   continuity: string;
   usage: Usage | null;
+  /** Exact same-run guide retention, independently reconstructed from committed receipts. */
+  nativeSkills?: SkillContinuitySection;
 }
 export interface RunCompactionFailure { requestId: string; reason: string; usage: Usage | null }
 interface RunCompactionPlan extends RunCompactionInput {
@@ -165,7 +174,7 @@ interface RunCompactionPlan extends RunCompactionInput {
   retainedTurns: Array<{ runId: string; start: number }>;
   retainedBatches: Array<{ runId: string; start: number }>;
 }
-export interface RunCompactionReceipt { seq: number; context: ModelContext; beforeBytes: number; afterBytes: number }
+export interface RunCompactionReceipt { seq: number; context: ModelContext; beforeBytes: number; afterBytes: number; nativeSkills?: SkillContinuitySection }
 type RecoveryCompletion = Extract<RunJournalEvent, { type: 'tool_completed' }>;
 type StoreEvent =
   | { type: 'conversation_created' }
@@ -522,6 +531,7 @@ export class NativeRunStore implements RunStore {
       text(request.inputDigest, 'input digest', 256); text(request.policyRevision, 'policy revision', 256);
       validateContext({ protocol: request.protocol, items: request.userItems });
       validateConfiguration(request.configuration);
+      if (Object.hasOwn(request.configuration, 'nativeSkills') && !isNativeSkillSubmission(request.configuration.nativeSkills)) fail('invalid_record', 'Invalid Native skill submission');
       if (event.payloadDigest !== payloadDigest(request)) fail('payload_mismatch', 'Submission payload digest mismatch');
       if (this.runs.has(identity.runId) || this.submissions.has(identity.requestId)) fail('payload_mismatch', 'Duplicate run or submission in journal');
       for (const [requestId, startups] of this.startups) {
@@ -529,7 +539,10 @@ export class NativeRunStore implements RunStore {
           if (requestId === identity.requestId) {
             if (!equal(startup.identity, identity)) fail('stale_owner', 'Only the startup owner may begin its associated run');
             if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot begin a new run');
-            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments) || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
+            const optionsDigest = createHash('sha256').update(canonical(request.configuration.sessionOptions)
+              + (request.configuration.nativeExecutionPolicy === undefined ? '' : canonical(request.configuration.nativeExecutionPolicy))
+              + (request.configuration.nativeSkills === undefined ? '' : canonical(request.configuration.nativeSkills))).digest('hex');
+            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments, request.configuration.nativeSkills) || startup.optionsDigest !== optionsDigest) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
           } else if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
         }
       }
@@ -1264,7 +1277,8 @@ export class NativeRunStore implements RunStore {
     requireCompleteContext(context);
     const latest = this.records.at(-1)!;
     return { expectedHash: latest.hash, sourceSeq: latest.seq, contextHash: digest(this.context), scope: 'prefix', context,
-      beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), retainedContext: { protocol: clone(this.context!.protocol), items: [...goals, ...clone(this.context!.items.slice(boundary))] } };
+      retainedPrefixItems: goals.length, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)),
+      retainedContext: { protocol: clone(this.context!.protocol), items: [...goals, ...clone(this.context!.items.slice(boundary))] } };
   }
 
   /** 每轮运行在任何付费摘要请求之前只预留一次额度。确认丢失绝不授予重试权限。 */
@@ -1288,13 +1302,17 @@ export class NativeRunStore implements RunStore {
     const source = this.getRunCompactionSource(identity);
     if (source.contextHash !== input.contextHash) fail('stale_context', 'Run context changed while producing the summary');
     const { boundary, goals, currentStart, imageSuffix } = this.runCompactionBoundary(identity);
-    const prefix = [...goals, contextSummaryItem(input.summary, this.context!.protocol), runContinuityItem(input.continuity, this.context!.protocol)];
+    const nativeSkills = input.nativeSkills === undefined ? undefined : validateSkillContinuitySection(
+      readSkillContinuityEvidence(this, identity.runId, source.retainedContext), input.nativeSkills);
+    const prefix = [...goals, contextSummaryItem(input.summary, this.context!.protocol), runContinuityItem(input.continuity, this.context!.protocol),
+      ...(nativeSkills ? skillContinuityItems(nativeSkills, this.context!.protocol) : [])];
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
     requireCompleteContext(context);
     const afterBytes = Buffer.byteLength(JSON.stringify(context));
     if (afterBytes >= source.beforeBytes) fail('compaction_not_smaller', 'In-turn summary would not reduce the model context');
     if (Buffer.byteLength(canonical({ schemaVersion: 1, conversationId: this.conversationId, seq: this.records.length + 1, journalHash: ZERO_HASH, context, hash: ZERO_HASH })) > this.limits.maxCheckpointBytes) fail('limit_exceeded', 'Compacted context exceeds checkpoint limit');
     return { requestId: input.requestId, contextHash: input.contextHash, summary: input.summary, continuity: input.continuity, usage: clone(input.usage), beforeBytes: source.beforeBytes, afterBytes, context,
+      ...(nativeSkills ? { nativeSkills } : {}),
       retainedTurns: imageSuffix ? this.contextTurns.filter(turn => turn.start >= boundary).map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length }))
         : [{ runId: identity.runId, start: currentStart }],
       retainedBatches: imageSuffix ? this.contextBatches.filter(batch => batch.start >= boundary).map(batch => ({ runId: batch.runId, start: batch.start - boundary + prefix.length }))
@@ -1308,12 +1326,18 @@ export class NativeRunStore implements RunStore {
       const attempt = this.runCompactionAttempts.get(identity.runId);
       if (attempt?.compactionSeq !== undefined) {
         const prior = this.records[attempt.compactionSeq - 1].event;
-        if (prior.type !== 'run_context_compacted' || !equal(input, { requestId: prior.plan.requestId, contextHash: prior.plan.contextHash, summary: prior.plan.summary, continuity: prior.plan.continuity, usage: prior.plan.usage })) fail('payload_mismatch', 'In-turn compaction receipt cannot change');
-        return { seq: attempt.compactionSeq, context: clone(prior.plan.context), beforeBytes: prior.plan.beforeBytes, afterBytes: prior.plan.afterBytes };
+        if (prior.type !== 'run_context_compacted' || !equal(input, { requestId: prior.plan.requestId, contextHash: prior.plan.contextHash, summary: prior.plan.summary, continuity: prior.plan.continuity, usage: prior.plan.usage,
+          ...(prior.plan.nativeSkills ? { nativeSkills: prior.plan.nativeSkills } : {}) })) fail('payload_mismatch', 'In-turn compaction receipt cannot change');
+        return { seq: attempt.compactionSeq, context: clone(prior.plan.context), beforeBytes: prior.plan.beforeBytes, afterBytes: prior.plan.afterBytes,
+          ...(prior.plan.nativeSkills ? { nativeSkills: clone(prior.plan.nativeSkills) } : {}) };
       }
+      // Old records without the optional section still replay exactly. New skill
+      // compactions cannot publish a summary that silently drops active bodies.
+      if (input.nativeSkills === undefined && readSkillContinuityEvidence(this, identity.runId)?.manifest.entries.length) fail('invalid_skill_continuity', 'Active skill compaction requires complete exact guide retention');
       const plan = this.planRunCompaction(identity, input);
       const receipt = await this.commit(identity, { type: 'run_context_compacted', plan });
-      return { ...receipt, context: clone(plan.context), beforeBytes: plan.beforeBytes, afterBytes: plan.afterBytes };
+      return { ...receipt, context: clone(plan.context), beforeBytes: plan.beforeBytes, afterBytes: plan.afterBytes,
+        ...(plan.nativeSkills ? { nativeSkills: clone(plan.nativeSkills) } : {}) };
     });
   }
 
