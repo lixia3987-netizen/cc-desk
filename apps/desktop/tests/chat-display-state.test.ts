@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatDisplayCache, mergeDisplayPage, mergeDisplaySnapshot, sameChatMessage } from '../src/renderer/chat-display-state';
+import { ChatDisplayCache, mergeDisplayPage, mergeDisplayRead, mergeDisplaySnapshot, sameChatMessage } from '../src/renderer/chat-display-state';
 import type { ChatDisplayPage, ChatMessage } from '../src/shared/chat';
 
 const message = (id: string, text = id): ChatMessage => ({ id, text, turnId: 'turn', role: 'assistant', createdAt: '2026-10-16T00:00:00Z' });
@@ -45,6 +45,42 @@ test('earlier pages prepend without duplicate IDs and retain the latest cursor',
   assert.equal(mergeDisplayPage(page(['latest']), page(['older'], { after: 'older' }), 'before').after, null, 'prepending preserves a null live-tail cursor');
 });
 
+test('an incomplete empty boundary read never erases the successful window or either cursor', () => {
+  const current = page(['three', 'four'], { before: 'three', after: 'four' });
+  for (const direction of ['before', 'after'] as const) {
+    assert.throws(() => mergeDisplayPage(current, page([], { before: null, after: null, incomplete: true }), direction), /暂时无法读取/);
+    assert.equal(current.before, 'three'); assert.equal(current.after, 'four');
+    assert.deepEqual(current.messages.map(item => item.id), ['three', 'four']);
+  }
+  assert.equal(mergeDisplayPage(current, page([], { before: null }), 'before').before, null, 'a complete empty read proves the boundary');
+});
+
+test('newer pages append contiguously, retain the old boundary and clear only a proven end', () => {
+  const current = page(['one', 'two'], { before: 'one', after: 'two' });
+  const next = mergeDisplayPage(current, page(['two', 'three', 'four'], { before: 'two', after: null }), 'after');
+  assert.deepEqual(next.messages.map(item => item.id), ['one', 'two', 'three', 'four']);
+  assert.equal(next.before, 'one'); assert.equal(next.after, null);
+  assert.equal(next.messages[0], current.messages[0]);
+  const bounded = mergeDisplayPage(page(Array.from({ length: 990 }, (_, index) => `m${index}`), { after: 'm989' }), page(Array.from({ length: 50 }, (_, index) => `m${990 + index}`), { after: 'm1039' }), 'after');
+  assert.equal(bounded.messages.length, 1000); assert.equal(bounded.messages[0].id, 'm40');
+  assert.equal(bounded.before, 'm40'); assert.equal(bounded.after, 'm1039');
+});
+
+test('newer reads retain their destination when authority hydration enlarges payloads beyond the byte cap', () => {
+  const tool = (index: number, bytes: number): ChatMessage => ({ ...message(`tool-${index}`, 'x'.repeat(bytes)), role: 'tool', input: { detail: 'd'.repeat(20_000) } });
+  const current = page([], { messages: Array.from({ length: 102 }, (_, index) => tool(index, 8192)), before: null, after: 'tool-101' });
+  const destination = message('latest-marker');
+  const newer = page([], { messages: [...Array.from({ length: 10 }, (_, index) => tool(index + 102, 8192)), destination], before: 'tool-102', after: null });
+  const authority = [...Array.from({ length: 27 }, (_, index) => tool(index + 85, 65_536)), destination];
+  const stalled = mergeDisplaySnapshot(mergeDisplayPage(current, newer, 'after'), authority, true);
+  assert.equal(stalled.messages.some(item => item.id === destination.id), false, 'the former two-phase direction mismatch discarded the just-read destination');
+  const next = mergeDisplayRead(current, newer, 'after', authority, true);
+  assert.equal(next.messages.at(-1)?.id, destination.id); assert.equal(next.after, null);
+  assert.notEqual(next.messages[0].id, current.messages[0].id, 'the opposite edge is released to preserve the byte limit');
+  assert.equal(next.before, next.messages[0].id);
+  assert.equal(mergeDisplaySnapshot(next, authority, true), next, 'the next protected reading render cannot undo the hydrated window');
+});
+
 test('live snapshots append only after the known overlap and update changed text', () => {
   const current = page(['old-archive', 'visible', 'streaming']);
   const next = mergeDisplaySnapshot(current, [message('not-displayed'), message('visible'), message('streaming', 'updated'), message('new')]);
@@ -63,6 +99,18 @@ test('a tail beyond the host window moves to the new bounded tail without joinin
 test('detached history updates overlaps without appending a distant live tail', () => {
   const current = page(['archive'], { after: 'archive' });
   assert.equal(mergeDisplaySnapshot(current, [message('latest')]), current);
+});
+
+test('detached history never clears a read cursor merely because an authority snapshot overlaps', () => {
+  const current = page(['one', 'two', 'three'], { after: 'three' });
+  const gap = mergeDisplaySnapshot(current, [message('one', 'updated'), message('new')]);
+  assert.deepEqual(gap.messages.map(item => item.id), ['one', 'two', 'three']);
+  assert.equal(gap.messages[0].text, 'updated'); assert.equal(gap.after, 'three');
+  const overlapping = mergeDisplaySnapshot(current, [message('three'), message('four')]);
+  assert.deepEqual(overlapping.messages.map(item => item.id), ['one', 'two', 'three']);
+  assert.equal(overlapping.after, 'three', 'a display read may have arrived ahead of this snapshot');
+  const incomplete = mergeDisplaySnapshot(current, [message('three'), message('four')], false, true);
+  assert.equal(incomplete.after, 'three'); assert.equal(incomplete.messages.length, 3);
 });
 
 test('canonical completion retires the precise temporary stream ID while retaining historical canonical messages', () => {

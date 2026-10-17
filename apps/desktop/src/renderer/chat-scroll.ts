@@ -18,6 +18,7 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
   const ready=useRef(false),adjusting=useRef(false),frame=useRef(0);
   const pendingJump=useRef(false);
   const mounting=useRef<string | undefined>(undefined);
+  const navigation=useRef(0);
   const restoreLater=useRef<()=>void>(()=>{});
   const latestSnapshot=useRef(snapshot);latestSnapshot.current=snapshot;
 
@@ -51,8 +52,8 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
       const anchor=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id],[data-request-id]')).find(message=>saved.messageId?message.dataset.messageId===saved.messageId:!!saved.requestId&&message.dataset.requestId===saved.requestId);
       if(!anchor&&saved.messageId&&ensureMessage&&latestSnapshot.current?.messages.some(message=>message.id===saved.messageId)){
         if(mounting.current!==saved.messageId){
-          const id=saved.messageId;mounting.current=id;
-          void ensureMessage(id).then(found=>{if(mounting.current===id){mounting.current=undefined;if(found)restoreLater.current();}});
+          const id=saved.messageId,generation=navigation.current;mounting.current=id;
+          void ensureMessage(id).then(found=>{if(navigation.current===generation&&mounting.current===id){mounting.current=undefined;if(found)restoreLater.current();}});
         }
         return;
       }
@@ -75,22 +76,25 @@ export function useChatScroll(sessionId: string, snapshot: ChatSnapshot | undefi
     const observer=new ResizeObserver(restore);
     if(content.current)observer.observe(content.current);
     if(scroll.current)observer.observe(scroll.current);
-    return()=>{observer.disconnect();cancelAnimationFrame(frame.current);remember();};
+    return()=>{navigation.current++;mounting.current=undefined;observer.disconnect();cancelAnimationFrame(frame.current);remember();};
   },[remember,restore]);
 
   const onScroll=()=>{
     const element=scroll.current;
-    if(adjusting.current||pendingJump.current||!ready.current||!element)return;
+    if(adjusting.current||pendingJump.current||!ready.current||!element)return false;
+    navigation.current++;mounting.current=undefined;
     const next=element.scrollHeight-element.scrollTop-element.clientHeight<70;
     following.current=next;remember();setFollow(next);
+    return true;
   };
-  const jumpToLatest=useCallback(()=>{pendingJump.current=false;following.current=true;setFollow(true);restoreLater.current();},[]);
+  const jumpToLatest=useCallback(()=>{navigation.current++;mounting.current=undefined;pendingJump.current=false;following.current=true;setFollow(true);restoreLater.current();},[]);
   const jumpToItem=useCallback((id:string,kind:'message'|'request'='message',offset=8)=>{
+    navigation.current++;mounting.current=undefined;
     following.current=false;
     pendingJump.current=true;
     position.current={follow:false,top:0,offset,...(kind==='message'?{messageId:id}:{requestId:id})};
     positions.set(sessionId,position.current);setFollow(false);restore();
   },[positions,sessionId,restore]);
-  const captureReading=useCallback(()=>{following.current=false;setFollow(false);remember();},[remember]);
+  const captureReading=useCallback(()=>{navigation.current++;mounting.current=undefined;following.current=false;setFollow(false);remember();},[remember]);
   return {scroll,content,follow,onScroll,jumpToLatest,jumpToItem,remember:captureReading};
 }

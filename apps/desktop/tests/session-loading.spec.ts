@@ -283,6 +283,16 @@ test('session loading: prepend preserves the visible anchor and search mounts an
     await expect(f.page.locator('[data-message-id="b-saved-20"]')).toContainText('UNMOUNTED_SEARCH_TARGET_20');
     expect(await f.page.locator('.chat-pane [data-message-id]').count()).toBeLessThanOrEqual(60);
     await attachMetrics(f.app, f.page, f.sourceBytes);
+    // The target must survive the next measurement/redraw frames,
+    // rather than only entering the viewport briefly.
+    await frames(f.page);
+    expect(await f.page.evaluate(() => {
+      const target = document.querySelector<HTMLElement>('[data-message-id="b-saved-20"]');
+      const scroll = document.querySelector<HTMLElement>('.chat-scroll');
+      if (!target || !scroll) return false;
+      const bounds = target.getBoundingClientRect(), viewport = scroll.getBoundingClientRect();
+      return bounds.bottom > Math.max(0, viewport.top) && bounds.top < Math.min(innerHeight, viewport.bottom);
+    })).toBe(true);
   } finally { await f.close(); }
 });
 

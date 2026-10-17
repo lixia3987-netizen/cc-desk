@@ -10,7 +10,7 @@ const standard = (name, body = 'Use this guide.', description = `Guide for ${nam
 const projectSource = (id = 'agents', rootPath = '.agents/skills', extra = {}) => ({ id, scope: 'project', kind: 'project-agents', rootPath, enabled: true, revision: 1, ...extra });
 const userSource = (rootPath, extra = {}) => ({ id: 'user-agents', scope: 'user', kind: 'user-agents', rootPath, enabled: true, revision: 1, ...extra });
 async function fixture(t) {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-registry-'));
+  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-registry-')));
   t.after(() => fs.rm(parent, { recursive: true, force: true }));
   const root = path.join(parent, 'project');
   const user = path.join(parent, 'user-skills');

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ChatDisplayPage, ChatPageOptions, ChatSnapshot } from '../shared/chat';
 import type { ChatReadingPosition } from './chat-scroll';
-import { chatDisplayCache, chatDisplayScope, mergeDisplayPage, mergeDisplaySnapshot } from './chat-display-state';
+import { chatDisplayCache, chatDisplayScope, mergeDisplayRead, mergeDisplaySnapshot } from './chat-display-state';
 import { sessionReadLifecycle } from './session-read-lifecycle';
 
 export function useChatDisplay(sessionId: string, conversationId: string | undefined, snapshot: ChatSnapshot | undefined, saved?: ChatReadingPosition, protectHistory = false) {
@@ -29,8 +29,7 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
       if (seq !== request.current || current.current !== scope) return undefined;
       if (!page) { setError('会话记录尚未确认，请重试读取。'); return undefined; }
       if (page.sessionId !== sessionId || (page.conversationId ?? '') !== (conversationId ?? '')) throw new Error('会话上下文已变化，请重新读取记录。');
-      let next = mergeDisplayPage(pageRef.current, page, direction);
-      if (authority.current) next = mergeDisplaySnapshot(next, authority.current.messages, history.current, authority.current.sourceIncomplete);
+      const next = mergeDisplayRead(pageRef.current, page, direction, authority.current?.messages, history.current, authority.current?.sourceIncomplete);
       publish(next); setLoading(false);
       return next;
     } catch (reason) {
@@ -67,5 +66,11 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
     if (loadingPage.current || !page?.before || !page.messages.length) return Promise.resolve(undefined);
     return read({ before: page.messages[0].id }, 'before');
   }, [read]);
-  return { page, loading, paging, error, read, earlier };
+  const later = useCallback(() => {
+    const page = pageRef.current;
+    if (loadingPage.current || !page?.after || !page.messages.length) return Promise.resolve(undefined);
+    return read({ after: page.messages.at(-1)!.id }, 'after');
+  }, [read]);
+  const retry = useCallback(() => read(lastRead.current.options, lastRead.current.direction), [read]);
+  return { page, loading, paging, error, read, earlier, later, retry };
 }

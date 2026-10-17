@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -28,6 +29,114 @@ async function fixture() {
   }, dispose: async () => { projection.flush(); await store.close(); await fs.rm(directory, { recursive: true, force: true }); } };
 }
 const assistant = (text: string) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] });
+
+test('text deltas notify at most once per 50 ms without cloning the conversation, and approval publishes immediately', async t => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
+    const emitted: string[] = [];
+    f.events.subscribe(event => { if (event.type === 'conversation.changed') emitted.push(event.taskState); });
+    const snapshot = f.projection.snapshot.bind(f.projection);
+    t.mock.method(f.projection, 'snapshot', () => { throw new Error('notification must not build a full snapshot'); });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    for (let index = 0; index < 200; index++) f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'a' });
+    assert.equal(snapshot(f.id).messages.at(-1)?.text, 'a'.repeat(200), 'coalescing never drops stream content');
+    assert.deepEqual(emitted, []);
+    t.mock.timers.tick(49); assert.deepEqual(emitted, []);
+    t.mock.timers.tick(1); assert.deepEqual(emitted, ['thinking']);
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'b' });
+    f.projection.approval(f.id, { requestId: 'question', kind: 'question', toolName: 'question', input: {}, createdAt: new Date().toISOString() });
+    assert.deepEqual(emitted, ['thinking', 'waiting_input']);
+    assert.equal(snapshot(f.id).messages.at(-1)?.text, 'a'.repeat(200) + 'b');
+    t.mock.timers.tick(1000); assert.deepEqual(emitted, ['thinking', 'waiting_input'], 'approval drains the old timer');
+  } finally { f.projection.flush(); t.mock.timers.reset(); await f.dispose(); }
+});
+
+test('flush, forget and durable termination drain streaming notifications without late timers', async t => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
+    const emitted: string[] = [];
+    f.events.subscribe(event => { if (event.type === 'conversation.changed') emitted.push(event.taskState); });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'flush' });
+    f.projection.flush(); assert.deepEqual(emitted, ['thinking']);
+    t.mock.timers.tick(1000); assert.equal(emitted.length, 1);
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'forget' });
+    f.projection.forget(f.id); assert.deepEqual(emitted, ['thinking', 'thinking']);
+    t.mock.timers.tick(1000); assert.equal(emitted.length, 2, 'forget must not recreate the discarded entry');
+    await f.projection.hydrate(f.id, f.store); emitted.length = 0;
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'uncommitted' });
+    await f.finish(); await f.projection.hydrate(f.id, f.store);
+    assert.deepEqual(emitted, ['completed'], 'a durable terminal record publishes immediately');
+    assert.equal(f.projection.snapshot(f.id).messages.some(message => message.text === 'uncommitted'), false);
+    t.mock.timers.tick(1000); assert.deepEqual(emitted, ['completed']);
+  } finally { f.projection.flush(); t.mock.timers.reset(); await f.dispose(); }
+});
+
+test('a queued stream notification cannot refresh a replacement conversation or another engine', async t => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req); await f.projection.hydrate(f.id, f.store);
+    const emitted: unknown[] = [];
+    f.events.subscribe(event => { if (event.type === 'conversation.changed') emitted.push(event); });
+    t.mock.timers.enable({ apis: ['setTimeout'] });
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'old-conversation' });
+    f.session.execution.conversationId = randomUUID();
+    t.mock.timers.tick(50); assert.deepEqual(emitted, []);
+    f.session.execution.conversationId = f.conversationId;
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'old-engine' });
+    f.session.execution.providerId = 'claude';
+    f.projection.flush(); assert.deepEqual(emitted, []);
+    t.mock.timers.tick(1000); assert.deepEqual(emitted, []);
+    f.session.execution.providerId = 'native';
+    f.projection.event(f.id, { type: 'text_delta', identity: f.req.identity, text: 'current' });
+    f.projection.flush(); assert.equal(emitted.length, 1, 'the current bound stream still publishes');
+  } finally { f.projection.flush(); t.mock.timers.reset(); await f.dispose(); }
+});
+
+test('projection batches writes, retains sync and builds the bounded snapshot without rereading its committed log', async t => {
+  const f = await fixture();
+  try {
+    await f.store.beginRun(f.req);
+    for (let index = 0; index < 430; index++) await f.store.append(f.req.identity, { type: 'model_response', response: {
+      outputItems: [assistant(`${index}:` + '汉字'.repeat(4000))], toolCalls: [], finishReason: 'completed', usage: { inputTokens: 10, outputTokens: 5 },
+    } });
+    await f.finish();
+    const open = fs.open;
+    let writeCalls = 0, syncCalls = 0, readCalls = 0;
+    t.mock.method(fs, 'open', async (...args: Parameters<typeof fs.open>) => {
+      const handle = await open(...args);
+      if (String(args[0]).includes('.native-')) {
+        const write = handle.writeFile.bind(handle), sync = handle.sync.bind(handle);
+        t.mock.method(handle, 'writeFile', async (...data: Parameters<typeof handle.writeFile>) => { writeCalls++; return write(...data); });
+        t.mock.method(handle, 'sync', async () => { syncCalls++; return sync(); });
+      }
+      return handle;
+    });
+    const readSync = fsSync.readSync;
+    t.mock.method(fsSync, 'readSync', (...args: Parameters<typeof fsSync.readSync>) => { readCalls++; return readSync(...args); });
+    await f.projection.hydrate(f.id, f.store);
+    const readsAfterPublish = readCalls;
+    const snapshot = f.projection.snapshot(f.id);
+    assert.equal(readCalls, readsAfterPublish);
+    assert.equal(readsAfterPublish, 0, 'no synchronous disk replay after the atomically published projection');
+    const bytes = (await fs.stat(path.join(f.directory, 'chat', f.id + '.jsonl'))).size;
+    assert.ok(writeCalls > 1 && writeCalls < 100, `${writeCalls} batched writes for ${bytes} bytes and over 860 journal events`);
+    assert.equal(syncCalls, 1, 'durability is retained before atomic publication');
+    assert.equal(snapshot.truncated, true);
+    assert.ok(Buffer.byteLength(JSON.stringify(snapshot.messages)) < 2 * 1024 * 1024);
+    assert.equal(snapshot.messages.at(-1)?.text, '429:' + '汉字'.repeat(4000));
+    const restored = f.create();
+    try {
+      const cold = restored.snapshot(f.id);
+      for (const key of ['messages', 'taskState', 'context', 'usage', 'model', 'truncated'] as const) {
+        assert.deepEqual(cold[key], snapshot[key], `direct projection retains the cold JSONL ${key}`);
+      }
+    }
+    finally { restored.flush(); }
+  } finally { await f.dispose(); }
+});
 
 test('Windows display rename retries a transient sharing error and bounds persistent failures without removing the old target', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-rename-'));

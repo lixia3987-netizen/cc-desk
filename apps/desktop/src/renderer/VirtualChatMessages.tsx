@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ChatMessage } from '../shared/chat';
 import { VirtualChatLayout } from './virtual-chat-layout';
 
@@ -46,6 +46,7 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
   const frame = useRef(0), resolutionFrame = useRef(0);
   const needsScrollRead = useRef(false), needsRender = useRef(false), userInteracted = useRef(false);
   const waiters = useRef(new Map<string, Set<(mounted: boolean) => void>>());
+  const scheduleLatest = useRef<(readScroll?: boolean) => void>(() => {});
   const current = useRef({ items, initialAnchorId, initialFollow });
   current.current = { items, initialAnchorId, initialFollow };
   const [, redraw] = useState(0);
@@ -57,9 +58,25 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
       for (const [id, callbacks] of waiters.current) {
         const exists = layout.indexOf(id) >= 0;
         const ready = exists && !!rows.current.get(id)?.isConnected;
-        if (ready || !exists || forced.current !== id) {
+        const active = forced.current === id;
+        if (ready || !exists || !active) {
           waiters.current.delete(id);
-          for (const resolve of callbacks) resolve(ready);
+          if (active) {
+            // Mounting is a temporary lease for the caller's scroll restore,
+            // not a permanent viewport lock. Its promise continuation runs
+            // before the next frame reads the resulting programmatic scroll.
+            forced.current = undefined;
+            if (ready) {
+              reading.current.ready = true;
+              reading.current.top = Math.max(0, layout.offset(layout.indexOf(id)) - reading.current.height / 3);
+              // Measurements may change before an already queued redraw commits.
+              // Keep the mounted target by identity until the actual scroll is read.
+              reading.current.anchorId = id;
+              reading.current.inside = 0;
+            }
+            scheduleLatest.current(true);
+          }
+          for (const resolve of callbacks) resolve(ready && active);
         }
       }
       if (waiters.current.size) settleMounted();
@@ -101,6 +118,7 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
       if (needsRender.current && mounted.current) { needsRender.current = false; redraw(value => value + 1); }
     });
   }, [layout, scrollRef]);
+  scheduleLatest.current = schedule;
 
   const register = useCallback((id: string, element: HTMLDivElement | null) => {
     const old = rows.current.get(id);
@@ -137,7 +155,10 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
     };
   }, []);
 
-  useLayoutEffect(() => {
+  // The scroll element belongs to a parent host node. Child layout effects may
+  // run before that parent's ref is attached; a passive effect sees both refs
+  // and must not silently skip binding the only scroll/measurement observers.
+  useEffect(() => {
     const element = scrollRef.current, list = root.current;
     if (!element || !list) return;
     reading.current.height = element.clientHeight || reading.current.height;
@@ -180,6 +201,10 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
       if (rowObserver.current === observer) rowObserver.current = undefined;
     };
   }, [layout, schedule, scrollRef]);
+
+  // Prepending/cropping can keep scrollTop unchanged, so no native scroll event
+  // is guaranteed. Read the actual viewport after the parent's anchor restore.
+  useLayoutEffect(() => { schedule(true); }, [items, schedule]);
 
   useLayoutEffect(() => { if (waiters.current.size) settleMounted(); });
 
