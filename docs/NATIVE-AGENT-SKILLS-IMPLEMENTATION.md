@@ -254,3 +254,27 @@ Linux Node v24.19.0、Electron v44.4.3、Xvfb TCP 显示连接的真实物理界
 整合后的完整 `npm run check` 通过：3408 项，3378 通过、30 平台条件跳过、0 失败/取消；contracts 13、engine 44、core 246、node 1016、desktop 2089 项，类型检查与生产构建通过，只有既有 Vite chunk 提示。这轮完整检查早于最后三项 GUI 行尾夹具修正；其后仅调整 GUI fixture，相关最终类型和物理复验另行登记，不将重叠检查累加。生产新版 catalog 入口仍关闭。
 
 最后三项 GUI 夹具修正后，最终桌面类型检查通过；相同 `core.autocrlf=true` 的完整相关物理组 8/8、默认设置下受影响的三项物理用例 3/3 通过。上述结果与原 25 项及完整 check 重叠，分别登记，不相加；新 Windows 候选仍须独立完成全量检查。
+
+### M3 第四批 Windows #27 子审批阶段同步
+
+候选 `6548cc119114da80ec9b2f7863b7a6ee540a2b9e` 的 [Windows #27](https://github.com/lixia3987-netizen/cc-desk/actions/runs/39039293677) 独立 CIM 成功，物理 Electron 为 25 项、24 通过、1 失败。三项 Skills 配置、三项任务池及五项质量审查均通过；唯一失败为既有物理实现子任务用例的第一轮写入审批等待。未重跑或合入该失败候选。
+
+失败附件及 trace 表明，两个子任务的初始读取响应于 14:13:20.413Z 就绪；原 5s poll 结束时，子任务仍在完成读取及后续请求，尚无 `apply_patch` / `run_command` 模型响应，fixture 无错误，父子仍运行。此证据只能确定尚未进入待审批调用阶段，不能进一步归因到具体持久化操作，也不能认定为审批已产生但界面漏显示。
+
+仅修正该功能测试的等待边界：先在 15s 内等待真实未批准的写入/命令响应，再以原 5s 检查宿主 pending 和界面。pending 必须绑定唯一响应的 `call_id` 与相同工具名，requestId 和 call_id 均不得重复；fixture 错误或父任务提前终局立即失败。四次真实审批、两个子任务并发、完整 raw hash、工作树、命令、父文件及 index 等断言保持，原 case 的 120s 总时限保持。该修正将前置读取/模型阶段与审批显示分开，不再把两者合计作为 5s 显示检查；不宣称保留原隐含端到端时限或修复了生产性能。新增附件仅记录阶段、时间、计数及受限调用 ID。
+
+独立源码复核通过；最终桌面类型检查通过，Linux/Xvfb TCP 的受影响物理用例在默认配置及全局 `core.autocrlf=true` 下分别 1/1 通过，case 耗时分别为 8.4s、9.3s。两次结果分别登记，不替代新候选完整 Windows 验收；生产代码与入口未修改。
+
+另做一次负向 GUI 注入：仅临时改写该测试读取到的 pending 调用 ID，真实模型已生成两个 patch，真实 IPC 仍有对应审批。新增关联检查没有接受错误 ID，在原 5000ms 的 `child_host_approval` 阶段按预期失败，0 次批准、fixture 无错误；随后精确恢复正式文件并核对前后 SHA256 与干净工作树。该失败探针不计入正常通过数，不随提交保留。
+
+### M3 第四批 Windows #27 完整结果与质量继承夹具
+
+Windows #27 的桌面/真实 PTY 全量最终为 2088 项：2055 通过、1 失败、32 平台条件跳过、0 取消；连同物理 Electron 的失败，该候选未合入。两协议图片摘要取消均通过，固定阶段附件完整，Responses 与 chat-completions 分别耗时 2121ms、2079ms，各 3 次请求、0 夹具错误。该轮成功不能反推 Windows #26 的原 10s 超时原因。
+
+唯一单测失败为父工作流质量轮次与三个独立子任务的 Skills 继承组合；6.677s 内正常返回失败而非超时。两轮共六个角色均为 `quality_child_evidence_unconfirmed`，最终 blocked。原工件只有外层严格断言和通用质量错误，没有底层 preflight 异常或原文件字节。
+
+相同正式源码在 Linux 默认 Git 配置下通过；仅注入全局 `core.autocrlf=true` 即复现相同的两轮/六角色失败。两个独立预载诊断均定位为真实子启动前的描述符差异；其中字节对照确认，父冻结技能为 168 字节，子工作树为 173 字节，恰有 5 个换行变为 CRLF，完整 hash 不同。目录别名单独对照通过。生产严格拒绝符合既有来源版本约束；这是对原 Windows 失败有复现依据的判断，不把原工件未保存的底层异常说成已直接观测。
+
+最小修正仅为这个 Git 夹具新增 `.gitattributes`，精确将 `/.agents/skills/engineering/SKILL.md` 和 `/fixture.txt` 设为 `-text` 并随原提交保存，继续继承宿主 Git 设置。默认、全局 autocrlf、临时目录别名、别名加 autocrlf 四组分别 1/1 通过。原 30s 时限、父清单仅冻结一次、三个并发子身份/同一 manifest、第一轮即通过及三份真实 committed/completed 账本与质量报告断言均保持；独立复核通过。该机制 worker 在 Node 内联，不称为物理 Electron Worker；未修改生产的严格来源 hash 校验。
+
+本轮最后的桌面类型检查通过。新增候选只包含上述测试同步、夹具和实施记录修正；未重复完整 `npm run check`，也不将旧完整检查说成覆盖最后修改的测试代码。新 head 必须重新完成全部 Windows jobs/checks 后才可合入。

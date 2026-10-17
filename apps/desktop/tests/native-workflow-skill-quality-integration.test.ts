@@ -33,6 +33,9 @@ test('one parent workflow quality round freezes Skills once while all three inde
   const project = path.join(directory, 'project'), data = path.join(directory, 'data');
   const skillPath = path.join(project, '.agents', 'skills', 'engineering', 'SKILL.md');
   await fs.mkdir(path.dirname(skillPath), { recursive: true });
+  // This fixture tests exact raw-byte Skill inheritance. Keep only its two
+  // evidence files stable through checkout while inheriting host Git settings.
+  await fs.writeFile(path.join(project, '.gitattributes'), '/.agents/skills/engineering/SKILL.md -text\n/fixture.txt -text\n');
   await fs.writeFile(skillPath, '---\nname: engineering\ndescription: Exact independent quality engineering guide.\n---\nINHERITED_QUALITY_GUIDE Preserve unrelated files and cite actual material evidence.\n');
   await fs.writeFile(path.join(project, 'fixture.txt'), 'actual quality material\n');
   for (const args of [['init'], ['config', 'user.name', 'Local workflow fixture'], ['config', 'user.email', 'fixture@example.invalid'], ['add', '.'], ['commit', '-m', 'fixture baseline']]) await exec('git', args, { cwd: project });
