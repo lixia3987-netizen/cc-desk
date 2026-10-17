@@ -1,5 +1,6 @@
 import { canonicalJson, type JsonValue, type ModelContext, type ProtocolVersion, type RunIdentity, type ToolCall } from '@cc-desk/agent-core';
-import { isNativeSkillSubmission, isSkillVersionSnapshot, type SkillActivation, type SkillVersionSnapshot } from '@cc-desk/contracts/native-skills';
+import { isNativeSkillSubmission, isSkillVersionSnapshot, normalizeSkillInheritanceContext, normalizeSkillInheritedFrom,
+  type SkillActivation, type SkillVersionSnapshot, type SkillInheritanceContext, type SkillInheritedFrom } from '@cc-desk/contracts/native-skills';
 import type { NativeRunStore, RunStoreRecord } from './run-store.js';
 import type { SkillSnapshotStore } from './skill-snapshots.js';
 import { SKILL_GUIDE_AUTHORITY } from './skill-tools.js';
@@ -50,6 +51,7 @@ export interface SkillContinuityEntry {
   relativePath: string;
   version: SkillVersionSnapshot;
   origin: SkillActivation['origin'];
+  inheritedFrom?: SkillInheritedFrom;
   evidence: { kind: 'run_started' | 'tool_completed'; seq: number; callId?: string };
   placement: 'initial_instructions' | 'compacted_context' | 'retained_receipt';
 }
@@ -75,6 +77,72 @@ export interface SkillContinuityEvidence {
 }
 type EvidenceStore = Pick<NativeRunStore, 'head' | 'replay' | 'getRun'>;
 interface CatalogEntry { skillId: string; sourceId: string; relativePath: string; sourceRevision: number; sourceFingerprint: string; metadataHash: string; format: string }
+
+/**
+ * Checks the persisted host attestation, not an external cryptographic proof.
+ * The parent host must create it from its real committed journal before child
+ * transfer. Replay verifies its digest, membership and separate child identity.
+ */
+export function validateSkillInheritanceContext(value: unknown, childIdentity: RunIdentity): SkillInheritanceContext {
+  let context: SkillInheritanceContext;
+  try { context = normalizeSkillInheritanceContext(value); } catch { return invalid(); }
+  const { digest, ...manifest } = context.parentManifest;
+  if (hash(manifest) !== digest || !same(manifest.entries, [...manifest.entries].sort((a, b) => a.skillId.localeCompare(b.skillId, 'en')))
+    || manifest.identity.sessionId === childIdentity.sessionId || manifest.identity.runId === childIdentity.runId || manifest.identity.conversationId === childIdentity.conversationId
+    || manifest.identity.requestId === childIdentity.requestId) invalid();
+  return context;
+}
+
+export function validateSkillInheritedBinding(value: unknown, childIdentity: RunIdentity,
+  descriptor: Pick<CatalogEntry, 'skillId' | 'sourceId' | 'relativePath'>, version: SkillVersionSnapshot, provenance: unknown): SkillInheritedFrom {
+  const context = validateSkillInheritanceContext(value, childIdentity);
+  let inheritedFrom: SkillInheritedFrom;
+  try { inheritedFrom = normalizeSkillInheritedFrom(provenance); } catch { return invalid(); }
+  if (!isSkillVersionSnapshot(version) || version.format === 'invalid' || !same(inheritedFrom.parentIdentity, context.parentManifest.identity)
+    || !same(inheritedFrom.parentHead, context.parentHead) || inheritedFrom.manifestDigest !== context.parentManifest.digest
+    || inheritedFrom.catalogRevision !== context.parentManifest.catalogRevision || inheritedFrom.skillId !== descriptor.skillId
+    || inheritedFrom.sourceId !== descriptor.sourceId || inheritedFrom.relativePath !== descriptor.relativePath || version.skillId !== descriptor.skillId) invalid();
+  const parent = context.parentManifest.entries.find(entry => entry.skillId === inheritedFrom.skillId);
+  if (!parent || parent.sourceId !== inheritedFrom.sourceId || parent.relativePath !== inheritedFrom.relativePath || !same(parent.version, inheritedFrom.version)
+    || version.fullFileHash !== parent.version.fullFileHash || version.bodyHash !== parent.version.bodyHash || version.bytes !== parent.version.bytes
+    || version.format !== parent.version.format) invalid();
+  return inheritedFrom;
+}
+
+/** Narrow new-field check at run admission and replay; unrelated old records retain their semantics. */
+export function validateSkillInheritanceConfiguration(configuration: Record<string, unknown>, identity: RunIdentity): void {
+  const initial = configuration.initialNativeSkills;
+  const values = object(initial) && Array.isArray(initial.activations) ? initial.activations : [];
+  if (configuration.nativeSkillInheritance === undefined && !values.some(value => object(value) && (value.origin === 'inherited' || Object.hasOwn(value, 'inheritedFrom')))) return;
+  const inheritance = validateSkillInheritanceContext(configuration.nativeSkillInheritance, identity);
+  const delegated = configuration.delegated, catalog = configuration.nativeSkillCatalog;
+  if (!object(delegated) || delegated.depth !== 1 || !object(delegated.parentIdentity) || !same(delegated.parentIdentity, inheritance.parentManifest.identity)
+    || !object(catalog) || !keys(catalog, ['revision', 'entries', 'truncated']) || !isHash(catalog.revision) || typeof catalog.truncated !== 'boolean'
+    || !Array.isArray(catalog.entries) || catalog.entries.length > 512 || !object(initial) || !keys(initial, ['activationRevision', 'digest', 'activations'])
+    || !Array.isArray(initial.activations) || initial.activations.length > MAX_ACTIVE || initial.activations.length !== inheritance.parentManifest.entries.length
+    || initial.activationRevision !== initial.activations.length || !isHash(initial.digest)
+    || typeof configuration.modelInstructions !== 'string') invalid();
+  const descriptors = new Map<string, CatalogEntry>(), versions: Array<{ skillId: string; version: SkillVersionSnapshot }> = [], revisions = new Set<number>();
+  for (const value of catalog.entries) {
+    const descriptor = catalogEntry(value);
+    if (descriptors.has(descriptor.skillId)) invalid(); descriptors.set(descriptor.skillId, descriptor);
+  }
+  for (const value of initial.activations) {
+    if (!object(value) || !keys(value, ['runId', 'skillId', 'version', 'origin', 'requestId', 'receiptSeq', 'activationRevision', ...(value.origin === 'inherited' ? ['inheritedFrom'] : [])])
+      || value.runId !== identity.runId || value.requestId !== identity.requestId || value.receiptSeq !== 0 || !text(value.skillId, 256)
+      || value.origin !== 'inherited' || !Number.isSafeInteger(value.activationRevision)
+      || (value.activationRevision as number) < 1 || (value.activationRevision as number) > initial.activations.length || revisions.has(value.activationRevision as number)
+      || versions.some(version => version.skillId === value.skillId)) invalid();
+    revisions.add(value.activationRevision as number);
+    const descriptor = descriptors.get(value.skillId);
+    if (!descriptor) invalid();
+    const version = versionFor(value.version, descriptor);
+    if (value.origin === 'inherited') validateSkillInheritedBinding(inheritance, identity, descriptor, version, value.inheritedFrom);
+    versions.push({ skillId: value.skillId, version });
+  }
+  versions.sort((left, right) => left.skillId.localeCompare(right.skillId, 'en'));
+  if (hash(versions) !== initial.digest) invalid();
+}
 
 function catalogEntry(value: unknown): CatalogEntry {
   if (!object(value) || !keys(value, ['skillId', 'sourceId', 'relativePath', 'sourceRevision', 'sourceFingerprint', 'metadataHash', 'format'])
@@ -142,7 +210,12 @@ function projectSkillContinuityEvidence(records: RunStoreRecord[], head: { seq: 
   const start = records[0];
   if (start.event.type !== 'run_started' || start.identity?.runId !== runId || !same(start.identity, start.event.request.identity) || !same(start.identity, run.identity)) invalid();
   const configuration = start.event.request.configuration;
-  if (configuration.nativeSkillCatalog === undefined && configuration.initialNativeSkills === undefined) return undefined;
+  validateSkillInheritanceConfiguration(configuration, run.identity);
+  if (configuration.nativeSkillCatalog === undefined && configuration.initialNativeSkills === undefined) {
+    if (configuration.nativeSkillInheritance !== undefined) invalid();
+    return undefined;
+  }
+  const inheritance = configuration.nativeSkillInheritance === undefined ? undefined : validateSkillInheritanceContext(configuration.nativeSkillInheritance, run.identity);
   const catalog = configuration.nativeSkillCatalog, initial = configuration.initialNativeSkills;
   if (!object(catalog) || !keys(catalog, ['revision', 'entries', 'truncated']) || !isHash(catalog.revision) || !Array.isArray(catalog.entries) || catalog.entries.length > 512
     || typeof catalog.truncated !== 'boolean' || !object(initial) || !keys(initial, ['activationRevision', 'digest', 'activations'])
@@ -156,20 +229,21 @@ function projectSkillContinuityEvidence(records: RunStoreRecord[], head: { seq: 
   }
   const entries = new Map<string, SkillContinuityEntry>(), bodies = new Map<string, string>(), revisions = new Set<number>();
   for (const value of initial.activations) {
-    if (!object(value) || !keys(value, ['runId', 'skillId', 'version', 'origin', 'requestId', 'receiptSeq', 'activationRevision'])
+    if (!object(value) || !keys(value, ['runId', 'skillId', 'version', 'origin', 'requestId', 'receiptSeq', 'activationRevision', ...(value.origin === 'inherited' ? ['inheritedFrom'] : [])])
       || value.runId !== runId || value.requestId !== run.identity.requestId || !text(value.skillId, 256) || value.receiptSeq !== 0
-      || !['explicit', 'pinned', 'legacy'].includes(value.origin as string) || !Number.isSafeInteger(value.activationRevision)
+      || !['explicit', 'pinned', 'legacy', 'inherited'].includes(value.origin as string) || !Number.isSafeInteger(value.activationRevision)
       || (value.activationRevision as number) < 1 || (value.activationRevision as number) > initial.activations.length || revisions.has(value.activationRevision as number)) invalid();
     const descriptor = descriptors.get(value.skillId);
     if (!descriptor || entries.has(value.skillId)) invalid();
     revisions.add(value.activationRevision as number);
     const version = versionFor(value.version, descriptor);
+    const inheritedFrom = value.origin === 'inherited' ? validateSkillInheritedBinding(inheritance, run.identity, descriptor, version, value.inheritedFrom) : undefined;
     if (value.origin === 'explicit') {
       if (!isNativeSkillSubmission(configuration.nativeSkills) || !configuration.nativeSkills.explicitSkillRefs.some(ref => ref.skillId === descriptor.skillId
         && ref.catalogRevision === catalog.revision && same(ref.version, version))) invalid();
     }
     entries.set(descriptor.skillId, { skillId: descriptor.skillId, sourceId: descriptor.sourceId, relativePath: descriptor.relativePath, version,
-      origin: value.origin as SkillActivation['origin'], evidence: { kind: 'run_started', seq: start.seq }, placement: 'initial_instructions' });
+      origin: value.origin as SkillActivation['origin'], ...(inheritedFrom ? { inheritedFrom } : {}), evidence: { kind: 'run_started', seq: start.seq }, placement: 'initial_instructions' });
   }
   const initialVersions = [...entries.values()].sort((a, b) => a.skillId.localeCompare(b.skillId, 'en')).map(({ skillId, version }) => ({ skillId, version }));
   if (hash(initialVersions) !== initial.digest) invalid();

@@ -329,6 +329,32 @@ test('every replacement invalidates inert effects even with no active guides', a
   await assert.rejects(guarded.validate(stale, f.ctx), /active_skills_changed/);
 });
 
+test('synchronous final observation fence rejects stale revisions, replacements and termination without running host I/O', async () => {
+  const f = fixture(), loaded = await f.execute(); f.commit(loaded.prepared, loaded.result);
+  assert.throws(() => f.port.assertSideEffectsObserved(f.port.snapshot().activationRevision), { code: 'skill_model_observation_required' });
+  f.confirm(); await f.port.assertSideEffectsCurrent(f.controller.signal);
+  const revision = f.port.snapshot().activationRevision, before = clone(f.state);
+  f.port.assertSideEffectsObserved(revision); assert.deepEqual(f.state, before);
+  for (const stale of [-1, revision + 1, 0.5, Number.NaN, undefined]) assert.throws(() => f.port.assertSideEffectsObserved(stale), { code: 'active_skills_changed' });
+  replaceContext(f);
+  assert.throws(() => f.port.assertSideEffectsObserved(revision), { code: 'active_skills_changed' });
+  const replacedRevision = f.port.snapshot().activationRevision;
+  assert.throws(() => f.port.assertSideEffectsObserved(replacedRevision), { code: 'skill_model_observation_required' });
+  f.confirm(); f.port.assertSideEffectsObserved(replacedRevision);
+  f.observe({ type: 'run_finished', result: { status: 'completed' } });
+  assert.throws(() => f.port.assertSideEffectsObserved(replacedRevision), { code: 'cancelled' });
+});
+
+test('synchronous final observation fence sees same-revision pending loads even with an empty active snapshot', () => {
+  const f = fixture(), before = f.port.snapshot();
+  f.port.assertSideEffectsObserved(before.activationRevision);
+  f.observe({ type: 'model_request_started', attempt: 1 });
+  f.observe({ type: 'model_response', response: response([f.loadCall()]) });
+  assert.deepEqual(f.port.snapshot(), before);
+  assert.throws(() => f.port.assertSideEffectsObserved(before.activationRevision), { code: 'skill_model_observation_required' });
+  f.confirm(); f.port.assertSideEffectsObserved(before.activationRevision);
+});
+
 test('duplicate committed replacement never resets later confirmation or new activations', async () => {
   const f = fixture({ skills: [skill(0), skill(1)] });
   const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result); f.confirm();

@@ -9,6 +9,7 @@ import { collectAgentWorkspaceEvidence, createAgentWorktree, materializeAgentBas
 import { writeAgentArtifact, writeAgentReceipt } from './agent-artifacts';
 import type { NativeActivePauseSource } from './active-pause';
 import { nativeDelegationExecutionPath, type NativeDelegationExecution } from './agent-delegation-audit';
+import { normalizeNativeSkillInheritanceManifest, type NativeSkillInheritanceManifest } from './skill-inheritance';
 
 export interface NativeDelegationBudget {
   /** 单个子任务自己的原子门控；父任务和同级子任务不消耗这份预算。 */
@@ -32,6 +33,8 @@ export interface NativeAgentChildInput {
   toolPolicy: 'read_only' | 'workspace_write';
   signal: AbortSignal;
   budget: NativeDelegationBudget;
+  /** Exact parent Skill evidence; child bindings remain tied to its own cwd. */
+  nativeSkills?: NativeSkillInheritanceManifest;
   recovery?: { previousChildId: string; previousRunId: string; summary: string; reason: string; receiptPath: string; patchPath?: string };
 }
 export interface NativeAgentChildResult {
@@ -71,6 +74,7 @@ export interface NativeDelegationReceipt {
   recovery?: { previousChildId: string; previousRunId: string; attempt: number; workspaceOwnerChildId?: string };
   artifact?: { patchPath: string; changedFiles: Array<{ path: string; status: string }>; head: string; baseCommit: string; sha256?: string; bytes?: number };
   result?: NativeAgentChildResult;
+  nativeSkills?: NativeSkillInheritanceManifest;
   /** 此处只保留稳定的宿主错误码，绝不复制供应商或子进程错误。 */
   error?: string;
 }
@@ -91,6 +95,13 @@ export interface NativeAgentDelegationOptions {
   record?(receipt: NativeDelegationReceipt): Promise<void>;
   /** 标准自动写入策略可以关闭对话框，但不能取消宿主限制。 */
   requiresApproval?: boolean;
+  skills?: NativeAgentSkillInheritanceHooks;
+}
+export interface NativeAgentSkillInheritanceHooks {
+  freeze(signal: AbortSignal): Promise<NativeSkillInheritanceManifest>;
+  assertCurrent(manifest: NativeSkillInheritanceManifest, signal: AbortSignal, recovery: boolean): Promise<void>;
+  preflightChild(manifest: NativeSkillInheritanceManifest,
+    input: Pick<NativeAgentChildInput, 'identity' | 'childId' | 'parentIdentity' | 'cwd' | 'toolPolicy' | 'signal' | 'recovery'>): Promise<void>;
 }
 export interface NativeAgentDelegationTools extends ToolPort { closeAll(): Promise<void> }
 
@@ -116,7 +127,9 @@ const toolDefinitions: ToolDefinition[] = [{
 }];
 const encode = (value: unknown) => canonicalJson(JSON.parse(JSON.stringify(value)));
 const hash = (value: unknown) => createHash('sha256').update(encode(value)).digest('hex');
-interface CallState { prepared: PreparedTool; maxOutputBytes: number; baseline?: NativeAgentBaseline; recovery?: { receipt: NativeDelegationReceipt; workspaceSha256?: string; workspaceHead?: string }; execution?: Promise<ToolResult>; effectsStarted?: boolean }
+interface CallState { prepared: PreparedTool; maxOutputBytes: number; baseline?: NativeAgentBaseline; nativeSkills?: NativeSkillInheritanceManifest; recovery?: { receipt: NativeDelegationReceipt; workspaceSha256?: string; workspaceHead?: string }; execution?: Promise<ToolResult>; effectsStarted?: boolean }
+const knownChildNotStarted = (error: unknown): boolean => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'child_start_preconditions_failed'
+  && 'childNotStarted' in error && error.childNotStarted === true && !('cleanupUnconfirmed' in error && error.cleanupUnconfirmed === true));
 
 /** 一个批次对应父任务的一次工具调用，因此即使核心循环串行，同级任务仍可并行。 */
 export function createAgentDelegationTools(options: NativeAgentDelegationOptions): NativeAgentDelegationTools {
@@ -138,6 +151,18 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     if (closing || options.signal.aborted || context.signal.aborted || encode(context.identity) !== identityKey) throw new Error('委派不属于当前运行。');
   };
   const guard = async (context: ToolExecutionContext) => { current(context); await options.assertOwnership(); current(context); };
+  const inheritance = (manifest: NativeSkillInheritanceManifest): NativeSkillInheritanceManifest => {
+    const captured = normalizeNativeSkillInheritanceManifest(manifest);
+    credentials(captured);
+    if (encode(captured.context.parentManifest.identity) !== identityKey) throw new Error('技能继承清单不属于当前父任务。');
+    return captured;
+  };
+  const assertSkillsCurrent = async (state: Pick<CallState, 'nativeSkills' | 'recovery'>, context: ToolExecutionContext) => {
+    if (!state.nativeSkills) return;
+    if (!options.skills) throw new Error('技能继承运行时尚未就绪。');
+    await options.skills.assertCurrent(structuredClone(state.nativeSkills), context.signal, Boolean(state.recovery));
+    await guard(context);
+  };
   const stateFor = (prepared: PreparedTool, context: ToolExecutionContext) => {
     current(context);
     const state = states.get(prepared.call.id);
@@ -189,6 +214,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     const input = recovery ? { tasks: [{ title: recovery.receipt.title, goal: recoverySchema.parse(state.prepared.input).goal ?? recovery.receipt.goal }] } :
       state.prepared.call.name === 'delegate_review' ? reviewSchema.parse(state.prepared.input) : implementSchema.parse(state.prepared.input);
     await guard(context);
+    await assertSkillsCurrent(state, context);
     const mode = recovery?.receipt.mode ?? (state.prepared.call.name === 'delegate_review' ? 'review' : 'implement');
     if (recovery) await verifyRecovery(recovery);
     if (state.baseline) await verifyAgentBaseline(state.baseline, operationSignal);
@@ -198,6 +224,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
       return { version: 1, batchId, childId, taskId: randomUUID(), identity: { sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 },
         parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, toolCallId: state.prepared.call.id, ...task,
         mode, status: 'prepared', createdAt: now, updatedAt: now, receiptPath: path.join(batchPath, childId, 'receipt.json'), cwd: recovery?.receipt.cwd ?? options.cwd,
+        ...(state.nativeSkills ? { nativeSkills: structuredClone(state.nativeSkills) } : {}),
         ...(recovery ? { recovery: { previousChildId: recovery.receipt.childId, previousRunId: recovery.receipt.identity.runId, attempt: (recovery.receipt.recovery?.attempt ?? 0) + 1,
           ...(recovery.receipt.workspace ? { workspaceOwnerChildId: recovery.receipt.recovery?.workspaceOwnerChildId ?? recovery.receipt.childId } : {}) },
           ...(recovery.receipt.workspace ? { workspace: structuredClone(recovery.receipt.workspace), workspaceVerified: true } : {}) } : {}) };
@@ -230,7 +257,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     await Promise.allSettled(receipts.map(async receipt => {
       const abort = new AbortController(); children.add(abort);
       const signal = AbortSignal.any([abort.signal, operationSignal]);
-      let childStarted = false, worktreeAttempted = false;
+      let childStarted = false, worktreeAttempted = false, skillPreflightFailed = false;
       let childOperation: Promise<NativeAgentChildResult> | undefined;
       const lifecycle = execution.children.find(child => child.childId === receipt.childId)!;
       if (recovery?.receipt.workspace) worktreeAttempted = true;
@@ -250,6 +277,18 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
           await save(receipt);
         }
         if (signal.aborted) throw new NativeAgentWorktreeError('cancelled', '委派已取消。');
+        const childRecovery: NativeAgentChildInput['recovery'] = recovery ? { previousChildId: recovery.receipt.childId, previousRunId: recovery.receipt.identity.runId,
+          summary: recovery.receipt.result!.summary, reason: recovery.receipt.result!.reason, receiptPath: recovery.receipt.receiptPath,
+          ...(recovery.receipt.artifact ? { patchPath: recovery.receipt.artifact.patchPath } : {}) } : undefined;
+        if (receipt.nativeSkills) {
+          try {
+            if (!options.skills) throw new Error('技能继承运行时尚未就绪。');
+            await options.skills.preflightChild(structuredClone(receipt.nativeSkills), { identity: structuredClone(receipt.identity), childId: receipt.childId,
+              parentIdentity: structuredClone(parentIdentity), cwd: receipt.cwd, toolPolicy: mode === 'review' ? 'read_only' : 'workspace_write', signal,
+              ...(childRecovery ? { recovery: childRecovery } : {}) });
+            await guard(context);
+          } catch (error) { skillPreflightFailed = true; throw error; }
+        }
         receipt.status = 'running'; await save(receipt);
         if (signal.aborted) throw new NativeAgentWorktreeError('cancelled', '委派已停止。');
         const budget = options.createChildBudget(structuredClone(receipt.identity));
@@ -258,8 +297,8 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         childOperation = options.runChild({ identity: structuredClone(receipt.identity), childId: receipt.childId, taskId: receipt.taskId,
           parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, title: receipt.title, goal: receipt.goal,
           cwd: receipt.cwd, toolPolicy: mode === 'review' ? 'read_only' : 'workspace_write', budget, signal,
-          ...(recovery ? { recovery: { previousChildId: recovery.receipt.childId, previousRunId: recovery.receipt.identity.runId, summary: recovery.receipt.result!.summary,
-            reason: recovery.receipt.result!.reason, receiptPath: recovery.receipt.receiptPath, ...(recovery.receipt.artifact ? { patchPath: recovery.receipt.artifact.patchPath } : {}) } } : {}) })
+          ...(receipt.nativeSkills ? { nativeSkills: structuredClone(receipt.nativeSkills) } : {}),
+          ...(childRecovery ? { recovery: childRecovery } : {}) })
           .finally(() => { lifecycle.settled = instant(); });
         // 持久化起点期间 worker 仍并行执行；及时附加拒绝处理，失败后也必须等待物理子任务结算。
         void childOperation.catch(() => {});
@@ -274,13 +313,17 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         if (result.status === 'recovery_required') receipt.error = 'child_recovery_required';
         else if (!result.committed) receipt.error = 'child_commit_unconfirmed';
       } catch (error) {
+        const wasCancelled = signal.aborted;
         abort.abort();
         if (childStarted && !lifecycle.settled) lifecycle.settled = instant();
         if (childOperation) await childOperation.catch(() => {});
+        const notStarted = knownChildNotStarted(error);
+        if (notStarted) { delete lifecycle.started; delete lifecycle.settled; }
         // 子任务启动被拒绝时仍可能已执行工具。除非
         // 宿主提供已持久化的终态 RunResult，否则必须恢复；绝不根据信号推断取消。
-        receipt.status = childStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : signal.aborted ? 'cancelled' : 'failed';
-        receipt.error = error instanceof NativeAgentWorktreeError ? error.code : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
+        receipt.status = childStarted && !notStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : wasCancelled ? 'cancelled' : 'failed';
+        receipt.error = error instanceof NativeAgentWorktreeError ? error.code : notStarted ? 'child_start_preconditions_failed'
+          : skillPreflightFailed ? 'skill_inheritance_preflight_failed' : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
       } finally {
         children.delete(abort);
         settled.add(receipt.childId);
@@ -339,19 +382,24 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
       if (encode(raw) !== encode(input)) throw new Error('委派参数不能被隐式改写。');
       credentials(input);
       const baseline = call.name === 'delegate_implement' ? await prepareAgentBaseline(options.cwd, implementSchema.parse(raw).baseline, context.signal) : undefined;
+      const nativeSkills = recovery ? recovery.receipt.nativeSkills === undefined ? undefined : inheritance(recovery.receipt.nativeSkills)
+        : options.skills ? inheritance(await options.skills.freeze(context.signal)) : undefined;
+      if (nativeSkills && !options.skills) throw new Error('技能继承运行时尚未就绪。');
       await guard(context);
       const prepared: PreparedTool = { call: structuredClone(call), definition: structuredClone(definition), input: input as unknown as JsonObject,
         inputDigest: hash(input), policyRevision: context.policyRevision, requiresApproval: (call.name === 'delegate_implement' || recovery?.receipt.mode === 'implement') && (options.requiresApproval ?? true),
         preconditions: { parentTaskId: options.parentTaskId, cwd: options.cwd, interaction: 'independent_native_agents',
+          ...(nativeSkills ? { nativeSkillsDigest: nativeSkills.digest, nativeSkills: JSON.parse(encode(nativeSkills)) as JsonObject } : {}),
           ...(recovery ? { recoveryMode: recovery.receipt.mode, recoveryChildId: recovery.receipt.childId, recoveryRunId: recovery.receipt.identity.runId, workspaceSha256: recovery.workspaceSha256 ?? '', workspaceHead: recovery.workspaceHead ?? '' } : {}),
           ...(baseline ? { parentHead: baseline.parentHead, baseline: baseline.mode, fingerprint: baseline.fingerprint, includesUncommittedChanges: baseline.dirty } : {}) } };
-      states.set(call.id, { prepared: structuredClone(prepared), maxOutputBytes: context.maxOutputBytes, ...(baseline ? { baseline } : {}), ...(recovery ? { recovery } : {}) });
+      states.set(call.id, { prepared: structuredClone(prepared), maxOutputBytes: context.maxOutputBytes, ...(nativeSkills ? { nativeSkills } : {}), ...(baseline ? { baseline } : {}), ...(recovery ? { recovery } : {}) });
       return prepared;
     },
     async validate(prepared, context) {
       const state = stateFor(prepared, context); await guard(context); stateFor(prepared, context);
       if (!state.execution && state.recovery) await verifyRecovery(state.recovery);
       if (!state.execution && state.baseline) await verifyAgentBaseline(state.baseline, context.signal);
+      if (!state.execution) await assertSkillsCurrent(state, context);
     },
     async execute(prepared, context, approval?: ApprovalDecision) {
       let state: CallState;

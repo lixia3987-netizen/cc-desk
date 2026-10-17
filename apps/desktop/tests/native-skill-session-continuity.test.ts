@@ -158,7 +158,7 @@ for (const protocol of ['responses', 'chat-completions', 'anthropic'] as const) 
     const oldSelection = await f.selection(), ref = oldSelection.explicitSkillRefs[0];
     let phase = 0;
     f.setHandler((body, request) => {
-      assert.equal(body.tools?.some(tool => ['delegate_review', 'delegate_implement', 'recover_agent'].includes(tool.name ?? tool.function?.name)), false);
+      for (const name of ['delegate_review', 'delegate_implement', 'recover_agent']) assert.ok(body.tools?.some(tool => (tool.name ?? tool.function?.name) === name));
       if (request.request.input === 'Load the original guide') {
         if (phase++ === 0) {
           assert.deepEqual(initialActivations(request), []);

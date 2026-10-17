@@ -1,9 +1,9 @@
 import type { ApprovalDecision, JsonObject, JsonValue, PreparedTool, RunIdentity, RunJournalEvent, ToolCall, ToolDefinition, ToolExecutionContext, ToolPort, ToolResult } from '@cc-desk/agent-core';
 import { ToolPreparationError, type SkillPreparationFeedback } from '@cc-desk/agent-core';
-import type { SkillActivation, SkillCatalogSnapshot, SkillDescriptor } from '@cc-desk/contracts/native-skills';
+import type { SkillActivation, SkillCatalogSnapshot, SkillDescriptor, SkillInheritanceContext, SkillInheritedFrom } from '@cc-desk/contracts/native-skills';
 import { extractSkillBody, SKILL_METADATA_MAX_FILE_BYTES } from './skill-metadata.js';
 import { listSkillCatalog, type LoadedCatalogSkill } from './skill-registry.js';
-import type { SkillContinuityManifest } from './skill-continuity.js';
+import { validateSkillInheritanceContext, validateSkillInheritedBinding, type SkillContinuityManifest } from './skill-continuity.js';
 import { contentHash } from './tools/project-files.js';
 
 const MAX_ACTIVE = 16;
@@ -57,9 +57,13 @@ export interface SkillToolOptions {
   /** Host checks unresolved operations and live command handles before allowing a new load. */
   canActivate?(signal: AbortSignal): boolean | Promise<boolean>;
   baseInstructionBytes?: number;
+  /** Host-attested exact parent manifest; parent request/response confirmations never transfer. */
+  inheritance?: SkillInheritanceContext;
   /** Trusted host includes these exact bodies in the run's durable initial instructions. */
-  initialSkills?: Array<{ descriptor: SkillDescriptor; loaded: LoadedCatalogSkill; origin: 'explicit' | 'pinned' | 'legacy' }>;
+  initialSkills?: SkillInitialSelection[];
 }
+export type SkillInitialSelection = { descriptor: SkillDescriptor; loaded: LoadedCatalogSkill } &
+  ({ origin: 'explicit' | 'pinned' | 'legacy'; inheritedFrom?: never } | { origin: 'inherited'; inheritedFrom: SkillInheritedFrom });
 interface Active { descriptor: SkillDescriptor; loaded: LoadedCatalogSkill; activation: SkillActivation; loadCallId?: string }
 interface OwnState { prepared: PreparedTool; maxOutputBytes: number; signal?: AbortSignal; result?: ToolResult; execution?: Promise<ToolResult>; pending?: { descriptor: SkillDescriptor; loaded: LoadedCatalogSkill }; committed?: boolean }
 interface GuardState { prepared: PreparedTool; original: PreparedTool; maxOutputBytes: number; revision: number; digest: string; execution?: Promise<ToolResult>; result?: ToolResult; executionSettled?: boolean }
@@ -96,22 +100,31 @@ export class SkillToolPort implements ToolPort {
     if (this.catalog.schemaVersion !== 1 || typeof this.catalog.revision !== 'string' || !this.catalog.revision || this.entries.size !== this.catalog.entries.length
       || this.entries.size > 512 || !Number.isSafeInteger(this.baseBytes) || this.baseBytes < 0 || this.baseBytes > MAX_INSTRUCTIONS
       || !this.identity.runId || !Number.isSafeInteger(this.identity.workerGeneration) || this.identity.workerGeneration < 1) throw new SkillToolError('invalid_options');
+    const inheritance = options.inheritance === undefined ? undefined : validateSkillInheritanceContext(options.inheritance, this.identity);
     for (const initial of options.initialSkills ?? []) {
       const descriptor = this.entries.get(initial.descriptor.skillId);
-      if (!descriptor || canonical(descriptor) !== canonical(initial.descriptor) || !['legacy', 'pinned', 'explicit'].includes(initial.origin)) throw new SkillToolError('initial_skill_not_in_catalog');
+      if (!descriptor || canonical(descriptor) !== canonical(initial.descriptor) || !['legacy', 'pinned', 'explicit', 'inherited'].includes(initial.origin)
+        || initial.origin !== 'inherited' && initial.inheritedFrom !== undefined) throw new SkillToolError('initial_skill_not_in_catalog');
       this.checkLoaded(descriptor, initial.loaded);
+      const inheritedFrom = initial.origin === 'inherited' ? validateSkillInheritedBinding(inheritance, this.identity, descriptor, initial.loaded.version, initial.inheritedFrom) : undefined;
       const existing = this.active.get(descriptor.skillId);
       if (existing) {
-        if (canonical(existing.loaded.version) !== canonical(initial.loaded.version)) throw new SkillToolError('initial_skill_conflict');
+        if (canonical(existing.loaded.version) !== canonical(initial.loaded.version)
+          || (initial.origin === 'inherited' || existing.activation.origin === 'inherited')
+            && (initial.origin !== existing.activation.origin || canonical(inheritedFrom ?? null) !== canonical(existing.activation.inheritedFrom ?? null))) throw new SkillToolError('initial_skill_conflict');
         continue;
       }
       this.checkCapacity(initial.loaded);
       this.revision++;
       this.active.set(descriptor.skillId, { descriptor, loaded: clone(initial.loaded), activation: {
         runId: this.identity.runId, skillId: descriptor.skillId, version: clone(initial.loaded.version), origin: initial.origin,
+        ...(inheritedFrom ? { inheritedFrom } : {}),
         requestId: this.identity.requestId, receiptSeq: 0, activationRevision: this.revision,
       } });
     }
+    if (inheritance && (this.active.size !== inheritance.parentManifest.entries.length
+      || [...this.active.values()].some(item => item.activation.origin !== 'inherited')
+      || inheritance.parentManifest.entries.some(entry => !this.active.has(entry.skillId)))) throw new SkillToolError('inherited_skill_set_incomplete');
   }
   get definitions(): ToolDefinition[] { return clone(DEFINITIONS); }
   snapshot(): { activationRevision: number; digest: string; activations: SkillActivation[] } {
@@ -121,6 +134,15 @@ export class SkillToolPort implements ToolPort {
   /** Final host effect checks can reuse the same guard without inventing a policy revision. */
   async assertSideEffectsCurrent(signal: AbortSignal): Promise<void> {
     await this.ready({ identity: this.identity, signal });
+  }
+  /**
+   * Synchronous fence after the host's final await. It does not recheck sources
+   * or ownership and therefore complements, never replaces, the async guard.
+   */
+  assertSideEffectsObserved(expectedActivationRevision: number): void {
+    if (this.terminated) throw new SkillToolError('cancelled');
+    if (!Number.isSafeInteger(expectedActivationRevision) || expectedActivationRevision < 0 || this.revision !== expectedActivationRevision) throw new SkillToolError('active_skills_changed');
+    if (this.batchHasNewLoad || [...this.active.values()].some(item => !item.activation.confirmedByResponseId)) throw new SkillToolError('skill_model_observation_required');
   }
   /** Compaction preserves exact guides even before their next model observation. */
   async assertSourcesCurrent(signal: AbortSignal): Promise<void> {
@@ -160,9 +182,11 @@ export class SkillToolPort implements ToolPort {
     let initialReceiptSeq = this.initialReceiptSeq;
     for (const entry of manifest.entries) {
       const active = entry && this.active.get(entry.skillId);
-      if (!active || seen.has(entry.skillId) || Object.keys(entry).sort().join(',') !== 'evidence,origin,placement,relativePath,skillId,sourceId,version'
+      const entryKeys = entry?.origin === 'inherited' ? 'evidence,inheritedFrom,origin,placement,relativePath,skillId,sourceId,version' : 'evidence,origin,placement,relativePath,skillId,sourceId,version';
+      if (!active || seen.has(entry.skillId) || Object.keys(entry).sort().join(',') !== entryKeys
         || entry.sourceId !== active.descriptor.sourceId || entry.relativePath !== active.descriptor.relativePath
         || canonical(entry.version) !== canonical(active.loaded.version) || entry.origin !== active.activation.origin
+        || canonical(entry.inheritedFrom ?? null) !== canonical(active.activation.inheritedFrom ?? null)
         || !['initial_instructions', 'compacted_context', 'retained_receipt'].includes(entry.placement)
         || !entry.evidence || !Number.isSafeInteger(entry.evidence.seq) || entry.evidence.seq < 1 || entry.evidence.seq >= seq) {
         throw new SkillToolError('context_replacement_invalid');

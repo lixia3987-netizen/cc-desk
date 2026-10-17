@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash, randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { runAgent } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { ResponsesModel } from '@cc-desk/agent-node/responses-model';
@@ -34,21 +36,22 @@ const guide = 'CATALOG_GUIDE_FULL_BODY: Preserve unrelated files and verify ever
 const inlineWorker: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: new ResponsesModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
   contextMaintenance: options.contextMaintenance,
-  host: { now: Date.now, digest: hash, emit: options.onEvent, deadline: (timeout, parent) => {
+  completionValidation: options.completionValidation,
+  host: { now: Date.now, digest: hash, emit: options.onEvent, consumeBudget: options.consumeBudget, deadline: (timeout, parent) => {
     const controller = new AbortController(), abort = () => controller.abort();
     const timer = setTimeout(abort, timeout); parent.addEventListener('abort', abort, { once: true });
     if (parent.aborted) abort();
     return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent.removeEventListener('abort', abort); } };
   } },
 });
-async function fixture(options: { handler?: Handler; enabled?: boolean; autoApprove?: boolean; skillBody?: string; stdio?: boolean } = {}) {
+async function fixture(options: { handler?: Handler; enabled?: boolean; autoApprove?: boolean; skillBody?: string; stdio?: boolean; independentRuns?: boolean; executorOptions?: Partial<NativeExecutorOptions> } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-runtime-'));
   const data = path.join(directory, 'data'), project = path.join(directory, 'project');
   const skillPath = path.join(project, '.agents/skills/review/SKILL.md');
   await fs.mkdir(path.dirname(skillPath), { recursive: true });
   await fs.writeFile(skillPath, `---\nname: review\ndescription: Review project changes.\n---\n${options.skillBody ?? guide}`);
   await fs.writeFile(path.join(project, 'fixture.txt'), 'original\n');
-  const server = await startResponsesFixture({ handler: options.handler ?? (() => ({ output: [assistantMessage('final', 'Done.')] })) });
+  const server = await startResponsesFixture({ ...(options.independentRuns ? { assertReplay: false } : {}), handler: options.handler ?? (() => ({ output: [assistantMessage('final', 'Done.')] })) });
   const store = new StateStore(data), connections = new ConnectionStore(data);
   const connection = connections.upsert({ name: 'local', protocol: 'responses', baseURL: server.baseURL, model: 'catalog-fixture', allowLoopbackHttp: true, enabled: true, auth: { mode: 'memory' } });
   connections.setCredential({ id: connection.id, revision: connection.revision, mode: 'memory', secret });
@@ -71,7 +74,7 @@ async function fixture(options: { handler?: Handler; enabled?: boolean; autoAppr
   const snapshotsDirectory = path.join(data, 'native', 'skill-snapshots');
   const runtime = new NativeSkillRuntime({ registry, snapshots: new SkillSnapshotStore({ directory: snapshotsDirectory }), forbiddenValues: () => [secret] });
   const events = new ExecutionEvents();
-  const executor = new NativeStructuredExecutor(store, connections, events, { worker: inlineWorker, mcpConnections, ...(options.enabled === false ? {} : { skills: runtime }) });
+  const executor = new NativeStructuredExecutor(store, connections, events, { worker: inlineWorker, mcpConnections, ...(options.enabled === false ? {} : { skills: runtime }), ...options.executorOptions });
   await executor.initialize();
   const approvalIds = new Set<string>();
   const off = events.subscribe(() => {
@@ -99,6 +102,107 @@ const output = (body: Body, id: string) => {
   return result ? JSON.parse(String(result.output)) : undefined;
 };
 
+test('the real parent executor blocks a load/delegate batch, then delegates exact observed skills to independent read-only children', { timeout: 30000 }, async () => {
+  let selected: NativeSkillSubmission, parentRequests = 0, childRequests = 0;
+  const childFirst = new Set<string>();
+  const f = await fixture({ independentRuns: true, handler: ({ body }) => {
+    if (body.instructions?.includes('Children cannot spawn further agents.')) {
+      childRequests++;
+      assert.match(body.instructions, /CATALOG_GUIDE_FULL_BODY/);
+      assert.ok(body.tools.every(tool => !['apply_patch', 'start_command', 'delegate_review', 'delegate_implement', 'recover_agent'].includes(tool.name)));
+      const goal = JSON.stringify(body.input[0]);
+      if (!childFirst.has(goal)) {
+        childFirst.add(goal);
+        return { output: [functionCall(`child-read-${childFirst.size}`, 'read_file', { path: 'fixture.txt' })] };
+      }
+      return { output: [assistantMessage('child-final', 'Verified original fixture contents.')] };
+    }
+    const phase = parentRequests++;
+    if (phase === 0) return { output: [
+      functionCall('parent-load', 'load_skill', { skillId: selected.explicitSkillRefs[0].skillId, catalogRevision: selected.explicitSkillRefs[0].catalogRevision }),
+      functionCall('delegate-too-early', 'delegate_review', { tasks: [{ title: 'premature', goal: 'Review fixture.txt.' }] }),
+    ] };
+    if (phase === 1) {
+      assert.equal(childRequests, 0, 'no child starts before the parent has observed the loaded guide');
+      assert.notEqual(output(body, 'delegate-too-early')?.status, 'completed');
+      assert.equal(output(body, 'parent-load')?.status, 'completed');
+      return { output: [functionCall('observed-delegation', 'delegate_review', { tasks: [
+        { title: 'contents', goal: 'Read fixture.txt and check original contents.' },
+        { title: 'constraints', goal: 'Read fixture.txt and check review constraints.' },
+      ] })] };
+    }
+    if (phase === 2) {
+      const delegated = output(body, 'observed-delegation');
+      assert.equal(delegated.status, 'completed');
+      assert.equal(delegated.output.children.length, 2);
+      for (const child of delegated.output.children) { assert.equal(child.status, 'completed'); assert.equal(child.toolCalls, 1); assert.equal(child.modelRequests, 2); }
+      return { output: delegated.output.children.map((child: { childId: string }, index: number) => functionCall(`read-child-${index}`, 'read_agent_result', {
+        parentRunId: delegated.output.parentRunId, childId: child.childId,
+      })) };
+    }
+    for (const id of ['read-child-0', 'read-child-1']) assert.equal(output(body, id)?.status, 'completed');
+    return { output: [assistantMessage('parent-final', 'Reviewed both retained child results.')] };
+  } });
+  try {
+    selected = await f.submission();
+    const result = await f.executor.send(f.id, 'Use a relevant skill and inspect fixture contents.');
+    assert.equal(result.success, true, result.error);
+    assert.equal(parentRequests, 4); assert.equal(childRequests, 4); assert.equal(childFirst.size, 2);
+    const saved = await f.ledger(), delegated = saved.runs[0].tools.find(tool => tool.call.id === 'observed-delegation');
+    assert.equal(delegated?.completed?.result.status, 'completed');
+    const refs = (delegated!.completed!.result.output as { children: Array<{ receiptPath: string }> }).children;
+    const receipts = await Promise.all(refs.map(async ref => JSON.parse(await fs.readFile(ref.receiptPath, 'utf8'))));
+    assert.notEqual(receipts[0].identity.runId, receipts[1].identity.runId);
+    for (const receipt of receipts) {
+      assert.equal(receipt.nativeSkills.context.parentManifest.identity.runId, saved.runs[0].identity.runId);
+      const child = await NativeRunStore.open({ rootDirectory: path.join(f.data, 'native', 'conversations'), conversationId: receipt.identity.conversationId });
+      try {
+        const config = child.getRun(receipt.identity.runId)!.configuration;
+        const initial = config.initialNativeSkills as unknown as { activations: Array<{ runId: string; origin: string; offeredToRequestId?: string; confirmedByResponseId?: string }> };
+        assert.equal(initial.activations[0].origin, 'inherited'); assert.equal(initial.activations[0].runId, receipt.identity.runId);
+        assert.equal(initial.activations[0].offeredToRequestId, undefined); assert.equal(initial.activations[0].confirmedByResponseId, undefined);
+        assert.equal(child.recoveryRequired, false);
+      } finally { await child.close(); }
+    }
+    await assert.rejects(f.runtime.assertInheritanceCurrent({ sessionId: f.id, parentIdentity: saved.runs[0].identity,
+      inheritance: receipts[0].nativeSkills, signal: new AbortController().signal }), /继承|inherit|来源|运行|改变/);
+  } finally { await f.dispose(); }
+});
+
+test('a startup source rejection with failed child ownership release remains unknown and blocks parent recovery', { timeout: 30000 }, async () => {
+  let parentRequests = 0, releaseAttempts = 0;
+  const f = await fixture({ handler: ({ body }) => {
+    assert.doesNotMatch(body.instructions!, /Children cannot spawn further agents\./);
+    if (parentRequests++ === 0) return { output: [functionCall('delegate-owned-child', 'delegate_implement', {
+      baseline: 'head', tasks: [{ title: 'owned implementation', goal: 'Inspect fixture.txt.' }],
+    })] };
+    const delegated = output(body, 'delegate-owned-child');
+    assert.equal(delegated.output.children[0].status, 'unknown');
+    assert.equal(delegated.output.children[0].error, 'child_result_unknown');
+    return { output: [assistantMessage('parent-stop', 'Ownership cleanup needs recovery.')] };
+  }, executorOptions: {
+    acquireChildOwnership: async (_sessionId, _identity, cwd) => {
+      // Preflight has passed; change only this child's copy before actual startup.
+      await fs.writeFile(path.join(cwd, '.agents/skills/review/SKILL.md'), 'changed after inherited-source preflight');
+      return { assert: () => {}, release: () => { releaseAttempts++; throw new Error('injected retained ownership'); } };
+    },
+  } });
+  try {
+    const git = (args: string[]) => promisify(execFile)('git', args, { cwd: f.project });
+    await git(['init']); await git(['config', 'user.name', 'Skills fixture']); await git(['config', 'user.email', 'skills-fixture@example.invalid']);
+    await git(['add', '.']); await git(['commit', '-m', 'initial skill fixture']);
+    const result = await f.executor.send(f.id, 'Inspect the project using an implementation child.');
+    assert.equal(result.success, false); assert.equal(f.executor.recoveryRequired(f.id), true);
+    assert.ok(releaseAttempts >= 1); assert.equal(parentRequests, 2);
+    const saved = await f.ledger(), delegated = saved.runs[0].tools.find(tool => tool.call.id === 'delegate-owned-child')!;
+    const children = (delegated.completed!.result.output as { children: Array<{ status: string; receiptPath: string }> }).children;
+    assert.equal(children[0].status, 'unknown');
+    const receipt = JSON.parse(await fs.readFile(children[0].receiptPath, 'utf8'));
+    assert.equal(receipt.status, 'unknown'); assert.equal(receipt.result, undefined);
+    assert.equal(await fs.access(path.join(f.data, 'native', 'conversations', receipt.identity.conversationId, 'journal.jsonl')).then(() => true, () => false), false);
+  } finally { await f.dispose(); }
+});
+
 test('ordinary construction keeps catalog tools disabled and rejects explicit refs without a model request', async () => {
   const f = await fixture({ enabled: false });
   try {
@@ -118,7 +222,7 @@ for (const order of ['load-first', 'write-first'] as const) test(`a real ${order
   const f = await fixture({ handler: ({ body, index }) => {
     if (index === 0) {
       assert.doesNotMatch(body.instructions!, /CATALOG_GUIDE_FULL_BODY/);
-      assert.equal(body.tools.some(tool => tool.name.startsWith('delegate_') || tool.name === 'recover_agent'), false);
+      for (const name of ['delegate_review', 'delegate_implement', 'recover_agent']) assert.ok(body.tools.some(tool => tool.name === name));
       const load = functionCall('load', 'load_skill', { skillId: selected.explicitSkillRefs[0].skillId, catalogRevision: selected.explicitSkillRefs[0].catalogRevision });
       const write = functionCall('too-early', 'apply_patch', { path: 'new.txt', content: 'EARLY', expectedHash: null });
       return { output: order === 'load-first' ? [load, write] : [write, load] };
@@ -268,14 +372,15 @@ test('explicit guide and execution policy bind a real stdio startup receipt with
   } finally { await f.dispose(); }
 });
 
-test('read-only Native policy permits bounded skill reads and offers no write, command or delegation tool', async () => {
+test('read-only Native policy permits skill reads and review delegation while excluding write and command tools', async () => {
   let selected: NativeSkillSubmission;
   const f = await fixture({ handler: ({ body, index }) => {
-    for (const name of ['apply_patch', 'apply_change_set', 'run_command', 'start_command', 'delegate_review', 'delegate_implement', 'recover_agent']) {
+    for (const name of ['apply_patch', 'apply_change_set', 'run_command', 'start_command', 'delegate_implement']) {
       assert.equal(body.tools.some(tool => tool.name === name), false, name);
     }
     assert.equal(body.tools.some(tool => tool.name === 'list_skills'), true);
     assert.equal(body.tools.some(tool => tool.name === 'load_skill'), true);
+    for (const name of ['delegate_review', 'recover_agent']) assert.ok(body.tools.some(tool => tool.name === name));
     if (index === 0) return { output: [functionCall('readonly-guide', 'load_skill', { skillId: selected.explicitSkillRefs[0].skillId,
       catalogRevision: selected.explicitSkillRefs[0].catalogRevision })] };
     assert.equal(output(body, 'readonly-guide').output.body, guide);

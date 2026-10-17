@@ -31,7 +31,7 @@ import type { ConnectionStore } from './connections';
 import type { NativeMcpConnectionStore } from './mcp-connections';
 import { createNativeConfig, createNativeDefaultConfig, parseNativeConfig } from './config';
 import { NativeProjection, MISSING_NATIVE_CONTEXT_MESSAGE } from './projection';
-import { runNativeWorker } from './worker-host';
+import { runNativeWorker, NativeWorkerCleanupError } from './worker-host';
 import { sameRun } from './worker-protocol';
 import { nativeRunError, type NativeRunErrorDetails } from './run-errors';
 import { summarizeNativeContext } from './context-summary';
@@ -50,7 +50,7 @@ import { parseNativeExecutionPolicy, restrictNativeTools } from './execution-pol
 import { NativeAggregateBudget } from './aggregate-budget';
 import { createNativeChildBudget } from './child-budget';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentDelegationTools } from './agent-delegation';
-import { runNativeAgentChild } from './agent-child-runner';
+import { runNativeAgentChild, nativeChildExcludedRoots } from './agent-child-runner';
 import { NativeActivePause } from './active-pause';
 import { loadNativeAgents } from './agent-projection';
 import { readNativeAgentResult } from './agent-results';
@@ -567,6 +567,15 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           const budget = createNativeChildBudget(childIdentity, config, active.abort.signal);
           childBudgets.set(childIdentity.runId, { budget, modelRequests: 0, toolCalls: 0 }); return budget;
         }, assertOwnership,
+        ...(skillRun ? { skills: {
+          freeze: () => skillRun.prepareInheritance(ledger),
+          assertCurrent: (inheritance, signal, recovery) => this.options.skills!.assertInheritanceCurrent({ sessionId: id, parentIdentity: identity,
+            inheritance, signal, forbiddenValues, ...(recovery ? { allowAdditionalActivations: true } : {}) }),
+          preflightChild: async (inheritance, input) => this.options.skills!.preflightChild({ sessionId: id, parentIdentity: identity,
+            inheritance, signal: input.signal, forbiddenValues, identity: input.identity, projectRoot: input.cwd,
+            excludedRoots: await nativeChildExcludedRoots(this.store.directory, input.cwd),
+            ...(input.recovery ? { allowAdditionalActivations: true } : {}) }),
+        } } : {}),
         record: async receipt => { try { this.projection.nativeAgent(id, receipt); } catch { this.options.onError?.(new Error('Native child state projection needs repair.')); } },
         runChild: async input => {
           await assertOwnership();
@@ -581,7 +590,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             const run = await runNativeAgentChild(input, { dataDirectory: this.store.directory,
               model: { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL,
                 model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
-              config, forbiddenValues, worker: this.options.worker,
+              config, forbiddenValues, worker: this.options.worker, ...(skillRun ? { skills: this.options.skills } : {}),
               assertOwnership: async () => { await assertOwnership(); await lease?.assert(); },
               approvals: { request: (request, signal) => {
                 const operation = active.childApprovalQueue!.then(async () => {
@@ -604,7 +613,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             if (retainLease) { active.cleanupUnconfirmed = true; this.recovery.add(id); }
             else if (lease) {
               try { await lease.release(); active.childLeases!.delete(input.identity.runId); }
-              catch { active.cleanupUnconfirmed = true; this.recovery.add(id); }
+              catch { active.cleanupUnconfirmed = true; this.recovery.add(id); throw new NativeWorkerCleanupError(); }
             }
           }
         },
@@ -736,7 +745,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       // 单 Agent 或明确禁止委派的请求在宿主侧不注册委派工具，不能靠模型自律放宽。
       const stageTools = () => {
         const ordinary = active.tasks!.wrapTools(composeToolPorts([createTools(),
-          ...(skillRun || nativeParallelReviewIntent(active.input).mode === 'single_agent' ? [] : [active.delegation!]), resultTools]), active.taskId, identity);
+          ...(nativeParallelReviewIntent(active.input).mode === 'single_agent' ? [] : [active.delegation!]), resultTools]), active.taskId, identity);
         const combined = skillRun ? composeToolPorts([skillRun.tools.guard(ordinary), ...(skillRun.catalog.entries.some(entry => entry.autoMatchable) ? [skillRun.tools] : [])]) : ordinary;
         return restrictNativeTools(combined, active.executionPolicy);
       };
@@ -858,6 +867,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       active.approval?.settle('denied');
       try { await active.delegation?.closeAll(); await active.childApprovalQueue; }
       catch { active.cleanupUnconfirmed = true; }
+      if (active.identity) this.options.skills?.releaseInheritance(active.identity);
       stopPauseClock();
       try { await commandTools?.closeAll(); }
       catch { active.cleanupUnconfirmed = true; }

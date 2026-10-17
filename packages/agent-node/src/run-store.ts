@@ -13,7 +13,7 @@ import { isNativeSkillSubmission, normalizeNativeSkillSubmission } from '@cc-des
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { readStoreSnapshot } from './store-read.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeCompletionFeedbackItems, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
-import { readSkillContinuityEvidence, skillContinuityItems, validateSkillContinuitySection, type SkillContinuitySection,
+import { readSkillContinuityEvidence, skillContinuityItems, validateSkillContinuitySection, validateSkillInheritanceConfiguration, type SkillContinuitySection,
   readConversationSkillContinuityEvidence, conversationSkillContinuityItems, validateConversationSkillContinuitySection, type ConversationSkillContinuitySection } from './skill-continuity.js';
 
 export { RunStoreError } from './store-files.js';
@@ -538,6 +538,7 @@ export class NativeRunStore implements RunStore {
       text(request.inputDigest, 'input digest', 256); text(request.policyRevision, 'policy revision', 256);
       validateContext({ protocol: request.protocol, items: request.userItems });
       validateConfiguration(request.configuration);
+      validateSkillInheritanceConfiguration(request.configuration, request.identity);
       if (Object.hasOwn(request.configuration, 'nativeSkills') && !isNativeSkillSubmission(request.configuration.nativeSkills)) fail('invalid_record', 'Invalid Native skill submission');
       if (event.payloadDigest !== payloadDigest(request)) fail('payload_mismatch', 'Submission payload digest mismatch');
       if (this.runs.has(identity.runId) || this.submissions.has(identity.requestId)) fail('payload_mismatch', 'Duplicate run or submission in journal');
