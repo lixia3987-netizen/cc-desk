@@ -26,6 +26,8 @@ export interface NativeCommandToolOptions {
   identity: RunIdentity; taskId: string; supervisor: ProcessSupervisor; signal: AbortSignal; forbiddenValues: readonly string[];
   remainingMs(): number;
   assertOwnership(): Promise<void>;
+  /** Enables a final recheck after guardian/Windows containment preparation. */
+  assertSideEffectsCurrent?(): Promise<void>;
   record(call: ToolCall, event: NativeCommandLifecycleEvent): Promise<void>;
   onFailure(): void;
   onPrepared?(prepared: PreparedTool, signal: AbortSignal): Promise<void>;
@@ -144,7 +146,8 @@ export function createCommandTools(options: NativeCommandToolOptions): NativeCom
         return { status: 'not_executed', output: observe(entry) };
       }
       entry.handle = options.supervisor.start(options.identity.runId, { executable: String(prepared.input.executable), argv: [...prepared.input.argv as string[]], cwd: command.cwd,
-        timeoutMs: Math.min(timeoutMs, budgetNow), maxOutputBytes }, options.signal, options.forbiddenValues);
+        timeoutMs: Math.min(timeoutMs, budgetNow), maxOutputBytes }, options.signal, options.forbiddenValues,
+        options.assertSideEffectsCurrent ? async () => { await command.beforeStart(); await options.assertSideEffectsCurrent!(); } : undefined);
       entry.ready = (async () => {
         if (await entry.handle!.started) { await save(entry, { commandId: entry.commandId, status: 'running', at: new Date().toISOString() }); entry.phase = 'running'; }
       })();

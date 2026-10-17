@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
+import { normalizeNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import type { ChatQueueSnapshot, ChatSendOptions, ChatSubmission, ChatTurnResult, QueuedChatMessage } from '../shared/chat';
 import { ChatQueueStorage, type StoredChatQueue } from './chat-queue-storage';
 
@@ -10,6 +11,8 @@ interface QueueOptions {
   blocked(id: string): boolean;
   /** 确认队列所有权之前，将 Native 图片绑定到显式提交。 */
   attachmentMetadata?(id: string, files: string[]): Promise<NativeImageAttachment[] | undefined>;
+  /** 在接收回执前持久化正文快照；不得重绑提交指定的技能版本。 */
+  prepareNativeSkills?(id: string, submission: NativeSkillSubmission): Promise<NativeSkillSubmission>;
   acceptAttachments(id: string, files: string[], commit: (attachmentNames?: string[]) => void): Promise<void>;
   run(id: string, item: QueuedChatMessage): Promise<ChatTurnResult>;
   /** 仅在上一轮及其进程资源均已结束后返回。 */
@@ -74,6 +77,7 @@ export class ChatQueue {
   async submit(id: string, text: string, attachments: string[] = [], requestId: string = randomUUID(), options: ChatSendOptions = {}): Promise<ChatSubmission> {
     const nativeTaskId = options.nativeTaskId;
     if (nativeTaskId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(nativeTaskId)) throw new Error('无效任务标识。');
+    const nativeSkills = options.nativeSkills === undefined ? undefined : normalizeNativeSkillSubmission(options.nativeSkills);
     const assertAdmission = this.captureAdmission(id);
     const epoch = this.generation.get(id) ?? 0;
     return this.serial(id, async () => {
@@ -83,7 +87,7 @@ export class ChatQueue {
       const nativeImageAttachments = await this.options.attachmentMetadata?.(id, [...attachments]);
       assertAdmission();
       if (nativeImageAttachments !== undefined && (!isNativeImageAttachments(nativeImageAttachments) || nativeImageAttachments.length !== attachments.length)) throw new Error('图片提交快照无效，请重新选择。');
-      const digest = createHash('sha256').update(JSON.stringify({ text, attachments, ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments } : {}) })).digest('hex');
+      const digest = createHash('sha256').update(JSON.stringify({ text, attachments, ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments } : {}), ...(nativeSkills ? { nativeSkills } : {}) })).digest('hex');
       const state = this.state(id), receipt = state.receipts.find(item => item.requestId === requestId);
       if (receipt) {
         if (receipt.digest !== digest) throw new Error('同一消息提交标识不能用于不同内容。');
@@ -91,7 +95,13 @@ export class ChatQueue {
       }
       if (state.items.length >= 100) throw new Error('最多保留 100 条排队消息，请先移除部分消息。');
       if (attachments.some(file => state.items.some(item => item.attachments.includes(file)))) throw new Error('附件已用于排队或正在发送的消息，请重新添加附件。');
-      const item: QueuedChatMessage = { id: randomUUID(), clientRequestId: requestId, text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments: structuredClone(nativeImageAttachments) } : {}) };
+      if (nativeSkills) {
+        if (!this.options.prepareNativeSkills) throw new Error('当前引擎未开放技能调用。');
+        const prepared = normalizeNativeSkillSubmission(await this.options.prepareNativeSkills(id, structuredClone(nativeSkills)));
+        assertAdmission();
+        if (JSON.stringify(prepared) !== JSON.stringify(nativeSkills)) throw new Error('技能提交版本已变化，请重新选择后发送。');
+      }
+      const item: QueuedChatMessage = { id: randomUUID(), clientRequestId: requestId, text, attachments: [...attachments], createdAt: new Date().toISOString(), status: 'queued', ...(nativeTaskId ? { nativeTaskId } : {}), ...(nativeImageAttachments ? { nativeImageAttachments: structuredClone(nativeImageAttachments) } : {}), ...(nativeSkills ? { nativeSkills: structuredClone(nativeSkills) } : {}) };
       await this.options.acceptAttachments(id, attachments, attachmentNames => {
         assertAdmission();
         item.attachmentNames = attachmentNames;

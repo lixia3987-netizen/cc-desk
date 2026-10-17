@@ -474,11 +474,11 @@ export class ProcessSupervisor {
 
   has(ownerId: string): boolean { return [...this.records].some(record => record.owner === ownerId); }
 
-  async run(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): Promise<CommandResult> {
-    return this.runOwned(ownerId, command, signal, forbiddenValues);
+  async run(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], beforeLaunch?: () => void | Promise<void>): Promise<CommandResult> {
+    return this.runOwned(ownerId, command, signal, forbiddenValues, undefined, undefined, beforeLaunch);
   }
 
-  start(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): CommandHandle {
+  start(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], beforeLaunch?: () => void | Promise<void>): CommandHandle {
     let record: CommandRecord | undefined;
     let started = false;
     let settled = false;
@@ -500,7 +500,7 @@ export class ProcessSupervisor {
     const closed = this.runOwned(ownerId, command, signal, forbiddenValues, undefined, {
       onRecord: value => { record = value; },
       onStarted: () => { started = true; notifyStarted(true); },
-    }).then(result => {
+    }, beforeLaunch).then(result => {
       settled = true;
       terminal = copy(result);
       notifyStarted(started);
@@ -532,7 +532,7 @@ export class ProcessSupervisor {
     };
   }
 
-  async openStdio(ownerId: string, request: StdioProcessRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = []): Promise<StdioProcessHandle> {
+  async openStdio(ownerId: string, request: StdioProcessRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], beforeLaunch?: () => void | Promise<void>): Promise<StdioProcessHandle> {
     if (!request || typeof request.onStdout !== 'function') throw new TypeError('Stdio requires an output consumer.');
     validateCommand(request);
     if (!path.isAbsolute(request.executable) || /\.(?:cmd|bat)$/i.test(request.executable)
@@ -550,7 +550,7 @@ export class ProcessSupervisor {
       environment, startupTimeoutMs, maxInputBytes, onStdout: request.onStdout,
       onStarted: record => ready(this.stdioHandle(record)),
     };
-    void this.runOwned(ownerId, request, signal, forbiddenValues, control).then(result => {
+    void this.runOwned(ownerId, request, signal, forbiddenValues, control, undefined, beforeLaunch).then(result => {
       const error = new Error(result.cancelled ? 'Stdio process was cancelled.' : 'Unable to start or retain the stdio process.');
       if (result.cleanup !== 'released') Object.assign(error, { cleanupUnconfirmed: true });
       failed(error);
@@ -621,7 +621,7 @@ export class ProcessSupervisor {
     };
   }
 
-  private async runOwned(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], stdio?: StdioProcessControl, control?: CommandControl): Promise<CommandResult> {
+  private async runOwned(ownerId: string, command: CommandRequest, signal?: AbortSignal, forbiddenValues: readonly string[] = [], stdio?: StdioProcessControl, control?: CommandControl, beforeLaunch?: () => void | Promise<void>): Promise<CommandResult> {
     if (typeof ownerId !== 'string' || !ownerId || ownerId.length > 1_024) throw new TypeError('An owner ID is required.');
     if (this.disposed || this.revokedOwners.has(ownerId)) throw new Error('Command owner has been released.');
     validateCommand(command);
@@ -725,7 +725,15 @@ export class ProcessSupervisor {
         void this.stopRecord(record);
       }
     });
-    const launch = () => {
+    const launch = async () => {
+      if (record.cleanupRequested || this.disposed || this.revokedOwners.has(ownerId) || signal?.aborted) return;
+      if (beforeLaunch) {
+        try { await beforeLaunch(); }
+        catch {
+          result.error = 'Command launch preconditions changed; the command was not executed.';
+          void this.stopRecord(record); return;
+        }
+      }
       if (record.cleanupRequested || this.disposed || this.revokedOwners.has(ownerId) || signal?.aborted) return;
       if (record.guardianExited || record.closed || (process.platform === 'win32' && !record.windowsJob?.usable)) {
         result.error = 'Command containment was lost before launch; the command was not executed.';
@@ -745,7 +753,7 @@ export class ProcessSupervisor {
     };
     child.once('spawn', () => {
       if (record.cleanupRequested) return;
-      if (process.platform !== 'win32') { launch(); return; }
+      if (process.platform !== 'win32') { void launch(); return; }
       record.windowsPreparation = (async () => {
         try {
           record.windowsJob = await createWindowsCommandJob({
@@ -757,7 +765,7 @@ export class ProcessSupervisor {
               void whenClosed.then(() => record.windowsHelpers.delete(whenClosed));
             },
           });
-          launch();
+          await launch();
         } catch (error) {
           // 准备阶段失败时绝不授权执行命令；辅助进程
           // 和尚未启动命令的守护进程仍须到达各自实际关闭的屏障。

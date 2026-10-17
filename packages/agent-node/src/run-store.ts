@@ -9,6 +9,7 @@ import type {
 import { contextHasUserImages, MAX_COMPLETION_CORRECTIONS, validateCompletionDecision, validateModelFailureDiagnostic, validateModelRequestDiagnostic, validateUsage, validateProviderUsage, sumUsage } from '@cc-desk/agent-core';
 import { isNativeChangeSetPreview, isNativeChangeSetResult, type NativeChangeSetFileEvent, type NativeChangeSetPreview } from '@cc-desk/contracts/native-changes';
 import { isNativeCommandLifecycleEvent, NATIVE_COMMAND_MAX_PER_RUN, type NativeCommandLifecycleEvent } from '@cc-desk/contracts/native-commands';
+import { isNativeSkillSubmission, normalizeNativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { readStoreSnapshot } from './store-read.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeCompletionFeedbackItems, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
@@ -17,7 +18,10 @@ export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
 
 /** 确保引入图像之前的请求标识与现有日志逐字节兼容。 */
-export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue): string {
+export function nativeSubmissionInputDigest(input: string, imageAttachments?: JsonValue, nativeSkills?: JsonValue): string {
+  if (nativeSkills !== undefined) return createHash('sha256').update(canonical({ input,
+    ...(Array.isArray(imageAttachments) && imageAttachments.length ? { imageAttachments } : {}),
+    nativeSkills: normalizeNativeSkillSubmission(nativeSkills) })).digest('hex');
   const value = Array.isArray(imageAttachments) && imageAttachments.length ? canonical({ input, imageAttachments }) : input;
   return createHash('sha256').update(value).digest('hex');
 }
@@ -295,6 +299,7 @@ function validateCall(call: ToolCall): void {
 }
 function validateConfiguration(value: unknown): void {
   if (!object(value)) fail('invalid_record', 'Configuration must be a JSON object');
+  if (Object.hasOwn(value, 'nativeSkills') && !isNativeSkillSubmission(value.nativeSkills)) fail('invalid_record', 'Invalid Native skill submission');
   for (const [key, item] of Object.entries(value)) {
     if (SECRET_FIELD.test(key)) fail('secret_rejected', 'Credential fields cannot enter a run configuration');
     const visit = (child: unknown): void => {
@@ -529,7 +534,10 @@ export class NativeRunStore implements RunStore {
           if (requestId === identity.requestId) {
             if (!equal(startup.identity, identity)) fail('stale_owner', 'Only the startup owner may begin its associated run');
             if (startup.closedSeq !== undefined) fail('startup_already_prepared', 'A completed startup submission cannot begin a new run');
-            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments) || startup.optionsDigest !== digest(request.configuration.sessionOptions)) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
+            const optionsDigest = createHash('sha256').update(canonical(request.configuration.sessionOptions)
+              + (request.configuration.nativeExecutionPolicy === undefined ? '' : canonical(request.configuration.nativeExecutionPolicy))
+              + (request.configuration.nativeSkills === undefined ? '' : canonical(request.configuration.nativeSkills))).digest('hex');
+            if (startup.inputDigest !== nativeSubmissionInputDigest(request.input, request.configuration.imageAttachments, request.configuration.nativeSkills) || startup.optionsDigest !== optionsDigest) fail('payload_mismatch', 'Run input/options differ from the approved startup submission');
           } else if (startup.closedSeq === undefined) fail('conversation_busy', 'Previous startup resources are unresolved');
         }
       }

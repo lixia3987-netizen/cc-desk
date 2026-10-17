@@ -20,6 +20,8 @@
     "./project-skills": { "types": "./dist/project-skills.d.ts", "default": "./dist/project-skills.js" },
     "./skill-metadata": { "types": "./dist/skill-metadata.d.ts", "default": "./dist/skill-metadata.js" },
     "./skill-registry": { "types": "./dist/skill-registry.d.ts", "default": "./dist/skill-registry.js" },
+    "./skill-snapshots": { "types": "./dist/skill-snapshots.d.ts", "default": "./dist/skill-snapshots.js" },
+    "./skill-tools": { "types": "./dist/skill-tools.d.ts", "default": "./dist/skill-tools.js" },
     "./mcp-client": { "types": "./dist/mcp-client.d.ts", "default": "./dist/mcp-client.js" },
     "./mcp-stdio-client": { "types": "./dist/mcp-stdio-client.d.ts", "default": "./dist/mcp-stdio-client.js" },
     "./mcp-tools": { "types": "./dist/mcp-tools.d.ts", "default": "./dist/mcp-tools.js" }

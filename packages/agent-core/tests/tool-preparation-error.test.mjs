@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { ToolPreparationError, getToolPreparationFeedback, validateToolPreparationFeedback } from '../dist/index.js'
 
-test('preparation feedback snapshots only the two fixed schemas and preserves the empty-file correction', () => {
+test('preparation feedback snapshots fixed schemas and preserves the empty-file correction', () => {
   for (const value of [
     { error: 'task_revision_changed', currentRevision: Number.MAX_SAFE_INTEGER, readTask: true },
     { error: 'code_location_line_range_invalid', lineCount: 0, readFile: true },
@@ -51,5 +51,52 @@ test('feedback inspection never invokes accessors or leaks hostile inspection fa
     assert.equal(validateToolPreparationFeedback(value), false)
     assert.throws(() => new ToolPreparationError(value), error => error instanceof TypeError && error.message === 'Invalid tool preparation feedback' && !error.stack.includes(secret))
   }
+  assert.equal(reads, 0)
+})
+
+const skillActions = {
+  context_unconfirmed: 'continue_model', source_changed: 'restart_turn', activation_changed: 'prepare_again',
+  activation_blocked: 'settle_operations', output_limit: 'adjust_skill_limits', skill_limit: 'adjust_skill_limits',
+}
+
+test('skill preparation feedback accepts only the six exact code/action pairs', () => {
+  for (const [code, action] of Object.entries(skillActions)) {
+    const expected = { error: 'skill_precondition_failed', code, action }
+    assert.equal(validateToolPreparationFeedback(expected), true)
+    const error = new ToolPreparationError(expected)
+    assert.deepEqual(getToolPreparationFeedback(error), expected)
+    assert.equal(Object.isFrozen(error.feedback), true)
+    for (const otherAction of new Set(Object.values(skillActions))) {
+      if (otherAction === action) continue
+      assert.equal(validateToolPreparationFeedback({ ...expected, action: otherAction }), false)
+    }
+  }
+})
+
+test('skill feedback rejects extra fields, arbitrary strings, prototypes and obsolete reload flags', () => {
+  const valid = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' }
+  for (const value of [
+    { ...valid, code: 'secret-source-path' }, { ...valid, action: 'run-command' }, { ...valid, action: null },
+    { ...valid, reloadSkill: true }, { error: valid.error, code: valid.code, reloadSkill: true },
+    { ...valid, message: 'secret-path' }, { ...valid, [Symbol('secret')]: 'secret-path' },
+    Object.defineProperty({ ...valid }, 'private', { value: 'secret-path' }),
+    Object.assign(Object.create({ secret: 'secret-path' }), valid),
+  ]) {
+    assert.equal(validateToolPreparationFeedback(value), false)
+    assert.throws(() => new ToolPreparationError(value), { name: 'TypeError', message: 'Invalid tool preparation feedback' })
+  }
+})
+
+test('skill feedback inspection never executes code/action getters or toJSON', () => {
+  let reads = 0
+  for (const field of ['code', 'action']) {
+    const value = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn' }
+    Object.defineProperty(value, field, { enumerable: true, get() { reads++; throw new Error('secret-path') } })
+    assert.equal(validateToolPreparationFeedback(value), false)
+    assert.throws(() => new ToolPreparationError(value), TypeError)
+  }
+  const value = { error: 'skill_precondition_failed', code: 'source_changed', action: 'restart_turn', toJSON() { reads++; throw new Error('secret-path') } }
+  assert.equal(validateToolPreparationFeedback(value), false)
+  assert.equal(getToolPreparationFeedback(Object.assign(Object.create(ToolPreparationError.prototype), { feedback: value })), null)
   assert.equal(reads, 0)
 })

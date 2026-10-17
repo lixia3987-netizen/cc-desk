@@ -9,6 +9,7 @@ import type { Attachments } from '../attachments';
 import type { WorkflowEngine } from '../workflows';
 import type { ChatQueue } from '../chat-queue';
 import { invokedCommand } from '../../shared/session-commands';
+import { isNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import { attachmentFilters, attachmentPathsSchema, draftAttachmentSelectionSchema, draftAttachmentSelectionsSchema, DraftAttachments } from '../draft-attachments';
 import type { Register } from './registration';
 
@@ -25,7 +26,7 @@ interface ChatPorts {
   reserve(id: string): Promise<void>;
   releaseAdmission(id: string): void | Promise<void>;
   manage<T>(id: string, action: () => T | Promise<T>): Promise<T>;
-  runChat(id: string, text: string, attachments: string[], requestId?: string, nativeTaskId?: string): Promise<ChatTurnResult>;
+  runChat(id: string, text: string, attachments: string[], requestId?: string, nativeTaskId?: string, nativeSkills?: NativeSkillSubmission): Promise<ChatTurnResult>;
   versionSnapshot(snapshot: ChatSnapshot): ChatSnapshot;
   getWindow(): BrowserWindow | null;
 }
@@ -43,6 +44,7 @@ const sendSchema = z.object({
   id: idSchema, text: z.string().max(128 * 1024), attachments: z.array(z.string().max(4096)).max(8).optional(),
   requestId: shortId.optional(),
   nativeTaskId: shortId.optional(),
+  nativeSkills: z.custom<NativeSkillSubmission>(isNativeSkillSubmission).optional(),
 });
 const droppedFilesSchema = z.object({
   id: idSchema,
@@ -143,8 +145,9 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     return ports.chat.search(id, query, before);
   });
   handle('chat:attention', z.undefined(), () => ports.chat.attention());
-  handle('chat:send', sendSchema, async ({ id, text, attachments, requestId, nativeTaskId }) => {
+  handle('chat:send', sendSchema, async ({ id, text, attachments, requestId, nativeTaskId, nativeSkills }) => {
     const session = ports.structured(id);
+    if (nativeSkills !== undefined && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话支持 Native 技能引用。');
     if (nativeTaskId && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话可以继续已有任务。');
     const checkAdmission = ports.captureAdmission(id);
     if (!text.trim() && !attachments?.length) throw new Error('请输入消息或选择附件。');
@@ -152,13 +155,15 @@ export function registerChatHandlers(handle: Register, ports: ChatPorts): void {
     const approved = await ports.attachments.validate(id, attachments);
     checkAdmission();
     if (ports.workflows.isSessionBusy(id)) throw new Error('工作流已开始，请先取消后再发送。');
-    return ports.runChat(id, text, approved, requestId, nativeTaskId);
+    return nativeSkills === undefined ? ports.runChat(id, text, approved, requestId, nativeTaskId)
+      : ports.runChat(id, text, approved, requestId, nativeTaskId, nativeSkills);
   });
-  handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId, nativeTaskId }) => {
+  handle('chat:submit', sendSchema.extend({ requestId: shortId.optional() }), ({ id, text, attachments, requestId, nativeTaskId, nativeSkills }) => {
     const session = ports.structured(id);
+    if (nativeSkills !== undefined && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话支持 Native 技能引用。');
     if (nativeTaskId && session.execution.providerId !== 'native') throw new Error('只有自研 Agent 会话可以继续已有任务。');
     if (invokedCommand(text) && attachments?.length) throw new Error('执行斜杠命令时请先移除附件，再单独发送命令。');
-    return ports.queue.submit(id, text, attachments, requestId, { nativeTaskId });
+    return ports.queue.submit(id, text, attachments, requestId, { nativeTaskId, ...(nativeSkills === undefined ? {} : { nativeSkills }) });
   });
   const queueMessage = z.object({ id: idSchema, messageId: z.string().uuid() });
   handle('chat:queue-now', queueMessage, ({ id, messageId }) => { ports.structured(id); return ports.queue.sendNow(id, messageId); });

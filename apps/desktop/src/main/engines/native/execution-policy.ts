@@ -13,7 +13,7 @@ export function parseNativeExecutionPolicy(value: unknown): NativeExecutionPolic
   return value === undefined ? undefined : schema.parse(value);
 }
 const READ_ONLY_TOOLS = new Set(['list_directory', 'read_file', 'search', 'find_files', 'update_plan', 'read_task',
-  'record_code_location', 'ask_user', 'delegate_review', 'recover_agent', 'read_agent_result']);
+  'record_code_location', 'ask_user', 'delegate_review', 'recover_agent', 'read_agent_result', 'list_skills', 'load_skill']);
 /** 宿主白名单在每次 prepare/validate/execute 时重新检查；仅有工具风险注解还不够。 */
 export function restrictNativeTools(port: ToolPort, policy?: NativeExecutionPolicy): ToolPort {
   if (policy?.toolPolicy !== 'read_only') return port;

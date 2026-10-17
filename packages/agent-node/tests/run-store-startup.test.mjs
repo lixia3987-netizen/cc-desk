@@ -235,3 +235,64 @@ test('image startup submission binds exact attachment hashes and legacy text sta
   assert.deepEqual((await f.store.beginRun(req)).result, result);
   assert.throws(() => f.store.getCompactionSource(), { code: 'image_context_compaction_unsupported' });
 });
+
+function skillSubmission(digit = 'a') {
+  const skillId = `skill:${digit.repeat(64)}`;
+  return { schemaVersion: 1, explicitSkillRefs: [{ skillId, catalogRevision: 'b'.repeat(64), version: {
+    skillId, sourceRevision: 1, sourceFingerprint: 'c'.repeat(64), fullFileHash: 'd'.repeat(64), bodyHash: 'e'.repeat(64),
+    bytes: 20, format: 'standard',
+  } }], excludedSkillIds: [] };
+}
+
+test('submission digest keeps legacy bytes and binds normalized exact skill versions plus images', () => {
+  const input = 'Keep legacy bytes\n';
+  const images = [{ name: 'a.png', sha256: '1'.repeat(64), bytes: 10, mimeType: 'image/png' }];
+  assert.equal(nativeSubmissionInputDigest(input), sha(input));
+  assert.equal(nativeSubmissionInputDigest(input, []), sha(input));
+  assert.equal(nativeSubmissionInputDigest(input, images), sha(canonicalJson({ input, imageAttachments: images })));
+  const refs = skillSubmission(); refs.explicitSkillRefs.push(...skillSubmission('f').explicitSkillRefs);
+  const normalizedDigest = nativeSubmissionInputDigest(input, images, refs);
+  const reordered = structuredClone(refs); reordered.explicitSkillRefs.reverse();
+  assert.equal(nativeSubmissionInputDigest(input, images, reordered), normalizedDigest);
+  for (const field of ['bodyHash', 'fullFileHash', 'sourceFingerprint']) {
+    const changed = structuredClone(refs); changed.explicitSkillRefs[0].version[field] = '0'.repeat(64);
+    assert.notEqual(nativeSubmissionInputDigest(input, images, changed), normalizedDigest);
+  }
+  assert.notEqual(nativeSubmissionInputDigest(input, [], refs), normalizedDigest);
+  assert.notEqual(nativeSubmissionInputDigest(input, images), normalizedDigest);
+  assert.throws(() => nativeSubmissionInputDigest(input, images, { ...refs, ignored: true }));
+});
+
+test('startup binds policy and exact skill refs, rejects drift and replays the same durable receipt', async t => {
+  const f = await fixture(t), req = runRequest(f.conversationId);
+  req.configuration.nativeSkills = skillSubmission();
+  req.configuration.nativeExecutionPolicy = { toolPolicy: 'read_only', networkPolicy: 'disabled' };
+  const inputDigest = nativeSubmissionInputDigest(req.input, undefined, req.configuration.nativeSkills);
+  const optionsDigest = sha(canonicalJson(req.configuration.sessionOptions)
+    + canonicalJson(req.configuration.nativeExecutionPolicy) + canonicalJson(req.configuration.nativeSkills));
+  const launch = startup(req, { inputDigest, optionsDigest });
+  await f.store.prepareStartup(launch);
+  for (const mutate of [
+    changed => { changed.configuration.nativeSkills.explicitSkillRefs[0].version.bodyHash = '0'.repeat(64); },
+    changed => { delete changed.configuration.nativeSkills; },
+    changed => { changed.configuration.nativeExecutionPolicy.toolPolicy = 'all'; },
+  ]) {
+    const changed = structuredClone(req); mutate(changed);
+    await assert.rejects(f.store.beginRun(changed), { code: 'payload_mismatch' });
+  }
+  assert.equal((await f.store.beginRun(req)).kind, 'accepted');
+  const result = await finish(f.store, req);
+  await f.store.closeStartup(req.identity, launch.startupId);
+  await f.reopen();
+  assert.deepEqual((await f.store.beginRun(req)).result, result);
+  assert.deepEqual(f.store.listRuns()[0].configuration.nativeSkills, req.configuration.nativeSkills);
+});
+
+test('run configuration refuses malformed skill references before journal admission', async t => {
+  const f = await fixture(t), req = runRequest(f.conversationId);
+  req.configuration.nativeSkills = { ...skillSubmission(), excludedSkillIds: ['outside'] };
+  await assert.rejects(f.store.beginRun(req), { code: 'invalid_record' });
+  assert.equal(f.store.listRuns().length, 0);
+  await f.reopen();
+  assert.equal(f.store.listRuns().length, 0);
+});

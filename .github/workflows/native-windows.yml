@@ -12,6 +12,12 @@ on:
       - 'packages/*/tsconfig.json'
       - 'packages/agent-core/src/**'
       - 'packages/contracts/src/**'
+      - 'packages/contracts/tests/**'
+      - 'packages/agent-node/src/skill-*.ts'
+      - 'packages/agent-node/src/mcp-*.ts'
+      - 'packages/agent-node/src/tools/**'
+      - 'packages/agent-node/tests/skill-*.test.mjs'
+      - 'packages/agent-node/tests/run-store-startup.test.mjs'
       - 'packages/agent-node/src/process-supervisor.ts'
       - 'packages/agent-node/src/run-store.ts'
       - 'packages/agent-node/src/windows-*.ts'
@@ -49,6 +55,7 @@ on:
       - 'apps/desktop/tests/windows-pty-resources.test.ts'
       - 'apps/desktop/tests/native-agent.spec.ts'
       - 'apps/desktop/tests/native-multi-agent.spec.ts'
+      - 'apps/desktop/tests/native-skill-*.test.ts'
       - 'apps/desktop/src/renderer/**'
       - 'apps/desktop/tests/chat-queue.spec.ts'
       - 'apps/desktop/tests/new-session-flow.spec.ts'
@@ -186,6 +193,12 @@ jobs:
         timeout-minutes: 10
         run: |
           node --test --test-concurrency=1 --test-reporter=tap packages/agent-node/tests/process-supervisor.test.mjs packages/agent-node/tests/process-windows-protocol.test.mjs packages/agent-node/tests/process-windows-job-integration.test.mjs packages/agent-node/tests/windows-command-job.test.mjs packages/agent-node/tests/process-windows-tree.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/agent-node.tap
+          exit $LASTEXITCODE
+      - name: 验证 Skills 目录、快照、回执与消息版本绑定
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
+        timeout-minutes: 5
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap packages/contracts/tests/*.test.mjs packages/agent-node/tests/skill-*.test.mjs packages/agent-node/tests/run-store-startup.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/native-skills.tap
           exit $LASTEXITCODE
       - name: 验证真实 Claude Windows 后代进程清理
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}

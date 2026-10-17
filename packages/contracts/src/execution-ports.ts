@@ -1,5 +1,6 @@
 import type { NativeImageAttachment, ChatAttention, ChatDecision, ChatPage, ChatPageOptions, ChatSearchPage, ChatSnapshot, ChatTurnResult, TaskState } from './chat.js';
 import type { EngineConfig, SessionStatus, TerminalChunk } from './execution.js';
+import type { NativeSkillSubmission } from './native-skills.js';
 export interface TerminalSnapshot { chunks: TerminalChunk[]; status: SessionStatus }
 
 /** 资源的归属一直保持到整个进程树及其句柄均已释放。 */
@@ -45,6 +46,8 @@ export interface ExecutionSubmission {
   nativeTaskId?: string;
   /** 接受排队请求时捕获的、由宿主绑定的图像选择。 */
   imageAttachments?: NativeImageAttachment[];
+  /** 精确版本引用由接收队列前持久化；不允许执行器静默忽略。 */
+  nativeSkills?: NativeSkillSubmission;
   source?: 'direct' | 'queue' | 'workflow';
   workflowRunId?: string;
   stageId?: string;

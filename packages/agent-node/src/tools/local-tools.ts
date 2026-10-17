@@ -51,6 +51,8 @@ export interface LocalToolOptions extends FilePolicyOptions {
   ownerId: string;
   /** 由宿主确认当前运行或代次仍持有其目录租约。 */
   assertOwnership?: (identity: RunIdentity) => void | Promise<void>;
+  /** Dynamic constraints, checked only immediately before an actual write/launch. */
+  assertSideEffectsCurrent?: (signal: AbortSignal) => void | Promise<void>;
   /** 在模型首次发起工具请求前实际提供给它的指令。 */
   initialInstructions?: ProjectInstructions;
   projectSkills?: readonly string[];
@@ -307,6 +309,7 @@ export class LocalToolPort implements ToolPort {
       check();
     }
     await this.files.verify(state.target); await this.options.assertOwnership?.(context.identity); check();
+    await this.options.assertSideEffectsCurrent?.(context.signal); check();
   }
   private async executeChangeSet(prepared: PreparedTool, context: ToolExecutionContext, approval?: ApprovalDecision): Promise<ToolResult> {
     const state = this.state(prepared, context);
@@ -356,9 +359,26 @@ export class LocalToolPort implements ToolPort {
     throwIfAborted(context.signal);
     state.executed = true;
     let result: ToolResult;
+    let preconditionPreventedEffect = false;
+    const beforeEffect = async () => {
+      try {
+        throwIfAborted(context.signal); this.state(prepared, context);
+        await this.options.assertOwnership?.(context.identity);
+        if (!this.options.assertSideEffectsCurrent) { throwIfAborted(context.signal); return; }
+        const targetPath = String(prepared.input[['run_command', 'start_command'].includes(prepared.call.name) ? 'cwd' : 'path']);
+        const kind = ['run_command', 'start_command'].includes(prepared.call.name) ? 'directory' : 'file';
+        if ((await this.instructions(targetPath, kind, context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed before the operation.');
+        await this.options.assertSideEffectsCurrent?.(context.signal);
+        await this.options.assertOwnership?.(context.identity);
+        throwIfAborted(context.signal); this.state(prepared, context);
+        const binding = { ...context.identity, toolCallId: prepared.call.id, inputDigest: prepared.inputDigest, policyRevision: context.policyRevision };
+        if (!approval || approval.decision !== 'approved' || !Number.isFinite(approval.expiresAt) || approval.expiresAt <= Date.now()
+          || canonical(asJson(approval.binding)) !== canonical(asJson(binding))) throw new Error('Approval changed before the operation.');
+      } catch (error) { preconditionPreventedEffect = true; throw error; }
+    };
     try {
       if (prepared.call.name === 'apply_patch' || prepared.call.name === 'edit_file') {
-        const effect = await this.files.applyPatch(state.patch!, context.signal);
+        const effect = await this.files.applyPatch(state.patch!, context.signal, beforeEffect);
         result = { status: 'completed', output: asJson(effect), effects: asJson(effect) };
       } else if (prepared.call.name === 'start_command') {
         if (!this.options.startCommand) throw new Error('Run-scoped commands are unavailable.');
@@ -375,17 +395,20 @@ export class LocalToolPort implements ToolPort {
           if ((await this.instructions(String(prepared.input.cwd), 'directory', context.signal)).digest !== state.instructions.digest) throw new Error('Project instructions changed before command launch.');
           await this.files.verify(state.target);
           await this.options.assertOwnership?.(context.identity);
+          await beforeEffect();
           throwIfAborted(context.signal); this.state(prepared, context); checkApproval();
         };
         result = await this.options.startCommand(structuredClone(prepared), context, { cwd: state.target.absolute, beforeStart });
       } else if (prepared.call.name === 'run_command') {
-        const command = await this.options.supervisor.run(this.options.ownerId, { executable: String(prepared.input.executable), argv: prepared.input.argv as string[], cwd: state.target.absolute, timeoutMs: prepared.input.timeoutMs as number | undefined, maxOutputBytes: Math.min((prepared.input.maxOutputBytes as number | undefined) ?? context.maxOutputBytes, Math.max(256, Math.floor(context.maxOutputBytes / 2))) }, context.signal, this.options.forbiddenValues);
-        result = { status: command.cleanup === 'cleanup_failed' ? 'unknown' : command.cancelled ? 'cancelled' : command.timedOut || command.exitCode !== 0 ? 'failed' : 'completed', output: asJson(command), truncated: command.truncated, effects: { exitCode: command.exitCode, cleanup: command.cleanup } };
+        await beforeEffect();
+        const command = await this.options.supervisor.run(this.options.ownerId, { executable: String(prepared.input.executable), argv: prepared.input.argv as string[], cwd: state.target.absolute, timeoutMs: prepared.input.timeoutMs as number | undefined, maxOutputBytes: Math.min((prepared.input.maxOutputBytes as number | undefined) ?? context.maxOutputBytes, Math.max(256, Math.floor(context.maxOutputBytes / 2))) }, context.signal, this.options.forbiddenValues,
+          this.options.assertSideEffectsCurrent ? beforeEffect : undefined);
+        result = { status: command.cleanup === 'cleanup_failed' ? 'unknown' : preconditionPreventedEffect ? 'not_executed' : command.cancelled ? 'cancelled' : command.timedOut || command.exitCode !== 0 ? 'failed' : 'completed', output: asJson(command), truncated: command.truncated, effects: { exitCode: command.exitCode, cleanup: command.cleanup } };
       } else {
         result = await this.readTool(prepared, state, context);
       }
     } catch (error) {
-      result = { status: prepared.definition.risk === 'read' ? (context.signal.aborted ? 'cancelled' : 'failed') : 'unknown', output: { error: error instanceof Error ? error.message.slice(0, 1024) : 'Tool execution failed.' } };
+      result = { status: preconditionPreventedEffect ? 'not_executed' : prepared.definition.risk === 'read' ? (context.signal.aborted ? 'cancelled' : 'failed') : 'unknown', output: { error: error instanceof Error ? error.message.slice(0, 1024) : 'Tool execution failed.' } };
     }
     if (size(result.output) > context.maxOutputBytes) result = { status: result.status, output: { error: 'Tool output exceeded the configured byte budget.', truncated: true }, truncated: true, ...(result.effects ? { effects: result.effects } : {}) };
     state.result = structuredClone(result);

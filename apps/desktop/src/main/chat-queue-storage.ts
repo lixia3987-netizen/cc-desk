@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { isNativeImageAttachments, type NativeImageAttachment } from '@cc-desk/contracts/chat';
+import { isNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import type { ChatQueueSnapshot } from '../shared/chat';
 
 const itemSchema = z.object({
@@ -11,6 +12,7 @@ const itemSchema = z.object({
   attachmentNames: z.array(z.string().max(1024)).max(8).optional(),
   nativeTaskId: z.string().uuid().optional(),
   nativeImageAttachments: z.custom<NativeImageAttachment[]>(isNativeImageAttachments).optional(),
+  nativeSkills: z.custom<NativeSkillSubmission>(isNativeSkillSubmission).optional(),
 }).refine(item => item.nativeImageAttachments === undefined || item.nativeImageAttachments.length === item.attachments.length);
 const schema = z.object({
   version: z.literal(1), items: z.array(itemSchema).max(100), paused: z.boolean(), error: z.string().max(8000).optional(),

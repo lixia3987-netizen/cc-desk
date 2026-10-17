@@ -15,6 +15,8 @@ export interface McpStdioClientOptions {
   environment?: Record<string, string>
   forbiddenValues?: readonly (string | undefined)[]
   timeoutMs?: number
+  /** Trusted startup approval check, run after process containment preparation. */
+  beforeLaunch?: () => void | Promise<void>
 }
 
 interface Operation { signal: AbortSignal; sentCall: boolean; bytes: number }
@@ -161,7 +163,7 @@ export class McpStdioClient {
       this.#starting = Promise.resolve().then(() => this.#options.supervisor.openStdio(this.#options.ownerId, {
         executable: this.#options.executable, argv: this.#options.argv, cwd: this.#options.cwd,
         environment: this.#options.environment, maxInputBytes: LIMIT.requestBytes + 1, onStdout: chunk => this.receive(chunk),
-      }, this.#lifetime.signal, this.#forbidden)).then(handle => {
+      }, this.#lifetime.signal, this.#forbidden, this.#options.beforeLaunch)).then(handle => {
         this.#handle = handle
         void handle.closed.then(result => {
           if (result.cleanup !== 'released') this.#cleanupFailure ??= this.cleanupError()
