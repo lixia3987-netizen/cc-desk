@@ -23,6 +23,8 @@ export interface SkillRegistryOptions {
   excludedRoots?: readonly string[];
   /** Host-only exception for the exact application-managed skill root. */
   managedRoot?: string;
+  /** Nonserialized, revocable host capability for this exact project root only. */
+  projectAccess?: { rootPath: string; excludedRoots: readonly string[]; assertCurrent(): void | Promise<void> };
 }
 export interface LoadedCatalogSkill { version: SkillVersionSnapshot; content: string; body: string }
 export type SkillResolution = { status: 'resolved'; descriptor: SkillDescriptor; candidates: SkillDescriptor[] }
@@ -59,6 +61,15 @@ function validateOptions(options: SkillRegistryOptions): SkillRegistryOptions {
   if (!safeId(options.projectId) || typeof options.projectRoot !== 'string' || !path.isAbsolute(options.projectRoot)) throw new Error('Skill registry requires a logical project ID and absolute project root.');
   if (!Array.isArray(options.sources) || options.sources.length > 64 || options.sources.filter(item => item?.enabled === true).length > MAX_SOURCES) throw new Error('Enable at most 16 skill sources (at most 64 registrations).');
   if (options.managedRoot !== undefined && (typeof options.managedRoot !== 'string' || !path.isAbsolute(options.managedRoot))) throw new Error('Managed skill root must be an absolute host path.');
+  let projectAccess: SkillRegistryOptions['projectAccess'];
+  if (options.projectAccess !== undefined) {
+    const capability = options.projectAccess;
+    const absoluteHostPath = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && path.isAbsolute(value);
+    if (!capability || !absoluteHostPath(capability.rootPath) || path.resolve(capability.rootPath) !== path.resolve(options.projectRoot)
+      || typeof capability.assertCurrent !== 'function' || !Array.isArray(capability.excludedRoots) || capability.excludedRoots.length > 64
+      || !capability.excludedRoots.every(absoluteHostPath)) throw new Error('Project skill access requires an exact absolute root, bounded exclusions and a host authorization callback.');
+    projectAccess = { rootPath: path.resolve(capability.rootPath), excludedRoots: [...capability.excludedRoots], assertCurrent: capability.assertCurrent };
+  }
   const ids = new Set<string>();
   const sources = options.sources.map(source => {
     if (!source || !safeId(source.id) || ids.has(source.id) || !['project', 'user'].includes(source.scope) || !kinds.has(source.kind)
@@ -89,7 +100,7 @@ function validateOptions(options: SkillRegistryOptions): SkillRegistryOptions {
     if (source.kind === 'project-explicit' && explicitPaths === undefined) throw new Error('Explicit skill sources require explicit paths.');
     return { ...source, rootPath, ...(explicitPaths === undefined ? {} : { explicitPaths }) };
   });
-  return { ...options, sources, excludedRoots: options.excludedRoots ? [...options.excludedRoots] : undefined };
+  return { ...options, sources, excludedRoots: options.excludedRoots ? [...options.excludedRoots] : undefined, projectAccess };
 }
 function statIdentity(stat: BigIntStats, file: boolean): string[] {
   return (file ? [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeNs, stat.ctimeNs] : [stat.dev, stat.ino, stat.mode]).map(value => value.toString());
@@ -104,6 +115,7 @@ interface SourceAccess {
   files: ProjectFiles;
   prefix: string;
   verifyRoot(): Promise<void>;
+  assertCurrent?(): void | Promise<void>;
 }
 interface CacheEntry { fingerprint: string; metadata: SkillMetadataResult; metadataHash: string; bytes: number; cacheBytes: number }
 interface Candidate { source: SkillRegistrySource; access: SourceAccess; relative: string }
@@ -116,15 +128,18 @@ export class SkillRegistry {
   constructor(options: SkillRegistryOptions) { this.options = validateOptions(options); }
 
   /** Trusted-host-only root rebinding; logical source identities and user capabilities stay fixed. */
-  rebindProject(projectRoot: string, excludedRoots: readonly string[] = this.options.excludedRoots ?? []): SkillRegistry {
-    return new SkillRegistry({ ...this.options, projectRoot, excludedRoots: [...excludedRoots],
+  rebindProject(projectRoot: string, excludedRoots?: readonly string[]): SkillRegistry {
+    return new SkillRegistry({ ...this.options, projectRoot, excludedRoots: [...(excludedRoots ?? this.options.excludedRoots ?? [])],
+      projectAccess: excludedRoots === undefined && path.resolve(projectRoot) === path.resolve(this.options.projectRoot) ? this.options.projectAccess : undefined,
       sources: this.options.sources.map(source => ({ ...source,
         ...(source.explicitPaths === undefined ? {} : { explicitPaths: [...source.explicitPaths] }) })) });
   }
 
   private async sourceAccess(source: SkillRegistrySource, signal?: AbortSignal): Promise<SourceAccess> {
     throwIfAborted(signal);
-    let excludedRoots = this.options.excludedRoots;
+    const projectAccess = source.scope === 'project' ? this.options.projectAccess : undefined;
+    if (projectAccess) { await projectAccess.assertCurrent(); throwIfAborted(signal); }
+    let excludedRoots = projectAccess?.excludedRoots ?? this.options.excludedRoots;
     let managedCanonical: string | undefined;
     if (source.scope === 'user' && source.kind === 'managed' && this.options.managedRoot !== undefined && path.resolve(this.options.managedRoot) === source.rootPath) {
       const ancestors = this.options.excludedRoots?.filter(excluded => isWithin(path.resolve(excluded), source.rootPath)) ?? [];
@@ -152,13 +167,15 @@ export class SkillRegistry {
     const authorized = await files.snapshot(prefix, 'directory');
     const verifyRoot = async () => {
       throwIfAborted(signal);
+      if (projectAccess) { await projectAccess.assertCurrent(); throwIfAborted(signal); }
       if ((managedCanonical !== undefined && canonical !== managedCanonical) || await fs.realpath(requestedRoot) !== canonical
         || !sameObject(registered, await fs.lstat(requestedRoot, { bigint: true }))) throw changed();
       await files.verify(authorized);
+      if (projectAccess) await projectAccess.assertCurrent();
       throwIfAborted(signal);
     };
     await verifyRoot();
-    return { files, prefix, verifyRoot };
+    return { files, prefix, verifyRoot, ...(projectAccess ? { assertCurrent: () => projectAccess.assertCurrent() } : {}) };
   }
   private actualPath(access: SourceAccess, relative: string): string { return access.prefix === '.' ? relative : `${access.prefix}/${relative}`; }
   private fingerprint(source: SkillRegistrySource, snapshot: PathSnapshot): string {
@@ -200,6 +217,7 @@ export class SkillRegistry {
       this.cache.delete(id);
       this.cache.set(id, cached);
     }
+    if (access.assertCurrent) await access.assertCurrent();
     throwIfAborted(signal);
     return { ...structuredClone(cached.metadata), skillId: id, sourceId: source.id, scope: source.scope, relativePath: relative,
       sourceRevision: source.revision, sourceFingerprint: fingerprint, metadataHash: cached.metadataHash, bytes: cached.bytes };
@@ -264,6 +282,8 @@ export class SkillRegistry {
     }
     const active = new Set(entries.map(item => item.skillId));
     for (const [key, cached] of this.cache) if (!active.has(key)) { this.cacheBytes -= cached.cacheBytes; this.cache.delete(key); }
+    if (this.options.projectAccess && entries.some(item => item.scope === 'project')) await this.options.projectAccess.assertCurrent();
+    throwIfAborted(signal);
     const shape = { schemaVersion: 1 as const, entries, issues, truncated };
     return { ...shape, revision: contentHash(JSON.stringify(shape)) };
   }
@@ -289,6 +309,7 @@ export class SkillRegistry {
       if (contentHash(JSON.stringify(metadata)) !== expected.metadataHash) throw changed();
       if (metadata.format === 'invalid') throw new Error('Skill metadata is invalid. Repair the guide and refresh before loading.');
       const body = extractSkillBody(read.content);
+      if (access.assertCurrent) await access.assertCurrent();
       throwIfAborted(signal);
       return { content: read.content, body, version: { skillId: expected.skillId, sourceRevision: source.revision, sourceFingerprint: expected.sourceFingerprint,
         fullFileHash: read.hash, bodyHash: contentHash(body), bytes: read.bytes, format: metadata.format } };
