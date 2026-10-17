@@ -9,6 +9,8 @@ const DIRECTORY = process.platform === 'win32' ? 0 : constants.O_DIRECTORY;
 export interface FileIdentity { path: string; stat: BigIntStats }
 export interface PathSnapshot { relative: string; absolute: string; kind: 'file' | 'directory'; identities: FileIdentity[] }
 export interface TextFile { path: string; content: string; hash: string; bytes: number; mode: number; snapshot: PathSnapshot }
+/** A metadata prefix is never a complete content version. */
+export interface TextFilePrefix { path: string; content: string; prefixHash: string; bytes: number; truncated: boolean; snapshot: PathSnapshot }
 export interface PatchInput { path: string; content: string; expectedHash: string | null }
 export interface EditInput { path: string; oldText: string; newText: string; expectedHash: string }
 export interface PreparedPatch { input: PatchInput; parent: PathSnapshot; previous?: TextFile }
@@ -140,6 +142,37 @@ export class ProjectFiles {
       try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer); } catch { throw new Error('Only valid UTF-8 text files are supported.'); }
       throwIfAborted(signal);
       return { path: snapshot.relative, content, hash: contentHash(buffer), bytes: buffer.length, mode: Number(before.mode & 0o777n), snapshot };
+    } finally { await Promise.all(handles.map(item => item.close())); }
+  }
+  async readPrefix(relative: string, maximumBytes: number, signal?: AbortSignal): Promise<TextFilePrefix> {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > this.maxFileBytes) throw new Error('Invalid prefix byte limit.');
+    throwIfAborted(signal);
+    const snapshot = await this.snapshot(relative);
+    const { handle, handles } = await this.openSnapshot(snapshot);
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (before.size > BigInt(this.maxFileBytes)) throw new Error(`File exceeds the ${this.maxFileBytes} byte limit.`);
+      const size = Math.min(Number(before.size), maximumBytes);
+      const buffer = Buffer.alloc(size);
+      let offset = 0;
+      while (offset < size) {
+        throwIfAborted(signal);
+        const { bytesRead } = await handle.read(buffer, offset, size - offset, offset);
+        if (!bytesRead) throw changed();
+        offset += bytesRead;
+      }
+      if (!sameVersion(before, await handle.stat({ bigint: true }))) throw changed();
+      await this.verifyHandle(handle, snapshot);
+      await this.verify(snapshot, true);
+      if (buffer.includes(0)) throw new Error('Binary files are not supported.');
+      const truncated = before.size > BigInt(size);
+      let content: string;
+      // A byte-boundary may split the final UTF-8 character. Do not decode a partial character
+      // or treat the prefix digest as the full file's hash; full activation reads it again.
+      try { content = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(buffer, { stream: truncated }); }
+      catch { throw new Error('Only valid UTF-8 text files are supported.'); }
+      throwIfAborted(signal);
+      return { path: snapshot.relative, content, prefixHash: contentHash(buffer), bytes: size, truncated, snapshot };
     } finally { await Promise.all(handles.map(item => item.close())); }
   }
   async entries(relative: string, limit: number, signal?: AbortSignal): Promise<{ names: string[]; truncated: boolean }> {

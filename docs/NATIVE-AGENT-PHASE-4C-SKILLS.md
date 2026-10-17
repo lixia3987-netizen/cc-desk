@@ -1,6 +1,6 @@
 # 阶段四 P4c 首批：项目 Skills 显式选择
 
-2026-10-17：完整能力补齐的目标设计、分阶段任务及验收条件见 [Native Skills 开发计划](NATIVE-AGENT-SKILLS-PLAN.md)。该计划尚未实施，下文仍作为已交付的显式项目 Skills 行为及首批验证档案。
+2026-10-17：完整能力补齐见 [开发计划](NATIVE-AGENT-SKILLS-PLAN.md)与 [实施记录](NATIVE-AGENT-SKILLS-IMPLEMENTATION.md)。M1 基础已实现，新调用链路仍关闭；下文保留显式项目 Skills 行为及首批验证档案。
 
 后续扩展已提供额外项目相对 `目录/SKILL.md` 的显式预览和选择，以及指定目录的双项目指令检查。默认发现仍限下文两个目录；运行规则和字节预算不变。当前交付状态见[剩余清单](NATIVE-AGENT-COMPLETION.md)。以下保留首批实现记录。
 

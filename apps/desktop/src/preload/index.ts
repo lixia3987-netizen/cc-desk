@@ -22,6 +22,11 @@ const api: DesktopAPI = {
     setCredential: input => ipcRenderer.invoke('native:mcp-connections-credential', input),
   },
   nativeSkills: {
+    settings: () => ipcRenderer.invoke('native:skills-settings'),
+    saveSettings: input => ipcRenderer.invoke('native:skills-settings-save', input),
+    catalog: input => ipcRenderer.invoke('native:skills-catalog', input),
+    inspectCatalog: input => ipcRenderer.invoke('native:skills-catalog-inspect', input),
+    previewMigration: input => ipcRenderer.invoke('native:skills-migration-preview', input),
     list: input => ipcRenderer.invoke('native:skills-list', input),
     inspect: input => ipcRenderer.invoke('native:skills-inspect', input),
     inspectInstructions: input => ipcRenderer.invoke('native:instructions-inspect', input),
