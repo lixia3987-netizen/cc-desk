@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { captureNativeDiagnostics, closeNativeApp as cleanupApp } from './helpers/native-app-cleanup';
+import { attachNativeQueueTiming, nativeQueueDiagnosticSources, withNativeQueueDiagnostics } from './helpers/native-queue-diagnostics';
 import type { NativeConnectionView } from '../src/shared/native-connections';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 // @ts-expect-error 与 agent-node 测试共享同一个可执行 JS HTTP 测试装置。
@@ -420,29 +421,41 @@ test('native interruption cancels a live HTTP model request and releases its rea
 
 test('native queue executes two accepted messages in order with distinct durable submission identities', async () => {
   const f = await workspace(), firstResponse = gate();
+  const clockStarted = performance.now(), postObservedElapsedMs: number[] = [];
+  const timing: Record<string, number | readonly number[] | undefined> = { postObservedElapsedMs };
   const fixture: Fixture = await startResponsesFixture({ handler: async ({ index }: { index: number }) => {
+    postObservedElapsedMs[index] = performance.now() - clockStarted;
     if (index === 0) await firstResponse.promise;
     return { output: [assistantMessage(`queue_${index}`, `真实 native 队列完成 ${index + 1}`)] };
   } });
   const app = await f.launch();
   try {
     const page = await readyWindow(app), configured = await connection(page, fixture.baseURL), session = await nativeSession(page, f.projectId, configured.id);
+    const diagnostics = nativeQueueDiagnosticSources({ app, page, dataDirectory: f.data, sessionId: session.id, fixture });
+    const waitForRequest = (expected: 1 | 2) => withNativeQueueDiagnostics(
+      async () => {
+        timing[`request${expected}WaitStartedElapsedMs`] = performance.now() - clockStarted;
+        try { await expect.poll(() => fixture.requests.length, { timeout: 5000 }).toBe(expected); }
+        finally { timing[`request${expected}WaitSettledElapsedMs`] = performance.now() - clockStarted; }
+      },
+      { phase: expected === 1 ? 'first-request' : 'second-request', conversationId: session.execution.conversationId!, sources: diagnostics,
+        timing, attach: (name, options) => test.info().attach(name, options) });
+    timing.firstSubmitStartedElapsedMs = performance.now() - clockStarted;
     const first = await page.evaluate(id => window.desktop.submitChat(id, '第一个顺序消息', [], 'native-queue-client-one'), session.id);
-    await expect.poll(() => fixture.requests.length).toBe(1);
+    timing.firstSubmitAcceptedElapsedMs = performance.now() - clockStarted;
+    await waitForRequest(1);
+    timing.secondSubmitStartedElapsedMs = performance.now() - clockStarted;
     const second = await page.evaluate(id => window.desktop.submitChat(id, '第二个顺序消息', [], 'native-queue-client-two'), session.id);
+    timing.secondSubmitAcceptedElapsedMs = performance.now() - clockStarted;
     expect(first.messageId).not.toBe(second.messageId);
     const retried = await page.evaluate(id => window.desktop.submitChat(id, '第二个顺序消息', [], 'native-queue-client-two'), session.id);
     expect(retried.messageId).toBe(second.messageId);
     expect(fixture.requests).toHaveLength(1);
     expect(await page.evaluate(async id => (await window.desktop.chatSnapshot(id)).queue?.items.filter(item => item.status === 'queued').map(item => item.text), session.id)).toEqual(['第二个顺序消息']);
     firstResponse.release();
-    try { await expect.poll(() => fixture.requests.length).toBe(2); }
-    catch (error) {
-      const saved = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id).catch(problem => ({ error: String(problem) }));
-      const diagnostic = JSON.stringify({ snapshot: saved, fixtureErrors: fixture.errors.map(String), requests: fixture.requests }, null, 2).replaceAll(sentinel, '[redacted]');
-      await test.info().attach('native-queue-next-request-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
-      throw error;
-    }
+    timing.firstResponseReleasedElapsedMs = performance.now() - clockStarted;
+    await waitForRequest(2);
+    await attachNativeQueueTiming((name, options) => test.info().attach(name, options), timing);
     await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).queue?.items ?? [], session.id)).toEqual([]);
     await expect(page.locator('.chat-message.assistant').last()).toContainText('队列完成 2');
     const firstUsers = (fixture.requests[0].input as Array<{ role?: string; content?: unknown }>).filter(item => item.role === 'user');
