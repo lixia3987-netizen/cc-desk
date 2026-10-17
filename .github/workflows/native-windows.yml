@@ -203,7 +203,8 @@ jobs:
           npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
           exit $LASTEXITCODE
       - name: 验证全部桌面单元测试与真实 PTY 运行时
-        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' && steps.immediate_feedback.outcome != 'failure' && steps.session_loading.outcome != 'failure' && steps.native_e2e.outcome != 'failure' }}
+        if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
+        # GUI 失败仍运行独立的单元与 PTY 检查，保留同一候选的完整证据。
         working-directory: apps/desktop
         timeout-minutes: 30
         run: |
