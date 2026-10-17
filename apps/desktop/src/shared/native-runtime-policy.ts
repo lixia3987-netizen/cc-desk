@@ -11,7 +11,7 @@ export const nativeRuntimePolicyKeys = [
 /** 仅解析支持的策略字段，旧版与未知配置保持原样。 */
 export function resolveNativeRuntimeConfig(config: EngineConfig, defaults?: EngineConfig): EngineConfig {
   const resolved = structuredClone(config);
-  if (config.schemaVersion !== 1 || config.options.runtimePolicy !== 'defaults' || defaults?.schemaVersion !== config.schemaVersion) return resolved;
+  if (![1, 2].includes(config.schemaVersion) || config.options.runtimePolicy !== 'defaults' || !defaults || ![1, 2].includes(defaults.schemaVersion)) return resolved;
   for (const key of nativeRuntimePolicyKeys) {
     if (Object.hasOwn(defaults.options, key)) resolved.options[key] = structuredClone(defaults.options[key]);
   }

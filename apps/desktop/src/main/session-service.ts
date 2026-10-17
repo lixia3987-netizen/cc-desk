@@ -10,6 +10,7 @@ import { exportSession } from './execution/export-session';
 import { Attachments } from './attachments';
 import { NativeImagePreviewHost } from './native-image-preview';
 import { registerNativeImageHandlers } from './ipc/native-image-handlers';
+import { registerNativeSessionSkillHandlers } from './ipc/native-session-skill-handlers';
 import { readNativeImageAttachments } from './native-image-attachments';
 import { WorkflowEngine } from './workflows';
 import { ChatQueue } from './chat-queue';
@@ -571,6 +572,12 @@ export class SessionService {
   select(id: string) { if(id) this.session(id); this.store.change(s => {s.selectedSessionId=id;}); this.onState(); }
   register(handle: Register) {
     registerNativeImageHandlers(handle, this.imagePreviews);
+    registerNativeSessionSkillHandlers(handle, {
+      store: this.store, manage: (id, action) => this.manage(id, action),
+      assertUnlocked: session => this.assertUnlocked(session), taskOccupied: id => this.taskOccupied(id),
+      hasPending: id => this.queue.hasPending(id), captureAdmission: id => this.captureEngineAdmission(this.session(id).execution.providerId),
+      onState: this.onState,
+    });
     registerSessionHandlers(handle, {
       store: this.store, chat: this.chat, runtime: this.runtime, workflows: this.workflows, attachments: this.attachments,
       session: id => this.session(id), taskOccupied: id => this.taskOccupied(id), admissionPending: id => this.admissions.has(id),

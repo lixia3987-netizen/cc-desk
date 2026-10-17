@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { changeNativePermissionForNextTurn } from '../src/main/native-session-permission';
 import type { Session } from '../src/shared/types';
 import type { EngineConfig } from '../src/shared/execution';
+import { createNativeConfig, normalizeNativeLegacySkillPolicy } from '../src/main/engines/native/config';
 
 function fixture() {
   const session: Session = { id: 'session', projectId: 'project', title: 'task', cwd: '/fixture', kind: 'agent',
@@ -69,4 +70,21 @@ test('schema validation and persistence failures cannot publish success notifica
   const g = fixture();
   assert.throws(() => changeNativePermissionForNextTurn(g.session.id, 'acceptEdits', { ...g.ports, commit: () => { throw new Error('disk failure'); } }), /disk/);
   assert.equal(g.session.engineConfig.options.permissionMode, 'default'); assert.equal(g.changes, 0);
+});
+
+test('next-turn permission edits preserve upgraded Skills and cannot bypass their dedicated save', () => {
+  const f = fixture(), paths = ['.agents/skills/review/SKILL.md'];
+  f.session.engineConfig = createNativeConfig({ schemaVersion: 2, options: {
+    projectSkills: paths, skills: normalizeNativeLegacySkillPolicy(paths), permissionMode: 'default',
+  } });
+  const ports = { ...f.ports, validateConfig: (_id: string, config: EngineConfig) => createNativeConfig(config) };
+  assert.equal(changeNativePermissionForNextTurn(f.session.id, 'acceptEdits', ports), 'acceptEdits');
+  assert.equal(f.session.engineConfig.schemaVersion, 2);
+  assert.deepEqual(f.session.engineConfig.options.skills, normalizeNativeLegacySkillPolicy(paths));
+  const before = structuredClone(f.session.engineConfig), committed = f.commits;
+  assert.throws(() => changeNativePermissionForNextTurn(f.session.id, 'bypassPermissions', {
+    ...ports, validateConfig: (_id, config) => createNativeConfig({ ...config,
+      options: { ...config.options, projectSkills: [], skills: normalizeNativeLegacySkillPolicy([]) } }),
+  }), /技能选择/);
+  assert.deepEqual(f.session.engineConfig, before); assert.equal(f.commits, committed);
 });

@@ -1,5 +1,6 @@
 import type { EngineConfig, Session } from '../shared/types';
 import { NATIVE_PERMISSION_MODES, type NativePermissionMode } from '../shared/native-permissions';
+import { assertNativeSkillConfigChangeAllowed } from './engines/native/skill-config-guard';
 
 interface Ports {
   session(id: string): Session;
@@ -22,6 +23,7 @@ export function changeNativePermissionForNextTurn(id: string, mode: NativePermis
     ...session.engineConfig, options: { ...session.engineConfig.options, permissionMode: mode },
   });
   if (config.options.permissionMode !== mode) throw new Error('权限模式校验失败。');
+  assertNativeSkillConfigChangeAllowed(session.engineConfig, config);
   ports.commit(id, config);
   ports.changed();
   return mode;

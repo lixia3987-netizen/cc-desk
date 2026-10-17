@@ -38,7 +38,7 @@ export class ExecutionRegistry {
   private normalizeConfig(registration: ExecutionRegistration, input: EngineConfig): EngineConfig {
     const config = engineConfigSchema.parse(input);
     const declared = registration.configuration?.();
-    if (config.schemaVersion === 0 || (declared && declared.schemaVersion !== config.schemaVersion)) throw new Error('此引擎配置版本不受支持，原配置已保留。');
+    if (config.schemaVersion === 0 || (declared && !(declared.supportedSchemaVersions ?? [declared.schemaVersion]).includes(config.schemaVersion))) throw new Error('此引擎配置版本不受支持，原配置已保留。');
     return structuredClone(registration.validateConfig ? registration.validateConfig(config) : config);
   }
   validateConfig(id: string, config: EngineConfig) {

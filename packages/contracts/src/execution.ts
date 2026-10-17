@@ -18,6 +18,8 @@ export interface EngineConfigField {
 }
 export interface EngineConfiguration {
   schemaVersion: number;
+  /** 可读取的会话版本；缺省时仅支持 schemaVersion。默认新建版本仍由 defaults 声明。 */
+  supportedSchemaVersions?: number[];
   defaults: EngineConfig;
   fields: EngineConfigField[];
 }

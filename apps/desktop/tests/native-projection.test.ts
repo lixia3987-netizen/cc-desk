@@ -378,6 +378,21 @@ test('an empty native conversation without display evidence remains a valid new 
   } finally { await f.dispose(); }
 });
 
+test('unknown saved configuration versions preserve readable history without inventing a context budget', async () => {
+  const f = await fixture();
+  try {
+    f.req.configuration = { model: 'fixture-model', sessionOptionsSchemaVersion: 3, sessionOptions: { maxInputTokens: 2048 } };
+    await f.store.beginRun(f.req); await f.finish();
+    await f.projection.hydrate(f.id, f.store);
+    const snapshot = f.projection.snapshot(f.id);
+    assert.equal(snapshot.messages.find(message => message.role === 'user')?.text, f.req.input);
+    assert.equal(snapshot.taskState, 'completed');
+    assert.equal(snapshot.context?.model, 'fixture-model');
+    assert.equal(snapshot.context?.budget, undefined);
+    assert.deepEqual(f.errors, []);
+  } finally { await f.dispose(); }
+});
+
 test('native context projection uses durable history, latest reported input, and per-run budget across restart', async () => {
   const f = await fixture();
   try {
