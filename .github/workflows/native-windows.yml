@@ -228,7 +228,7 @@ jobs:
         timeout-minutes: 10
         # 使用本地 HTTP 测试服务和临时凭据，覆盖物理进程链路；不冒充真实模型回归。
         run: |
-          npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts tests/native-session-skills.spec.ts tests/native-workflow-quality.spec.ts tests/native-agent-task-pool.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
+          npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts tests/native-session-skills.spec.ts tests/native-workflow-quality.spec.ts tests/native-agent-task-pool.spec.ts tests/native-chat-paging.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
           exit $LASTEXITCODE
       - name: 及时保留 Electron 失败轨迹
         uses: actions/upload-artifact@v4

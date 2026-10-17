@@ -21,6 +21,16 @@ interface PagingFixture {
 }
 type FixtureGlobal = typeof globalThis & { nativePagingFixture: PagingFixture };
 
+async function windowGeometry(app: ElectronApplication, page: Page) {
+  const native = await app.evaluate(({ BrowserWindow, screen }) => {
+    const window = BrowserWindow.getAllWindows()[0], display = screen.getDisplayMatching(window.getBounds());
+    return { bounds: window.getBounds(), contentBounds: window.getContentBounds(), maximized: window.isMaximized(),
+      display: { bounds: display.bounds, workArea: display.workArea, scaleFactor: display.scaleFactor } };
+  });
+  const renderer = await page.evaluate(() => ({ width: innerWidth, height: innerHeight, devicePixelRatio }));
+  return { native, renderer };
+}
+
 async function workspace(long = false) {
   const prepared = await prepareNativePagingWorkspace(long);
   let app: ElectronApplication | undefined;
@@ -29,7 +39,21 @@ async function workspace(long = false) {
       env: { ...process.env, WORKBENCH_TEST_MODE: '1', WORKBENCH_DATA_DIR: prepared.data } });
     const page = await app.firstWindow();
     await expect(page.locator('main.workspace')).toBeVisible();
-    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].maximize());
+    // Host work areas vary. Establish the real viewport required by the
+    // byte-clipped eight-row underfill fixture before selecting any session.
+    await app.evaluate(async ({ BrowserWindow }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      if (window.isMaximized()) await new Promise<void>(resolve => {
+        window.once('unmaximize', () => resolve()); window.unmaximize();
+      });
+      window.setContentSize(1460, 1200);
+    });
+    await frames(page);
+    const geometry = await windowGeometry(app, page);
+    await test.info().attach('native-paging-window.json', { body: JSON.stringify(geometry), contentType: 'application/json' });
+    expect(geometry.native.maximized).toBe(false);
+    expect(geometry.native.contentBounds).toMatchObject({ width: 1460, height: 1200 });
+    expect(geometry.renderer).toMatchObject({ width: 1460, height: 1200 });
     await app.evaluate(({ ipcMain }) => {
       type Handler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown;
       const handlers = (ipcMain as unknown as { _invokeHandlers?: Map<string, Handler> })._invokeHandlers;
@@ -111,7 +135,8 @@ async function attachEvidence(app: ElectronApplication, page: Page, name: string
     mounted: Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).map(row => row.dataset.messageId),
     error: element.querySelector('.chat-error')?.textContent }));
   const metrics = test.info().outputPath(name + '.json');
-  await fs.writeFile(metrics, JSON.stringify({ ipc, ui, viewportRows: actualViewportRows, scroll, offlineLedger: true, externalModelCalls: 0 }, null, 2));
+  const window = await windowGeometry(app, page);
+  await fs.writeFile(metrics, JSON.stringify({ ipc, ui, viewportRows: actualViewportRows, scroll, window, offlineLedger: true, externalModelCalls: 0 }, null, 2));
   await test.info().attach(name + '.json', { path: metrics, contentType: 'application/json' });
   const screenshot = test.info().outputPath(name + '.png');
   await page.screenshot({ path: screenshot });
@@ -147,6 +172,9 @@ test('native paging: an underfilled saved page loads older records automatically
     await expect.poll(async () => (await viewportRows(f.page))[0]).toMatch(new RegExp('^' + a.runId + ':tool:fixture-tool-\\d+$'));
     expect(await f.page.locator('.chat-pane [data-message-id]').count()).toBeLessThanOrEqual(60);
     await attachEvidence(f.app, f.page, 'native-underfilled-autopaging');
+  } catch (error) {
+    await attachEvidence(f.app, f.page, 'native-underfilled-failure').catch(() => {});
+    throw error;
   } finally { await f.close(); }
 });
 

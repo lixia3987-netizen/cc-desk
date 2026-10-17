@@ -17,6 +17,8 @@ import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
 import { NativeSkillRuntime } from '../src/main/engines/native/skill-runtime';
+import { NativeSkillCatalogHost } from '../src/main/engines/native/skill-catalog-host';
+import { createNativeSkillHostRuntime } from '../src/main/engines/native/skill-host-runtime';
 import { createNativeConfig } from '../src/main/engines/native/config';
 
 const exec = promisify(execFile);
@@ -28,7 +30,9 @@ const callResponse = (name: string, input: unknown, id: string = randomUUID()): 
   return { outputItems: [{ type: 'function_call', call_id: call.id, name, arguments: call.arguments }], toolCalls: [call], finishReason: 'tool_calls', usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 } };
 };
 
-test('one parent workflow quality round freezes Skills once while all three independent children concurrently pass strict inheritance preflight', { timeout: 30000 }, async t => {
+for (const assembly of ['plain', 'host'] as const) {
+test(assembly === 'plain' ? 'one parent workflow quality round freezes Skills once while all three independent children concurrently pass strict inheritance preflight' :
+  'host-assembled Skills survive real internal quality worktrees with one frozen parent manifest and three confirmed child reports', { timeout: 30000 }, async t => {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-workflow-skill-quality-')));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data');
   const skillPath = path.join(project, '.agents', 'skills', 'engineering', 'SKILL.md');
@@ -38,14 +42,24 @@ test('one parent workflow quality round freezes Skills once while all three inde
   await fs.writeFile(path.join(project, '.gitattributes'), '/.agents/skills/engineering/SKILL.md -text\n/fixture.txt -text\n');
   await fs.writeFile(skillPath, '---\nname: engineering\ndescription: Exact independent quality engineering guide.\n---\nINHERITED_QUALITY_GUIDE Preserve unrelated files and cite actual material evidence.\n');
   await fs.writeFile(path.join(project, 'fixture.txt'), 'actual quality material\n');
-  // Strict Skill inheritance compares exact source bytes; system autocrlf must
-  // not rewrite this fixture's LF files when the child worktrees are checked out.
-  for (const args of [['init'], ['config', 'core.autocrlf', 'false'], ['config', 'user.name', 'Local workflow fixture'], ['config', 'user.email', 'fixture@example.invalid'], ['add', '.'], ['commit', '-m', 'fixture baseline']]) await exec('git', args, { cwd: project });
+  for (const args of [['init'], ['config', 'user.name', 'Local workflow fixture'], ['config', 'user.email', 'fixture@example.invalid'], ['add', '.'], ['commit', '-m', 'fixture baseline']]) await exec('git', args, { cwd: project });
   const id = randomUUID(), projectId = randomUUID(), conversationId = randomUUID();
   const registry = () => new SkillRegistry({ projectId, projectRoot: project, excludedRoots: [data], sources: [
     { id: 'project-agents', scope: 'project', kind: 'project-agents', rootPath: '.agents/skills', enabled: true, revision: 1 },
   ] });
-  const runtime = new NativeSkillRuntime({ registry, forbiddenValues: () => ['sk-quality-inheritance-local-fixture'], snapshots: new SkillSnapshotStore({ directory: path.join(data, 'native', 'skill-snapshots') }) });
+  const store = new StateStore(data), connections = new ConnectionStore(data), events = new ExecutionEvents();
+  const connection = connections.upsert({ name: 'local deterministic quality model', protocol: 'responses', baseURL: 'https://example.invalid/v1', model: 'fixture', enabled: true, allowLoopbackHttp: false, auth: { mode: 'memory' } });
+  connections.setCredential({ id: connection.id, revision: connection.revision, mode: 'memory', secret: 'sk-quality-inheritance-local-fixture' });
+  const timestamp = new Date().toISOString();
+  store.change(state => {
+    state.projects.push({ id: projectId, path: project, name: 'quality project', createdAt: timestamp });
+    state.sessions.push({ id, projectId, title: 'quality inheritance', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId },
+      engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: 'off', maxInputTokens: 240000, maxSubagents: 3 } }),
+      started: false, archived: false, status: 'idle', createdAt: timestamp, updatedAt: timestamp });
+  });
+  const catalogHost = assembly === 'host' ? new NativeSkillCatalogHost(store) : undefined;
+  const assembled = catalogHost ? createNativeSkillHostRuntime(store, { catalog: catalogHost, connections }) : undefined;
+  const runtime = assembled?.runtime ?? new NativeSkillRuntime({ registry, forbiddenValues: () => ['sk-quality-inheritance-local-fixture'], snapshots: new SkillSnapshotStore({ directory: path.join(data, 'native', 'skill-snapshots') }) });
   let freezes = 0;
   const createRun = runtime.createRun.bind(runtime);
   t.mock.method(runtime, 'createRun', async (...args: Parameters<typeof createRun>) => {
@@ -63,16 +77,6 @@ test('one parent workflow quality round freezes Skills once while all three inde
     await concurrent;
     // Run the actual private-capture identity fence after all roles arrive.
     return preflight(...args);
-  });
-  const store = new StateStore(data), connections = new ConnectionStore(data), events = new ExecutionEvents();
-  const connection = connections.upsert({ name: 'local deterministic quality model', protocol: 'responses', baseURL: 'https://example.invalid/v1', model: 'fixture', enabled: true, allowLoopbackHttp: false, auth: { mode: 'memory' } });
-  connections.setCredential({ id: connection.id, revision: connection.revision, mode: 'memory', secret: 'sk-quality-inheritance-local-fixture' });
-  const timestamp = new Date().toISOString();
-  store.change(state => {
-    state.projects.push({ id: projectId, path: project, name: 'quality project', createdAt: timestamp });
-    state.sessions.push({ id, projectId, title: 'quality inheritance', kind: 'agent', cwd: project, execution: { providerId: 'native', mode: 'structured', conversationId },
-      engineConfig: createNativeConfig({ schemaVersion: 1, options: { connectionId: connection.id, autoCompact: 'off', maxInputTokens: 240000, maxSubagents: 3 } }),
-      started: false, archived: false, status: 'idle', createdAt: timestamp, updatedAt: timestamp });
   });
   const worker: NonNullable<NativeExecutorOptions['worker']> = async options => {
     const transport = createNativeModel(options.model), quality = options.request.configuration.workflowQuality as { role: string } | undefined;
@@ -104,9 +108,10 @@ test('one parent workflow quality round freezes Skills once while all three inde
   const executor = new NativeStructuredExecutor(store, connections, events, { worker, skills: runtime });
   t.after(async () => { release(); await executor.shutdown().catch(() => {}); store.flush(); await fs.rm(directory, { recursive: true, force: true }); });
   await executor.initialize();
-  const source = registry(), catalog = await source.discover(), loaded = await source.loadCatalogSkill(catalog.entries[0]);
+  const source = catalogHost ? catalogHost.registry(id) : registry(), catalog = await source.discover(), loaded = await source.loadCatalogSkill(catalog.entries[0]);
   const submission: NativeSkillSubmission = { schemaVersion: 1, explicitSkillRefs: [{ skillId: loaded.version.skillId, version: loaded.version, catalogRevision: catalog.revision }], excludedSkillIds: [] };
-  await runtime.prepareSubmission(id, submission);
+  if (assembled) await assembled.prepareNativeSkills(id, submission);
+  else await runtime.prepareSubmission(id, submission);
   const result = await executor.send(id, '使用 workflow，独立分析 `fixture.txt` 并核对交付结论。', [], undefined, { requestId: randomUUID(), nativeSkills: submission,
     nativeExecutionPolicy: { toolPolicy: 'read_only', collaboration: 'adversarial', qualityValidation: 'static' } });
   assert.equal(result.success, true, JSON.stringify(result));
@@ -117,6 +122,7 @@ test('one parent workflow quality round freezes Skills once while all three inde
   assert.deepEqual(quality?.rounds[0].roles.map(role => role.role).sort(), ['challenger', 'reviewer', 'verifier']);
   for (const role of quality!.rounds[0].roles) {
     assert.equal(role.status, 'completed'); assert.equal(role.report?.declaration.verdict, 'passed');
+    assert.equal(path.dirname(role.cwd), path.join(data, 'native', 'agent-worktrees'));
     const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId: role.identity.conversationId });
     try { const run = ledger.getRun(role.identity.runId)!;
       assert.equal(run.result?.committed, true); assert.equal(run.result?.status, 'completed');
@@ -125,3 +131,4 @@ test('one parent workflow quality round freezes Skills once while all three inde
   }
   assert.equal(await fs.readFile(path.join(project, 'fixture.txt'), 'utf8'), 'actual quality material\n');
 });
+}

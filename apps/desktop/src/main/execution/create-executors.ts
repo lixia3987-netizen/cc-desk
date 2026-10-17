@@ -29,7 +29,7 @@ const shellCapabilities: ExecutionCapabilities = {
 };
 
 /** 唯一选择并组装具体执行提供方的位置。 */
-export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; mcpConnections?: NativeMcpConnectionStore; modelCapabilities?: NativeModelCapabilityService; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void; acquireNativeChildOwnership?: NativeExecutorOptions['acquireChildOwnership'] } = {}) {
+export function createExecutors(store: StateStore, capabilities: () => Capabilities, onError: (error: Error) => void, options: { connections?: ConnectionStore; mcpConnections?: NativeMcpConnectionStore; modelCapabilities?: NativeModelCapabilityService; skills?: NativeExecutorOptions['skills']; onNative?(executor: NativeStructuredExecutor): void; assertNativeOwnership?(id: string): void; acquireNativeChildOwnership?: NativeExecutorOptions['acquireChildOwnership'] } = {}) {
   const registry = new ExecutionRegistry(id => {
     const session = store.state.sessions.find(session => session.id === id);
     if (!session) throw new Error('会话不存在。');
@@ -86,7 +86,7 @@ export function createExecutors(store: StateStore, capabilities: () => Capabilit
     },
     createIdentity: () => ({ providerId: 'shell', mode: 'terminal' }) });
   const connections = options.connections ?? new ConnectionStore(store.directory);
-  const native = new NativeStructuredExecutor(store, connections, registry.events, { onError, mcpConnections: options.mcpConnections, modelCapabilities: options.modelCapabilities, assertOwnership: id => options.assertNativeOwnership?.(id), acquireChildOwnership: options.acquireNativeChildOwnership });
+  const native = new NativeStructuredExecutor(store, connections, registry.events, { onError, mcpConnections: options.mcpConnections, modelCapabilities: options.modelCapabilities, skills: options.skills, assertOwnership: id => options.assertNativeOwnership?.(id), acquireChildOwnership: options.acquireNativeChildOwnership });
   options.onNative?.(native);
   registry.register({
     providerId: 'native', displayName: '自研 Agent · Alpha', mode: 'structured', executor: native, history: false,

@@ -56,7 +56,8 @@ export class SessionService {
   private maintenanceEpochs = new Map<string, number>();
   private globalAdmissionEpoch = 0;
   constructor(private store: StateStore, readonly execution: ExecutionRegistry,
-    private onState: () => void, private getWindow: () => BrowserWindow | null, private queries: WorkspaceQueries) {
+    private onState: () => void, private getWindow: () => BrowserWindow | null, private queries: WorkspaceQueries,
+    options: { prepareNativeSkills?: ConstructorParameters<typeof ChatQueue>[1]['prepareNativeSkills'] } = {}) {
     this.attachments = new Attachments(store.directory);
     this.chat = new StructuredExecutions(execution, store.directory);
     this.runtime = new TerminalExecutions(execution);
@@ -117,6 +118,9 @@ export class SessionService {
       blocked: id => this.admissions.has(id) || this.chat.isBusy(id) || this.workflows.isSessionBusy(id),
       attachmentMetadata: async (id, files) => this.session(id).execution.providerId === 'native' && files.length
         ? (await readNativeImageAttachments(store.directory, id, files)).metadata : undefined,
+      // Internal dependencies only; ChatQueue activates the captured check after looking up accepted receipts.
+      captureNativeSkillAdmission: options.prepareNativeSkills && (id => this.captureSkillSubmissionAdmission(id)),
+      prepareNativeSkills: options.prepareNativeSkills,
       acceptAttachments: (id, files, commit) => this.attachments.acceptQueued(id, files, commit),
       run: (id, item) => this.runChat(id, item.text, item.attachments, undefined, true, { requestId: item.id, source: 'queue', ...(item.nativeTaskId ? { nativeTaskId: item.nativeTaskId } : {}), ...(item.nativeImageAttachments ? { imageAttachments: item.nativeImageAttachments } : {}), ...(item.nativeSkills === undefined ? {} : { nativeSkills: item.nativeSkills }) }),
       settled:id => this.refreshDirectoryRelease(id),
@@ -134,6 +138,24 @@ export class SessionService {
   private beginLifecycle(id: string) {
     this.lifecycle.add(id);
     this.imagePreviewEpochs.set(id, (this.imagePreviewEpochs.get(id) ?? 0) + 1);
+  }
+  private captureSkillSubmissionAdmission(id: string): () => void {
+    const initial = this.structured(id);
+    if (initial.execution.providerId !== 'native') throw new Error('此引擎不支持 Native 技能引用。');
+    const checkEngine = this.captureEngineAdmission(initial.execution.providerId);
+    const cancelled = this.cancellations.get(id) ?? 0, lifecycle = this.imagePreviewEpochs.get(id) ?? 0;
+    const stamp = () => {
+      const session = this.structured(id), project = this.project(session.projectId);
+      return JSON.stringify([session.projectId, project.path, session.cwd, session.kind, session.execution, session.engineConfig]);
+    };
+    const identity = stamp();
+    const check = () => {
+      checkEngine();
+      if (cancelled !== (this.cancellations.get(id) ?? 0) || lifecycle !== (this.imagePreviewEpochs.get(id) ?? 0)
+        || stamp() !== identity) throw new Error('技能提交已取消或会话已变化，请重新选择后发送。');
+      this.assertUnlocked(this.structured(id));
+    };
+    return check;
   }
   private captureImagePreviewAdmission(id: string): () => void {
     const initial = this.session(id), checkEngine = this.captureEngineAdmission(initial.execution.providerId);

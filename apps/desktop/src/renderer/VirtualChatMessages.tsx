@@ -69,7 +69,10 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
             if (ready) {
               reading.current.ready = true;
               reading.current.top = Math.max(0, layout.offset(layout.indexOf(id)) - reading.current.height / 3);
-              reading.current.anchorId = undefined;
+              // Measurements may change before an already queued redraw commits.
+              // Keep the mounted target by identity until the actual scroll is read.
+              reading.current.anchorId = id;
+              reading.current.inside = 0;
             }
             scheduleLatest.current(true);
           }
