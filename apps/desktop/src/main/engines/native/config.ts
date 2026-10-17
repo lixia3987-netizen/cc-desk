@@ -1,7 +1,22 @@
 import { z } from 'zod';
+import { createHash } from 'node:crypto';
+import { canonicalJson } from '@cc-desk/agent-core';
 import { NATIVE_PERMISSION_MODES, NATIVE_PERMISSION_LABELS } from '../../../shared/native-permissions';
 import { normalizeProjectSkillPaths } from '@cc-desk/agent-node/project-skills';
 import type { EngineConfig, EngineConfigField } from '../../../shared/execution';
+
+export type NativeLegacySkillPolicy = {
+  mode: 'legacy';
+  autoActivation: false;
+  pins: Array<{ kind: 'legacy'; path: string }>;
+  disabledIds: [];
+}
+
+/** 兼容模式保留旧整文件注入语义，不建立新的 catalog 激活。 */
+export function normalizeNativeLegacySkillPolicy(projectSkills: readonly string[]): NativeLegacySkillPolicy {
+  return { mode: 'legacy', autoActivation: false,
+    pins: normalizeProjectSkillPaths(projectSkills).map(source => ({ kind: 'legacy', path: source })), disabledIds: [] };
+}
 
 export const NATIVE_MODEL_RETRY_FIELD: EngineConfigField = {
   key: 'modelRetry', label: '模型请求有限重试', type: 'select', apply: 'stopped',
@@ -44,12 +59,47 @@ const optionsSchema = z.object({
     catch { context.addIssue({ code: 'custom', message: '请选择项目内普通目录中有效且不重复的 SKILL.md，最多 16 项。' }); return z.NEVER; }
   }),
 }).strict();
-export function parseNativeConfig(config: EngineConfig) {
-  if (config.schemaVersion !== 1) throw new Error('不支持此 native 配置版本；原配置已保留。');
-  return optionsSchema.parse(config.options);
+const legacySkillPolicySchema = z.object({
+  mode: z.literal('legacy'),
+  autoActivation: z.literal(false),
+  pins: z.array(z.object({ kind: z.literal('legacy'), path: z.string().max(4096) }).strict()).max(16),
+  disabledIds: z.tuple([]),
+}).strict().transform((policy, context): NativeLegacySkillPolicy => {
+  try { return normalizeNativeLegacySkillPolicy(policy.pins.map(pin => pin.path)); }
+  catch { context.addIssue({ code: 'custom', message: '旧版 Skills 固定路径无效或重复，原配置已保留。' }); return z.NEVER; }
+});
+const v2OptionsSchema = optionsSchema.extend({ skills: legacySkillPolicySchema }).superRefine((options, context) => {
+  const paths = options.skills.pins.map(pin => pin.path);
+  if (paths.length !== options.projectSkills.length || paths.some((source, index) => source !== options.projectSkills[index])) {
+    context.addIssue({ code: 'custom', message: '旧版 Skills 固定项与项目路径必须一致，原配置已保留。', path: ['skills', 'pins'] });
+  }
+});
+export type NativeConfigOptions = z.infer<typeof optionsSchema> & { skills?: NativeLegacySkillPolicy };
+
+export function parseNativeConfig(config: EngineConfig): NativeConfigOptions {
+  if (config.schemaVersion === 1) return optionsSchema.parse(config.options);
+  if (config.schemaVersion !== 2) throw new Error('不支持此 native 配置版本；原配置已保留。');
+  const policy = config.options?.skills;
+  if (policy && typeof policy === 'object' && !Array.isArray(policy) && policy.mode === 'catalog') {
+    throw new Error('Native Skills catalog 模式尚未开放；原配置已保留。');
+  }
+  return v2OptionsSchema.parse(config.options);
 }
 export function createNativeConfig(config: EngineConfig = { schemaVersion: 1, options: {} }): EngineConfig {
-  return { schemaVersion: 1, options: parseNativeConfig(config) };
+  return { schemaVersion: config.schemaVersion, options: parseNativeConfig(config) };
+}
+
+/** CAS 比较原配置，不用补全默认值后的结果覆盖用户尚未保存的表示。 */
+export function nativeConfigDigest(config: EngineConfig): string {
+  return createHash('sha256').update(canonicalJson({ schemaVersion: config.schemaVersion, options: config.options })).digest('hex');
+}
+
+/** 较早的账本未存版本，其 sessionOptions 按当时唯一支持的 v1 读取。 */
+export function readNativeRunConfig(configuration: Readonly<Record<string, unknown>>): EngineConfig {
+  const version = Object.hasOwn(configuration, 'sessionOptionsSchemaVersion') ? configuration.sessionOptionsSchemaVersion : 1;
+  if (typeof version !== 'number') throw new Error('Native 运行记录的配置版本无效；原记录已保留。');
+  return createNativeConfig({ schemaVersion: version,
+    options: (configuration.sessionOptions === undefined ? {} : configuration.sessionOptions) as EngineConfig['options'] });
 }
 
 /** 全新安装使用已知模型容量；旧配置保留已保存的自定义上限。 */

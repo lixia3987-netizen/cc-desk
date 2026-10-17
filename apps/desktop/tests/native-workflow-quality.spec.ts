@@ -37,6 +37,9 @@ async function workspace(content: string) {
   const data = path.join(directory, '应用 数据'), cwd = path.join(directory, '项目 空格'), projectId = randomUUID();
   await fs.mkdir(data); await fs.mkdir(cwd);
   await fs.writeFile(path.join(cwd, 'fixture.txt'), content);
+  // The deterministic model and commands assert these exact bytes. Preserve
+  // this one file through Git checkout without changing inherited autocrlf.
+  await fs.writeFile(path.join(cwd, '.gitattributes'), '/fixture.txt -text\n');
   await execute('git', ['-C', cwd, 'init', '-b', 'main'], { windowsHide: true });
   await execute('git', ['-C', cwd, 'config', 'user.name', 'Workflow quality fixture'], { windowsHide: true });
   await execute('git', ['-C', cwd, 'config', 'user.email', 'quality-fixture@localhost'], { windowsHide: true });
@@ -79,6 +82,7 @@ function qualityResponse(body: Body, mode: 'static' | 'repair' | 'blocked') {
   for (const material of materials) if (!done.has(readId(material))) return call(readId(material), 'read_file', { path: material });
   const read = done.get(readId('fixture.txt'))!;
   expect(read.status).toBe('completed'); expect(read.output.hash).toMatch(/^[a-f\d]{64}$/u);
+  if (mode !== 'static') expect(['broken\n', 'fixed\n']).toContain(read.output.content);
   const broken = read.output.content === 'broken\n';
   if (mode === 'repair' && role === 'verifier' && !done.has('quality-check')) return call('quality-check', 'run_command', {
     executable: process.execPath, argv: ['-e', 'const fs=require("node:fs");if(fs.readFileSync("fixture.txt","utf8")!=="fixed\\n")process.exitCode=9;else process.stdout.write("independent-quality-check-ok")'],

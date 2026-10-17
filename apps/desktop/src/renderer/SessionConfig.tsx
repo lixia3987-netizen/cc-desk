@@ -6,6 +6,7 @@ import { isSessionBusy } from '../shared/session-activity';
 import { nativeSubagentPolicyKeys, resolveNativeRuntimeConfig } from '../shared/native-runtime-policy';
 import { EngineConfigFields, configurationSupported, engineDefaults } from './EngineConfiguration';
 import { NativeProjectSkills } from './components/NativeProjectSkills';
+import { NativeSessionSkills } from './components/NativeSessionSkills';
 import { NativeMcpSelection } from './components/NativeMcpSelection';
 import { NativeContextSettingsInfo } from './components/NativeContextSettingsInfo';
 import { LegacyClaudeOverrides } from './components/LegacyClaudeOverrides';
@@ -27,6 +28,7 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
   const draft = store.get(session.id);
   const value = draft?.value ?? session.engineConfig;
   const busy = draft?.busy ?? false, saved = draft?.saved ?? false, dirty = draft?.dirty ?? false, conflict = draft?.conflict ?? false;
+  const skillsDraft = store.nativeSkills.get(session.id), skillsSaving = skillsDraft?.saving ?? false;
   const setValue = (next: typeof value | ((current: typeof value) => typeof value)) => {
     store.change(session.id, typeof next === 'function' ? next(store.get(session.id)?.value ?? value) : next);
   };
@@ -34,14 +36,15 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const persisted = JSON.stringify(session.engineConfig);
   useEffect(() => { store.observe(session.id, session.engineConfig); }, [store, session.id, persisted]);
-  useEffect(() => { onDirtyChange?.(dirty); }, [onDirtyChange, dirty]);
+  const skillsDirty = !!skillsDraft?.dirty || !!skillsDraft?.attempt || skillsSaving;
+  useEffect(() => { onDirtyChange?.(dirty || skillsDirty); }, [onDirtyChange, dirty, skillsDirty]);
   const running = session.status === 'running';
   const supported = configurationSupported(descriptor, session.engineConfig);
   const native = session.execution.providerId === 'native';
   const policyGroup = native && ['context', 'compaction', 'limits', 'recovery'].includes(group);
   const followsDefaults = policyGroup && value.options.runtimePolicy === 'defaults';
   const nativeSubagentDefaults = Object.fromEntries(nativeSubagentPolicyKeys.flatMap(key => {
-    const fallback = descriptor?.configuration?.defaults.schemaVersion === value.schemaVersion ? descriptor.configuration.defaults.options[key] : undefined;
+    const fallback = configurationSupported(descriptor, value) ? descriptor?.configuration?.defaults.options[key] : undefined;
     return fallback === undefined ? [] : [[key, fallback]];
   }));
   const effective = native ? resolveNativeRuntimeConfig({ ...value, options: { permissionMode: 'default', ...nativeSubagentDefaults, ...value.options } }, engineDefaults(descriptor, settings)) : value;
@@ -51,7 +54,8 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
   const validProjectSkills = projectSkills === undefined || Array.isArray(projectSkills) && projectSkills.every(path => typeof path === 'string');
   const mcpConnections = value.options.mcpConnections;
   const validMcpConnections = mcpConnections === undefined || Array.isArray(mcpConnections) && mcpConnections.every(id => typeof id === 'string');
-  const locked = busy || !supported || !!descriptor?.maintenance || isSessionBusy(session) || (running && (session.execution.mode !== 'structured' || !descriptor?.capabilities.liveConfig));
+  const settingsLocked = busy || !supported || !!descriptor?.maintenance || isSessionBusy(session) || (running && (session.execution.mode !== 'structured' || !descriptor?.capabilities.liveConfig));
+  const locked = settingsLocked || skillsSaving;
   const bindingLocked = native && group === 'model' && session.started;
   const restarts = session.execution.providerId === 'claude' && running && value.options.permissionMode !== session.engineConfig.options.permissionMode &&
     (value.options.permissionMode === 'bypassPermissions' || session.engineConfig.options.permissionMode === 'bypassPermissions');
@@ -91,10 +95,14 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
       {group === 'context' && effective.options.inputBudgetMode === 'model' && <p className="panel-note">窗口未知时备用输入预算：{Number(effective.options.maxInputTokens ?? 64000).toLocaleString()} tokens。</p>}
       {bindingLocked && <p className="panel-note">已有模型上下文，请新建会话切换模型连接或模型。</p>}
       {session.execution.providerId === 'claude' && group === 'permissions' && <><LegacyClaudeOverrides config={value} disabled={locked || running || session.status === 'stopping'} onChange={setValue}/><p className="panel-note">清除旧模型与强度覆盖需要先停止会话。</p></>}
-      {group === 'tools' && native && session.execution.mode === 'structured' && (validProjectSkills
+      {group === 'tools' && native && session.execution.mode === 'structured' && session.engineConfig.schemaVersion === 1 && (validProjectSkills
         ? <NativeProjectSkills sessionId={session.id} selected={(projectSkills ?? []) as string[]} disabled={locked} onChange={paths => {
           setValue(current => ({ ...current, options: { ...current.options, projectSkills: paths } }));
         }} /> : <p className="panel-note">当前项目 Skills 配置无法编辑，原始值已保留。</p>)}
+      {group === 'tools' && native && session.execution.mode === 'structured' && validProjectSkills && <NativeSessionSkills session={session}
+        store={store.nativeSkills} disabled={settingsLocked} parentDirty={dirty || conflict}
+        canEdit={() => { const current = store.get(session.id); return !current?.dirty && !current?.busy && !current?.conflict; }}
+        onSaved={config => store.observe(session.id, config)} />}
       {group === 'tools' && native && session.execution.mode === 'structured' && (validMcpConnections
         ? <NativeMcpSelection sessionId={session.id} selected={(mcpConnections ?? []) as string[]} disabled={locked || running} onChange={ids => {
           setValue(current => ({ ...current, options: { ...current.options, mcpConnections: ids } }));
@@ -102,7 +110,7 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
       {!fields.length && group !== 'tools' && <p className="panel-note">此执行引擎没有本页可编辑的配置。</p>}
       {restarts && <p className="panel-note">切换 Bypass 时会停止空闲 CLI，下次发送自动恢复原会话。</p>}
       {(fields.length > 0 || group === 'tools' && native) && <button type="button" className="secondary compact full" disabled={locked || !dirty || conflict} onClick={save}><Check size={12} />{busy ? '正在保存…' : saved ? '已保存' : '保存配置'}</button>}
-      <p className="panel-note">{descriptor?.maintenance ? '引擎维护完成后可修改配置。' : locked ? '任务结束或停止会话后可修改。' : session.execution.mode === 'structured' ? '已保存配置用于下一轮任务。' : '配置用于下一次启动终端。终端内部变更可能尚未同步。'}</p>
+      <p className="panel-note">{descriptor?.maintenance ? '引擎维护完成后可修改配置。' : skillsSaving ? '技能配置正在保存，请稍候。' : locked ? '任务结束或停止会话后可修改。' : session.execution.mode === 'structured' ? '已保存配置用于下一轮任务。' : '配置用于下一次启动终端。终端内部变更可能尚未同步。'}</p>
     </>}
   </section>;
 }

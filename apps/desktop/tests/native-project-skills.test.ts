@@ -11,7 +11,7 @@ import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
-import { createNativeConfig } from '../src/main/engines/native/config';
+import { createNativeConfig, normalizeNativeLegacySkillPolicy } from '../src/main/engines/native/config';
 // 真实的本地 HTTP/SSE 测试装置仅替换远端模型。
 // @ts-expect-error 本地测试专用 ESM 装置没有类型声明。
 import { startResponsesFixture, assistantMessage, functionCall } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
@@ -105,6 +105,54 @@ test('existing sessions do not automatically send discovered project Skills to t
     assert.doesNotMatch(f.server.requests[0].instructions, /UNSELECTED_|SKILL\.md/);
     const run = (await f.ledger()).runs[0];
     assert.deepEqual(run.configuration.instructions, [{ path: 'AGENTS.md', scope: '.', hash: hash('Keep unrelated files intact.\n') }]);
+  } finally { await f.dispose(); }
+});
+
+test('v1 history continues as v2 legacy with complete files, raw hashes and restart-safe completed receipts', async () => {
+  let workerCalls = 0;
+  const f = await fixture({ worker: options => {
+    // 真实旧账本没有此字段；下一回合开始才按新协议保存版本。
+    if (workerCalls++ === 0) delete options.request.configuration.sessionOptionsSchemaVersion;
+    return inlineWorker(options);
+  } });
+  try {
+    const plain = 'LEGACY_PLAIN_COMPLETE_GUIDE\n';
+    const standard = '---\nname: FRONTMATTER_LITERAL_NAME\ndescription: Keep this header literal\n---\nFRONTMATTER_GUIDE_BODY\n';
+    await f.writeSkill(agentsSkill, plain); await f.writeSkill(claudeSkill, standard);
+    await f.configure([agentsSkill, claudeSkill]);
+    const old = await f.executor.send(f.id, '旧版任务', [], undefined, { requestId: 'v1-legacy-complete' });
+    assert.equal(old.success, true, JSON.stringify(old));
+    const oldLedger = await f.ledger();
+    assert.equal(oldLedger.runs[0].configuration.sessionOptionsSchemaVersion, undefined);
+    f.store.change(state => {
+      const session = state.sessions.find(item => item.id === f.id)!;
+      session.engineConfig = createNativeConfig({ schemaVersion: 2, options: { ...session.engineConfig.options,
+        projectSkills: [agentsSkill, claudeSkill], skills: normalizeNativeLegacySkillPolicy([agentsSkill, claudeSkill]) } });
+    });
+    const first = await f.executor.send(f.id, '保留完整旧指南', [], undefined, { requestId: 'v2-legacy-complete' });
+    assert.equal(first.success, true, JSON.stringify(first)); assert.equal(f.server.requests.length, 2);
+    const instructions = f.server.requests[1].instructions!;
+    assert.equal(instructions, f.server.requests[0].instructions, 'explicit migration retains the exact old instruction text');
+    assert.deepEqual(f.server.requests[1].input.slice(0, oldLedger.context!.items.length), oldLedger.context!.items);
+    assert.equal(instructions.split(plain).length - 1, 1);
+    assert.equal(instructions.split(standard).length - 1, 1);
+    const run = (await f.ledger()).runs[1];
+    assert.equal(run.configuration.sessionOptionsSchemaVersion, 2);
+    assert.equal(run.configuration.nativeSkillCatalog, undefined);
+    assert.equal(run.configuration.initialNativeSkills, undefined);
+    assert.deepEqual(run.configuration.instructions, [
+      { path: 'AGENTS.md', scope: '.', hash: hash('Keep unrelated files intact.\n') },
+      { path: agentsSkill, scope: '.', hash: hash(plain) },
+      { path: claudeSkill, scope: '.', hash: hash(standard) },
+    ]);
+    assert.ok(!(run.configuration.toolDefinitions as Array<{ name: string }>).some(tool => tool.name === 'load_skill'));
+    await f.restart(false);
+    assert.equal(f.store.state.sessions.find(item => item.id === f.id)!.engineConfig.schemaVersion, 2);
+    await fs.rm(path.join(f.project, agentsSkill)); await fs.rm(path.join(f.project, claudeSkill));
+    const duplicate = await f.executor.send(f.id, '保留完整旧指南', [], undefined, { requestId: 'v2-legacy-complete' });
+    assert.equal(duplicate.success, true, JSON.stringify(duplicate));
+    assert.equal(f.server.requests.length, 2, 'a completed receipt needs neither source files nor a model credential');
+    assert.equal(f.executor.snapshot(f.id).taskState, 'completed', 'v2 run remains projectable after restart');
   } finally { await f.dispose(); }
 });
 

@@ -84,3 +84,14 @@ Windows x64 / Intel Core i7-13700KF；真实 Electron 44.4.3 窗口运行重新�
 3. 严格 Skill 继承装置受系统 `core.autocrlf=true` 影响：子工作树将 LF 的 168 字节技能文件改成 CRLF 的 173 字节，真实字节身份检查正确拒绝，隔离基线同样失败。仅为测试仓库设置 `core.autocrlf=false`；一次冻结、三并发、报告及账本断言保留，单项和最后组合回归均通过。
 
 隔离基线及诊断位于 `test-results/paging-baseline-check/`、`test-results/paging-auto-compaction-diagnostic/`。本次没有验证安装包、外部模型服务、跨硬件表现或全部自然并发竞争。
+
+## PR 合并前的 main 集成复验
+
+集成 `main@105bd83` 的会话 Skills 配置改动。Playwright 清单的一处文本冲突同时保留分页与会话 Skills 两组测试；自动合并的投影和严格继承测试也单独核对了两侧行为。
+
+- 本地包构建、桌面类型检查、生产构建均通过。
+- 16 个针对性测试文件共 180 项通过，0 失败、0 跳过，涵盖分页、投影与新增 Skills/权限/旧配置守卫。
+- 真实 Electron 运行分页、会话 Skills、首屏加载、快照生命周期共 16 项，全部通过，54.9 秒，退出码 0。
+- 日志：`.codex-pr-integration-packages.log`、`.codex-pr-integration-types.log`、`.codex-pr-integration-build.log`、`.codex-pr-integration-focused.log`、`.codex-pr-integration-electron.log`。Electron 证据保存在 `test-results/pr-main-integration/`。
+
+这些是最新 main 合并后的独立复验，不将旧提交的实机截图或较早测试计数当作此次集成运行。

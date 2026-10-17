@@ -16,6 +16,7 @@ import { registerNativeHandlers } from './ipc/native-handlers';
 import { ClaudeModelImporter } from './claude-model-import';
 import { registerClaudeModelImportHandlers } from './ipc/claude-model-import-handlers';
 import { registerNativeSkillHandlers } from './ipc/native-skill-handlers';
+import { assertNativeDefaultSkillConfigAllowed } from './engines/native/skill-config-guard';
 import { registerNativeMcpHandlers } from './ipc/native-mcp-handlers';
 import { registerNativeTaskHandlers } from './ipc/native-task-handlers';
 import { registerNativeAgentResultHandlers } from './ipc/native-agent-result-handlers';
@@ -159,6 +160,7 @@ function registerIPC() {
     if(cliChanged)cliUpdates.assertIdle();
     for (const [providerId, config] of Object.entries(settings.engineDefaults)) {
       if (isDeepStrictEqual(config, store.state.settings.engineDefaults[providerId])) continue;
+      if (providerId === 'native') assertNativeDefaultSkillConfigAllowed(store.state.settings.engineDefaults.native, config);
       const descriptor = executors.descriptors().find(item => item.providerId === providerId);
       if (descriptor) {
         services.assertEngineAvailable(providerId);

@@ -1,5 +1,5 @@
 /** 发现操作返回元数据，明确检查时才另行返回受限的字面内容。 */
-import type { NativeSkillsSettings, NativeSkillSourceSetting, SkillCatalogSnapshot, SkillVersionSnapshot, NativeSkillPin } from '@cc-desk/contracts/native-skills';
+import type { NativeSkillsSettings, NativeSkillSourceSetting, SkillCatalogSnapshot, SkillVersionSnapshot, NativeSkillPin, NativeSkillPolicy } from '@cc-desk/contracts/native-skills';
 import type { EngineConfig } from './execution';
 
 export interface NativeSkillsSettingsView { settings: NativeSkillsSettings; runtimeEnabled: false; error?: string }
@@ -20,6 +20,26 @@ export interface NativeSkillsListResult {
 export interface NativeSkillPreview {
   path: string; name: string; hash: string; bytes: number; content: string;
 }
+export interface NativeSessionSkillsView {
+  schemaVersion: 1 | 2;
+  configDigest: string;
+  policy: NativeSkillPolicy;
+  pinDiagnostics: Array<{ path: string; status: 'available' | 'unavailable' | 'unverified'; message?: string }>;
+  /** Catalog activation remains gated; legacy guides retain their existing runtime. */
+  runtimeEnabled: false;
+}
+export interface NativeSessionSkillsSave {
+  sessionId: string;
+  /** Frozen for retries; a new explicit save gets a new identity. */
+  mutationId: string;
+  expectedConfigDigest: string;
+  policy: NativeSkillPolicy;
+}
+export interface NativeSessionSkillsSaved extends NativeSessionSkillsView {
+  config: EngineConfig;
+  migrated: boolean;
+  backupCreated: boolean;
+}
 export interface NativeInstructionsPreview {
   targetPath: string;
   digest: string;
@@ -31,6 +51,8 @@ export interface NativeSkillsAPI {
   catalog(input: { sessionId: string; refresh?: boolean }): Promise<NativeSkillsCatalogResult>;
   inspectCatalog(input: { sessionId: string; skillId: string; catalogRevision: string }): Promise<NativeCatalogSkillPreview>;
   previewMigration(input: { sessionId: string }): Promise<NativeSkillMigrationPreview>;
+  getSessionSkills(input: { sessionId: string }): Promise<NativeSessionSkillsView>;
+  saveSessionSkills(input: NativeSessionSkillsSave): Promise<NativeSessionSkillsSaved>;
   list(input: { sessionId: string }): Promise<NativeSkillsListResult>;
   inspect(input: { sessionId: string; path: string }): Promise<NativeSkillPreview>;
   inspectInstructions(input: { sessionId: string; targetPath: string }): Promise<NativeInstructionsPreview>;

@@ -43,20 +43,34 @@ on:
       - 'apps/desktop/scripts/build.mjs'
       - 'apps/desktop/scripts/run-desktop-tests.mjs'
       - 'apps/desktop/src/main/runtime.ts'
+      - 'apps/desktop/src/main/index.ts'
+      - 'apps/desktop/src/main/session-service.ts'
+      - 'apps/desktop/src/main/session-creation.ts'
+      - 'apps/desktop/src/main/native-session-permission.ts'
       - 'apps/desktop/src/main/chat-*.ts'
       - 'apps/desktop/src/main/ipc/chat-handlers.ts'
+      - 'apps/desktop/src/main/ipc/session-handlers.ts'
+      - 'apps/desktop/src/main/ipc/native-session-skill-handlers.ts'
       - 'apps/desktop/src/main/execution/**'
       - 'apps/desktop/src/main/engines/claude/**'
       - 'apps/desktop/src/main/engines/native/**'
       - 'apps/desktop/src/preload/**'
       - 'apps/desktop/src/shared/chat.ts'
       - 'apps/desktop/src/shared/types.ts'
+      - 'apps/desktop/src/shared/native-skills.ts'
+      - 'apps/desktop/src/shared/native-runtime-policy.ts'
       - 'apps/desktop/tests/native-build.test.ts'
       - 'apps/desktop/tests/runtime.test.ts'
       - 'apps/desktop/tests/windows-pty-resources.test.ts'
       - 'apps/desktop/tests/native-agent.spec.ts'
       - 'apps/desktop/tests/native-multi-agent.spec.ts'
+      - 'apps/desktop/tests/native-session-skills.spec.ts'
+      - 'apps/desktop/tests/native-workflow-quality.spec.ts'
+      - 'apps/desktop/tests/native-agent-task-pool.spec.ts'
       - 'apps/desktop/tests/native-skill-*.test.ts'
+      - 'apps/desktop/tests/native-session-skill*.test.ts'
+      - 'apps/desktop/tests/native-legacy-config.test.ts'
+      - 'apps/desktop/tests/native-project-skills.test.ts'
       - 'apps/desktop/src/renderer/**'
       - 'apps/desktop/tests/chat-queue.spec.ts'
       - 'apps/desktop/tests/new-session-flow.spec.ts'
@@ -214,7 +228,7 @@ jobs:
         timeout-minutes: 10
         # 使用本地 HTTP 测试服务和临时凭据，覆盖物理进程链路；不冒充真实模型回归。
         run: |
-          npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
+          npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts tests/native-session-skills.spec.ts tests/native-workflow-quality.spec.ts tests/native-agent-task-pool.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
           exit $LASTEXITCODE
       - name: 及时保留 Electron 失败轨迹
         uses: actions/upload-artifact@v4

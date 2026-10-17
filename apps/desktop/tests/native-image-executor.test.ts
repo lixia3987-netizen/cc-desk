@@ -93,7 +93,9 @@ async function fixture(protocol: Protocol, gate?: () => Promise<void>, options: 
     return (await attachments.add(id, [source]))[0].path;
   };
   const imagePath = await add('picture.png'); await attachments.retain(id, [imagePath]);
-  return { data, id, conversationId, server, store, requests, imagePath, add, summaryStarted,
+  let transportClose: Promise<void> | undefined;
+  const closeTransport = (): Promise<void> => transportClose ??= server.close();
+  return { data, id, conversationId, server, store, requests, imagePath, add, summaryStarted, closeTransport,
     get executor() { return executor; },
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
@@ -105,6 +107,21 @@ async function fixture(protocol: Protocol, gate?: () => Promise<void>, options: 
     },
     async restart(noCredential = false) { await executor.shutdown(); executor = new NativeStructuredExecutor(store, noCredential ? new ConnectionStore(data) : connections, events, { worker }); await executor.initialize(); },
     async dispose() { await executor.shutdown().catch(() => {}); await server.close(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); },
+    async disposeInterrupted(onPhase: (phase: string) => void) {
+      // 超时或断言失败时先中断并关闭本地挂起连接，不能先等待仍依赖该连接的执行器。
+      executor.interrupt(id);
+      onPhase('cleanup_release');
+      const released = await Promise.allSettled([
+        closeTransport().then(() => onPhase('cleanup_transport_released')),
+        executor.shutdown().then(() => onPhase('cleanup_executor_released')),
+      ]);
+      const errors: unknown[] = released.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      onPhase('cleanup_store');
+      try { store.flush(); } catch (error) { errors.push(error); }
+      onPhase('cleanup_files');
+      try { await fs.rm(directory, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, 'Image cancellation fixture cleanup failed.');
+    },
   };
 }
 
@@ -386,23 +403,72 @@ for (const protocol of ['responses', 'chat-completions'] as const) {
     } finally { await f.dispose(); }
   });
 
-  test(`${protocol}: cancelling automatic image-prefix summary preserves images and cannot repeat its reserved request`, { timeout: 10000 }, async () => {
-    const f = await fixture(protocol, undefined, { cancelSummary: true });
+  test(`${protocol}: cancelling automatic image-prefix summary preserves images and cannot repeat its reserved request`, { timeout: 10000 }, async t => {
+    const startedAt = performance.now(), phases: { phase: string; elapsedMs: number }[] = [];
+    const elapsedMs = () => Math.round(performance.now() - startedAt);
+    const mark = (phase: string) => { if (phases.length < 40) phases.push({ phase, elapsedMs: elapsedMs() }); };
+    const stage = (phase: string) => { t.signal.throwIfAborted(); mark(phase); };
+    let f: Awaited<ReturnType<typeof fixture>> | undefined;
+    let sendingState: 'not_started' | 'pending' | 'fulfilled' | 'rejected' = 'not_started';
+    let primaryFailed = false;
+    // 只输出固定阶段、计数和耗时，不读取或打印输入、响应、凭据、标识或文件路径。
+    const report = (event: string) => t.diagnostic(JSON.stringify({ case: 'image_summary_cancellation', protocol, event,
+      elapsedMs: elapsedMs(), phases, sendingState, workerRequests: f?.requests.length ?? 0,
+      providerRequests: f?.server.requests.length ?? 0, providerErrors: f?.server.errors.length ?? 0 }));
+    const interruptTimedOutFixture = () => {
+      report('test_deadline');
+      f?.executor.interrupt(f.id);
+      void f?.closeTransport().catch(() => report('timeout_transport_close_failed'));
+    };
+    t.signal.addEventListener('abort', interruptTimedOutFixture, { once: true });
     try {
+      stage('fixture');
+      f = await fixture(protocol, undefined, { cancelSummary: true });
+      if (t.signal.aborted) { interruptTimedOutFixture(); t.signal.throwIfAborted(); }
+      stage('send_original');
       assert.equal((await f.executor.send(f.id, 'original text goal')).success, true);
+      stage('send_image');
       assert.equal((await f.executor.send(f.id, 'image retained', [f.imagePath])).success, true);
+      stage('read_before');
       const before = await f.ledger(), model = createNativeModel(f.requests.at(-1)!.model);
       const pending = { ...before.context!, items: [...before.context!.items, ...model.userItems('next')] };
+      stage('configure');
       await f.configure({ autoCompact: 'before_send', maxInputTokens: Math.floor(model.estimateInputTokens(pending) / 0.95) });
+      stage('send_summary');
+      sendingState = 'pending';
       const sending = f.executor.send(f.id, 'next', [], undefined, { requestId: 'cancel-image-summary' });
-      await f.summaryStarted; await f.executor.stop(f.id); assert.equal((await sending).success, false);
+      const settled = sending.then(result => { sendingState = 'fulfilled'; return { kind: 'send_finished' as const, success: result.success }; },
+        () => { sendingState = 'rejected'; return { kind: 'send_rejected' as const }; });
+      stage('wait_summary_started');
+      const first = await Promise.race([f.summaryStarted.then(() => ({ kind: 'summary_started' as const })), settled]);
+      assert.equal(first.kind, 'summary_started', first.kind === 'send_finished'
+        ? `The send finished before the summary request started (success=${first.success}).`
+        : 'The send rejected before the summary request started.');
+      stage('stop');
+      await f.executor.stop(f.id);
+      stage('wait_send_cancelled');
+      assert.equal((await sending).success, false);
+      stage('read_after');
       const after = await f.ledger(); assert.deepEqual(after.context, before.context);
       assert.equal(after.records.filter(record => record.event.type === 'context_compaction_attempted').length, 1);
       assert.equal(after.records.some(record => record.event.type === 'context_compacted'), false);
+      stage('restart');
       await f.restart();
+      stage('retry_reserved_request');
       assert.equal((await f.executor.send(f.id, 'next', [], undefined, { requestId: 'cancel-image-summary' })).success, false);
       assert.equal(summaryRequests(f.requests).length, 1); assert.equal(f.server.requests.length, 3);
+      stage('read_restarted');
       assert.deepEqual((await f.ledger()).context, before.context);
-    } finally { await f.dispose(); }
+      stage('assertions_complete');
+    } catch (error) {
+      primaryFailed = true; report('failure'); throw error;
+    } finally {
+      try { await f?.disposeInterrupted(mark); }
+      catch (error) { report('cleanup_failed'); if (!primaryFailed && !t.signal.aborted) throw error; }
+      finally {
+        t.signal.removeEventListener('abort', interruptTimedOutFixture);
+        if (!primaryFailed && !t.signal.aborted) report('complete');
+      }
+    }
   });
 }

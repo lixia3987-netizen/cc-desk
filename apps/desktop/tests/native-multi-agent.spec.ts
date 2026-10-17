@@ -9,6 +9,7 @@ import path from 'node:path';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { captureNativeDiagnostics, closeNativeApp } from './helpers/native-app-cleanup';
+import { nativeQueueDiagnosticSources, withNativeQueueDiagnostics } from './helpers/native-queue-diagnostics';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
@@ -400,23 +401,33 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       return parentResponse(body, 'implement');
     }
     const name = userGoal(body).startsWith('IMPLEMENT_A') ? 'a' : 'b', done = toolResults(body), content = `child ${name} implementation\n`;
-    if (!done.has(`child-${name}-read`)) { started.add(name); await barrier.promise; return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' }); }
-    if (!done.has(`child-${name}-patch`)) return responseCall(`child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content, expectedHash: done.get(`child-${name}-read`)!.output.hash });
+    if (!done.has(`child-${name}-read`)) return responseCall(`child-${name}-read`, 'read_file', { path: 'fixture.txt' });
+    if (!done.has(`child-${name}-patch`)) {
+      const read = done.get(`child-${name}-read`)!;
+      expect(read.status).toBe('completed'); expect(read.output.hash).toMatch(/^[0-9a-f]{64}$/);
+      expect(started.has(name)).toBe(false); started.add(name);
+      // Hold both actual write responses after their real reads. The existing
+      // child-readiness wait covers this stage before any approval timer starts.
+      await barrier.promise;
+      return responseCall(`child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content, expectedHash: read.output.hash });
+    }
     if (!done.has(`child-${name}-command`)) return responseCall(`child-${name}-command`, 'run_command', { executable: process.execPath, cwd: '.',
       argv: ['-e', `const fs=require('node:fs');if(fs.readFileSync('fixture.txt','utf8')!==${JSON.stringify(content)})process.exitCode=9;else process.stdout.write('child-${name}-verified')`], timeoutMs: 10000, maxOutputBytes: 4096 });
     return final(`child-${name}-done`, `隔离实现 ${name} 与命令检查已完成，等待审阅。`);
   };
-  const requestDiagnostics: Array<{ index: number; actor: string; toolResultIds: string[]; branch: string; receivedAt: string; responseReadyAt?: string }> = [];
+  const requestDiagnostics: Array<{ index: number; actor: string; toolResultIds: string[]; branch: string; callId?: string; receivedAt: string; responseReadyAt?: string }> = [];
   const fixture: Fixture = await startResponsesFixture({ assertReplay: false, handler: async ({ body, index }: { body: Body; index: number }) => {
     const child = body.instructions.includes('independent delegated Native agent');
     const record = { index, actor: child ? userGoal(body).startsWith('IMPLEMENT_A') ? 'child-a' : 'child-b' : 'parent',
       toolResultIds: body.input.filter(item => item.type === 'function_call_output').map(item => item.call_id).filter((id): id is string => typeof id === 'string' && /^[a-zA-Z0-9_:-]{1,160}$/.test(id)),
-      branch: 'handler_pending', receivedAt: new Date().toISOString(), responseReadyAt: undefined as string | undefined };
+      branch: 'handler_pending', callId: undefined as string | undefined,
+      receivedAt: new Date().toISOString(), responseReadyAt: undefined as string | undefined };
     requestDiagnostics.push(record);
     try {
       const response = await implementationResponse({ body });
-      const call = response.output?.find((item): item is { type: string; name: string } => Boolean(item && typeof item === 'object' && 'type' in item && item.type === 'function_call' && 'name' in item && typeof item.name === 'string'));
+      const call = response.output?.find((item): item is { type: string; name: string; call_id?: unknown } => Boolean(item && typeof item === 'object' && 'type' in item && item.type === 'function_call' && 'name' in item && typeof item.name === 'string'));
       record.branch = call?.name ?? 'final';
+      if (typeof call?.call_id === 'string' && /^[a-zA-Z0-9_:-]{1,160}$/.test(call.call_id)) record.callId = call.call_id;
       return response;
     } catch (error) { record.branch = 'handler_failed'; throw error; }
     finally { record.responseReadyAt = new Date().toISOString(); }
@@ -424,6 +435,9 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
   const app = await f.launch();
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
+    const initialDiagnostics = nativeQueueDiagnosticSources({ app, page, dataDirectory: f.data, sessionId: session.id, fixture });
+    const initialTiming: Record<string, number | readonly number[] | undefined> = {};
+    const initialClock = performance.now();
     const pending = page.evaluate(id => window.desktop.sendChat(id, '从当前未提交修改快照委派两个独立实现，不自动合并', [], 'multi-implement-request'), session.id);
     let parentCompletion: { settled: boolean; success?: boolean; interrupted?: boolean; error?: string } = { settled: false };
     void pending.then(result => { parentCompletion = { settled: true, success: result.success, interrupted: result.interrupted, error: result.error }; },
@@ -433,12 +447,21 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       // #21's trace returned a valid approval at send+6.119s, after the generic
       // 5s poll expired. This phase includes worker startup, two responses and
       // the dirty baseline's Git checks; readiness is not a snapshot-I/O timer.
-      await expect.poll(async () => {
-        initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
-          .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
-        if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
-        return initialApprovalId;
-      }, { timeout: 15000 }).toBeTruthy();
+      // Preserve the 15s readiness requirement. When it fails, collect the
+      // parent's bounded journal/process evidence before snapshot hydration;
+      // response-ready timestamps alone cannot identify which host phase stalled.
+      await withNativeQueueDiagnostics(async () => {
+        initialTiming.approvalWaitStartedElapsedMs = performance.now() - initialClock;
+        try {
+          await expect.poll(async () => {
+            initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
+              .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
+            if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
+            return initialApprovalId;
+          }, { timeout: 15000 }).toBeTruthy();
+        } finally { initialTiming.approvalWaitSettledElapsedMs = performance.now() - initialClock; }
+      }, { phase: 'initial-delegation-approval', conversationId: session.execution.conversationId!, sources: initialDiagnostics,
+        timing: initialTiming, attach: (name, options) => test.info().attach(name, options) });
       phase = 'initial_ui_approval';
       const approval = page.getByRole('region', { name: '工具审批' });
       await expect(approval).toHaveAttribute('data-request-id', initialApprovalId!);
@@ -453,9 +476,37 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     await waitForChildren(started, page, session.id, fixture, f.data, pending); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n'); barrier.release();
-    const approvals: string[] = [], approvedRequests = new Set<string>();
+    const approvals: string[] = [], approvedRequests = new Set<string>(), approvedCalls = new Set<string>();
+    const approvalTimings: Array<{ iteration: number; waitStartedAt: string; requestsAtWaitStart: number; approvalPollStartedAt?: string;
+      readyCallsAtPollStart?: Array<{ callId: string; responseReadyAt: string }>; pendingFirstSeenAt?: string; pendingCount?: number;
+      callId?: string; responseReadyAt?: string }> = [];
     for (let i = 0; i < 4; i++) {
-      try { await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => ['apply_patch', 'run_command'].includes(item.toolName ?? '') && !approvedRequests.has(item.requestId))?.requestId).toBeTruthy(); }
+      const phase = 'child_host_approval';
+      let childApproval: Awaited<ReturnType<typeof snapshot>>['pending'][number] | undefined;
+      const timing: typeof approvalTimings[number] = { iteration: i, waitStartedAt: new Date().toISOString(), requestsAtWaitStart: fixture.requests.length };
+      approvalTimings.push(timing);
+      try {
+        // Both first write responses have reached the existing readiness gate.
+        // Keep the original 5s approval wait for every write/command, without
+        // adding another model-response allowance between approval iterations.
+        timing.approvalPollStartedAt = new Date().toISOString();
+        timing.readyCallsAtPollStart = requestDiagnostics.filter(record => record.actor !== 'parent' && record.responseReadyAt && record.callId &&
+          ['apply_patch', 'run_command'].includes(record.branch) && !approvedCalls.has(record.callId))
+          .map(record => ({ callId: record.callId!, responseReadyAt: record.responseReadyAt! }));
+        await expect.poll(async () => {
+          expect(fixture.errors).toEqual([]);
+          if (parentCompletion.settled) throw new Error('Parent settled before child approval display: ' + JSON.stringify(parentCompletion));
+          const pending = (await snapshot(page, session.id)).pending;
+          childApproval = pending.find(item => ['apply_patch', 'run_command'].includes(item.toolName ?? '') &&
+            !approvedRequests.has(item.requestId) && !approvedCalls.has(item.toolUseId ?? '') && requestDiagnostics.some(record =>
+              record.actor !== 'parent' && record.responseReadyAt && record.callId === item.toolUseId && record.branch === item.toolName));
+          if (childApproval && !timing.pendingFirstSeenAt) {
+            timing.pendingFirstSeenAt = new Date().toISOString(); timing.pendingCount = pending.length; timing.callId = childApproval.toolUseId;
+            timing.responseReadyAt = requestDiagnostics.find(record => record.callId === childApproval!.toolUseId)?.responseReadyAt;
+          }
+          return childApproval?.requestId;
+        }).toBeTruthy();
+      }
       catch (error) {
         const live = await page.evaluate(async id => {
           const [snapshot, attention] = await Promise.all([window.desktop.chatSnapshot(id), window.desktop.chatAttention()]);
@@ -467,14 +518,16 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
               children: snapshot.nativeAgents?.items.map(item => ({ childId: item.childId, runId: item.identity.runId, status: item.status, updatedAt: item.updatedAt })) } };
         }, session.id).catch(() => ({ unavailable: true }));
         const children = await receipts(f.data).catch(() => []);
-        const diagnostic = JSON.stringify({ approved: approvals, requests: fixture.requests.length, fixtureErrors: fixture.errors.length,
+        const diagnostic = JSON.stringify({ phase, approved: approvals, approvalTimings, requests: fixture.requests.length, fixtureErrors: fixture.errors.length,
           requestDiagnostics: requestDiagnostics.slice(-64), omittedRequests: Math.max(0, requestDiagnostics.length - 64),
           live, children: await childJournalDiagnostics(f.data, children) }, null, 2).replaceAll(secret, '[redacted]');
         await test.info().attach('native-child-approval-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
         throw error;
       }
-      const request = (await snapshot(page, session.id)).pending.find(item => ['apply_patch', 'run_command'].includes(item.toolName ?? '') && !approvedRequests.has(item.requestId))!;
+      const request = childApproval!;
       approvedRequests.add(request.requestId); approvals.push(request.toolName!);
+      expect(requestDiagnostics.filter(record => record.actor !== 'parent' && record.responseReadyAt && record.callId === request.toolUseId && record.branch === request.toolName)).toHaveLength(1);
+      expect(request.toolUseId).toBeTruthy(); approvedCalls.add(request.toolUseId!);
       const approval = page.getByRole('region', { name: '工具审批' });
       await expect(approval).toHaveAttribute('data-request-id', request.requestId);
       await expect(approval).toContainText(request.toolName!);

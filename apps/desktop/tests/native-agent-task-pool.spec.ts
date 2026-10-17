@@ -252,7 +252,13 @@ test('queued implementation starts only after cleanup and retains the approved d
     if (!done.has(`pool-child-${name}-read`)) {
       started.push(name); await barriers.get(name)!.promise; return call(`pool-child-${name}-read`, 'read_file', { path: 'fixture.txt' });
     }
-    expect(done.get(`pool-child-${name}-read`)?.output.content).toBe('approved dirty pool snapshot\n');
+    const baselineRead = done.get(`pool-child-${name}-read`);
+    expect(baselineRead?.status).toBe('completed');
+    // Snapshot worktrees follow the repository's Git checkout filters, so an
+    // inherited core.autocrlf=true legitimately returns CRLF here. Still require
+    // the exact approved dirty text rather than the staged/committed draft;
+    // patch preconditions below retain the actual read's raw-content hash.
+    expect(baselineRead?.output.content?.replace(/\r\n/g, '\n')).toBe('approved dirty pool snapshot\n');
     if (!done.has(`pool-child-${name}-patch`)) return call(`pool-child-${name}-patch`, 'apply_patch', { path: 'fixture.txt', content,
       expectedHash: done.get(`pool-child-${name}-read`)!.output.hash });
     if (!done.has(`pool-child-${name}-command`)) return call(`pool-child-${name}-command`, 'run_command', { executable: process.execPath, cwd: '.',
