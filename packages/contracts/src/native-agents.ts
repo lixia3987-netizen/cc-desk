@@ -8,7 +8,9 @@ export interface NativeAgentView {
   childId: string; batchId: string; taskId: string; parentTaskId: string;
   identity: NativeTaskIdentity; parentIdentity: NativeTaskIdentity; toolCallId: string;
   title: string; mode: 'review' | 'implement';
-  status: 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  status: 'queued' | 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  /** 宿主保存的批内任务次序；不是实时队列位置。旧记录可缺失。 */
+  queueIndex?: number;
   createdAt: string; updatedAt: string; cwd: string; receiptPath: string;
   /** 缺少持久化的子任务终态结果；宿主绝不恢复看似仍在运行的工作任务。 */
   missingTerminal?: boolean;
@@ -27,11 +29,13 @@ export interface NativeAgentRuntime {
   policySource?: 'defaults' | 'session';
   /** 根据全部宿主回执计数，不受面板折叠或三十条展示上限影响。 */
   total: number; active: number; running: number; prepared: number;
+  /** 尚未取得执行名额，不占活跃并发；旧记录可缺失。 */
+  queued?: number;
   completed: number; failed: number; cancelled: number; unknown: number;
 }
 export interface NativeAgentSnapshot {
   parentRunId: string;
-  /** 展示最近最多 30 个子任务，优先显示活跃项；实际并发由会话配置限制。 */
+  /** 展示最多 30 个子任务，优先显示活跃项和等待项；实际并发由会话配置限制。 */
   items: NativeAgentView[];
   /** 其他结果保留在父任务运行的回执目录中。 */
   omitted: number; receiptDirectory: string;

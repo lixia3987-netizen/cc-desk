@@ -36,7 +36,7 @@ const resultFor = (input: NativeAgentChildInput, overrides: Partial<NativeAgentC
   status: 'completed', reason: 'model_completed', committed: true, summary: 'Verified child fixture.', modelRequests: 1, toolCalls: 0, ...overrides });
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, setup: (identity: RunIdentity) => {
-  hooks: NativeAgentSkillInheritanceHooks; runChild(input: NativeAgentChildInput): Promise<NativeAgentChildResult>; requiresApproval?: boolean;
+  hooks: NativeAgentSkillInheritanceHooks; runChild(input: NativeAgentChildInput): Promise<NativeAgentChildResult>; requiresApproval?: boolean; maxSubagents?: number;
 }) {
   const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'cc-skill-delegation-'))), cwd = path.join(directory, 'repo');
   await fs.mkdir(path.dirname(path.join(cwd, guidePath)), { recursive: true });
@@ -47,7 +47,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, setup: (iden
   const abort = new AbortController(), selected = setup(identity), receipts = new Map<string, NativeDelegationReceipt>(), inputs: NativeAgentChildInput[] = [];
   const options: NativeAgentDelegationOptions = { identity, parentTaskId: randomUUID(), cwd, policy: 'workspace_write', signal: abort.signal,
     forbiddenValues: ['sk-protected-delegation-secret'], storeDirectory: path.join(directory, 'records'), worktreeRoot: path.join(directory, 'worktrees'),
-    maxSubagents: 2, requiresApproval: selected.requiresApproval ?? false, skills: selected.hooks, assertOwnership: async () => {},
+    maxSubagents: selected.maxSubagents ?? 2, requiresApproval: selected.requiresApproval ?? false, skills: selected.hooks, assertOwnership: async () => {},
     createChildBudget: () => ({ consume: async () => true, remainingMs: () => 120000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) }),
     runChild: async input => { inputs.push(input); return selected.runChild(input); }, record: async receipt => { receipts.set(receipt.childId, structuredClone(receipt)); } };
   const tool = createAgentDelegationTools(options), context: ToolExecutionContext = { identity, policyRevision: 'policy', signal: abort.signal, maxOutputBytes: 65536 };
@@ -156,4 +156,23 @@ for (const uncertain of [false, true]) test(`a rejected child launch is ${uncert
   assert.equal(receipt.error, uncertain ? 'child_run_unconfirmed' : 'child_start_preconditions_failed');
   const execution = JSON.parse(await fs.readFile(nativeDelegationExecutionPath(f.options.storeDirectory, f.identity, receipt.batchId), 'utf8'));
   if (!uncertain) { assert.equal(execution.children[0].started, undefined); assert.equal(execution.children[0].settled, undefined); }
+});
+
+test('queued work retains its frozen Skills and rejects source changes before allocating another budget', async t => {
+  let selected!: NativeSkillInheritanceManifest, freezes = 0, preflights = 0, budgets = 0;
+  const f = await fixture(t, identity => {
+    selected = manifestFor(identity);
+    return { maxSubagents: 1, hooks: { freeze: async () => { freezes++; return selected; }, assertCurrent: async manifest => {
+      if (manifest.digest !== selected.digest) throw new Error('Inherited source changed while queued');
+    }, preflightChild: async () => { preflights++; } }, runChild: async input => {
+      selected = manifestFor(identity, 'changed-during-first-child'); return resultFor(input);
+    } };
+  });
+  const originalBudget = f.options.createChildBudget;
+  f.options.createChildBudget = identity => { budgets++; return originalBudget(identity); };
+  assert.equal((await f.tool.execute(await f.prepare('delegate_review', [{ title: 'A', goal: 'First question' }, { title: 'B', goal: 'Queued question' }]), f.context)).status, 'completed');
+  assert.equal(freezes, 1); assert.equal(preflights, 1); assert.equal(budgets, 1); assert.equal(f.inputs.length, 1);
+  const queued = [...f.receipts.values()].find(receipt => receipt.title === 'B')!;
+  assert.equal(queued.status, 'failed'); assert.equal(queued.error, 'skill_inheritance_preflight_failed'); assert.equal(queued.result, undefined); assert.equal(queued.workspace, undefined);
+  assert.equal(queued.nativeSkills!.digest, f.inputs[0].nativeSkills!.digest, 'source changes never replace the admitted manifest');
 });

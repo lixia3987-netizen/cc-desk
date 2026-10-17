@@ -265,7 +265,10 @@ test('lost child settlement and substituted receipts cause an unknown barrier, n
   const f = fixture(repo.cwd, async input => input.title === 'lost' ? Promise.reject(new Error('transport gone')) : resultFor(input, { identity: { ...input.identity, runId: randomUUID() } }));
   t.after(() => f.tool.closeAll());
   const result = await f.tool.execute(await f.prepare([{ title: 'lost', goal: '审阅' }, { title: 'forged', goal: '审阅' }]), f.context);
-  assert.equal(result.status, 'completed'); assert.ok((await readReceipts(repo.storeDirectory)).every(r => r.status === 'unknown'));
+  assert.equal(result.status, 'completed');
+  const saved = await readReceipts(repo.storeDirectory);
+  assert.ok(saved.some(r => r.status === 'unknown'));
+  assert.ok(saved.every(r => r.status === 'unknown' || r.status === 'failed' && !r.result && r.error === 'delegation_queue_halted'));
 });
 
 test('untracked content changes invalidate a prepared snapshot even if porcelain status stays identical', async t => {
@@ -278,7 +281,7 @@ test('new delegates obey configured concurrent capacity while settled children n
   const repo = await repository(t); let starts = 0;
   const f = fixture(repo.cwd, async input => { starts++; return resultFor(input); }); t.after(() => f.tool.closeAll());
   const invalid = [{ tasks: [] }, { tasks: [{ title: ' title ', goal: 'question' }] }, { tasks: [{ title: 'a', goal: 'sk-protected-delegation-secret' }] },
-    { tasks: [{ title: 'a', goal: 'question', toolPolicy: 'workspace_write' }] }, { tasks: Array.from({ length: 5 }, () => ({ title: 'a', goal: 'question' })) }];
+    { tasks: [{ title: 'a', goal: 'question', toolPolicy: 'workspace_write' }] }, { tasks: Array.from({ length: 31 }, () => ({ title: 'a', goal: 'question' })) }];
   for (const input of invalid) await assert.rejects(f.tool.prepare({ id: randomUUID(), name: 'delegate_review', arguments: JSON.stringify(input) }, f.context));
   const tasks = Array.from({ length: 4 }, () => ({ title: '审阅', goal: 'question' }));
   for (let i = 0; i < 4; i++) assert.equal((await f.tool.execute(await f.prepare(tasks), f.context)).status, 'completed');
@@ -305,22 +308,23 @@ test('credential-bearing child output is omitted from durable receipts and model
 });
 
 test('capacity is reserved before asynchronous preparation so overlapping batches cannot multiply concurrency', async t => {
-  const repo = await repository(t); let starts = 0, ready!: () => void, release!: () => void;
-  const allStarted = new Promise<void>(resolve => { ready = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
-  const f = fixture(repo.cwd, async input => { if (++starts === 3) ready(); await barrier; return resultFor(input); });
-  t.after(() => f.tool.closeAll());
+  const repo = await repository(t); let starts = 0, active = 0, peak = 0, ready!: () => void, fourth!: () => void, release!: () => void;
+  const allStarted = new Promise<void>(resolve => { ready = resolve; }), atCapacity = new Promise<void>(resolve => { fourth = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
+  const f = fixture(repo.cwd, async input => { peak = Math.max(peak, ++active); if (++starts === 3) ready(); if (starts === 4) fourth(); await barrier; active--; return resultFor(input); });
+  t.after(async () => { release(); await f.tool.closeAll(); });
   const first = await f.prepare(Array.from({ length: 3 }, () => ({ title: 'first', goal: 'review' })));
   const second = await f.prepare(Array.from({ length: 2 }, () => ({ title: 'second', goal: 'review' })));
   const pending = f.tool.execute(first, f.context); await allStarted;
-  assert.equal((await f.tool.execute(second, f.context)).status, 'not_executed'); assert.equal(starts, 3);
-  release(); assert.equal((await pending).status, 'completed');
+  const queued = f.tool.execute(second, f.context); await atCapacity;
+  assert.equal(starts, 4); assert.equal(peak, 4);
+  release(); assert.equal((await pending).status, 'completed'); assert.equal((await queued).status, 'completed'); assert.equal(starts, 5); assert.equal(peak, 4);
 });
 
 test('closeAll during durable intent preparation prevents child launch and settles cancellation', async t => {
   const repo = await repository(t); let starts = 0, intentReached!: () => void, release!: () => void;
   const reached = new Promise<void>(resolve => { intentReached = resolve; }), barrier = new Promise<void>(resolve => { release = resolve; });
   const f = fixture(repo.cwd, async input => { starts++; return resultFor(input); }, { record: async receipt => {
-    if (receipt.status === 'prepared') { intentReached(); await barrier; }
+    if (receipt.status === 'queued') { intentReached(); await barrier; }
   } });
   const pending = f.tool.execute(await f.prepare(), f.context); await reached;
   const closed = f.tool.closeAll(); release(); await closed;
@@ -374,7 +378,7 @@ test('parallel execution evidence must be durable before any child launches', as
   const result = await f.tool.execute(await f.prepare(), f.context);
   assert.equal(result.status, 'unknown'); assert.equal(starts, 0);
   const saved = await readReceipts(repo.storeDirectory);
-  assert.equal(saved.length, 1); assert.equal(saved[0].status, 'prepared');
+  assert.equal(saved.length, 1); assert.equal(saved[0].status, 'queued');
 });
 
 test('configured capacity supports thirty concurrently active independent children with bounded result references', async t => {
@@ -443,14 +447,14 @@ test('implementation recovery continues in the retained workspace without replay
   await assert.rejects(fs.stat(path.join(repo.cwd, 'effect.txt')));
 });
 
-test('unknown child effects block its recovery without preventing unrelated parent work', async t => {
+test('unknown child effects block recovery and further child launches in the same parent pool', async t => {
   const repo = await repository(t); let starts = 0;
   const f = fixture(repo.cwd, async input => resultFor(input, ++starts === 1 ? { status: 'recovery_required', reason: 'unknown_command_cleanup' } : {}));
   t.after(() => f.tool.closeAll());
   assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed');
   const failed = (await readReceipts(repo.storeDirectory))[0]; assert.equal(failed.status, 'unknown');
   await assert.rejects(f.tool.prepare({ id: randomUUID(), name: 'recover_agent', arguments: JSON.stringify({ childId: failed.childId }) }, f.context));
-  assert.equal((await f.tool.execute(await f.prepare(), f.context)).status, 'completed'); assert.equal(starts, 2);
+  await assert.rejects(f.prepare()); assert.equal(starts, 1);
 });
 
 test('recovery approval cannot be reused after retained workspace contents change', async t => {

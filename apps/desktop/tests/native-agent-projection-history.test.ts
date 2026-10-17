@@ -84,7 +84,7 @@ test('the current durable parent policy remains visible before delegation withou
   const saved = projection.snapshot(next.sessionId);
   assert.equal(saved.nativeRun?.runId, next.runId);
   assert.deepEqual(saved.nativeAgentRuntime, { parentRunId: next.runId, maxSubagents: 12, policySource: 'defaults', total: 0,
-    active: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 });
+    active: 0, queued: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 });
   assert.equal(saved.nativeAgents?.parentRunId, f.parent.runId);
   assert.equal(saved.nativeAgents?.runtime?.maxSubagents, 7); assert.equal(saved.nativeAgents?.runtime?.policySource, 'session');
   assert.equal(saved.nativeAgents?.runtime?.total, 1); assert.equal(saved.nativeAgents?.runtime?.active, 0);

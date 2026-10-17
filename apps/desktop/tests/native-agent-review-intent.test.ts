@@ -90,7 +90,9 @@ test('parent team sizing explains useful decomposition without assuming four or 
   const instructions = buildNativeParentInstructions({ permissionInstructions: 'Policy sentinel', projectInstructions: 'Project sentinel' });
   assert.match(instructions, /maximum active children as capacity, not a target team size/);
   assert.match(instructions, /choose and briefly explain a team size based on independently answerable questions, disjoint code paths and verification risks/);
-  assert.match(instructions, /honor an explicit user-requested count within the actual capacity or explain the limitation/);
+  assert.match(instructions, /honor an explicit user-requested count within the 30-task handoff limit or explain the limitation/);
+  assert.match(instructions, /host queues them FIFO and starts the next task whenever a slot is safely released/);
+  assert.match(instructions, /never describe all queued tasks as simultaneously running/);
   assert.match(instructions, /Do not default to four children, force all available slots to be filled, or duplicate work/);
   assert.match(instructions, /Host-supplied structured workflow policy defines any required collaboration and independent validation phases/);
   assert.match(instructions, /Workflow alone does not request delegation/);

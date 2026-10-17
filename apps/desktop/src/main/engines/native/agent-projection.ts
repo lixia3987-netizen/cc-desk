@@ -22,7 +22,8 @@ const result = z.object({ identity, taskId: uuid, status: z.enum(['completed', '
 }).strict();
 const receiptSchema = z.object({ version: z.literal(1), batchId: uuid, childId: uuid, taskId: uuid, identity, parentIdentity: identity,
   parentTaskId: z.string().min(1).max(100), toolCallId: z.string().min(1).max(256), title: z.string().min(1).max(200), goal: z.string().min(1).max(6000),
-  mode: z.enum(['review', 'implement']), status: z.enum(['prepared', 'running', 'completed', 'failed', 'cancelled', 'unknown']),
+  mode: z.enum(['review', 'implement']), status: z.enum(['queued', 'prepared', 'running', 'completed', 'failed', 'cancelled', 'unknown']),
+  queueIndex: z.number().int().min(0).max(29).optional(),
   createdAt: timestamp, updatedAt: timestamp, receiptPath: location, cwd: location,
   workspace: z.object({ path: location, cwd: location, branch: z.string().regex(/^codex\/native-agent-[0-9a-f-]{36}$/i), baseCommit: commit,
     parentHead: commit, baseline: z.enum(['head', 'snapshot']) }).strict().optional(), workspaceVerified: z.boolean().optional(),
@@ -32,7 +33,8 @@ const receiptSchema = z.object({ version: z.literal(1), batchId: uuid, childId: 
   recovery: z.object({ previousChildId: uuid, previousRunId: identifier, attempt: z.number().int().positive(), workspaceOwnerChildId: uuid.optional() }).strict().optional(),
   nativeSkills: z.custom<NativeSkillInheritanceManifest>(isNativeSkillInheritanceManifest).transform(normalizeNativeSkillInheritanceManifest).optional(),
   result: result.optional(), error: z.string().max(256).optional(),
-}).strict();
+}).strict().refine(value => value.status !== 'queued' || value.workspace === undefined && value.workspaceVerified === undefined && value.artifact === undefined && value.result === undefined,
+  'Queued Native children cannot have execution evidence.');
 const sameIdentity = (a: RunIdentity, b: RunIdentity) => (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).every(key => a[key] === b[key]);
 
 export function nativeAgentReceiptDirectory(dataDirectory: string, parent: RunIdentity): string {
@@ -49,6 +51,7 @@ export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIde
   const view: NativeAgentView = { childId: value.childId, batchId: value.batchId, taskId: value.taskId, parentTaskId: value.parentTaskId,
     identity: structuredClone(value.identity), parentIdentity: structuredClone(parent), toolCallId: value.toolCallId,
     title: value.title, mode: value.mode, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt, cwd: value.cwd, receiptPath: value.receiptPath };
+  if (value.queueIndex !== undefined) view.queueIndex = value.queueIndex;
   if (value.error) view.error = value.error;
   if (value.workspace) view.worktree = { ...value.workspace, verified: value.workspaceVerified === true };
   if (value.artifact) view.artifact = { patchPath: value.artifact.patchPath, changedFiles: value.artifact.changedFiles.slice(0, 128), omittedFiles: Math.max(0, value.artifact.changedFiles.length - 128),
@@ -80,13 +83,23 @@ export function nativeAgentRuntimePolicy(configuration: unknown): RuntimePolicy 
 function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receiptDirectory: string, active: boolean, incomplete = false, policy: RuntimePolicy = {}): NativeAgentSnapshot {
   const all = [...items].map(item => {
     const view = structuredClone(item);
-    if (!active && ['prepared', 'running'].includes(view.status)) { view.status = 'unknown'; view.missingTerminal = true; }
+    if (!active && ['queued', 'prepared', 'running'].includes(view.status)) { view.status = 'unknown'; view.missingTerminal = true; }
     return view;
   });
-  all.sort((a, b) => Number(['prepared', 'running'].includes(b.status)) - Number(['prepared', 'running'].includes(a.status)) ||
-    b.createdAt.localeCompare(a.createdAt) || b.batchId.localeCompare(a.batchId) || a.childId.localeCompare(b.childId));
-  const runtime: NativeAgentRuntime = { parentRunId: parent.runId, ...policy, total: all.length, active: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 };
-  for (const item of all) runtime[item.status]++;
+  const priority = (status: NativeAgentView['status']) => ['prepared', 'running'].includes(status) ? 2 : status === 'queued' ? 1 : 0;
+  const queuedBatches = new Map<string, string>(), insertion = new Map(all.map((item, index) => [item.childId, index]));
+  for (const item of all) if (item.status === 'queued' && (!queuedBatches.has(item.batchId) || item.createdAt < queuedBatches.get(item.batchId)!)) queuedBatches.set(item.batchId, item.createdAt);
+  all.sort((a, b) => {
+    const stateOrder = priority(b.status) - priority(a.status);
+    if (stateOrder) return stateOrder;
+    if (a.status === 'queued' && b.status === 'queued') {
+      return queuedBatches.get(a.batchId)!.localeCompare(queuedBatches.get(b.batchId)!) || a.batchId.localeCompare(b.batchId) ||
+        (a.queueIndex ?? 30 + insertion.get(a.childId)!) - (b.queueIndex ?? 30 + insertion.get(b.childId)!);
+    }
+    return b.createdAt.localeCompare(a.createdAt) || b.batchId.localeCompare(a.batchId) || a.childId.localeCompare(b.childId);
+  });
+  const runtime: NativeAgentRuntime = { parentRunId: parent.runId, ...policy, total: all.length, active: 0, queued: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 };
+  for (const item of all) if (item.status === 'queued') runtime.queued = (runtime.queued ?? 0) + 1; else runtime[item.status]++;
   runtime.active = runtime.running + runtime.prepared;
   return { parentRunId: parent.runId, items: all.slice(0, 30), omitted: Math.max(0, all.length - 30), receiptDirectory, runtime, ...(incomplete ? { incomplete: true } : {}) };
 }
@@ -111,7 +124,7 @@ export class NativeAgentProjection {
     if (evidence && (evidence.taskSnapshotPath && path.resolve(evidence.taskSnapshotPath) !== expectedTask ||
       evidence.runJournalPath && path.resolve(evidence.runJournalPath) !== expectedJournal || evidence.commandReceipts?.some(command => path.resolve(command.receiptPath) !== expectedJournal))) throw new Error('Native child evidence path changed.');
     const previous = this.items.get(view.childId);
-    if (previous && (previous.batchId !== view.batchId || previous.taskId !== view.taskId || !sameIdentity(previous.identity, view.identity))) throw new Error('Native child identity changed.');
+    if (previous && (previous.batchId !== view.batchId || previous.taskId !== view.taskId || previous.queueIndex !== view.queueIndex || !sameIdentity(previous.identity, view.identity))) throw new Error('Native child identity changed.');
     const previousReceipt = this.retained.get(view.childId);
     if (previousReceipt && canonicalJson((previousReceipt.nativeSkills ?? null) as unknown as JsonValue) !== canonicalJson((receipt.nativeSkills ?? null) as unknown as JsonValue)) {
       throw new Error('Native child skill inheritance changed.');

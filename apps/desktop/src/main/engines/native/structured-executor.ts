@@ -49,6 +49,7 @@ import { nativeExecutionReceipt, readNativeExecutionReceipt, saveNativeExecution
 import { parseNativeExecutionPolicy, restrictNativeTools } from './execution-policy';
 import { NativeAggregateBudget } from './aggregate-budget';
 import { createNativeChildBudget } from './child-budget';
+import { createNativeAgentTaskPool } from './agent-task-pool';
 import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeAgentDelegationTools } from './agent-delegation';
 import { runNativeAgentChild, nativeChildExcludedRoots } from './agent-child-runner';
 import { NativeActivePause } from './active-pause';
@@ -561,6 +562,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       };
       const stdioConnections = mcpConnections.filter(item => item.transport === 'stdio');
       active.children = new Map(); active.childApprovalQueue = Promise.resolve(); active.childLeases = new Map();
+      const taskPool = createNativeAgentTaskPool({ capacity: config.maxSubagents, signal: active.abort.signal });
       const createChildBudget = (childIdentity: RunIdentity) => {
         const budget = createNativeChildBudget(childIdentity, config, active.abort.signal);
         childBudgets.set(childIdentity.runId, { budget, modelRequests: 0, toolCalls: 0 }); return budget;
@@ -613,17 +615,17 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           throw error;
         } finally {
           active.children!.delete(input.identity.runId);
-          if (retainLease) { active.cleanupUnconfirmed = true; this.recovery.add(id); }
+          if (retainLease) { taskPool.close('unsafe'); active.cleanupUnconfirmed = true; this.recovery.add(id); }
           else if (lease) {
             try { await lease.release(); active.childLeases!.delete(input.identity.runId); }
-            catch { active.cleanupUnconfirmed = true; this.recovery.add(id); throw new NativeWorkerCleanupError(); }
+            catch { taskPool.close('unsafe'); active.cleanupUnconfirmed = true; this.recovery.add(id); throw new NativeWorkerCleanupError(); }
           }
         }
       };
       active.delegation = createAgentDelegationTools({ identity, parentTaskId: active.taskId, cwd: session.cwd,
         policy: active.executionPolicy?.toolPolicy === 'read_only' ? 'read_only' : 'workspace_write',
         signal: active.abort.signal, forbiddenValues, storeDirectory: path.join(this.store.directory, 'native'),
-        worktreeRoot: path.join(this.store.directory, 'native', 'agent-worktrees'), maxSubagents: config.maxSubagents,
+        worktreeRoot: path.join(this.store.directory, 'native', 'agent-worktrees'), maxSubagents: config.maxSubagents, taskPool,
         createChildBudget, assertOwnership, runChild,
         ...(skillRun ? { skills: {
           freeze: () => skillRun.prepareInheritance(ledger),
@@ -646,7 +648,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (collaboration && !singleAgent && validationMode) {
         quality = createNativeWorkflowQualityController({ identity, parentTaskId: active.taskId, cwd: session.cwd,
           dataDirectory: this.store.directory, collaboration, validationMode, goal: active.input,
-          maxSubagents: config.maxSubagents, forbiddenValues, signal: active.abort.signal, createChildBudget, assertOwnership, runChild,
+          maxSubagents: config.maxSubagents, taskPool, forbiddenValues, signal: active.abort.signal, createChildBudget, assertOwnership, runChild,
           readDelivery: async () => {
             for (let end = ledger.usage.records; end > 0;) {
               const start = Math.max(0, end - 1000), records = ledger.replay(start, end - start);

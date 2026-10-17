@@ -146,7 +146,7 @@ test('runtime counts all durable children before display trimming and releases t
   const live = projection.snapshot(true);
   assert.equal(live.items.length, 30); assert.equal(live.omitted, 7);
   assert.deepEqual(live.runtime, { parentRunId: parent.runId, maxSubagents: 12, policySource: 'defaults', total: 37, active: 5,
-    prepared: 1, running: 4, completed: 32, failed: 0, cancelled: 0, unknown: 0 });
+    queued: 0, prepared: 1, running: 4, completed: 32, failed: 0, cancelled: 0, unknown: 0 });
   const loaded = await loadNativeAgents(directory, parent, configuration);
   assert.equal(loaded.receipts().length, 37); assert.equal(loaded.snapshot().incomplete, undefined);
   assert.deepEqual(loaded.snapshot(true).runtime, live.runtime);

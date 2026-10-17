@@ -4,7 +4,7 @@ import { Dialog } from './Dialog';
 import { NativeAgentResultReader, nativeAgentReviewPrompt } from './native-agent-review';
 
 const labels: Record<NativeAgentView['status'], string> = {
-  prepared: '准备中', running: '运行中', completed: '执行已完成', failed: '执行失败', cancelled: '已取消', unknown: '结果未知，待核查',
+  queued: '排队中', prepared: '准备中', running: '运行中', completed: '执行已完成', failed: '执行失败', cancelled: '已取消', unknown: '结果未知，待核查',
 };
 const referenceId = (childId: string, kind: string) => `native-agent-${childId}-${kind}`;
 function revealReference(event: MouseEvent<HTMLAnchorElement>, id: string) {
@@ -32,6 +32,7 @@ function Agent({ agent, loadError, onRead }: { agent: NativeAgentView; loadError
   return <details className="native-agent-entry" data-agent-id={agent.childId} data-agent-status={status}>
     <summary><strong>{agent.title}</strong><span>{agent.mode === 'review' ? '只读审阅' : '隔离实现'}</span><span className={`native-agent-state ${status}`}>{labels[status]}</span></summary>
     <button type="button" className="secondary compact native-agent-read" onClick={onRead}>查看保存成果</button>
+    {agent.status === 'queued' && !loadError && <p className="native-agent-note">等待执行名额，尚未启动，不占活跃并发；空闲后按提交顺序启动。</p>}
     <nav aria-label={`${agent.title}的结果引用`}>{links.map(link => <a key={link.kind} href={`#${referenceId(agent.childId, link.kind)}`}
       onClick={event => revealReference(event, referenceId(agent.childId, link.kind))}>{link.label}</a>)}</nav>
     {agent.missingTerminal && <p className="native-agent-warning">未找到可确认的终局回执，无法确认子 Agent 已停止或成果已完整保存。</p>}
@@ -172,10 +173,10 @@ export function NativeAgentPanel({ sessionId, agents, runtime, loadError, readOn
   return <section className="native-agent-panel" aria-label="Native Agent 协作">
     {runtime && <div className="native-agent-runtime" aria-label="本轮子 Agent 配置" data-parent-run-id={runtime.parentRunId}>
       <strong>本轮子 Agent</strong>
-      <p>{loadError ? '当前状态未知；以下为上次同步记录。' : <>活跃 {runtime.active} / 有效上限 {runtime.maxSubagents ?? '未记录'} · 已启动 {runtime.total}</>}</p>
+      <p>{loadError ? '当前状态未知；以下为上次同步记录。' : <>活跃 {runtime.active} / 有效上限 {runtime.maxSubagents ?? '未记录'} · 任务总数 {runtime.total}</>}</p>
       <p>策略来源：{runtime.policySource === 'defaults' ? '跟随默认' : runtime.policySource === 'session' ? '此会话单独设置' : '旧记录未保存'} · 本轮开始时固定，已保存的修改在下一轮生效。</p>
-      <p className="native-agent-note">{loadError ? '上次记录：' : ''}运行中 {runtime.running} · 准备中 {runtime.prepared} · 执行完成 {runtime.completed} · 失败 {runtime.failed} · 取消 {runtime.cancelled} · 未知 {runtime.unknown}</p>
-      <p className="native-agent-note">活跃数仅包含准备中与运行中的任务；完成和取消的任务不占并发。上限是容量，实际拆分由独立任务数量决定。独立质量审查角色在质量面板单独记录。</p>
+      <p className="native-agent-note">{loadError ? '上次记录：' : ''}排队中 {runtime.queued ?? 0} · 运行中 {runtime.running} · 准备中 {runtime.prepared} · 执行完成 {runtime.completed} · 失败 {runtime.failed} · 取消 {runtime.cancelled} · 未知 {runtime.unknown}</p>
+      <p className="native-agent-note">活跃数仅包含准备中与运行中的任务；排队、完成和取消的任务不占并发。单次可提交最多 30 个任务，空闲后按提交顺序补位。独立质量审查角色在质量面板单独记录。</p>
     </div>}
     {selected && agents && <ResultDialog key={`${sessionId}:${agents.parentRunId}:${selected.childId}`} sessionId={sessionId} agent={selected} readOnly={readOnly || !!loadError} onReviewPrompt={onReviewPrompt} onClose={() => setSelection(undefined)}/>}
     {!!agents && (!!retained.length || agents.incomplete) && <details open><summary>{historical ? '最近一轮子任务记录' : '子 Agent'}（{agents.runtime?.total ?? agents.items.length + agents.omitted}）</summary>
