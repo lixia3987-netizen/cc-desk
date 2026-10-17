@@ -13,6 +13,7 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
   const authority = useRef(snapshot); authority.current = snapshot;
   const history = useRef(protectHistory); history.current = protectHistory;
   const loadingPage = useRef(false);
+  const confirmedDisjoint = useRef<ChatSnapshot | undefined>(undefined);
   const lastRead = useRef<{ options: ChatPageOptions; direction: 'replace' | 'before' | 'after' }>({ options: {}, direction: 'replace' });
   const publish = useCallback((page: ChatDisplayPage) => {
     pageRef.current = page; chatDisplayCache.set(page); setValue({ scope, page });
@@ -30,7 +31,8 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
       if (!page) { setError('会话记录尚未确认，请重试读取。'); return undefined; }
       if (page.sessionId !== sessionId || (page.conversationId ?? '') !== (conversationId ?? '')) throw new Error('会话上下文已变化，请重新读取记录。');
       let next = mergeDisplayPage(pageRef.current, page, direction);
-      if (authority.current) next = mergeDisplaySnapshot(next, authority.current.messages, history.current, authority.current.sourceIncomplete);
+      // 向后补页允许裁掉旧端，避免满历史窗口接上流式输出时又将新行裁掉。
+      if (authority.current) next = mergeDisplaySnapshot(next, authority.current.messages, direction === 'after' ? false : history.current, authority.current.sourceIncomplete);
       publish(next); setLoading(false);
       return next;
     } catch (reason) {
@@ -67,5 +69,21 @@ export function useChatDisplay(sessionId: string, conversationId: string | undef
     if (loadingPage.current || !page?.before || !page.messages.length) return Promise.resolve(undefined);
     return read({ before: page.messages[0].id }, 'before');
   }, [read]);
-  return { page, loading, paging, error, read, earlier };
+  const newer = useCallback(() => {
+    const page = pageRef.current;
+    if (loadingPage.current || !page?.after || !page.messages.length) return Promise.resolve(undefined);
+    return read({ after: page.messages.at(-1)!.id }, 'after');
+  }, [read]);
+  useEffect(() => {
+    const page = pageRef.current;
+    if (!snapshot?.messages.length || !page?.messages.length || page.after !== null || protectHistory || loadingPage.current || confirmedDisjoint.current === snapshot) return;
+    const ids = new Set(page.messages.map(message => message.id));
+    if (!snapshot.messages.some(message => ids.has(message.id))) {
+      // 无交集无法证明先后顺序，应重读保存的尾页确认，不能用迟到快照替换新页。
+      // 每个新快照仅确认一次，读取期间到达的快照在读取结束后继续核验。
+      confirmedDisjoint.current = snapshot;
+      void read();
+    }
+  }, [snapshot, scope, protectHistory, loading, read]);
+  return { page, loading, paging, error, read, earlier, newer };
 }

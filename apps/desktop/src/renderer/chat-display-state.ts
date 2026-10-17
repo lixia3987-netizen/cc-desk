@@ -66,31 +66,48 @@ export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming:
 export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly ChatMessage[], protectHistory = false, sourceIncomplete = false): ChatDisplayPage {
   if (sourceIncomplete && !page.incomplete) page = { ...page, incomplete: true };
   if (!messages.length) return page; // An initial empty projection cannot erase a saved display page.
-  const authorityIds = new Set(messages.map(message => message.id));
-  const retained = page.messages.filter(message => {
-    const streamPrefix = `${message.turnId}:stream:`;
-    const temporary = message.role === 'assistant' && message.id.startsWith(streamPrefix) && /^\d+$/.test(message.id.slice(streamPrefix.length));
-    return !temporary || authorityIds.has(message.id);
-  });
-  const currentIds = new Set(retained.map(message => message.id));
-  let lastOverlap = -1;
-  messages.forEach((message, index) => { if (currentIds.has(message.id)) lastOverlap = index; });
-  if (page.after === null && lastOverlap < 0 && (!protectHistory || !retained.length)) {
-    // The live tail advanced beyond the bounded host window while this view was inactive.
-    // Read the missing history through its cursor rather than joining unrelated windows.
+  if (!page.messages.length) {
     const tail = messages.slice(-50);
     return mergeDisplayPage(page, { ...page, messages: tail, before: tail[0].id, after: null });
   }
+  const authorityIds = new Set(messages.map(message => message.id));
+  const authorityOrder = new Map(messages.map((message, index) => [message.id, index]));
+  const streamNumber = (message: ChatMessage) => {
+    const streamPrefix = `${message.turnId}:stream:`;
+    return message.role === 'assistant' && message.id.startsWith(streamPrefix) && /^\d+$/.test(message.id.slice(streamPrefix.length))
+      ? Number(message.id.slice(streamPrefix.length)) : undefined;
+  };
+  let predecessor: ChatMessage | undefined;
+  const retained = page.messages.filter(message => {
+    const number = streamNumber(message);
+    if (number === undefined) { predecessor = message; return true; }
+    if (authorityIds.has(message.id)) return true;
+    const anchor = predecessor ? authorityOrder.get(predecessor.id) : undefined;
+    if (anchor === undefined) return !messages.some(next => next.turnId === message.turnId && (streamNumber(next) ?? -1) > number);
+    // 旧快照缺少新流式消息不代表输出已结束，必须在稳定前序之后看到替代记录。
+    return !messages.slice(anchor + 1).some(next => next.turnId !== message.turnId
+      || next.role === 'system'
+      || next.role === 'assistant' && (streamNumber(next) === undefined || streamNumber(next)! > number));
+  });
+  const currentIds = new Set(retained.map(message => message.id));
+  const tailIndex = messages.findIndex(message => message.id === retained.at(-1)?.id);
+  const overlapStart = messages.findIndex(message => currentIds.has(message.id));
+  const retainedStart = overlapStart < 0 ? -1 : retained.findIndex(message => message.id === messages[overlapStart].id);
+  // 有界快照可能早于刚读完的显示页。只有连续覆盖当前尾部才能扩展窗口，
+  // 任意交集或无交集都不能证明快照包含更新的消息。
+  const connectsTail = tailIndex >= 0 && retainedStart >= 0
+    && retained.length - retainedStart === tailIndex - overlapStart + 1
+    && retained.slice(retainedStart).every((message, index) => message.id === messages[overlapStart + index].id);
   const changed = new Map(messages.map(message => [message.id, message]));
   const updated = retained.map(message => {
     const value = changed.get(message.id), next = value && keepDisplayIdentity(message, value);
     return next && !sameChatMessage(message, next) ? next : message;
   });
-  if (page.after === null && lastOverlap >= 0) updated.push(...messages.slice(lastOverlap + 1));
+  if (connectsTail) updated.push(...messages.slice(tailIndex + 1));
   // Reading above the bottom changes which edge may be discarded at the cap.
   // It must not hide normal live replies, including a canonical stream replacement.
   return mergeDisplayPage(page, { ...page, messages: updated,
-    after: protectHistory && lastOverlap < 0 && updated.length ? page.after ?? updated.at(-1)!.id : page.after }, 'replace', protectHistory);
+    after: connectsTail ? null : page.after }, 'replace', protectHistory);
 }
 
 /** Read-only message pages, explicitly separate from running state, approvals and operation receipts. */

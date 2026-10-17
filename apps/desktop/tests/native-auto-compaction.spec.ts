@@ -175,7 +175,7 @@ test('native cancelling an automatic summary keeps the queued message and origin
     await expect.poll(() => fixture.requests.length).toBe(5);
     expect(fixture.requests[4].tools).toEqual([]);
     const meter = page.locator('details.context-meter');
-    if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
+    if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator(':scope > summary').click();
     await expect(meter).toContainText('正在自动压缩，完成后继续本次发送');
     await openSessionSettings(page, 'compaction');
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toBeDisabled();

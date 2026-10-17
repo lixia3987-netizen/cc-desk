@@ -139,6 +139,19 @@ test('context meter uses root request usage, invalidates after compact and clear
   const f = await workspace(); let app = await f.launch();
   try {
     let page = await app.firstWindow(), input = page.getByLabel('提示词编辑器');
+    const expectOldPromptReadable = async () => {
+      // The retained prompt may be outside the current virtual window after /clear.
+      // Navigate through the actual archive search, then restore the live tail.
+      await page.getByRole('button', { name: '查找消息', exact: true }).click();
+      const search = page.getByRole('dialog', { name: '会话内查找', exact: true });
+      await search.getByRole('textbox', { name: '查找消息内容', exact: true }).fill('查看项目');
+      await expect(search.locator('.chat-search-results button')).toHaveCount(1);
+      await search.locator('.chat-search-results button').click();
+      await expect(search).toHaveCount(0);
+      await expect(page.locator('.search-target')).toContainText('查看项目');
+      await expect(page.locator('.search-target')).toBeInViewport();
+      await page.getByRole('button', { name: '返回最新对话', exact: true }).click();
+    };
     await expect(page.locator('.context-meter')).toContainText('等待用量数据');
     await input.fill('查看项目'); await input.press('Enter');
     await expect(page.getByRole('progressbar', { name: '上下文占用' })).toHaveAttribute('aria-valuenow', '6');
@@ -155,14 +168,14 @@ test('context meter uses root request usage, invalidates after compact and clear
     await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '15');
     await input.fill('/clear'); await input.press('Escape'); await input.press('Enter');
     await expect(page.locator('.context-meter')).toContainText('等待用量数据');
-    await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].execution.conversationId).toBe('33333333-3333-4333-8333-333333333333');
     await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
+    await expectOldPromptReadable();
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].started).toBe(false);
     // CLI 尚未写入新的对话记录。在 /clear 后立即重新启动，
     // 必须使用这个新标识启动，不能要求传入 --resume。
     await close(app); app = await f.launch(); page = await app.firstWindow(); input = page.getByLabel('提示词编辑器');
-    await expect(page.getByText('查看项目', { exact: true })).toBeVisible();
+    await expectOldPromptReadable();
     await input.fill('继续'); await input.press('Enter'); await expect(page.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '6');
     await expect.poll(() => page.evaluate(async id => (await window.desktop.chatSnapshot(id)).taskState, f.session.id)).toBe('completed');
     expect((await page.evaluate(() => window.desktop.snapshot())).state.sessions[0].started).toBe(true);
