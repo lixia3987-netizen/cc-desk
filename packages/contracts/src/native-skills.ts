@@ -49,11 +49,53 @@ export interface SkillVersionSnapshot {
   bytes: number;
   format: SkillMetadataResult['format'];
 }
+/** Structural identity only; the host ledger separately validates its own UUIDs. */
+export interface SkillRunIdentity {
+  sessionId: string;
+  conversationId: string;
+  runId: string;
+  requestId: string;
+  workerGeneration: number;
+}
+export interface SkillParentManifestEntry {
+  skillId: string;
+  sourceId: string;
+  relativePath: string;
+  version: SkillVersionSnapshot;
+  origin: 'legacy' | 'pinned' | 'explicit' | 'model';
+  evidence: { kind: 'run_started' | 'tool_completed'; seq: number; callId?: string };
+  placement: 'initial_instructions' | 'compacted_context' | 'retained_receipt';
+}
+/** Shared host-attested parent evidence, persisted once in the child's configuration. */
+export interface SkillInheritanceContext {
+  schemaVersion: 1;
+  parentHead: { seq: number; hash: string };
+  parentManifest: {
+    schemaVersion: 1;
+    identity: SkillRunIdentity;
+    catalogRevision: string;
+    entries: SkillParentManifestEntry[];
+    digest: string;
+  };
+}
+/** This names the exact parent source/version; activation.version is the child binding. */
+export interface SkillInheritedFrom {
+  parentIdentity: SkillRunIdentity;
+  parentHead: { seq: number; hash: string };
+  manifestDigest: string;
+  catalogRevision: string;
+  skillId: string;
+  sourceId: string;
+  relativePath: string;
+  version: SkillVersionSnapshot;
+}
 export interface SkillActivation {
   runId: string;
   skillId: string;
   version: SkillVersionSnapshot;
-  origin: 'legacy' | 'pinned' | 'explicit' | 'model';
+  origin: 'legacy' | 'pinned' | 'explicit' | 'model' | 'inherited';
+  /** Required exactly for inherited activations; never aliases a parent confirmation. */
+  inheritedFrom?: SkillInheritedFrom;
   requestId: string;
   receiptSeq: number;
   activationRevision: number;
@@ -137,6 +179,59 @@ function parseSkillVersionSnapshot(value: unknown): SkillVersionSnapshot | undef
   return { skillId: snapshot.skillId, sourceRevision: snapshot.sourceRevision, sourceFingerprint: snapshot.sourceFingerprint,
     fullFileHash: snapshot.fullFileHash, bodyHash: snapshot.bodyHash, bytes: snapshot.bytes, format: snapshot.format };
 }
+const boundedSkillText = (value: unknown, maximum = 512): value is string => typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\x00-\x1f\x7f]/.test(value);
+const skillPath = (value: unknown): value is string => boundedSkillText(value, 4096) && !value.includes('\\') && !value.startsWith('/')
+  && !/^[a-z]:/i.test(value) && !value.split('/').some(part => !part || part === '.' || part === '..');
+function parseSkillRunIdentity(value: unknown): SkillRunIdentity | undefined {
+  const snapshot = dataObject(value, ['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration']);
+  if (!snapshot || !boundedSkillText(snapshot.sessionId, 256) || !boundedSkillText(snapshot.conversationId, 256) || !boundedSkillText(snapshot.runId, 256)
+    || !boundedSkillText(snapshot.requestId, 256) || typeof snapshot.workerGeneration !== 'number' || !Number.isSafeInteger(snapshot.workerGeneration) || snapshot.workerGeneration < 1) return undefined;
+  return { sessionId: snapshot.sessionId, conversationId: snapshot.conversationId, runId: snapshot.runId, requestId: snapshot.requestId, workerGeneration: snapshot.workerGeneration };
+}
+function parseSkillParentHead(value: unknown): SkillInheritanceContext['parentHead'] | undefined {
+  const snapshot = dataObject(value, ['seq', 'hash']);
+  if (!snapshot || typeof snapshot.seq !== 'number' || !Number.isSafeInteger(snapshot.seq) || snapshot.seq < 1 || !skillHash(snapshot.hash)) return undefined;
+  return { seq: snapshot.seq, hash: snapshot.hash };
+}
+function parseSkillParentManifestEntry(value: unknown, headSeq: number): SkillParentManifestEntry | undefined {
+  const snapshot = dataObject(value, ['skillId', 'sourceId', 'relativePath', 'version', 'origin', 'evidence', 'placement']);
+  if (!snapshot || !skillId(snapshot.skillId) || !boundedSkillText(snapshot.sourceId) || !skillPath(snapshot.relativePath)
+    || !['legacy', 'pinned', 'explicit', 'model'].includes(snapshot.origin as string)) return undefined;
+  const version = parseSkillVersionSnapshot(snapshot.version);
+  const model = snapshot.origin === 'model';
+  const evidence = dataObject(snapshot.evidence, model ? ['kind', 'seq', 'callId'] : ['kind', 'seq']);
+  if (!version || version.skillId !== snapshot.skillId || !evidence || evidence.kind !== (model ? 'tool_completed' : 'run_started')
+    || typeof evidence.seq !== 'number' || !Number.isSafeInteger(evidence.seq) || evidence.seq < 1 || evidence.seq > headSeq
+    || model && !boundedSkillText(evidence.callId, 512)
+    || (model ? !['compacted_context', 'retained_receipt'].includes(snapshot.placement as string) : snapshot.placement !== 'initial_instructions')) return undefined;
+  return { skillId: snapshot.skillId, sourceId: snapshot.sourceId, relativePath: snapshot.relativePath, version,
+    origin: snapshot.origin as SkillParentManifestEntry['origin'], evidence: { kind: model ? 'tool_completed' : 'run_started', seq: evidence.seq,
+      ...(model ? { callId: evidence.callId as string } : {}) }, placement: snapshot.placement as SkillParentManifestEntry['placement'] };
+}
+function parseSkillInheritanceContext(value: unknown): SkillInheritanceContext | undefined {
+  const snapshot = dataObject(value, ['schemaVersion', 'parentHead', 'parentManifest']);
+  if (!snapshot || snapshot.schemaVersion !== 1) return undefined;
+  const parentHead = parseSkillParentHead(snapshot.parentHead), manifest = dataObject(snapshot.parentManifest, ['schemaVersion', 'identity', 'catalogRevision', 'entries', 'digest']);
+  if (!parentHead || !manifest || manifest.schemaVersion !== 1 || !skillHash(manifest.catalogRevision) || !skillHash(manifest.digest)) return undefined;
+  const identity = parseSkillRunIdentity(manifest.identity), values = dataArray(manifest.entries, 16);
+  if (!identity || !values) return undefined;
+  const entries: SkillParentManifestEntry[] = [], seen = new Set<string>();
+  for (const value of values) {
+    const entry = parseSkillParentManifestEntry(value, parentHead.seq);
+    if (!entry || seen.has(entry.skillId)) return undefined;
+    seen.add(entry.skillId); entries.push(entry);
+  }
+  return { schemaVersion: 1, parentHead, parentManifest: { schemaVersion: 1, identity, catalogRevision: manifest.catalogRevision, entries, digest: manifest.digest } };
+}
+function parseSkillInheritedFrom(value: unknown): SkillInheritedFrom | undefined {
+  const snapshot = dataObject(value, ['parentIdentity', 'parentHead', 'manifestDigest', 'catalogRevision', 'skillId', 'sourceId', 'relativePath', 'version']);
+  if (!snapshot || !skillHash(snapshot.manifestDigest) || !skillHash(snapshot.catalogRevision) || !skillId(snapshot.skillId)
+    || !boundedSkillText(snapshot.sourceId) || !skillPath(snapshot.relativePath)) return undefined;
+  const parentIdentity = parseSkillRunIdentity(snapshot.parentIdentity), parentHead = parseSkillParentHead(snapshot.parentHead), version = parseSkillVersionSnapshot(snapshot.version);
+  if (!parentIdentity || !parentHead || !version || version.skillId !== snapshot.skillId) return undefined;
+  return { parentIdentity, parentHead, manifestDigest: snapshot.manifestDigest, catalogRevision: snapshot.catalogRevision,
+    skillId: snapshot.skillId, sourceId: snapshot.sourceId, relativePath: snapshot.relativePath, version };
+}
 function parseNativeSkillSubmission(value: unknown): NativeSkillSubmission | undefined {
   const snapshot = dataObject(value, ['schemaVersion', 'explicitSkillRefs', 'excludedSkillIds']);
   if (!snapshot || snapshot.schemaVersion !== 1) return undefined;
@@ -163,6 +258,20 @@ function parseNativeSkillSubmission(value: unknown): NativeSkillSubmission | und
 }
 export function isSkillVersionSnapshot(value: unknown): value is SkillVersionSnapshot {
   try { return parseSkillVersionSnapshot(value) !== undefined; } catch { return false; }
+}
+export function isSkillInheritanceContext(value: unknown): value is SkillInheritanceContext {
+  try { return parseSkillInheritanceContext(value) !== undefined; } catch { return false; }
+}
+export function normalizeSkillInheritanceContext(value: unknown): SkillInheritanceContext {
+  try { const parsed = parseSkillInheritanceContext(value); if (parsed) return parsed; } catch { /* Invalid hostile input. */ }
+  throw new Error('Invalid Native skill inheritance context.');
+}
+export function isSkillInheritedFrom(value: unknown): value is SkillInheritedFrom {
+  try { return parseSkillInheritedFrom(value) !== undefined; } catch { return false; }
+}
+export function normalizeSkillInheritedFrom(value: unknown): SkillInheritedFrom {
+  try { const parsed = parseSkillInheritedFrom(value); if (parsed) return parsed; } catch { /* Invalid hostile input. */ }
+  throw new Error('Invalid Native skill inherited provenance.');
 }
 export function isNativeSkillSubmission(value: unknown): value is NativeSkillSubmission {
   try { return parseNativeSkillSubmission(value) !== undefined; } catch { return false; }

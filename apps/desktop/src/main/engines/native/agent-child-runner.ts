@@ -25,6 +25,9 @@ import { buildNativeChildInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativeP
 import { nativeChildMaterialReadEvidence, nativeReviewMaterialReferences } from './agent-delegation-audit';
 import { createNativeQualityReportTool, type NativeQualityReportTool } from './workflow-quality-report';
 import { captureTaskWorkspace } from './task-evidence';
+import type { NativeSkillRuntime } from './skill-runtime';
+import { createInRunCompaction } from './in-run-compaction';
+import { buildNativeContextContinuity } from './context-continuity';
 
 export type NativeChildRuntimeConfig = ReturnType<typeof parseNativeConfig>;
 export interface NativeAgentChildRunnerOptions {
@@ -33,6 +36,8 @@ export interface NativeAgentChildRunnerOptions {
   config: NativeChildRuntimeConfig;
   forbiddenValues: readonly string[];
   worker?: typeof runNativeWorker;
+  /** Internal capability supplied by the parent host, never constructed from a child session ID. */
+  skills?: NativeSkillRuntime;
   approvals: ApprovalPort;
   assertOwnership(): Promise<void>;
   onEvent?(event: AgentEvent): void | Promise<void>;
@@ -41,7 +46,7 @@ const encode = (value: unknown) => canonicalJson(JSON.parse(JSON.stringify(value
 const digest = (value: unknown) => createHash('sha256').update(encode(value)).digest('hex');
 
 const VERIFICATION_TOOLS = new Set(['list_directory', 'read_file', 'search', 'find_files', 'update_plan', 'read_task', 'record_code_location',
-  'run_command', 'start_command', 'command_status', 'read_command_output', 'stop_command']);
+  'run_command', 'start_command', 'command_status', 'read_command_output', 'stop_command', 'list_skills', 'load_skill']);
 /** 验证者只获得本地检查能力；通用写入、外部服务和委派始终被宿主拒绝。 */
 export function restrictNativeVerificationTools(port: ToolPort): ToolPort {
   const definitions = port.definitions.filter(tool => VERIFICATION_TOOLS.has(tool.name) && tool.risk !== 'write');
@@ -50,6 +55,27 @@ export function restrictNativeVerificationTools(port: ToolPort): ToolPort {
   return { definitions, prepare: (call, context) => { check(call.name); return port.prepare(call, context); },
     validate: (prepared, context) => { check(prepared.call.name); return port.validate(prepared, context); },
     execute: (prepared, context, approval) => { check(prepared.call.name); return port.execute(prepared, context, approval); } };
+}
+
+/** Host preconditions failed before a worker or durable run-start was attempted. */
+export class NativeAgentChildNotStartedError extends Error {
+  readonly childNotStarted = true;
+  readonly code = 'child_start_preconditions_failed';
+  constructor() { super('子 Agent 启动前提已改变，未启动工作进程或模型请求。'); this.name = 'NativeAgentChildNotStartedError'; }
+}
+
+/** Host-owned metadata protection shared by preflight and actual child startup. */
+export async function nativeChildExcludedRoots(dataDirectory: string, cwd: string, requireIsolated = false): Promise<string[]> {
+  const privateRoot = await fs.realpath(dataDirectory).catch(error => {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    return path.resolve(dataDirectory);
+  });
+  const projectRoot = await fs.realpath(cwd), privateWorktrees = path.join(privateRoot, 'native', 'agent-worktrees');
+  if (containsPath(privateRoot, projectRoot) && (!containsPath(privateWorktrees, projectRoot) || projectRoot === privateWorktrees)) {
+    throw new Error('Delegated project is not an authorized private worktree.');
+  }
+  if (requireIsolated && (!containsPath(privateWorktrees, projectRoot) || projectRoot === privateWorktrees)) throw new Error('Quality agents require a host-created isolated worktree.');
+  return containsPath(privateRoot, projectRoot) ? ['conversations', 'tasks', 'delegations'].map(name => path.join(privateRoot, 'native', name)) : [privateRoot];
 }
 
 /** 每个委派子任务独立管理其会话、工作进程、进程及持久化任务账本。 */
@@ -67,6 +93,7 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
   let taskError = false, cleanupUnconfirmed = false, result: RunResult | undefined, failure: unknown;
   let childResult: NativeAgentChildResult | undefined;
   let qualityTool: NativeQualityReportTool | undefined;
+  let workerInvoked = false;
   try {
     const assertCurrent = async () => {
       if (signal.aborted || encode(input.identity) !== identityKey) throw new Error('Delegated child is no longer active.');
@@ -74,28 +101,34 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
       if (signal.aborted || encode(input.identity) !== identityKey) throw new Error('Delegated child ownership changed.');
     };
     await assertCurrent();
-    const privateRoot = await fs.realpath(options.dataDirectory).catch(error => {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      return path.resolve(options.dataDirectory);
-    });
-    const projectRoot = await fs.realpath(input.cwd), privateWorktrees = path.join(privateRoot, 'native', 'agent-worktrees');
-    if (containsPath(privateRoot, projectRoot) && (!containsPath(privateWorktrees, projectRoot) || projectRoot === privateWorktrees)) throw new Error('Delegated project is not an authorized private worktree.');
-    if (input.quality && (!containsPath(privateWorktrees, projectRoot) || projectRoot === privateWorktrees)) throw new Error('Quality agents require a host-created isolated worktree.');
     // 生产环境的实现工作树位于 Native 元数据旁。
     // 若保护祖先目录，会连已授权的项目本身也拒绝。本地
     // 工具仍严格限定当前项目根目录，并拒绝外部路径及符号链接路径。
-    const excludedRoots = containsPath(privateRoot, projectRoot) ? ['conversations', 'tasks', 'delegations'].map(name => path.join(privateRoot, 'native', name)) : [privateRoot];
+    const excludedRoots = await nativeChildExcludedRoots(options.dataDirectory, input.cwd, Boolean(input.quality));
     const instructions = await loadProjectInstructions({ projectRoot: input.cwd, excludedRoots, projectSkills: config.projectSkills }, signal);
     assertSafe(instructions);
+    if (input.nativeSkills && !options.skills) throw new Error('子 Agent 的技能继承服务不可用，未启动运行。');
+    const skillRun = input.nativeSkills ? await options.skills!.createChildRun({
+      sessionId: input.parentIdentity.sessionId, parentIdentity: input.parentIdentity, identity,
+      inheritance: input.nativeSkills, projectRoot: input.cwd, excludedRoots,
+      ...(input.recovery ? { allowAdditionalActivations: true } : {}),
+      signal, forbiddenValues, assertOwnership: assertCurrent,
+      baseInstructionBytes: 2 + Buffer.byteLength(buildNativeChildInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode),
+        projectInstructions: instructions.text, toolPolicy: input.toolPolicy, qualityRole: input.quality?.role })),
+      canActivate: () => !taskError && !cleanupUnconfirmed && !(ledger?.getRun(identity.runId)?.tools ?? []).some(tool => tool.prepared &&
+        (tool.prepared.prepared.definition.risk !== 'read' && (!tool.completed || tool.completed.result.status === 'unknown') ||
+          tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished')),
+    }) : undefined;
     const assertInstructions = async () => {
       await assertCurrent();
       if (taskError) throw new Error('Delegated task evidence needs recovery.');
       const current = await loadProjectInstructions({ projectRoot: input.cwd, excludedRoots, projectSkills: config.projectSkills }, signal);
       if (current.digest !== instructions.digest) throw new Error('Delegated project instructions changed.');
+      await skillRun?.tools.assertSourcesCurrent(signal);
       await assertCurrent();
     };
     const instructionsText = buildNativeChildInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode),
-      projectInstructions: instructions.text, toolPolicy: input.toolPolicy, qualityRole: input.quality?.role });
+      projectInstructions: [instructions.text, skillRun?.initialInstructions].filter(Boolean).join('\n\n'), toolPolicy: input.toolPolicy, qualityRole: input.quality?.role });
     assertSafe(instructionsText);
     ledger = await NativeRunStore.open({ rootDirectory: path.join(options.dataDirectory, 'native', 'conversations'), conversationId: identity.conversationId, forbiddenValues });
     if (ledger.recoveryRequired || ledger.listRuns().length) throw new Error('A delegated child conversation cannot be reused or replayed.');
@@ -108,6 +141,7 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
     const locationTools = createCodeLocationTool({ identity, taskId: input.taskId, session: tasks, projectRoot: input.cwd, excludedRoots,
       projectSkills: config.projectSkills, forbiddenValues, assertOwnership: assertInstructions });
     commands = createCommandTools({ identity, taskId: input.taskId, supervisor, signal, forbiddenValues,
+      ...(skillRun ? { assertSideEffectsCurrent: () => skillRun.tools.assertSideEffectsCurrent(signal) } : {}),
       remainingMs: () => input.budget.remainingMs(), assertOwnership: assertInstructions,
       record: async (call, event) => { if (event.status === 'prepared') await assertInstructions(); await ledger!.recordCommandEvent(identity, call, event); },
       onFailure: () => { cleanupUnconfirmed = true; abort.abort(); },
@@ -119,6 +153,7 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
     });
     const local = createLocalToolPort({ projectRoot: input.cwd, excludedRoots, supervisor, ownerId: identity.runId, forbiddenValues,
       initialInstructions: instructions, projectSkills: config.projectSkills,
+      ...(skillRun ? { assertSideEffectsCurrent: (effectSignal: AbortSignal) => skillRun.tools.assertSideEffectsCurrent(effectSignal) } : {}),
       assertOwnership: async run => { if (!sameRun(run, identity)) throw new Error('Delegated tool run ownership changed.'); await assertInstructions(); },
       startCommand: (prepared, context, command) => commands!.start(prepared, context, command),
       recordChangeSetEvent: async (run, call, event) => {
@@ -133,15 +168,19 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
       qualityTool = createNativeQualityReportTool({ identity, taskId: input.taskId, binding: input.quality, forbiddenValues,
         assertOwnership: assertInstructions, readRun: () => ledger!.getRun(identity.runId) });
     }
-    const localPorts = composeToolPorts([taskTools, locationTools, commands, local]);
-    const restricted = input.toolPolicy === 'workspace_verify' ? restrictNativeVerificationTools(localPorts) : restrictNativeTools(localPorts, {
+    const ordinary = tasks.wrapTools(composeToolPorts([taskTools, locationTools, commands, local]), input.taskId, identity);
+    const combined = skillRun ? composeToolPorts([skillRun.tools.guard(ordinary), ...(skillRun.catalog.entries.some(entry => entry.autoMatchable) ? [skillRun.tools] : [])]) : ordinary;
+    const restricted = input.toolPolicy === 'workspace_verify' ? restrictNativeVerificationTools(combined) : restrictNativeTools(combined, {
       toolPolicy: input.toolPolicy === 'read_only' ? 'read_only' : 'standard',
       parent: { sessionId: input.parentIdentity.sessionId, runId: input.parentIdentity.runId, taskId: input.parentTaskId, depth: 1 },
     });
-    const tools = tasks.wrapTools(qualityTool ? composeToolPorts([restricted, qualityTool]) : restricted, input.taskId, identity);
+    // The host-only report stays outside stage tool allowlists, while sharing task and Skill ownership guards.
+    const reportTools = qualityTool ? tasks.wrapTools(qualityTool, input.taskId, identity) : undefined;
+    const tools = reportTools ? composeToolPorts([restricted, skillRun ? skillRun.tools.guard(reportTools) : reportTools]) : restricted;
     const durable: RunStore = {
       beginRun: async request => {
         await assertInstructions();
+        await skillRun?.assertInitialCurrent();
         if (!sameRun(request.identity, identity)) throw new Error('Delegated run identity changed.');
         const accepted = await ledger!.beginRun(request);
         if (accepted.kind === 'accepted') {
@@ -158,6 +197,7 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
         if (!sameRun(run, identity)) throw new Error('Delegated journal identity changed.');
         if (event.type === 'run_finished') await commands!.closeAll();
         const accepted = await ledger!.append(run, event);
+        skillRun?.tools.observeCommitted(event, accepted.seq);
         try { if (!taskError) await tasks!.committed(input.taskId, identity, event); } catch { taskError = true; }
         return accepted;
       },
@@ -165,17 +205,27 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
       checkpoint: (run, context) => ledger!.checkpoint(run, context),
     };
     const policyRevision = digest({ version: 1, identity, cwd: input.cwd, instructions: instructions.digest, toolPolicy: input.toolPolicy,
+      ...(skillRun ? { nativeSkillCatalog: skillRun.catalogRevision, initialSkills: skillRun.tools.snapshot(), nativeSkillInheritance: skillRun.nativeSkillInheritance } : {}),
       parentIdentity: input.parentIdentity, parentTaskId: input.parentTaskId, tools: tools.definitions });
+    const consumeBudget = async (kind: 'model' | 'tool', run: RunIdentity) => {
+      if (!sameRun(run, identity)) throw new Error('Delegated budget identity changed.');
+      await assertInstructions();
+      return input.budget.remainingMs() > 0 && await input.budget.consume(kind, identity);
+    };
+    await skillRun?.assertInitialCurrent();
+    workerInvoked = true;
     result = await (options.worker ?? runNativeWorker)({
       request: { identity, input: childInput, policyRevision, modelRetry: config.modelRetry,
         diagnosticPurpose: 'child', diagnosticIdentity: { parentRunId: input.parentIdentity.runId, ...(input.childId ? { childId: input.childId } : {}) },
         diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode),
           projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))),
-          skills: projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), toolPolicy: input.toolPolicy, qualityRole: input.quality?.role }),
+          skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n'), toolPolicy: input.toolPolicy, qualityRole: input.quality?.role }),
         configuration: { nativeTaskId: input.taskId, delegated: { parentIdentity: JSON.parse(JSON.stringify(input.parentIdentity)), parentTaskId: input.parentTaskId, title: input.title, depth: 1,
           ...(input.recovery ? { recovery: JSON.parse(JSON.stringify(input.recovery)) } : {}) },
           toolPolicy: input.toolPolicy, permissionMode: config.permissionMode, model: options.model.model, protocol: options.model.protocol ?? 'responses', baseURL: options.model.baseURL,
           ...(input.quality ? { workflowQuality: JSON.parse(encode(input.quality)) } : {}),
+          ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated },
+            initialNativeSkills: JSON.parse(JSON.stringify(skillRun.tools.snapshot())), nativeSkillInheritance: JSON.parse(JSON.stringify(skillRun.nativeSkillInheritance)), effectiveAutoCompact: config.autoCompact } : {}),
           modelInstructions: instructionsText, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, toolDefinitions: JSON.parse(JSON.stringify(tools.definitions)),
           instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) },
         budget: { unlimited: false, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs: Math.max(1, Math.floor(Math.min(config.maxActiveMs, input.budget.remainingMs()))),
@@ -205,11 +255,30 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
         // 只返回已声明材料的缺失路径；不读取文件、不代填报告，也不授予额外权限。
         return paths.length ? { kind: 'continue' as const, code: 'declared_material_reads_missing' as const, paths } : { kind: 'accept' as const };
       } } } : {}),
-      consumeBudget: async (kind: 'model' | 'tool', run: RunIdentity) => {
-        if (!sameRun(run, identity)) throw new Error('Delegated budget identity changed.');
-        await assertInstructions();
-        return input.budget.remainingMs() > 0 && await input.budget.consume(kind, identity);
-      },
+      consumeBudget,
+      ...(skillRun && config.autoCompact === 'before_send_and_during_run' ? { contextMaintenance: createInRunCompaction({
+        ledger, identity, model: { ...options.model, instructions: instructionsText, toolDefinitions: tools.definitions }, forbiddenValues, signal,
+        remainingMs: () => input.budget.remainingMs(), assertOwnership: assertCurrent, assertInstructions,
+        continuity: async () => {
+          await tasks!.settled();
+          return buildNativeContextContinuity({ identity, taskId: input.taskId, task: taskStore!.read(input.taskId), run: ledger!.getRun(identity.runId),
+            issues: taskError ? ['Delegated task evidence needs recovery.'] : [] });
+        },
+        skills: { prepare: retainedContext => skillRun.prepareContinuity(ledger!, retainedContext),
+          onCommitted: (seq, section) => skillRun.tools.observeContextReplacement(seq, section.manifest) },
+        onCompacting: () => {}, onSettled: async () => {},
+        worker: async summaryOptions => {
+          if (summaryOptions.request.diagnosticPurpose !== 'summary_in_run' || summaryOptions.request.diagnosticIdentity?.parentRunId !== identity.runId) {
+            throw new Error('Delegated summary ownership changed.');
+          }
+          return await (options.worker ?? runNativeWorker)({ ...summaryOptions,
+            ...(input.budget.activePause ? { activePause: input.budget.activePause } : {}),
+            consumeBudget: async (kind, run) => {
+              if (kind !== 'model' || !sameRun(run, summaryOptions.request.identity)) throw new Error('Delegated summary budget identity changed.');
+              return await consumeBudget('model', identity);
+            } });
+        },
+      }) } : {}),
       onEvent: async event => { if (!sameRun(event.identity, identity)) throw new Error('Delegated event identity changed.'); await options.onEvent?.(event); },
     });
     if (!sameRun(result.identity, identity)) throw new Error('Delegated worker result identity changed.');
@@ -238,7 +307,10 @@ export async function runNativeAgentChild(input: NativeAgentChildInput, options:
     try { await taskStore?.close(); } catch { cleanupUnconfirmed = true; }
   }
   if (cleanupUnconfirmed) throw new NativeWorkerCleanupError();
-  if (failure) throw failure;
+  if (failure) {
+    if (input.nativeSkills && !workerInvoked) throw new NativeAgentChildNotStartedError();
+    throw failure;
+  }
   if (taskError || !childResult) throw new Error('Delegated result or task evidence is unavailable.');
   return childResult;
 }

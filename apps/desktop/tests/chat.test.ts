@@ -174,19 +174,20 @@ readline.createInterface({input:process.stdin}).on('line',line=>{
    output({type:'system',subtype:'task_notification',task_id:'child',status:'completed',summary:'child done'});return;
   }
   if(current==='subtasks-parallel'){
-   for(const [tool,task] of [['agent-a','task-a'],['agent-b','task-b'],['agent-c','task-c']]){
-    output({type:'assistant',message:{id:tool,content:[{type:'tool_use',id:tool,name:'Agent',input:{description:tool,run_in_background:true}}]}});
-    output({type:'system',subtype:'task_started',task_id:task,tool_use_id:tool,task_type:'local_agent',description:tool});
-   }
-   output({type:'system',subtype:'task_progress',task_id:'task-a',tool_use_id:'agent-a',description:'Review implementation',summary:'Reading tests',last_tool_name:'Read',usage:{total_tokens:240,tool_uses:2,duration_ms:25}});
-   setTimeout(()=>{
+   afterRelease('subtasks-parallel',()=>{
     output({type:'system',subtype:'task_notification',task_id:'task-a',tool_use_id:'agent-a',status:'completed',summary:'Review done'});
     output({type:'system',subtype:'task_updated',task_id:'task-b',patch:{status:'killed',description:'Cancelled analysis'}});
     output({type:'system',subtype:'task_notification',task_id:'task-c',status:'failed',summary:'Fixture failure'});
     output({type:'system',subtype:'task_started',task_id:'task-a',tool_use_id:'agent-a',description:'late duplicate'});
     output({type:'system',subtype:'task_progress',task_id:'task-a',tool_use_id:'agent-a',usage:{total_tokens:999}});
     done('parallel done');
-   },100);return;
+   });
+   for(const [tool,task] of [['agent-a','task-a'],['agent-b','task-b'],['agent-c','task-c']]){
+    output({type:'assistant',message:{id:tool,content:[{type:'tool_use',id:tool,name:'Agent',input:{description:tool,run_in_background:true}}]}});
+    output({type:'system',subtype:'task_started',task_id:task,tool_use_id:tool,task_type:'local_agent',description:tool});
+   }
+   output({type:'system',subtype:'task_progress',task_id:'task-a',tool_use_id:'agent-a',description:'Review implementation',summary:'Reading tests',last_tool_name:'Read',usage:{total_tokens:240,tool_uses:2,duration_ms:25}});
+   return;
   }
   if(current==='subtasks-foreground'){
    for(const [tool,input] of [['foreground',{run_in_background:false}],['unconfirmed',{}],['reported',{}]]){
@@ -883,7 +884,7 @@ test('parallel subtask cards merge tool and lifecycle identities, preserve progr
     const running = s.store.state.sessions[0].subtasks!.tasks;
     assert.equal(running.filter(task => task.status === 'running').length, 3);
     assert.equal(running.find(task => task.taskId === 'task-a')?.lastTool, 'Read');
-    assert.equal((await result).success, true);
+    assert.equal((await s.releaseAndWait('subtasks-parallel', result)).success, true);
     const tasks = s.store.state.sessions[0].subtasks!.tasks;
     assert.equal(tasks.length, 3);
     assert.deepEqual(tasks.map(task => task.status), ['completed', 'stopped', 'failed']);
