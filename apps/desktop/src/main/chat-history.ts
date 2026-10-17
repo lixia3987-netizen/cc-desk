@@ -162,6 +162,28 @@ export class ChatHistory {
       } finally { fs.closeSync(fd); }
     } else if (cursor !== undefined) this.dirty.add(id);
     if (hadSnapshot && projectionVersion !== PROJECTION_VERSION) this.dirty.add(id);
+    this.recoverSnapshot(id, snapshot);
+    entry.managedChange = false;
+    this.cache.set(id, entry);
+    this.evict();
+    return snapshot;
+  }
+  /** 仅供已原子提交的只读派生投影使用，复用日志重放规则，避免同步重读刚写入的日志。 */
+  loadProjection(id: string, events: Iterable<unknown>, journalBytes: number): ChatSnapshot {
+    if (!this.readOnly) throw new Error('仅只读历史支持载入已提交投影。');
+    this.file(id, '.jsonl');
+    if (!Number.isSafeInteger(journalBytes) || journalBytes < 0) throw new Error('无效投影长度。');
+    const snapshot: ChatSnapshot = { sessionId: id, taskState: 'idle', messages: [], pending: [] };
+    const entry = this.entry(snapshot), migration = new ResultEchoRecovery(new Set());
+    for (const event of events) if (!migration.skip(event)) this.applyEvent(entry, event);
+    entry.journalCursor = entry.journalEnd = journalBytes;
+    this.recoverSnapshot(id, snapshot);
+    entry.managedChange = false;
+    this.cache.set(id, entry);
+    this.evict();
+    return snapshot;
+  }
+  private recoverSnapshot(id: string, snapshot: ChatSnapshot): void {
     // 审批请求属于旧进程，不能带入恢复后的界面。
     if (snapshot.pending?.length || LIVE_STATES.has(snapshot.taskState)) this.dirty.add(id);
     snapshot.pending = [];
@@ -172,10 +194,6 @@ export class ChatHistory {
     }
     if (LIVE_STATES.has(snapshot.taskState)) snapshot.taskState = 'interrupted';
     if (!TASK_STATES.has(snapshot.taskState)) snapshot.taskState = 'idle';
-    entry.managedChange = false;
-    this.cache.set(id, entry);
-    this.evict();
-    return snapshot;
   }
   getMessage(id: string, messageId: string): ChatMessage | undefined {
     this.get(id);

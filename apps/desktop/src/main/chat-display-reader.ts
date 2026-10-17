@@ -112,7 +112,11 @@ export class ChatDisplayReader {
     if (options.before || options.after || options.around) {
       // 显式分页不需要先 hydrate 或同步读取完整的历史快照。
       const fallback = source.requireConversationMatch ? await this.page(id, {}, source) : await this.fallback(id);
-      if (source.requireConversationMatch && !fallback.messages.length && fallback.incomplete) return fallback;
+      if (source.requireConversationMatch && !fallback.messages.length && fallback.incomplete) {
+        // An unavailable projection is not an end-of-history receipt. Returning
+        // its null cursors would strand the already displayed historical window.
+        throw new Error('会话记录正在更新，请稍后重试读取记录。');
+      }
       const snapshot = await this.snapshot(id);
       return this.archive.page(id, { sessionId: id, taskState: 'idle', messages: snapshot?.messages ?? fallback.messages, pending: [], sourceIncomplete: fallback.incomplete }, options);
     }

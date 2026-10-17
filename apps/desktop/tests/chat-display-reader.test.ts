@@ -79,7 +79,7 @@ test('source changes, replacement and conversation changes invalidate cached and
     await fs.writeFile(replacement, record(message(4), 'conversation-a') + record(message(5), 'conversation-a'));
     await fs.utimes(replacement, stat.atime, stat.mtime); await fs.rename(replacement, f.file);
     assert.deepEqual((await cold.page('session', {}, source)).messages.map(item => item.id), ['message-4', 'message-5']);
-    assert.deepEqual((await cold.page('session', { before: 'message-4' }, { conversationId: 'conversation-b', requireConversationMatch: true })).messages, [], 'old-page access also observes the source guard');
+    await assert.rejects(cold.page('session', { before: 'message-4' }, { conversationId: 'conversation-b', requireConversationMatch: true }), /会话记录正在更新/, 'old-page access never turns an unavailable source into an end cursor');
   } finally { await f.dispose(); }
 });
 
@@ -93,6 +93,29 @@ test('Native legacy logs wait for authoritative source binding while generic leg
     await fs.writeFile(path.join(f.directory, 'session.json'), JSON.stringify({ sessionId: 'session', messages: [message(2)], taskState: 'completed', pending: [] }));
     assert.deepEqual((await readDisplayPage(f.directory, 'session')).messages.map(item => item.id), ['message-2']);
     assert.deepEqual((await f.reader.page('session', {}, { conversationId: 'current', requireConversationMatch: true })).messages, [], 'unbound old snapshot is never attributed to a new Native context');
+  } finally { await f.dispose(); }
+});
+
+test('a temporarily unavailable Native journal rejects pagination and becomes readable with the same anchor after restoration', async () => {
+  const f = await fixture();
+  const source = { conversationId: 'native-context', requireConversationMatch: true };
+  try {
+    await fs.writeFile(f.file, Array.from({ length: 80 }, (_, index) => record(message(index), source.conversationId)).join(''));
+    const tail = await f.reader.page('session', {}, source);
+    assert.equal(tail.before, 'message-30');
+    await fs.rename(f.file, f.file + '.unavailable');
+    try {
+      for (const options of [{ before: tail.before! }, { after: tail.messages.at(-1)!.id }, { around: tail.before! }]) {
+        await assert.rejects(f.reader.page('session', options, source), /会话记录正在更新/);
+      }
+      const unavailable = await f.reader.page('session', {}, source);
+      assert.deepEqual(unavailable.messages, []); assert.equal(unavailable.incomplete, true);
+    } finally { await fs.rename(f.file + '.unavailable', f.file); }
+    const older = await f.reader.page('session', { before: tail.before! }, source);
+    assert.equal(older.messages.length, 30); assert.equal(older.before, null); assert.equal(older.incomplete, false);
+    assert.equal(older.messages.at(-1)?.id, 'message-29');
+    const end = await f.reader.page('session', { before: older.messages[0].id }, source);
+    assert.deepEqual(end.messages, []); assert.equal(end.before, null); assert.equal(end.incomplete, false);
   } finally { await f.dispose(); }
 });
 

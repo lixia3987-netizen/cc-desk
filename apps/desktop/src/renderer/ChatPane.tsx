@@ -30,6 +30,7 @@ import { isMissingTranscriptError } from '../shared/session-recovery';
 import { sharedChatSnapshots } from './shared-chat-snapshot';
 import { useSharedChatSnapshot } from './useSharedChatSnapshot';
 import { useChatDisplay } from './useChatDisplay';
+import { useChatPaging } from './useChatPaging';
 import { sameChatMessage } from './chat-display-state';
 import { VirtualChatMessages, type VirtualChatMessagesHandle } from './VirtualChatMessages';
 import { runConfirmedChatAction } from './confirmed-chat-action';
@@ -153,29 +154,39 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const displayRetryGate=useRef<{scope:string} | undefined>(undefined);
   const [displayRetry,setDisplayRetry]=useState<{scope:string}>();
   const retryingDisplay=displayRetry?.scope===displayRetryScope;
-  const [historyNotice,setHistoryNotice]=useState(''),[exhaustedBefore,setExhaustedBefore]=useState('');
+  const [historyNotice,setHistoryNotice]=useState('');
   const visible=useMemo(()=>({sessionId:session.id,taskState:snapshot?.taskState??'idle',...snapshot,messages:display.page?.messages??[],pending:archive?[]:snapshot?.pending??[]}),[session.id,snapshot,display.page,archive]);
   const messageList=useRef<VirtualChatMessagesHandle>(null);
   const ensureMessage=useCallback((id:string)=>messageList.current?.ensureMessage(id)??Promise.resolve(false),[]);
   const {scroll,content,follow,onScroll,jumpToLatest:scrollLatest,jumpToItem,remember:rememberReading}=useChatScroll(session.id,display.page?visible:undefined,readingPositions,ensureMessage);
   const jumpToLatest=useCallback(()=>{
-    pageRequest.current++;setReadingArchive(false);setHighlight('');setHistoryNotice('');
-    if(display.page?.after){void display.read().then(page=>{if(page?.messages.length)void ensureMessage(page.messages.at(-1)!.id).then(()=>scrollLatest());});}
-    else {const id=display.page?.messages.at(-1)?.id;if(id)void ensureMessage(id).then(()=>scrollLatest());else scrollLatest();}
-  },[display.page,display.read,ensureMessage,scrollLatest]);
+    const seq=++pageRequest.current;setReadingArchive(false);setHighlight('');setHistoryNotice('');
+    // Retire pending historical anchor mounts before asking the virtual list
+    // for the tail; otherwise an old restore can overwrite the newest target.
+    scrollLatest();
+    if(display.page?.after){void display.read().then(async page=>{
+      if(!page?.messages.length)return;
+      await paintActionFeedback();
+      if(!mounted.current||pageRequest.current!==seq||currentConversation.current!==sourceConversation)return;
+      await ensureMessage(page.messages.at(-1)!.id);
+      if(mounted.current&&pageRequest.current===seq&&currentConversation.current===sourceConversation)scrollLatest();
+    });}
+    else {const id=display.page?.messages.at(-1)?.id;if(id)void ensureMessage(id).then(()=>{
+      if(mounted.current&&pageRequest.current===seq&&currentConversation.current===sourceConversation)scrollLatest();
+    });}
+  },[display.page,display.read,ensureMessage,scrollLatest,sourceConversation]);
   const openPage=useCallback(async(options:ChatPageOptions,saved?:ChatReadingPosition)=>{
     const seq=++pageRequest.current;
     try{
-      if(options.before)rememberReading();
-      const page=await display.read(options,options.before?'before':'replace');
+      if(options.before||options.after)rememberReading();
+      const page=await display.read(options,options.before?'before':options.after?'after':'replace');
       if(!page||!mounted.current||seq!==pageRequest.current)return;
       if(!page.messages.length){
-        if(options.before)setExhaustedBefore(options.before);
         setHistoryNotice(options.after?'已到本地保留记录的末尾。':page.incomplete?'没有更早的本地记录；部分原始内容需导出查看。':'已到本地保留记录的开头。');
         return;
       }
       setHistoryNotice('');
-      if(!options.before){
+      if(!options.before&&!options.after){
         setReadingArchive(true);setHighlight(options.around??'');
         if(page.messages.length)jumpToItem(options.around??page.messages[0].id,'message',saved?.offset??8);
       }
@@ -203,7 +214,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       // The authoritative read rebuilds derived files. Let its completeness flag
       // reach React before reading the newly published, read-only display page.
       await paintActionFeedback();if(!current())return;
-      if(archive&&anchor)await openPage({around:anchor},saved?.messageId?saved:undefined);
+      if(display.error){rememberReading();await display.retry();}
+      else if(archive&&anchor)await openPage({around:anchor},saved?.messageId?saved:undefined);
       else await display.read();
     }catch(error){if(current())onError(error);}
     finally{
@@ -351,20 +363,18 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const renderMessage=useCallback((message:ChatMessage)=><ChatMessageRow message={message} engineName={engineName} isNative={session.execution.providerId==='native'} expandedTools={expandedTools.current} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>,[engineName,session.execution.providerId,session.execution.conversationId,previewHistoryImage]);
   const loadEarlier=useCallback(async()=>{
     if(display.paging||!display.page?.before)return;
-    rememberReading();await display.earlier();
+    rememberReading();return display.earlier();
   },[display.paging,display.page?.before,display.earlier,rememberReading]);
-  const earlierFrame=useRef(0);
-  useEffect(()=>()=>cancelAnimationFrame(earlierFrame.current),[]);
+  const loadLater=useCallback(async()=>{
+    if(display.paging||!display.page?.after)return;
+    rememberReading();return display.later();
+  },[display.paging,display.page?.after,display.later,rememberReading]);
+  const autoPaging=useChatPaging({scope:displayRetryScope,page:display.page,loading:display.loading,error:display.error,scroll,content,earlier:loadEarlier,later:loadLater});
   const handleScroll=()=>{
-    onScroll();
-    if(scroll.current&&scroll.current.scrollTop<180&&!display.loading&&!display.error&&!earlierFrame.current){
-      // A large scroll can initially land in a virtual spacer. Capture the anchor
-      // after the new viewport rows have committed, before prepending older data.
-      earlierFrame.current=requestAnimationFrame(()=>{earlierFrame.current=requestAnimationFrame(()=>{
-        earlierFrame.current=0;if(mounted.current&&scroll.current&&scroll.current.scrollTop<180)void loadEarlier();
-      });});
-    }
+    autoPaging.onScroll(onScroll());
   };
+  const detached=!!display.page?.after;
+  const newerAvailable=detached&&!!snapshot?.messages.length&&!visible.messages.some(message=>message.id===snapshot.messages.at(-1)!.id);
   const pasteAvailable=useRef(false);
   // 导入自身的等待状态不能取消导入；离开此面板、
   // 恢复会话或压缩上下文则会取消仍在读取剪贴板字节的粘贴。
@@ -373,18 +383,18 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   return <div className={'chat-pane'+(dragging?' file-drag-active':'')} data-session-id={session.id} {...dropHandlers}>
     {currentImagePreview&&<NativeImagePreview key={nativeImagePreviewKey(currentImagePreview)} selection={currentImagePreview} onClose={()=>setImagePreview(undefined)}/>}
     {dragging&&<div className={'chat-file-drop-overlay'+(attachmentsBlocked?' blocked':'')} role="status"><Paperclip size={28}/><strong>{attachmentsBlocked?attachmentBusy?'正在添加附件，请稍候':'当前无法添加附件':'松开以添加附件'}</strong><span>文件仅加入待发送附件，点击发送后才交给当前引擎。</span></div>}
-    <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
+    <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{(archive||detached)&&<span>{newerAvailable?'有较新的消息':'正在阅读历史记录'}</span>}{(archive||detached)&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
     {syncState.error&&<div className="chat-error" role="alert"><strong>状态未知，显示的是上次读取的记录。</strong><p>{syncState.error}</p><button className="secondary compact" disabled={syncState.loading} onClick={()=>void load()}>{syncState.loading?'正在重试…':'重新同步状态'}</button></div>}
     {nativeAction&&<div className="chat-operation-feedback" role="status"><Loader2 size={14} className="spin"/>{nativeAction.accepted?'操作已受理，等待同步确认…':'正在提交操作…'}{nativeAction.accepted&&!nativeAction.synchronized&&<button className="secondary compact" disabled={nativeAction.synchronizing} onClick={()=>void synchronizeAction(nativeActionKey,nativeAction.token)}>{nativeAction.synchronizing?'正在核实…':'核实操作结果'}</button>}</div>}
-      {(display.page?.before||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={display.loading||paging||!display.page?.before||!visible.messages.length||exhaustedBefore===visible.messages[0]?.id} onClick={()=>void loadEarlier()}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>已载入 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
+      {(display.page?.before||archive||detached)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={display.loading||paging||!display.page?.before||!visible.messages.length} onClick={()=>void autoPaging.earlier()}>{paging?'读取中…':'查看更早消息'}</button><span>已载入 {visible.messages.length} 条</span>{detached&&<button className="secondary compact" disabled={display.loading||paging} onClick={()=>void autoPaging.later()}>查看较新消息</button>}</div>}
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
     {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
-    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={handleScroll}><div className="chat-scroll-content" ref={content}>
+    <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={handleScroll} onWheel={autoPaging.onWheel}><div className="chat-scroll-content" ref={content}>
       {display.loading&&!visible.messages.length&&!submissions.length&&<p className="panel-note chat-history-loading" role="status"><Loader2 size={14} className="spin"/>正在读取会话记录…</p>}
       {display.error&&<div className="chat-error" role="alert"><p>{display.error}</p><button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button></div>}
       {!display.loading&&!display.error&&!visible.messages.length&&!snapshot?.queue?.items.length&&!submissions.length&&<div className="chat-empty"><MessageSquare size={32}/><h3>{readOnly ? '已保存的会话记录' : '从一个明确的任务开始'}</h3><p>{readOnly ? '没有可显示的本地消息；会话身份和原始配置已保留。' : `描述目标、引用项目文件，在这里查看 ${engineName} 的执行过程。`}</p>{!readOnly && <small>需要确认的工具请求会显示审批卡片。</small>}</div>}
       {(display.page?.incomplete||snapshot?.sourceIncomplete)&&<div className="panel-note" role="status"><p>部分会话记录暂时无法完整显示，可重试读取或导出原始记录。</p>{!display.error&&<button className="secondary compact" disabled={retryingDisplay||display.loading||paging} onClick={()=>void retryDisplay()}>{retryingDisplay?'正在重试…':'重试读取记录'}</button>}</div>}
-      {archive&&!archive.before&&<p className="panel-note">已到本地保留记录的开头。</p>}
+      {display.page&&!display.loading&&!display.page.before&&!display.page.incomplete&&visible.messages.length>0&&<p className="panel-note">已到本地保留记录的开头。</p>}
       <VirtualChatMessages ref={messageList} items={visible.messages} renderMessage={renderMessage} scrollRef={scroll} initialAnchorId={initialReading.current?.follow?undefined:initialReading.current?.messageId} initialFollow={initialReading.current?.follow}/>
       {!archive&&<PendingChatMessages submissions={displaySubmissions}/>}
       {!syncState.error&&!readOnly&&!descriptor?.maintenance&&descriptor?.capabilities.approvals&&visible?.pending.map(approval=><ApprovalCard key={approval.requestId} approval={approval} sessionId={session.id} onError={onError} drafts={approvalDrafts} engineName={engineName} allowMessage={session.execution.providerId!=='native'} isNative={session.execution.providerId==='native'}/>)}
@@ -395,7 +405,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {!archive&&(running||interruptAction)&&!syncState.error&&<div className="thinking-indicator" role="status"><Loader2 size={13} className="spin"/>{interruptAction?.kind==='compaction'?'正在停止压缩…':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} displayMessages={visible.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
     </div></div>
-    {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
+    {(!follow||archive||detached)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}
     {session.execution.providerId==='native' && <div className="native-assistance">

@@ -159,25 +159,38 @@ for (const mutation of ['append', 'replace']) test(`a transcript ${mutation} dur
     const file = path.join(folder, id + '.jsonl'); await fs.writeFile(file, record(id, cwd, 'original', 'old source text'));
     const snapshot = { sessionId: 'local', taskState: 'idle', messages: [], pending: [] };
     const hydrator = new TranscriptHydrator({ get: () => ({ cwd, started: true, execution: { conversationId: id } }) }, { get: () => snapshot, flush() {} }, () => false, { message: (_id, message) => snapshot.messages.push(message), system() {} });
-    const open = fs.open.bind(fs); let mutated = false;
+    const open = fs.open.bind(fs); let mutated = false, previewBytesRead = 0;
     const intercepted = t.mock.method(fs, 'open', async (target, ...args) => {
       const handle = await open(target, ...args);
       if (target === file) {
         const read = handle.read.bind(handle);
         handle.read = async (...readArgs) => {
           const result = await read(...readArgs);
-          if (!mutated) {
+          previewBytesRead += result.bytesRead;
+          if (!mutated && mutation === 'append') {
             mutated = true;
-            if (mutation === 'append') await fs.appendFile(file, record(id, cwd, 'suffix', 'complete new suffix'));
-            else { const replacement = path.join(folder, 'replacement'); await fs.writeFile(replacement, record(id, cwd, 'replacement', 'replacement source text')); await fs.rename(replacement, file); }
+            await fs.appendFile(file, record(id, cwd, 'suffix', 'complete new suffix'));
           }
           return result;
+        };
+        const close = handle.close.bind(handle);
+        handle.close = async () => {
+          await close();
+          if (!mutated && mutation === 'replace') {
+            // Windows 不允许替换仍被预览句柄占用的目标。关闭已读取的
+            // 句柄后、preview 返回前替换，仍早于 hydrator 的读后版本核查。
+            mutated = true;
+            const replacement = path.join(folder, 'replacement');
+            await fs.writeFile(replacement, record(id, cwd, 'replacement', 'replacement source text'));
+            await fs.rename(replacement, file);
+          }
         };
       }
       return handle;
     });
     try { await hydrator.hydrate('local'); }
     finally { intercepted.mock.restore(); }
+    assert.ok(previewBytesRead > 0, 'the original preview was read before changing the source version');
     assert.equal(mutated, true); assert.deepEqual(snapshot.messages, [], 'an unstable preview must not produce partial local effects');
     await hydrator.hydrate('local');
     assert.deepEqual(snapshot.messages.map(message => message.text), mutation === 'append' ? ['old source text', 'complete new suffix'] : ['replacement source text']);

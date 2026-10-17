@@ -35,6 +35,9 @@ function keepDisplayIdentity(previous: ChatMessage | undefined, incoming: ChatMe
 }
 
 export function mergeDisplayPage(current: ChatDisplayPage | undefined, incoming: ChatDisplayPage, direction: 'replace' | 'before' | 'after' = 'replace', preserveStart = false): ChatDisplayPage {
+  // A missing/unreadable file is not proof that either end of the transcript
+  // was reached. Keep the successful window and its retryable cursor intact.
+  if (direction !== 'replace' && incoming.incomplete && !incoming.messages.length) throw new Error('部分会话记录暂时无法读取，请重试读取记录。');
   const previous = new Map(current?.messages.map(message => [message.id, message]));
   const fresh = incoming.messages.map(value => {
     const old = previous.get(value.id), message = keepDisplayIdentity(old, value);
@@ -91,6 +94,15 @@ export function mergeDisplaySnapshot(page: ChatDisplayPage, messages: readonly C
   // It must not hide normal live replies, including a canonical stream replacement.
   return mergeDisplayPage(page, { ...page, messages: updated,
     after: protectHistory && lastOverlap < 0 && updated.length ? page.after ?? updated.at(-1)!.id : page.after }, 'replace', protectHistory);
+}
+
+/** Reconcile a read as one operation: payload hydration must retain the requested edge too. */
+export function mergeDisplayRead(current: ChatDisplayPage | undefined, incoming: ChatDisplayPage, direction: 'replace' | 'before' | 'after', authority?: readonly ChatMessage[], protectHistory = false, sourceIncomplete = false): ChatDisplayPage {
+  const next = mergeDisplayPage(current, incoming, direction);
+  // The authority can contain larger payloads than the lightweight display
+  // projection. Cropping its hydration at the other edge would immediately
+  // remove the newly fetched rows and repeatedly request the same after cursor.
+  return authority ? mergeDisplaySnapshot(next, authority, direction === 'before' || direction === 'replace' && protectHistory, sourceIncomplete) : next;
 }
 
 /** Read-only message pages, explicitly separate from running state, approvals and operation receipts. */
