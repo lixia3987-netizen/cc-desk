@@ -268,7 +268,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     await Promise.allSettled(receipts.map(async (receipt, index) => {
       const abort = new AbortController(); children.add(abort);
       const signal = AbortSignal.any([abort.signal, operationSignal]);
-      let childStarted = false, worktreeAttempted = false, skillPreflightFailed = false;
+      let childStarted = false, worktreeAttempted = false, skillPreflightFailed = false, baselineMaterializationFailed = false;
       let childOperation: Promise<NativeAgentChildResult> | undefined;
       let slot: NativeAgentTaskSlot | undefined;
       const timing = execution.children.find(child => child.childId === receipt.childId)!;
@@ -289,7 +289,9 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         if (state.baseline) {
           await verifyAgentBaseline(state.baseline, signal);
           baselineCommit ??= materializeAgentBaseline(state.baseline, options.worktreeRoot, operationSignal);
-          const baseCommit = await baselineCommit;
+          let baseCommit: string;
+          try { baseCommit = await baselineCommit; }
+          catch (error) { baselineMaterializationFailed = true; throw error; }
           await guard(context); await verifyAgentBaseline(state.baseline, signal);
           const worktreePath = path.join(await fs.realpath(options.worktreeRoot), receipt.childId);
           receipt.workspace = { path: worktreePath, cwd: path.join(worktreePath, state.baseline.relativeCwd), branch: `codex/native-agent-${receipt.childId}`,
@@ -355,7 +357,7 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         receipt.error = error instanceof NativeAgentReceiptPersistenceError ? 'delegation_receipt_unconfirmed' : error instanceof NativeAgentExecutionPersistenceError ? 'delegation_execution_unconfirmed'
           : error instanceof NativeAgentTaskPoolClosedError && error.reason === 'unsafe' || unsafe && !childStarted ? 'delegation_queue_halted'
           : error instanceof NativeAgentWorktreeError ? error.code : notStarted ? 'child_start_preconditions_failed'
-          : skillPreflightFailed ? 'skill_inheritance_preflight_failed' : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
+          : baselineMaterializationFailed ? 'baseline_materialization_failed' : skillPreflightFailed ? 'skill_inheritance_preflight_failed' : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
         if (receipt.status === 'unknown') halt();
       } finally {
         children.delete(abort);
