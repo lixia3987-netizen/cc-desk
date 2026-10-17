@@ -311,7 +311,7 @@ test('new session: choose or reuse a directory without an empty record, and firs
     await page.getByRole('tab', { name: '权限与审批', exact: true }).click();
     await page.locator('.settings-engine-defaults').filter({ has: page.getByRole('heading', { name: 'Claude Code', exact: true }) }).getByLabel('默认权限模式', { exact: true }).selectOption('plan');
     await page.getByRole('button', { name: '保存设置', exact: true }).click();
-    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude.options.permissionMode).toBe('plan');
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.claude?.options.permissionMode).toBe('plan');
     await page.getByRole('dialog', { name: '设置与连接', exact: true }).getByRole('button', { name: '关闭', exact: true }).click();
     await expect(permission).toHaveValue('plan');
     await permission.selectOption('acceptEdits');

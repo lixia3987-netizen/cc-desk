@@ -63,8 +63,23 @@ async function send(page: Page, sessionId: string, text: string) {
 async function openBudget(page: Page) {
   const meter = page.locator('details.context-meter');
   await expect(meter).toBeVisible();
-  if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
+  if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator(':scope > summary').click();
   return meter;
+}
+async function expectOriginalAnswerReadable(page: Page, sessionId: string) {
+  const history=await page.evaluate(id=>window.desktop.searchChat(id,'ORIGINAL_ANSWER_1'),sessionId);
+  expect(history.hits).toHaveLength(1);
+  await page.getByRole('button',{name:'查找消息',exact:true}).click();
+  const search=page.getByRole('dialog',{name:'会话内查找',exact:true});
+  await search.getByRole('textbox',{name:'查找消息内容',exact:true}).fill('ORIGINAL_ANSWER_1');
+  await expect(search.locator('.chat-search-results button')).toHaveCount(1);
+  await search.locator('.chat-search-results button').click();
+  await expect(search).toHaveCount(0);
+  await expect(page.locator('.search-target')).toHaveAttribute('data-message-id',history.hits[0].id);
+  await expect(page.locator('.search-target')).toContainText('ORIGINAL_ANSWER_1');
+  await expect(page.locator('.search-target')).toBeInViewport();
+  await page.getByRole('button',{name:'返回最新对话',exact:true}).click();
+  await expect.poll(()=>page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(5);
 }
 async function longConversation(page: Page, sessionId: string) {
   await send(page, sessionId, firstGoal);
@@ -105,7 +120,7 @@ test('native manual compaction uses one tool-free request, retains exact goal an
     expect(compacted.nativeContextMaintenance!.lastCompaction!.afterBytes).toBeLessThan(compacted.nativeContextMaintenance!.lastCompaction!.beforeBytes);
     for (const message of before.messages) expect(compacted.messages).toContainEqual(message);
     await expect(meter).toContainText('原始聊天和工具记录已保留');
-    await expect(page.locator('.chat-message.assistant').first()).toContainText('ORIGINAL_ANSWER_1');
+    await expectOriginalAnswerReadable(page,session.id);
 
     await send(page, session.id, 'CONTINUE_AFTER_COMPACTION_使用已压缩的记录继续。');
     const continued = fixture.requests.at(-1)!.input as Array<Record<string, unknown>>;
@@ -123,7 +138,7 @@ test('native manual compaction uses one tool-free request, retains exact goal an
     const restored = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
     expect(restored.nativeContextMaintenance?.lastCompaction).toEqual(compacted.nativeContextMaintenance?.lastCompaction);
     for (const message of before.messages) expect(restored.messages).toContainEqual(message);
-    await expect(page.locator('.chat-message.assistant').first()).toContainText('ORIGINAL_ANSWER_1');
+    await expectOriginalAnswerReadable(page,session.id);
     await restoreCredential(page);
     await send(page, session.id, 'CONTINUE_AFTER_RESTART_沿用已压缩上下文。');
     expect(JSON.stringify(fixture.requests.at(-1)!.input)).toContain(summaryText);
@@ -141,6 +156,12 @@ test('native cancelling a hanging compaction preserves its original context and 
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     await longConversation(page, session.id);
     const before = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
+    const loadPersistedContext=async()=>{
+      const ledger=await NativeRunStore.open({rootDirectory:path.join(f.data,'native','conversations'),conversationId:session.execution.conversationId!});
+      try{return ledger.loadContext();}finally{await ledger.close();}
+    };
+    const beforeContext=await loadPersistedContext();
+    expect(beforeContext).toBeTruthy();
     const requestCount = fixture.requests.length;
     const meter = await openBudget(page);
     await meter.getByRole('button', { name: '压缩上下文（可能计费）', exact: true }).click();
@@ -151,7 +172,8 @@ test('native cancelling a hanging compaction preserves its original context and 
     await expect.poll(() => app.evaluate(({ app }) => app.getAppMetrics().some(metric => metric.serviceName === 'cc-desk native agent' || metric.name === 'cc-desk native agent'))).toBe(false);
     const cancelled = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
     expect(cancelled.nativeContextMaintenance?.lastCompaction).toBeUndefined();
-    expect(cancelled.nativeContextMaintenance?.headHash).toBe(before.nativeContextMaintenance?.headHash);
+    // 取消时的模型请求诊断回执会推进日志头；协议上下文必须保持完全一致。
+    expect(await loadPersistedContext()).toEqual(beforeContext);
     expect(cancelled.messages).toEqual(before.messages);
     await send(page, session.id, 'CONTINUE_AFTER_CANCEL_保留所有原始内容继续。');
     const input = JSON.stringify(fixture.requests.at(-1)!.input);

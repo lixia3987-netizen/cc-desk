@@ -1,4 +1,4 @@
-import { forwardRef, memo, useCallback, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { ChatMessage } from '../shared/chat';
 import { VirtualChatLayout } from './virtual-chat-layout';
 
@@ -137,7 +137,8 @@ export const VirtualChatMessages = memo(forwardRef<VirtualChatMessagesHandle, Vi
     };
   }, []);
 
-  useLayoutEffect(() => {
+  // 滚动容器属于父组件，ref 在子组件布局副作用之后才绑定，须等待整次提交完成。
+  useEffect(() => {
     const element = scrollRef.current, list = root.current;
     if (!element || !list) return;
     reading.current.height = element.clientHeight || reading.current.height;

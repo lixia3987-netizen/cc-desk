@@ -151,7 +151,7 @@ test('mermaid: identical diagrams keep independent IDs and a collapsed tool resu
     const page = await app.firstWindow(), errors: string[] = [];
     page.on('pageerror', error => errors.push(error.message));
     const blocks = page.locator('.mermaid-block'), tool = page.locator('.tool-card');
-    await expect(blocks).toHaveCount(3);
+    await expect(blocks).toHaveCount(2);
     await expect(tool).not.toHaveAttribute('open', '');
     for (let index = 0; index < 2; index++) {
       await blocks.nth(index).scrollIntoViewIfNeeded();
@@ -161,6 +161,7 @@ test('mermaid: identical diagrams keep independent IDs and a collapsed tool resu
     await expect(tool.locator('.mermaid-preview .mermaid-svg > svg')).toHaveCount(0);
     await tool.locator('summary').click();
     await expect(tool).toHaveAttribute('open', '');
+    await expect(blocks).toHaveCount(3);
     await tool.locator('.mermaid-block').scrollIntoViewIfNeeded();
     await expect(tool.locator('.mermaid-preview .mermaid-svg > svg')).toBeVisible({ timeout: 15_000 });
     // Mermaid 可能将换行标签拆成相邻的 tspan，中间没有实际空格。

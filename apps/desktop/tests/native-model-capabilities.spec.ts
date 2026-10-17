@@ -26,7 +26,8 @@ async function fixture() {
   await fs.writeFile(path.join(data, 'workspace.json'), JSON.stringify({ version: 3,
     projects: [{ id: projectId, name: '模型能力本地测试', path: project, createdAt: now }], sessions: [], settings: {
       claudePath: path.join(directory, 'missing-claude'), shellPath: '', maxSessions: 4, fontSize: 14, scrollback: 8000,
-      engineDefaults: { native: { schemaVersion: 1, options: { inputBudgetMode: 'custom', maxInputTokens: 24000, maxOutputTokens: 128 } },
+      // 预算需容纳当前工具 schema，三种预算仍互不相同且低于模型的 40,000 输入上限。
+      engineDefaults: { native: { schemaVersion: 1, options: { inputBudgetMode: 'custom', maxInputTokens: 32000, maxOutputTokens: 128 } },
         claude: { schemaVersion: 1, options: { model: 'existing-cli-model', effort: 'high' } } },
     } }));
   const requests: Array<{ method?: string; path: string; authorization?: string; body?: { max_tokens: number } }> = [];
@@ -97,24 +98,24 @@ test('automatic partial metadata displays field sources and survives a real thin
     await page.getByRole('button', { name: '关闭', exact: true }).click();
     const session = await page.evaluate(async ({ projectId, connectionId }) => {
       const session = await window.desktop.createSession({ projectId, title: '能力与 thinking 本地测试', kind: 'agent', providerId: 'native', mode: 'structured', isolated: false,
-        engineConfig: { schemaVersion: 1, options: { connectionId, maxInputTokens: 24000, maxOutputTokens: 128 } } });
+        engineConfig: { schemaVersion: 1, options: { connectionId, maxInputTokens: 32000, maxOutputTokens: 128 } } });
       await window.desktop.setSelection(session.id); return session;
     }, { projectId: f.projectId, connectionId: configured.id });
     const result = await page.evaluate(({ id, requestId }) => window.desktop.sendChat(id, 'Give a short local response.', [], requestId), { id: session.id, requestId: randomUUID() });
     expect(result.success).toBe(true); expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(1);
     expect(f.requests.find(item => item.method === 'POST')!.body!.max_tokens).toBe(128);
-    const meter = page.locator('details.context-meter'); await expect(meter).toHaveCount(1); await meter.locator('summary').click();
+    const meter = page.locator('details.context-meter'); await expect(meter).toHaveCount(1); await meter.locator(':scope > summary').click();
     await expect(meter.getByRole('group', { name: '模型窗口信息', exact: true })).toHaveText(capabilityText);
     const snapshot = await page.evaluate(async id => ({ state: (await window.desktop.snapshot()).state, chat: await window.desktop.chatSnapshot(id) }), session.id);
-    expect(snapshot.chat.context?.budget?.maxInputTokens).toBe(24000);
-    expect(snapshot.state.sessions.find(item => item.id === session.id)!.engineConfig.options).toMatchObject({ maxInputTokens: 24000, maxOutputTokens: 128 });
-    expect(snapshot.state.settings.engineDefaults.native.options).toMatchObject({ maxInputTokens: 24000, maxOutputTokens: 128 });
+    expect(snapshot.chat.context?.budget?.maxInputTokens).toBe(32000);
+    expect(snapshot.state.sessions.find(item => item.id === session.id)!.engineConfig.options).toMatchObject({ maxInputTokens: 32000, maxOutputTokens: 128 });
+    expect(snapshot.state.settings.engineDefaults.native.options).toMatchObject({ maxInputTokens: 32000, maxOutputTokens: 128 });
     expect(snapshot.state.settings.engineDefaults.claude.options).toMatchObject({ model: 'existing-cli-model', effort: 'high' });
     await assertPrivate(page, f.data); await page.screenshot({ path: testInfo.outputPath('model-capabilities-context.png') });
     await closeNativeApp(app); app = await f.launch(); page = await app.firstWindow(); await ready(page);
     const restored = await page.evaluate(id => window.desktop.chatSnapshot(id), session.id);
     expect(restored.context?.modelCapabilities).toEqual(snapshot.chat.context?.modelCapabilities);
-    expect(restored.context?.budget?.maxInputTokens).toBe(24000); expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(1);
+    expect(restored.context?.budget?.maxInputTokens).toBe(32000); expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(1);
     await assertPrivate(page, f.data);
   } finally { await closeNativeApp(app); await f.dispose(); }
 });
@@ -162,44 +163,44 @@ test('session policy uses saved defaults and isolates custom budgets from an uns
     await expect.poll(async () => (await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId)).taskState).toBe('completed');
     const dialog = await openSessionSettings(page, 'context');
     await expect(dialog.getByLabel('会话运行策略来源', { exact: true })).toHaveValue('defaults');
-    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('24000');
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('32000');
     await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toBeDisabled();
     await dialog.getByRole('radio', { name: '新会话默认', exact: true }).click();
-    await dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true }).fill('30000');
+    await dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true }).fill('38000');
     await dialog.getByLabel('默认输入预算方式', { exact: true }).selectOption('model');
     await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
     await dialog.getByLabel('默认输入预算方式', { exact: true }).selectOption('custom');
-    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('38000');
     await dialog.getByRole('radio', { name: '当前会话', exact: true }).click();
-    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('24000');
+    await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('32000');
     const inheritedResult = await page.evaluate(id => window.desktop.sendChat(id, 'Use the saved defaults while global edits remain unsaved.'), sessionId);
     expect(inheritedResult.success).toBe(true);
     const inheritedSnapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
-    expect(inheritedSnapshot.context?.budget?.maxInputTokens).toBe(24000);
+    expect(inheritedSnapshot.context?.budget?.maxInputTokens).toBe(32000);
     await dialog.getByLabel('会话运行策略来源', { exact: true }).selectOption('custom');
     await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('model');
     await expect(dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveCount(0);
     await dialog.getByLabel('会话输入预算方式', { exact: true }).selectOption('custom');
-    await dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill('22000');
+    await dialog.getByLabel('会话输入预算（估算 tokens）', { exact: true }).fill('30000');
     await dialog.getByRole('button', { name: '保存配置', exact: true }).click();
-    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(item => item.id === sessionId)!.engineConfig.options).toMatchObject({ runtimePolicy: 'custom', inputBudgetMode: 'custom', maxInputTokens: 22000 });
+    await expect.poll(async () => (await page.evaluate(() => window.desktop.snapshot())).state.sessions.find(item => item.id === sessionId)!.engineConfig.options).toMatchObject({ runtimePolicy: 'custom', inputBudgetMode: 'custom', maxInputTokens: 30000 });
     await dialog.getByRole('radio', { name: '新会话默认', exact: true }).click();
-    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
-    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('38000');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(32000);
     const result = await page.evaluate(id => window.desktop.sendChat(id, 'Use the saved custom budget only.'), sessionId);
     expect(result.success).toBe(true);
     const snapshot = await page.evaluate(id => window.desktop.chatSnapshot(id), sessionId);
-    expect(snapshot.context?.budget?.maxInputTokens).toBe(22000);
+    expect(snapshot.context?.budget?.maxInputTokens).toBe(30000);
     expect(f.requests.filter(item => item.method === 'POST')).toHaveLength(3);
-    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
-    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('30000');
+    expect((await page.evaluate(() => window.desktop.snapshot())).state.settings.engineDefaults.native.options.maxInputTokens).toBe(32000);
+    await expect(dialog.getByLabel('默认输入预算（估算 tokens）', { exact: true })).toHaveValue('38000');
     await dialog.getByRole('button', { name: '关闭弹窗', exact: true }).click();
     await expect(dialog.getByRole('alert', { name: '未保存的修改', exact: true })).toContainText('全局设置');
     await dialog.getByRole('button', { name: '放弃未保存修改并关闭', exact: true }).click();
     await expect(dialog).toHaveCount(0);
     const persisted = (await page.evaluate(() => window.desktop.snapshot())).state;
-    expect(persisted.settings.engineDefaults.native.options.maxInputTokens).toBe(24000);
-    expect(persisted.sessions.find(item => item.id === sessionId)!.engineConfig.options.maxInputTokens).toBe(22000);
+    expect(persisted.settings.engineDefaults.native.options.maxInputTokens).toBe(32000);
+    expect(persisted.sessions.find(item => item.id === sessionId)!.engineConfig.options.maxInputTokens).toBe(30000);
     await assertPrivate(page, f.data);
   } finally { await closeNativeApp(app); await f.dispose(); }
 });

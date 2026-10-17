@@ -117,7 +117,10 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await send(page, 'hold');
     await expect(page.locator('.thinking-indicator')).toBeVisible();
     await send(page, 'queued message');
-    await expect(page.locator('.queued-chat-message')).toContainText('queued message');
+    const queuedMessage=page.getByLabel('排队消息 1',{exact:true});
+    await expect(queuedMessage).toHaveCount(1);
+    await expect(queuedMessage).toContainText('queued message');
+    await expect(page.getByLabel('正在启动的消息',{exact:true})).toContainText('hold');
     await page.locator('.chat-composer').getByRole('button', { name: '停止本轮', exact: true }).click();
     // 被中断的轮次会有意保留在队列中：先移除已检查的旧轮次，
     // 再显式继续尚未发送的第二条消息。
@@ -182,7 +185,18 @@ test('engine UI uses heterogeneous configuration, real service execution and ref
     await openSessionSettings(page, 'limits');
     await expect(page.getByLabel('会话路由', { exact: true })).toHaveValue('saved-route');
     await closeSessionSettings(page);
-    await expect(page.locator('.chat-message.assistant').filter({ hasText: '测试审批已完成' })).toHaveCount(1);
+    const approvalHistory=await page.evaluate(id=>window.desktop.searchChat(id,'测试审批已完成'),first.id);
+    expect(approvalHistory.hits).toHaveLength(1);
+    await page.getByRole('button',{name:'查找消息',exact:true}).click();
+    const historySearch=page.getByRole('dialog',{name:'会话内查找',exact:true});
+    await historySearch.getByRole('textbox',{name:'查找消息内容',exact:true}).fill('测试审批已完成');
+    await expect(historySearch.locator('.chat-search-results button')).toHaveCount(1);
+    await historySearch.locator('.chat-search-results button').click();
+    await expect(historySearch).toHaveCount(0);
+    await expect(page.locator('.search-target')).toHaveAttribute('data-message-id',approvalHistory.hits[0].id);
+    await expect(page.locator('.search-target')).toContainText('测试审批已完成');
+    await expect(page.locator('.search-target')).toBeInViewport();
+    await page.getByRole('button',{name:'返回最新对话',exact:true}).click();
     await page.getByRole('button', { name: '新建会话', exact: false }).click();
     await page.getByRole('button', { name: '测试 Native', exact: true }).click();
     await expect(page.getByLabel('路由', { exact: true })).toHaveCount(0);

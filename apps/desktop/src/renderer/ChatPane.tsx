@@ -89,14 +89,15 @@ function ApprovalCard({approval,sessionId,onError,drafts,engineName,allowMessage
 function ToolMessageBody({message,children}:{message:ChatMessage;children:ReactNode}) {
   return <>{message.input&&<pre className="tool-input">{JSON.stringify(message.input,null,2)}</pre>}{children}</>;
 }
-const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative,onImagePreview,expandedTools}:{message:ChatMessage;engineName:string;isNative:boolean;expandedTools:Map<string,boolean>;onImagePreview?:(runId:string,index:number,image:NativeImageAttachment)=>void}) {
+const ChatMessageRow=memo(function ChatMessageRow({message,engineName,isNative,onImagePreview,expandedTools,highlighted=false}:{message:ChatMessage;engineName:string;isNative:boolean;expandedTools:Map<string,boolean>;highlighted?:boolean;onImagePreview?:(runId:string,index:number,image:NativeImageAttachment)=>void}) {
   const [expanded,setExpanded]=useState(expandedTools.get(message.id)??false);
   const [opened,setOpened]=useState(expandedTools.has(message.id));
+  useLayoutEffect(()=>{if(highlighted&&message.role==='tool'){expandedTools.set(message.id,true);setExpanded(true);setOpened(true);}},[highlighted,message.id,message.role,expandedTools]);
   const changeSet=isNative&&message.role==='tool'&&message.toolName==='apply_change_set';
   const content=<><MessageText text={message.text}/>{isNative&&message.role==='user'&&message.nativeImageAttachments&&<NativeImageAttachments images={message.nativeImageAttachments} onPreview={onImagePreview?(index,image)=>onImagePreview(message.turnId,index,image):undefined}/>} {message.truncated&&<p className="panel-note message-truncated">此消息过长，仅显示部分内容。可导出会话查看完整记录。</p>}</>;
   const changeSetContent=<><NativeChangeSetResult result={message.nativeChangeSetResult} state={message.nativeChangeSetState}/>{message.nativeChangeSetState==='not_executed'&&<><pre className="tool-input" aria-label="工具未执行原因">{message.text}</pre>{message.truncated&&<p className="panel-note message-truncated">未执行原因过长，展示内容已截断。可导出会话查看完整记录。</p>}</>}</>;
-  return message.role==='tool'?<details data-message-id={message.id} open={expanded} className={'tool-card '+(message.isError?'has-error':'')} onToggle={event=>{const open=event.currentTarget.open;expandedTools.set(message.id,open);setExpanded(open);if(open)setOpened(true);}}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{opened&&(changeSet?changeSetContent:<ToolMessageBody message={message}>{content}</ToolMessageBody>)}</details>:<article data-message-id={message.id} className={'chat-message '+message.role}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
-},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&previous.onImagePreview===next.onImagePreview&&sameChatMessage(previous.message,next.message));
+  return message.role==='tool'?<details data-message-id={message.id} open={expanded} className={'tool-card '+(message.isError?'has-error':'')+(highlighted?' search-target':'')} onToggle={event=>{const open=event.currentTarget.open;expandedTools.set(message.id,open);setExpanded(open);if(open)setOpened(true);}}><summary><span className={'dot '+(message.isError?'error':'idle')}/><strong>{message.toolName??'工具结果'}</strong>{message.parentToolUseId&&<small>子任务</small>}<span>{changeSet?nativeChangeSetResultLabel(message.nativeChangeSetResult,message.nativeChangeSetState):message.isError?'失败':'查看详情'}</span></summary>{opened&&(changeSet?changeSetContent:<ToolMessageBody message={message}>{content}</ToolMessageBody>)}</details>:<article data-message-id={message.id} className={'chat-message '+message.role+(highlighted?' search-target':'')}><header>{message.role==='user'?'你':message.role==='assistant'?engineName:'会话记录'}{message.parentToolUseId&&<small>子任务</small>}</header>{content}</article>;
+},(previous,next)=>previous.engineName===next.engineName&&previous.isNative===next.isNative&&previous.onImagePreview===next.onImagePreview&&previous.highlighted===next.highlighted&&sameChatMessage(previous.message,next.message));
 
 export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFiles,onPasteImages,onProjectFiles,attachments,attachmentBusy,attachmentDisabled,isAttachmentImporting,onRemoveAttachment,onAttachmentsSent,approvalDrafts,readingPositions,attentionTarget,onAttentionHandled,descriptor,readOnly=false,disabled=false,unavailable}:{
   descriptor?:ExecutionDescriptor;readOnly?:boolean;session:Session;draft:string;onDraft:(value:string)=>void;onSent:(expectedDraft:string)=>void;onError:(error:unknown)=>void;onAttach:()=>void;onProjectFiles:()=>void;attachments:Attachment[];onRemoveAttachment:(path:string)=>void;onAttachmentsSent:(files:Attachment[])=>void;approvalDrafts:ApprovalDrafts;readingPositions:Map<string,ChatReadingPosition>;attentionTarget?:{requestId:string;nonce:number};onAttentionHandled:()=>void;disabled?:boolean;unavailable?:string;
@@ -132,6 +133,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const readNativeAction=useCallback(()=>chatActionState.getSnapshot(nativeActionKey),[nativeActionKey]);
   const interruptAction=useSyncExternalStore(chatActionState.subscribe,readInterrupt,readInterrupt);
   const recoveryAction=useSyncExternalStore(chatActionState.subscribe,readRecovery,readRecovery);
+  const recoveryConfirmation=useRef('');
   const nativeAction=useSyncExternalStore(chatActionState.subscribe,readNativeAction,readNativeAction);
   const recovering=!!recoveryAction;
   const confirmingNativeRecovery=nativeAction?.kind==='recover';
@@ -147,7 +149,8 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const initialReading=useRef(readingPositions.get(session.id));
   const display=useChatDisplay(session.id,session.execution.conversationId,snapshot,initialReading.current,readingPositions.get(session.id)?.follow===false);
   const [readingArchive,setReadingArchive]=useState(!!initialReading.current&&!initialReading.current.follow),[showSearch,setShowSearch]=useState(false),[highlight,setHighlight]=useState('');
-  const archive=readingArchive?display.page:undefined,paging=display.paging;
+  const detached=display.page?.after!=null;
+  const archive=readingArchive||detached?display.page:undefined,paging=display.paging;
   const displayRetryScope=JSON.stringify([session.id,sourceConversation]);
   const displayRetryGate=useRef<{scope:string} | undefined>(undefined);
   const [displayRetry,setDisplayRetry]=useState<{scope:string}>();
@@ -156,17 +159,38 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const visible=useMemo(()=>({sessionId:session.id,taskState:snapshot?.taskState??'idle',...snapshot,messages:display.page?.messages??[],pending:archive?[]:snapshot?.pending??[]}),[session.id,snapshot,display.page,archive]);
   const messageList=useRef<VirtualChatMessagesHandle>(null);
   const ensureMessage=useCallback((id:string)=>messageList.current?.ensureMessage(id)??Promise.resolve(false),[]);
-  const {scroll,content,follow,onScroll,jumpToLatest:scrollLatest,jumpToItem,remember:rememberReading}=useChatScroll(session.id,display.page?visible:undefined,readingPositions,ensureMessage);
+  const {scroll,content,follow,onScroll,jumpToLatest:scrollLatest,jumpToItem,remember:rememberReading}=useChatScroll(session.id,display.page?visible:undefined,readingPositions,ensureMessage,!detached);
+  const [latestIntent,setLatestIntent]=useState<{seq:number;sessionId:string;conversationId:string}>();
   const jumpToLatest=useCallback(()=>{
-    pageRequest.current++;setReadingArchive(false);setHighlight('');setHistoryNotice('');
-    if(display.page?.after){void display.read().then(page=>{if(page?.messages.length)void ensureMessage(page.messages.at(-1)!.id).then(()=>scrollLatest());});}
-    else {const id=display.page?.messages.at(-1)?.id;if(id)void ensureMessage(id).then(()=>scrollLatest());else scrollLatest();}
-  },[display.page,display.read,ensureMessage,scrollLatest]);
+    const seq=++pageRequest.current;setLatestIntent(undefined);setHighlight('');setHistoryNotice('');
+    const intent={seq,sessionId:session.id,conversationId:sourceConversation};
+    if(display.page?.after||readingArchive||!follow){void display.read().then(page=>{
+      if(page&&mounted.current&&seq===pageRequest.current&&currentConversation.current===sourceConversation)setLatestIntent(intent);
+    }).catch(onError);}
+    else setLatestIntent(intent);
+  },[display.page,display.read,readingArchive,follow,session.id,sourceConversation,onError]);
+  useLayoutEffect(()=>{
+    if(!latestIntent)return;
+    const intent=latestIntent;
+    const current=()=>mounted.current&&intent.seq===pageRequest.current&&intent.sessionId===session.id&&intent.conversationId===currentConversation.current;
+    const clear=()=>setLatestIntent(value=>value===intent?undefined:value);
+    if(!current()){clear();return;}
+    if(display.loading||!display.page||detached)return;
+    let cancelled=false;
+    // 等显示页和虚拟列表提交后再定位；读取 Promise 返回时仍可能是旧窗口。
+    // 取当前尾行，允许读取完成前的 stream 已被正式消息替换。
+    const id=display.page.messages.at(-1)?.id;
+    void (id?ensureMessage(id):Promise.resolve(true)).then(found=>{
+      if(!found||cancelled||!current())return;
+      setReadingArchive(false);scrollLatest();clear();
+    }).catch(error=>{if(!cancelled&&current()){clear();onError(error);}});
+    return()=>{cancelled=true;};
+  },[latestIntent,display.page,display.loading,detached,session.id,ensureMessage,scrollLatest,onError]);
   const openPage=useCallback(async(options:ChatPageOptions,saved?:ChatReadingPosition)=>{
-    const seq=++pageRequest.current;
+    const seq=++pageRequest.current;setLatestIntent(undefined);
     try{
-      if(options.before)rememberReading();
-      const page=await display.read(options,options.before?'before':'replace');
+      if(options.before||options.after)rememberReading();
+      const page=await display.read(options,options.before?'before':options.after?'after':'replace');
       if(!page||!mounted.current||seq!==pageRequest.current)return;
       if(!page.messages.length){
         if(options.before)setExhaustedBefore(options.before);
@@ -174,7 +198,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
         return;
       }
       setHistoryNotice('');
-      if(!options.before){
+      if(!options.before&&!options.after){
         setReadingArchive(true);setHighlight(options.around??'');
         if(page.messages.length)jumpToItem(options.around??page.messages[0].id,'message',saved?.offset??8);
       }
@@ -219,8 +243,13 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const synchronizeAction=async(key:string,token:number)=>{
     if(!chatActionState.beginSync(key,token))return;
     try{
-      const fresh=await loadFresh();
-      if(fresh?.sessionId===session.id)chatActionState.synchronized(key,token,fresh.version);
+      // 重建会替换会话身份，须按新身份确认，不能使用 loadFresh 捕获的旧身份。
+      const recovery=key===recoveryKey;
+      const fresh=recovery?await sharedChatSnapshots.refreshFresh(session.id):await loadFresh();
+      const action=chatActionState.getSnapshot(key);
+      const confirmed=fresh?.sessionId===session.id&&(!recovery||mounted.current&&!!fresh.version?.conversationId
+        &&fresh.version.conversationId===currentConversation.current&&fresh.version.conversationId!==action?.target);
+      if(confirmed)chatActionState.synchronized(key,token,fresh.version);
       else chatActionState.syncFailed(key,token);
     }catch(error){chatActionState.syncFailed(key,token);if(mounted.current&&currentConversation.current===sourceConversation)onError(error);}
   };
@@ -246,7 +275,11 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     let cancelled=false;
     // 先获取新快照，再判断导航目标是否已过期。
     pageRequest.current++;setReadingArchive(false);setHighlight('');setShowSearch(false);
-    void sessionReadLifecycle.read(session.id,async()=>{await load();return sharedChatSnapshots.get(session.id).snapshot;}).then(value=>{
+    void sessionReadLifecycle.read(session.id,async()=>{
+      await load();
+      if(!await display.read())throw new Error('尚未读取到最新会话记录，请重试查看待处理请求。');
+      return sharedChatSnapshots.get(session.id).snapshot;
+    }).then(value=>{
       if(!value||cancelled||!mounted.current)return;
       if(sharedChatSnapshots.get(session.id).state.error)throw new Error('状态读取失败，请重新同步后查看待处理请求。');
       if(value?.pending.some(item=>item.requestId===attentionTarget.requestId)){
@@ -255,24 +288,12 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       handled.current();
     }).catch(error=>{if(!cancelled&&mounted.current){onError(error);handled.current();}});
     return()=>{cancelled=true;};
-  },[attentionTarget?.nonce,session.id,jumpToItem,onError,readOnly,descriptor?.maintenance,load]);
+  },[attentionTarget?.nonce,session.id,jumpToItem,onError,readOnly,descriptor?.maintenance,load,display.read]);
   useLayoutEffect(()=>{
     if(!focusRequest||archive)return;
     const card=Array.from(content.current?.querySelectorAll<HTMLElement>('[data-request-id]')??[]).find(item=>item.dataset.requestId===focusRequest);
     if(card){card.focus({preventScroll:true});setFocusRequest('');}
   },[focusRequest,archive,snapshot,content]);
-  useLayoutEffect(()=>{
-    let cancelled=false;
-    const apply=()=>{
-      if(cancelled)return;
-      for(const row of content.current?.querySelectorAll<HTMLElement>('[data-message-id]')??[]){
-        const selected=row.dataset.messageId===highlight;row.classList.toggle('search-target',selected);
-        if(selected&&row instanceof HTMLDetailsElement)row.open=true;
-      }
-    };
-    apply();if(highlight)void ensureMessage(highlight).then(found=>{if(found)apply();});
-    return()=>{cancelled=true;};
-  },[highlight,visible,content,ensureMessage]);
   const nativeRecovery=session.execution.providerId==='native'?snapshot?.nativeRecovery:undefined;
   const nativeMaintenance=session.execution.providerId==='native'?snapshot?.nativeContextMaintenance:undefined;
   const compacting=compactingNativeContext||!!nativeMaintenance?.compacting;
@@ -291,9 +312,15 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     if(interruptAction&&chatActionHasFreshSnapshot(interruptAction,snapshot?.version)&&snapshot&&(!running||sessionStatus==='stopping'))chatActionState.clear(interruptKey,interruptAction.token);
   },[interruptAction,interruptKey,snapshot,running,sessionStatus]);
   useEffect(()=>{
-    if(!recoveryAction||!chatActionHasFreshSnapshot(recoveryAction,snapshot?.version))return;
+    if(!recoveryAction?.accepted)return;
     const changed=(session.execution.conversationId??'')!==recoveryAction.target
       ||!!snapshot?.version?.conversationId&&snapshot.version.conversationId!==recoveryAction.target;
+    const confirmation=JSON.stringify([recoveryAction.token,sourceConversation]);
+    if(changed&&!recoveryAction.synchronized&&!recoveryAction.synchronizing&&recoveryConfirmation.current!==confirmation){
+      recoveryConfirmation.current=confirmation;
+      void synchronizeAction(recoveryKey,recoveryAction.token);
+    }
+    if(!chatActionHasFreshSnapshot(recoveryAction,snapshot?.version))return;
     if(changed){chatActionState.clear(recoveryKey,recoveryAction.token);setConfirmRecovery(false);jumpToLatest();}
   },[recoveryAction,recoveryKey,session.execution.conversationId,snapshot?.version]);
   const interruptCurrent=async(kind:'turn'|'compaction')=>{
@@ -347,20 +374,32 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
   const attachmentsBlocked=!descriptor?.capabilities.attachments||composerDisabled||attachmentDisabled||attachmentBusy||submitting;
   const expandedTools=useRef(new Map<string,boolean>());
   useEffect(()=>{const ids=new Set(visible.messages.map(message=>message.id));for(const id of expandedTools.current.keys())if(!ids.has(id))expandedTools.current.delete(id);},[visible.messages]);
-  const renderMessage=useCallback((message:ChatMessage)=><ChatMessageRow message={message} engineName={engineName} isNative={session.execution.providerId==='native'} expandedTools={expandedTools.current} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>,[engineName,session.execution.providerId,session.execution.conversationId,previewHistoryImage]);
+  const renderMessage=useCallback((message:ChatMessage)=><ChatMessageRow message={message} engineName={engineName} isNative={session.execution.providerId==='native'} expandedTools={expandedTools.current} highlighted={message.id===highlight} onImagePreview={session.execution.providerId==='native'&&session.execution.conversationId?previewHistoryImage:undefined}/>,[engineName,session.execution.providerId,session.execution.conversationId,previewHistoryImage,highlight]);
   const loadEarlier=useCallback(async()=>{
     if(display.paging||!display.page?.before)return;
+    pageRequest.current++;setLatestIntent(undefined);
     rememberReading();await display.earlier();
   },[display.paging,display.page?.before,display.earlier,rememberReading]);
+  const loadNewer=useCallback(async()=>{
+    if(display.paging||!display.page?.after)return;
+    pageRequest.current++;setLatestIntent(undefined);
+    rememberReading();await display.newer();
+  },[display.paging,display.page?.after,display.newer,rememberReading]);
   const earlierFrame=useRef(0);
   useEffect(()=>()=>cancelAnimationFrame(earlierFrame.current),[]);
   const handleScroll=()=>{
     onScroll();
-    if(scroll.current&&scroll.current.scrollTop<180&&!display.loading&&!display.error&&!earlierFrame.current){
+    const element=scroll.current;
+    if(element&&!detached&&readingArchive&&element.scrollHeight-element.scrollTop-element.clientHeight<70)setReadingArchive(false);
+    if(element&&(element.scrollTop<180||detached&&element.scrollHeight-element.scrollTop-element.clientHeight<180)&&!display.loading&&!display.error&&!earlierFrame.current){
       // A large scroll can initially land in a virtual spacer. Capture the anchor
       // after the new viewport rows have committed, before prepending older data.
       earlierFrame.current=requestAnimationFrame(()=>{earlierFrame.current=requestAnimationFrame(()=>{
-        earlierFrame.current=0;if(mounted.current&&scroll.current&&scroll.current.scrollTop<180)void loadEarlier();
+        earlierFrame.current=0;
+        const element=scroll.current;
+        if(!mounted.current||!element)return;
+        if(detached&&element.scrollHeight-element.scrollTop-element.clientHeight<180)void loadNewer();
+        else if(element.scrollTop<180)void loadEarlier();
       });});
     }
   };
@@ -375,7 +414,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     <div className="chat-reading-toolbar"><button className="text-button" title="会话内查找 Ctrl / ⌘ + F" onClick={()=>setShowSearch(true)}><Search size={14}/>查找消息</button>{archive&&<span>正在阅读历史记录</span>}{archive&&<button className="text-button" onClick={jumpToLatest}>返回最新对话</button>}</div>
     {syncState.error&&<div className="chat-error" role="alert"><strong>状态未知，显示的是上次读取的记录。</strong><p>{syncState.error}</p><button className="secondary compact" disabled={syncState.loading} onClick={()=>void load()}>{syncState.loading?'正在重试…':'重新同步状态'}</button></div>}
     {nativeAction&&<div className="chat-operation-feedback" role="status"><Loader2 size={14} className="spin"/>{nativeAction.accepted?'操作已受理，等待同步确认…':'正在提交操作…'}{nativeAction.accepted&&!nativeAction.synchronized&&<button className="secondary compact" disabled={nativeAction.synchronizing} onClick={()=>void synchronizeAction(nativeActionKey,nativeAction.token)}>{nativeAction.synchronizing?'正在核实…':'核实操作结果'}</button>}</div>}
-      {(display.page?.before||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={display.loading||paging||!display.page?.before||!visible.messages.length||exhaustedBefore===visible.messages[0]?.id} onClick={()=>void loadEarlier()}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>已载入 {archive.messages.length} 条</span><button className="secondary compact" disabled={paging||!archive.after} onClick={()=>void openPage({after:archive.after!}).catch(onError)}>查看较新消息</button></>}</div>}
+      {(display.page?.before||archive)&&<div className="history-controls chat-page-controls"><button className="secondary compact" disabled={display.loading||paging||!display.page?.before||!visible.messages.length||exhaustedBefore===visible.messages[0]?.id} onClick={()=>void loadEarlier()}>{paging?'读取中…':'查看更早消息'}</button>{archive&&<><span>已载入 {archive.messages.length} 条</span><button className="secondary compact" disabled={display.loading||paging||!archive.after} onClick={()=>void loadNewer().catch(onError)}>查看较新消息</button></>}</div>}
     {historyNotice&&<p className="panel-note history-reading-note" role="status">{historyNotice}</p>}
     {showSearch&&<ChatSearch sessionId={session.id} onClose={()=>{pageRequest.current++;setShowSearch(false);}} onSelect={(id,query)=>openPage({around:id,query})}/>}
     <div className="chat-scroll" ref={scroll} aria-label="对话记录" onScroll={handleScroll}><div className="chat-scroll-content" ref={content}>
@@ -394,6 +433,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
       {!archive&&(running||interruptAction)&&!syncState.error&&<div className="thinking-indicator" role="status"><Loader2 size={13} className="spin"/>{interruptAction?.kind==='compaction'?'正在停止压缩…':taskLabel}</div>}
       {!archive&&<ChatQueue sessionId={session.id} conversationId={session.execution.conversationId} queue={snapshot?.queue} version={snapshot?.version} messages={snapshot?.messages} displayMessages={visible.messages} disabled={composerDisabled||stopping} onError={onError} refresh={load} refreshFresh={loadFresh}/>}
     </div></div>
+    {archive&&<PendingChatMessages submissions={displaySubmissions}/>}
     {(!follow||archive)&&<button className="jump-latest secondary compact" onClick={jumpToLatest}>跳到最新消息</button>}
     {snapshot?.mcpServers&&snapshot.mcpServers.length>0&&<details className="chat-services"><summary>MCP 初始化状态 · {snapshot.mcpServers.length} 个服务</summary>{snapshot.mcpServers.map((server,index)=><span key={server.name+index}>{server.name} · {server.status==='connected'?'已连接':server.status==='failed'?'连接失败':server.status==='pending'?'连接中':server.status}</span>)}</details>}
     {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}

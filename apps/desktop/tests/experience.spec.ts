@@ -45,7 +45,7 @@ async function workspace(historyCount=90) {
       await fs.writeFile(path.join(data,'chat',sessions[index].id+'.jsonl'),snapshot.messages.map(message=>JSON.stringify({type:'message',message})+'\n').join(''));
       snapshot.messages=snapshot.messages.slice(-400);snapshot.truncated=true;
     }
-    if(index===1&&historyCount>400)snapshot.truncated=true;
+    if(index===1&&historyCount>400){snapshot.truncated=true;snapshot.sourceIncomplete=true;}
     await fs.writeFile(path.join(data,'chat',sessions[index].id+'.json'),JSON.stringify(snapshot));
   }
   const launch=async(env:Record<string,string>={})=>{const app=await electron.launch({args:electronLaunchArgs(),cwd:desktopRoot,
@@ -231,23 +231,28 @@ test('experience: new-session project, template append, terminal selection and r
     await selectProjectFilter(page,'全部项目');
     await expect(page.getByRole('button',{name:'开始输入',exact:true})).toHaveCount(0);await page.getByLabel('提示词编辑器').click();await expect(page.getByLabel('提示词编辑器')).toBeFocused();
     expect((await page.evaluate(()=>window.desktop.snapshot())).state.sessions.some(session=>session.started)).toBe(false);
-    await expect(page.locator('.chat-message')).toHaveCount(90);await settleReading(page);
-    await page.locator('.chat-scroll').evaluate(element=>{element.scrollTop=300;});
+    const list=page.locator('[data-virtual-chat-list]');
+    await expect.poll(async()=>Number(await list.getAttribute('data-message-count'))).toBeGreaterThanOrEqual(50);
+    await expect(page.locator('[data-message-id="message-89"]')).toBeInViewport();await settleReading(page);
+    expect(await page.locator('.chat-message').count()).toBeLessThanOrEqual(60);
+    await page.locator('.chat-scroll').evaluate(element=>{element.scrollTop=300;element.dispatchEvent(new Event('scroll'));});
     await expect(page.getByRole('button',{name:'跳到最新消息',exact:true})).toBeVisible();await settleReading(page);
     const anchor=await page.locator('.chat-scroll').evaluate(element=>{
       const top=element.getBoundingClientRect().top;
       const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.getBoundingClientRect().bottom>top)!;
       return {id:row.dataset.messageId!,offset:row.getBoundingClientRect().top-top};
     });
-    await select(page,'短对话 B');await select(page,'长对话 B');await expect(page.locator('.chat-message')).toHaveCount(90);await settleReading(page);
-    await expect.poll(()=>page.locator('.chat-scroll').evaluate(element=>element.scrollTop)).toBe(300);
+    const anchorOffset=()=>page.locator('.chat-scroll').evaluate((element,anchor)=>{
+      const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.dataset.messageId===anchor.id);
+      return row?Math.abs(row.getBoundingClientRect().top-element.getBoundingClientRect().top-anchor.offset):Infinity;
+    },anchor);
+    await select(page,'短对话 B');await select(page,'长对话 B');
+    await expect(page.locator('[data-message-id="'+anchor.id+'"]')).toBeInViewport();await settleReading(page);
+    // A restored around-page can have a different origin; preserve the visible row and its offset.
+    await expect.poll(anchorOffset).toBeLessThan(2);
     // 宽度变化会重新排布消息；同一消息须保持相同的可见偏移量。
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1100,800));await settleReading(page);
-    const offset=await page.locator('.chat-scroll').evaluate((element,id)=>{
-      const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.dataset.messageId===id)!;
-      return row.getBoundingClientRect().top-element.getBoundingClientRect().top;
-    },anchor.id);
-    expect(Math.abs(offset-anchor.offset)).toBeLessThan(2);
+    await expect.poll(anchorOffset).toBeLessThan(2);
     await page.getByRole('button',{name:'跳到最新消息',exact:true}).click();await settleReading(page);
     await select(page,'短对话 B');await select(page,'长对话 B');await settleReading(page);
     expect(await page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(2);
@@ -615,13 +620,40 @@ test('experience: archive pagination, conversation search and historic reading p
   const f=await workspace(525),app=await f.launch();
   try{
     const page=await app.firstWindow();const errors:string[]=[];page.on('pageerror',error=>errors.push(error.message));
+    const list=page.locator('[data-virtual-chat-list]'),scroll=page.locator('.chat-scroll');
+    const loaded=async()=>Number(await list.getAttribute('data-message-count'));
+    const readingAnchor=()=>scroll.evaluate(element=>{
+      const top=element.getBoundingClientRect().top;
+      const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.getBoundingClientRect().bottom>top+8);
+      if(!row)throw new Error('Expected a visible retained reading anchor');
+      return {id:row.dataset.messageId!,offset:row.getBoundingClientRect().top-top};
+    });
+    const expectAnchor=async(anchor:{id:string;offset:number})=>{
+      await expect.poll(()=>scroll.evaluate((element,anchor)=>{
+        const row=Array.from(element.querySelectorAll<HTMLElement>('[data-message-id]')).find(row=>row.dataset.messageId===anchor.id);
+        return row?Math.abs(row.getBoundingClientRect().top-element.getBoundingClientRect().top-anchor.offset):Infinity;
+      },anchor)).toBeLessThanOrEqual(2);
+    };
+    const leaveTail=async()=>{
+      await scroll.evaluate(element=>{element.scrollTop=Math.max(0,element.scrollHeight-element.clientHeight-240);element.dispatchEvent(new Event('scroll'));});
+      await settleReading(page);
+    };
     await expect(page.getByRole('heading',{name:'长对话 B',exact:true})).toBeVisible();
-    await expect(page.locator('[data-message-id]')).toHaveCount(400);
+    await expect(page.locator('[data-message-id="message-524"]')).toBeInViewport();
+    // The bounded tail need not backfill the larger authoritative snapshot.
+    // Count loaded data instead of mounted DOM rows: most of the archive stays virtual.
+    await expect.poll(loaded).toBeGreaterThanOrEqual(50);
+    await expect.poll(loaded).toBeLessThanOrEqual(1000);
+    expect(await page.locator('[data-message-id]').count()).toBeLessThanOrEqual(60);
     await page.getByLabel('提示词编辑器').fill('查找时保留的草稿');
+    await leaveTail();
+    const anchor=await readingAnchor(),initialCount=await loaded();
     await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
-    await expect(page.locator('[data-message-id]')).toHaveCount(50);await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-75');
-    await page.getByRole('button',{name:'查看更早消息',exact:true}).click();await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-25');
-    await page.getByRole('button',{name:'查看较新消息',exact:true}).click();await expect(page.locator('[data-message-id]').first()).toHaveAttribute('data-message-id','message-75');
+    await expect.poll(loaded).toBeGreaterThan(initialCount);await expectAnchor(anchor);
+    const firstPrependCount=await loaded();
+    await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
+    await expect.poll(loaded).toBeGreaterThan(firstPrependCount);await expectAnchor(anchor);
+    expect(await page.locator('[data-message-id]').count()).toBeLessThanOrEqual(60);
     await page.keyboard.press(process.platform==='darwin'?'Meta+f':'Control+f');
     await expect(page.getByLabel('查找消息内容')).toBeFocused();
     await page.getByLabel('查找消息内容').fill('不存在的旧查询');await page.getByLabel('查找消息内容').fill('第 21 条消息');
@@ -631,16 +663,49 @@ test('experience: archive pagination, conversation search and historic reading p
     await expect(page.locator('.search-target')).toHaveAttribute('data-message-id','message-20');await expect(page.locator('.search-target')).toHaveJSProperty('open',true);await settleReading(page);
     const offset=()=>page.locator('[data-message-id="message-20"]').evaluate(element=>element.getBoundingClientRect().top-element.closest('.chat-scroll')!.getBoundingClientRect().top);
     await expect.poll(offset).toBeGreaterThanOrEqual(0);await expect.poll(offset).toBeLessThan(20);
+    const searchCount=await loaded(),searchAnchor=await readingAnchor();
+    await page.getByRole('button',{name:'查看较新消息',exact:true}).click();
+    await expect.poll(loaded).toBeGreaterThan(searchCount);await expectAnchor(searchAnchor);
+    await expect(page.locator('[data-message-id="message-20"]')).toBeInViewport();
     await expect(page.getByLabel('提示词编辑器')).toHaveValue('查找时保留的草稿');
     await page.screenshot({path:documentationPath('screenshots', 'conversation-history.png')});
-    await select(page,'短对话 B');await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
-    await expect(page.getByText('没有更早的本地记录；部分原始内容需导出查看。',{exact:true})).toBeVisible();
-    await expect(page.locator('[data-message-id]')).toHaveCount(2);await expect(page.locator('.chat-empty')).toHaveCount(0);
-    await expect(page.getByRole('button',{name:'查看更早消息',exact:true})).toBeDisabled();
-    await select(page,'长对话 B');await expect(page.locator('[data-message-id]')).toHaveCount(50);await settleReading(page);
+    await select(page,'短对话 B');
+    await expect(list).toHaveAttribute('data-message-count','2');
+    await expect(page.locator('[data-message-id="message-0"]')).toContainText('第 1 条消息');
+    await expect(page.locator('[data-message-id="message-1"]')).toContainText('第 2 条消息');
+    await expect(page.locator('.chat-empty')).toHaveCount(0);
+    await expect(page.getByText('部分会话记录暂时无法完整显示，可重试读取或导出原始记录。',{exact:true})).toBeVisible();
+    // Read presence and disabled state atomically: hydration may remove this unknown cursor.
+    await expect.poll(()=>page.getByRole('button',{name:'查看更早消息',exact:true}).evaluateAll(buttons=>
+      buttons.length===0||buttons.every(button=>(button as HTMLButtonElement).disabled))).toBe(true);
+    await expect(list).toHaveAttribute('data-message-count','2');
+    await expect(page.locator('[data-message-id]')).toHaveCount(2);
+    await select(page,'长对话 B');await expect(page.locator('[data-message-id="message-20"]')).toBeInViewport();await settleReading(page);
     await expect.poll(offset).toBeGreaterThanOrEqual(0);await expect.poll(offset).toBeLessThan(20);
-    await page.getByRole('button',{name:'返回最新对话',exact:true}).click();await expect(page.locator('[data-message-id]')).toHaveCount(400);await settleReading(page);
-    expect(await page.locator('.chat-scroll').evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(5);
+    await page.getByRole('button',{name:'返回最新对话',exact:true}).click();
+    try{
+      await expect(page.locator('[data-message-id="message-524"]')).toBeInViewport();
+    }catch(error){
+      const diagnostic=await page.evaluate(async id=>{
+        const [snapshot,display]=await Promise.all([window.desktop.chatSnapshot(id),window.desktop.chatDisplay(id)]);
+        const scroll=document.querySelector<HTMLElement>('.chat-scroll')!,list=document.querySelector<HTMLElement>('[data-virtual-chat-list]');
+        return {snapshotIds:snapshot.messages.map(message=>message.id),displayIds:display.messages.map(message=>message.id),displayBefore:display.before,displayAfter:display.after,
+          list:list?.dataset,scroll:{top:scroll.scrollTop,height:scroll.scrollHeight,client:scroll.clientHeight},
+          rows:Array.from(scroll.querySelectorAll<HTMLElement>('[data-message-id]')).map(row=>({id:row.dataset.messageId,top:row.getBoundingClientRect().top-scroll.getBoundingClientRect().top,height:row.getBoundingClientRect().height})),
+          ui:document.querySelector('.chat-pane')?.textContent};
+      },f.sessions[0].id);
+      await test.info().attach('archive-return-latest-state',{body:JSON.stringify(diagnostic,null,2),contentType:'application/json'});
+      throw error;
+    }
+    await settleReading(page);
+    await expect.poll(()=>scroll.evaluate(element=>element.scrollHeight-element.scrollTop-element.clientHeight)).toBeLessThan(5);
+    // Returning to the tail must retain a usable earlier cursor, rather than stranding the archive.
+    await leaveTail();const tailAnchor=await readingAnchor(),tailCount=await loaded();
+    await page.getByRole('button',{name:'查看更早消息',exact:true}).click();
+    await expect.poll(loaded).toBeGreaterThan(tailCount);await expectAnchor(tailAnchor);
+    await page.getByRole('button',{name:'跳到最新消息',exact:true}).click();
+    await expect(page.locator('[data-message-id="message-524"]')).toBeInViewport();
+    expect(await page.locator('[data-message-id]').count()).toBeLessThanOrEqual(60);
     await page.getByRole('button',{name:'查找消息',exact:true}).click();await page.getByLabel('查找消息内容').fill('不存在');await expect(page.getByText('没有匹配的消息。',{exact:true})).toBeVisible();
     await page.keyboard.press('Escape');await expect(page.getByRole('button',{name:'查找消息',exact:true})).toBeFocused();
     expect(errors).toEqual([]);
