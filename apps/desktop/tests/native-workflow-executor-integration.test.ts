@@ -89,7 +89,7 @@ test('the effective subagent policy persists the send-time defaults snapshot and
     const first = (await f.ledger()).runs[0];
     assert.deepEqual(first.configuration.effectiveSubagentPolicy, { maxSubagents: 12, policySource: 'defaults' });
     assert.equal((first.configuration.sessionOptions as EngineConfig['options']).maxSubagents, 12);
-    assert.equal((((f.calls[0].tools.definitions.find(tool => tool.name === 'delegate_review')!.inputSchema.properties as any).tasks).maxItems), 12);
+    assert.equal((((f.calls[0].tools.definitions.find(tool => tool.name === 'delegate_review')!.inputSchema.properties as any).tasks).maxItems), 30);
     assert.equal((await f.executor.send(f.id, 'Inspect the next project state.')).success, true);
     const runs = (await f.ledger()).runs;
     assert.deepEqual(runs[0], first, 'new settings must not rewrite a historical effective policy');

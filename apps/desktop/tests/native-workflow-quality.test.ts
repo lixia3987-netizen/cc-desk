@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { runAgent, type ModelPort, type ModelResponse, type RunIdentity, type ToolCall } from '@cc-desk/agent-core';
 import { createNativeModel } from '@cc-desk/agent-node/native-model';
-import type { NativeQualityReportDeclaration } from '@cc-desk/contracts/native-workflow-quality';
+import type { NativeQualityReportDeclaration, NativeWorkflowQualityState } from '@cc-desk/contracts/native-workflow-quality';
 import { createNativeWorkflowQualityController, loadNativeWorkflowQuality } from '../src/main/engines/native/workflow-quality';
 import { runNativeAgentChild } from '../src/main/engines/native/agent-child-runner';
 import { parseNativeConfig } from '../src/main/engines/native/config';
@@ -16,6 +16,7 @@ import type { NativeAgentChildInput, NativeAgentChildResult } from '../src/main/
 import type { NativeWorkerOptions } from '../src/main/engines/native/worker-host';
 import { nativeQualityDeclarationSchema, nativeQualityFindingsForRound, nativeQualityHostEvidence } from '../src/main/engines/native/workflow-quality-report';
 import type { StoredRun } from '@cc-desk/agent-node/run-store';
+import { createNativeAgentTaskPool, type NativeAgentTaskPool } from '../src/main/engines/native/agent-task-pool';
 
 const execute = promisify(execFile);
 const identity = (): RunIdentity => ({ sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 });
@@ -24,6 +25,8 @@ const completed = (): ModelResponse => ({ outputItems: [{ type: 'message', role:
 const tools = (...calls: ToolCall[]): ModelResponse => ({ outputItems: calls.map(call => ({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.arguments })), toolCalls: calls, finishReason: 'tool_calls', usage: null });
 const call = (name: string, input: unknown, id = randomUUID()): ToolCall => ({ id, name, arguments: JSON.stringify(input) });
 type Behavior = { findingsFirstRound?: boolean; mutateVerifier?: boolean; noReport?: boolean; denied?: boolean; fakeCommand?: boolean; partialRead?: boolean; searchOnly?: boolean; omitFailedCommand?: boolean;
+  beforeChild?(input: NativeAgentChildInput): Promise<void>; afterChild?(input: NativeAgentChildInput): void;
+  onChanged?(state: NativeWorkflowQualityState): Promise<void>;
   chunkRead?: 'complete' | 'missing_middle' | 'missing_tail' | 'mixed_version' };
 
 async function fixture(t: { after(fn: () => Promise<void>): void }, behavior: Behavior = {}) {
@@ -88,20 +91,155 @@ async function fixture(t: { after(fn: () => Promise<void>): void }, behavior: Be
             parentSignal.addEventListener('abort', cancel, { once: true }); if (parentSignal.aborted) cancel();
             return { signal: controller.signal, dispose: () => { clearTimeout(timer); parentSignal.removeEventListener('abort', cancel); } }; } } });
     };
-    try { return await runNativeAgentChild(input, { dataDirectory, model: { baseURL: 'https://example.invalid/v1', model: 'test', apiKey: 'sk-quality-private' },
+    try {
+      await behavior.beforeChild?.(input);
+      return await runNativeAgentChild(input, { dataDirectory, model: { baseURL: 'https://example.invalid/v1', model: 'test', apiKey: 'sk-quality-private' },
       config: parseNativeConfig({ schemaVersion: 1, options: { maxModelRequests: 20, maxToolCalls: 30, maxActiveMs: 60000 } }), forbiddenValues: ['sk-quality-private'], worker,
       approvals: { request: async request => { approvals.push(request.tool.name); return { binding: request.binding, expiresAt: request.expiresAt, decision: behavior.denied ? 'denied' : 'approved' }; } }, assertOwnership: async () => {} }); }
-    finally { active--; }
+    finally { active--; behavior.afterChild?.(input); }
   };
-  const controller = (validationMode: 'commands' | 'static' = 'commands', maxSubagents = 3, goal = '修改并验证 file.txt', delivery = '当前实际待交付内容：已检查 file.txt，具体证据仍需独立审阅。') => {
+  const controller = (validationMode: 'commands' | 'static' = 'commands', maxSubagents = 3, goal = '修改并验证 file.txt', delivery = '当前实际待交付内容：已检查 file.txt，具体证据仍需独立审阅。', taskPool?: NativeAgentTaskPool) => {
     const value = createNativeWorkflowQualityController({ identity: parent, parentTaskId: randomUUID(), cwd, dataDirectory, goal, materialPaths: ['file.txt'], collaboration: 'adversarial', validationMode,
-      maxSubagents, signal: abort.signal, forbiddenValues: ['sk-quality-private'], assertOwnership: async () => {}, runChild, readDelivery: () => delivery,
+      maxSubagents, taskPool, signal: abort.signal, forbiddenValues: ['sk-quality-private'], assertOwnership: async () => {}, runChild, readDelivery: () => delivery,
+      onChanged: behavior.onChanged,
       createChildBudget: () => ({ consume: async () => true, remainingMs: () => 60000, snapshot: () => ({ modelRequests: 0, toolCalls: 0 }) }) });
     t.after(() => value.closeAll()); return value;
   };
   const candidate = () => ({ identity: parent, attempt: 17, context: { protocol: { id: 'openai-responses', version: 1 }, items: [] }, signal: abort.signal });
   return { directory, cwd, dataDirectory, parent, abort, children, approvals, controller, candidate, maximum: () => maximum };
 }
+
+const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; };
+async function barrier(promise: Promise<unknown>) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try { await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('quality scheduling barrier timed out')), 10000); })]); }
+  finally { clearTimeout(timer); }
+}
+
+test('quality verifier replenishes a shared capacity-two pool while the earlier reviewer remains active', async t => {
+  const reviewer = deferred(), verifier = deferred(), challenger = deferred();
+  let reviewerSettled = false;
+  const f = await fixture(t, { beforeChild: async input => {
+    if (input.quality!.role === 'reviewer') await reviewer.promise;
+    if (input.quality!.role === 'verifier') { assert.equal(reviewerSettled, false); verifier.resolve(); }
+  }, afterChild: input => {
+    if (input.quality!.role === 'reviewer') reviewerSettled = true;
+    if (input.quality!.role === 'challenger') challenger.resolve();
+  } });
+  const pool = createNativeAgentTaskPool({ capacity: 2 }), unrelated = await pool.acquire();
+  const controller = f.controller('static', 2, '检查 file.txt', '本次实际交付内容需要独立检查。', pool);
+  const operation = controller.validate(f.candidate());
+  try {
+    // A shared ordinary-delegation slot prevents the challenger from starting.
+    await barrier((async () => { while (f.children.length < 1) await new Promise(resolve => setImmediate(resolve)); })());
+    assert.deepEqual(f.children.map(child => child.quality!.role), ['reviewer']);
+    unrelated.release();
+    await barrier(challenger.promise); await barrier(verifier.promise);
+    assert.deepEqual(f.children.map(child => child.quality!.role), ['reviewer', 'challenger', 'verifier']);
+    assert.equal(reviewerSettled, false); assert.equal(f.maximum(), 2);
+  } finally { unrelated.release(); reviewer.resolve(); }
+  assert.deepEqual(await operation, { kind: 'accept' });
+  assert.equal(controller.snapshot().rounds[0].roles.every(role => role.report), true);
+  pool.close(); await pool.drain();
+});
+
+test('unconfirmed quality cleanup closes the shared pool before queued roles can start', async t => {
+  const f = await fixture(t, { beforeChild: async () => { throw Object.assign(new Error('cleanup unconfirmed'), { cleanupUnconfirmed: true }); } });
+  const pool = createNativeAgentTaskPool({ capacity: 1 }), controller = f.controller('static', 1, '检查 file.txt', '本次实际交付内容。', pool);
+  await assert.rejects(controller.validate(f.candidate()), /未确认/);
+  assert.deepEqual(f.children.map(child => child.quality!.role), ['reviewer']);
+  assert.equal(controller.snapshot().automaticReview, 'unknown');
+  await assert.rejects(pool.acquire(), /未确认/); await pool.drain();
+});
+
+test('quality receipt projection failure stops queued roles before worktree execution or a child result can be claimed', async t => {
+  let failed = false;
+  const f = await fixture(t, { onChanged: async state => {
+    if (!failed && state.rounds[0]?.roles.length === 1) { failed = true; throw new Error('quality receipt projection failed'); }
+  } });
+  const pool = createNativeAgentTaskPool({ capacity: 1 }), controller = f.controller('static', 1, '检查 file.txt', '本次实际交付内容。', pool);
+  await assert.rejects(controller.validate(f.candidate()), /quality receipt projection failed/);
+  assert.equal(failed, true); assert.equal(f.children.length, 0);
+  const state = controller.snapshot();
+  assert.equal(state.automaticReview, 'unknown'); assert.equal(state.rounds[0].roles.length, 1);
+  assert.equal(state.rounds[0].roles[0].report, undefined);
+  await assert.rejects(pool.acquire(), /未确认/); await pool.drain();
+});
+
+test('unsafe cleanup cancels another quality role that already owns a slot before its preparation resumes', async t => {
+  const granted = deferred(), resume = deferred(), real = createNativeAgentTaskPool({ capacity: 2 });
+  let claims = 0;
+  const pool: NativeAgentTaskPool = {
+    capacity: 2, signal: real.signal,
+    async acquire(signal) {
+      const index = ++claims, slot = await real.acquire(signal);
+      if (index === 2) { granted.resolve(); await resume.promise; }
+      return slot;
+    },
+    close: reason => real.close(reason), drain: () => real.drain(),
+  };
+  real.signal.addEventListener('abort', resume.resolve, { once: true });
+  const f = await fixture(t, { beforeChild: async () => {
+    await granted.promise;
+    throw Object.assign(new Error('cleanup unconfirmed'), { cleanupUnconfirmed: true });
+  } });
+  const controller = f.controller('static', 2, '检查 file.txt', '本次实际交付内容。', pool);
+  try {
+    await assert.rejects(controller.validate(f.candidate()), /未确认|no longer active/);
+    assert.deepEqual(f.children.map(child => child.quality!.role), ['reviewer']);
+    const state = controller.snapshot();
+    assert.equal(state.status, 'unknown'); assert.equal(state.rounds[0].roles.length, 1);
+    assert.equal(state.rounds[0].roles[0].status, 'unknown');
+    assert.equal(state.rounds[0].roles[0].report, undefined);
+  } finally { resume.resolve(); real.close(); await real.drain(); }
+});
+
+test('unsafe cleanup during another quality role worktree preparation prevents that role from allocating execution budget', async t => {
+  const prepared = deferred(), resume = deferred(), reviewerStarted = deferred(), real = createNativeAgentTaskPool({ capacity: 2 });
+  let claims = 0;
+  const pool: NativeAgentTaskPool = { capacity: 2, signal: real.signal,
+    async acquire(signal) {
+      const index = ++claims, slot = await real.acquire(signal);
+      if (index === 2) await reviewerStarted.promise;
+      return slot;
+    }, close: reason => real.close(reason), drain: () => real.drain() };
+  pool.signal.addEventListener('abort', resume.resolve, { once: true });
+  let held = false;
+  const f = await fixture(t, {
+    beforeChild: async input => {
+      assert.equal(input.quality!.role, 'reviewer');
+      reviewerStarted.resolve();
+      await prepared.promise;
+      throw Object.assign(new Error('cleanup unconfirmed'), { cleanupUnconfirmed: true });
+    },
+    onChanged: async state => {
+      if (!held && state.rounds[0]?.roles.some(role => role.role === 'challenger' && role.status === 'running')) {
+        held = true; prepared.resolve(); await resume.promise;
+      }
+    },
+  });
+  const controller = f.controller('static', 2, '检查 file.txt', '本次实际交付内容。', pool);
+  try {
+    await assert.rejects(controller.validate(f.candidate()), /未确认|no longer active/);
+    assert.equal(held, true); assert.deepEqual(f.children.map(child => child.quality!.role), ['reviewer']);
+    const state = controller.snapshot(); assert.equal(state.status, 'unknown');
+    assert.equal(state.rounds[0].roles.length, 2); assert.ok(state.rounds[0].roles.every(role => role.status === 'unknown' && !role.report));
+  } finally { resume.resolve(); reviewerStarted.resolve(); pool.close(); await pool.drain(); }
+});
+
+test('unconfirmed cleanup after parent cancellation remains unknown rather than claiming a confirmed cancellation', async t => {
+  const started = deferred(), f = await fixture(t, { beforeChild: async input => {
+    started.resolve();
+    await new Promise<void>(resolve => { input.signal.addEventListener('abort', () => resolve(), { once: true }); if (input.signal.aborted) resolve(); });
+    throw Object.assign(new Error('cleanup unconfirmed'), { cleanupUnconfirmed: true });
+  } });
+  const controller = f.controller('static', 1), operation = controller.validate(f.candidate());
+  void operation.catch(() => {});
+  await barrier(started.promise); f.abort.abort();
+  await assert.rejects(operation, /取消/);
+  assert.equal(controller.snapshot().status, 'unknown');
+  assert.equal(controller.snapshot().rounds[0].roles[0].status, 'unknown');
+});
 
 test('quality completion requires three fresh isolated roles, durable structured reports and a real approved successful command', async t => {
   const f = await fixture(t), controller = f.controller();

@@ -4,6 +4,7 @@
 .native-agent-note,.native-agent-state{color:var(--text-muted);font-size:calc(10px * var(--ui-font-scale))}
 .native-agent-warning,.native-agent-state.unknown,.native-agent-state.failed{color:var(--warning)}
 .native-agent-state.running{color:var(--accent)}
+.native-agent-state.queued,.native-agent-state.prepared{color:var(--text-secondary)}
 .native-agent-entry{border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
 .native-agent-entry>summary{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap}
 .native-agent-entry nav{display:flex;gap:14px;flex-wrap:wrap;margin:8px 0}

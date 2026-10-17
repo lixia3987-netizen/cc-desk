@@ -18,17 +18,59 @@ export interface NativeDelegationExecution {
   parentRunId: string;
   toolCallId: string;
   mode: 'review' | 'implement';
+  /** 新队列记录的实际并发容量；旧记录缺失时不倒推。 */
+  capacity?: number;
   clock: { id: string; timeOrigin: number };
-  children: Array<{ childId: string; identity: RunIdentity; started?: NativeDelegationInstant; settled?: NativeDelegationInstant }>;
+  children: Array<{ childId: string; identity: RunIdentity; queued?: NativeDelegationInstant; admitted?: NativeDelegationInstant;
+    started?: NativeDelegationInstant; settled?: NativeDelegationInstant; released?: NativeDelegationInstant }>;
 }
 const identifier = z.string().min(1).max(100).regex(/^[a-z0-9-]+$/iu);
 const instant = z.object({ monotonicMs: z.number().finite().nonnegative(), wallTime: z.string().max(64).refine(value => Number.isFinite(Date.parse(value))) }).strict();
 const executionSchema = z.object({ version: z.literal(1), batchId: z.string().uuid(), parentRunId: identifier,
   toolCallId: z.string().min(1).max(256), mode: z.enum(['review', 'implement']),
+  capacity: z.number().int().min(1).max(30).optional(),
   clock: z.object({ id: z.string().uuid(), timeOrigin: z.number().finite().nonnegative() }).strict(),
   children: z.array(z.object({ childId: z.string().uuid(), identity: z.object({ sessionId: identifier, conversationId: identifier, runId: identifier,
-    requestId: z.string().min(1).max(256), workerGeneration: z.number().int().positive() }).strict(), started: instant.optional(), settled: instant.optional() }).strict()).min(1).max(30),
+    requestId: z.string().min(1).max(256), workerGeneration: z.number().int().positive() }).strict(), queued: instant.optional(), admitted: instant.optional(),
+    started: instant.optional(), settled: instant.optional(), released: instant.optional() }).strict()).min(1).max(30),
 }).strict();
+export interface NativeDelegationPoolEvidence {
+  capacity: number; peakActive: number; queued: number; started: number; refilledBeforeEarlierSettled: number; issues: string[];
+}
+/** 只从同一宿主的单调时间恢复槽占用；排队与 worker 区间分别记录。 */
+export function nativeDelegationPoolEvidence(execution: NativeDelegationExecution): NativeDelegationPoolEvidence | undefined {
+  if (execution.capacity === undefined) return undefined;
+  const evidence: NativeDelegationPoolEvidence = { capacity: execution.capacity, peakActive: 0, queued: execution.children.length,
+    started: execution.children.filter(row => row.started).length, refilledBeforeEarlierSettled: 0, issues: [] };
+  const issue = (code: string) => { if (!evidence.issues.includes(code)) evidence.issues.push(code); };
+  if (!Number.isInteger(execution.capacity) || execution.capacity < 1 || execution.capacity > 30) issue('invalid_task_pool_capacity');
+  if (new Set(execution.children.map(row => row.childId)).size !== execution.children.length ||
+      new Set(execution.children.map(row => row.identity.runId)).size !== execution.children.length) issue('task_pool_identity_reused');
+  const events: Array<{ time: number; delta: number }> = [];
+  let priorAdmission = -1;
+  for (const row of execution.children) {
+    const q = row.queued?.monotonicMs, a = row.admitted?.monotonicMs, s = row.started?.monotonicMs,
+      e = row.settled?.monotonicMs, r = row.released?.monotonicMs;
+    if (q === undefined || [q, a, s, e, r].some(value => value !== undefined && (!Number.isFinite(value) || value < 0))) issue('task_pool_timeline_unconfirmed');
+    if (a === undefined) {
+      if (s !== undefined || e !== undefined || r !== undefined) issue('task_pool_start_without_admission');
+      continue;
+    }
+    if (q !== undefined && a < q || a < priorAdmission) issue('task_pool_admission_order_invalid');
+    priorAdmission = a;
+    if (r === undefined || (s === undefined) !== (e === undefined)) issue('task_pool_release_unconfirmed');
+    if (s !== undefined && s < a || e !== undefined && s !== undefined && e < s ||
+        r !== undefined && (r < a || e !== undefined && r < e)) issue('task_pool_timeline_invalid');
+    if (r !== undefined && r > a) events.push({ time: a, delta: 1 }, { time: r, delta: -1 });
+    if (execution.children.indexOf(row) >= execution.capacity && execution.children.some(other => other !== row && other.started && other.settled &&
+        other.started.monotonicMs < a && other.settled.monotonicMs > a)) evidence.refilledBeforeEarlierSettled++;
+  }
+  events.sort((left, right) => left.time - right.time || left.delta - right.delta);
+  let active = 0;
+  for (const event of events) { active += event.delta; evidence.peakActive = Math.max(evidence.peakActive, active); }
+  if (evidence.peakActive > execution.capacity) issue('task_pool_capacity_exceeded');
+  return evidence;
+}
 export interface NativeDelegationAudit {
   version: 1;
   parentRunId: string;
@@ -39,7 +81,7 @@ export interface NativeDelegationAudit {
   issues: string[];
   attempts: Array<{ toolCallId: string; tool: string; status: string; batchIds: string[] }>;
   batches: Array<{ batchId: string; toolCallId: string; childIds: string[]; actualOverlappingChildren: boolean;
-    completedChildren: number; inspectedChildren: number; childrenWithMaterialReads: number; issues: string[] }>;
+    completedChildren: number; inspectedChildren: number; childrenWithMaterialReads: number; scheduling?: NativeDelegationPoolEvidence; issues: string[] }>;
 }
 
 /** 确认同一批中两个实际调用的区间交叠；同名、同毫秒和 UI 卡片都不算证明。 */
@@ -175,9 +217,12 @@ export function auditNativeDelegation(input: { run: StoredRun; receipts: readonl
     }));
     const materialReads = completed.filter(receipt => readEvidence.get(receipt.childId) === 'verified');
     const issues: string[] = [];
+    const scheduling = execution ? nativeDelegationPoolEvidence(execution) : undefined;
     audit.batches.push({ batchId, toolCallId: call.call.id, childIds: receipts.map(receipt => receipt.childId), actualOverlappingChildren: overlap,
-      completedChildren: completed.length, inspectedChildren: inspected.length, childrenWithMaterialReads: materialReads.length, issues });
+      completedChildren: completed.length, inspectedChildren: inspected.length, childrenWithMaterialReads: materialReads.length,
+      ...(scheduling ? { scheduling } : {}), issues });
     if (!required) continue;
+    if (scheduling?.issues.length) issues.push(...scheduling.issues);
     if (call.completed!.result.status !== 'completed' || completed.length !== receipts.length) issues.push('child_execution_incomplete');
     if (receipts.length < 2) issues.push('parallel_batch_requires_two_children');
     if (new Set(receipts.map(receipt => nativeReviewQuestion(receipt.goal) ?? receipt.goal.trim())).size !== receipts.length) issues.push('duplicate_review_goals');
@@ -271,6 +316,10 @@ const issueMessages: Record<string, string> = {
   actual_child_material_reads_missing: '缺少子任务实际读取材料的账本证据',
   material_read_evidence_unconfirmed: '材料位置、版本或实际读取内容无法机械核对', child_terminal_receipt_mismatch: '子回执与实际账本终局不一致',
   delegation_conflicts_with_single_agent: '用户明确要求单 Agent 或禁止委派，但模型仍发起委派调用',
+  invalid_task_pool_capacity: '子任务池容量无效', task_pool_identity_reused: '子任务池复用了执行身份',
+  task_pool_timeline_unconfirmed: '缺少可信的排队时间', task_pool_start_without_admission: '子任务未取得名额就记录了执行',
+  task_pool_admission_order_invalid: '子任务领取名额的顺序与排队顺序不符', task_pool_release_unconfirmed: '子任务名额释放无法确认',
+  task_pool_timeline_invalid: '子任务准备、执行和释放的时间顺序无效', task_pool_capacity_exceeded: '子任务池活动数量超过配置上限',
 };
 /** 宿主执行完成与用户请求完成分开；失败摘要优先展示核验缺口，不能沿用模型的成功宣称。 */
 export function nativeDelegationAuditFailure(audit: NativeDelegationAudit, run: Pick<RunResult, 'status'>): string | undefined {

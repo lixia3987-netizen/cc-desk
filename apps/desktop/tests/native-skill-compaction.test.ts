@@ -53,7 +53,7 @@ function pairCounts(body: WireBody, callId: string) {
 }
 
 async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?: 'off' | 'before_send' | 'before_send_and_during_run' } = {}) {
-  const inputBudget = options.mode === 'guides-exceed-budget' ? 90000 : budget;
+  const inputBudget = options.mode === 'guides-exceed-budget' ? 100000 : budget;
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-compaction-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data');
   const snapshotsDirectory = path.join(data, 'native', 'skill-snapshots');
@@ -192,7 +192,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
       approved.add(attention.requestId); queueMicrotask(() => executor.respond(id, attention.requestId, { behavior: 'allow' }));
     }
   });
-  return { id, project, server, loaded, submission, get executor() { return executor; }, get ordinary() { return ordinary; }, get summaries() { return summaries; },
+  return { id, project, server, loaded, submission, inputBudget, get executor() { return executor; }, get ordinary() { return ordinary; }, get summaries() { return summaries; },
     get barrierChecks() { return barrierChecks; }, get pressureBytes() { return pressureBytes; }, get replacementContext() { return replacementContext; }, get activeMode() { return activeMode; },
     wireBytes(context: ModelContext) { assert.ok(lastModel); return createNativeModel(lastModel).estimateInputUsage!(context, lastOutputLimit).serializedBytes; },
     fullGuideInputLowerBoundBytes() {
@@ -325,8 +325,8 @@ test('unavoidable complete guide input exceeding the real wire budget blocks bef
   try {
     const result = await f.send(); assert.equal(result.success, false); assert.deepEqual(f.server.errors, []);
     assert.equal(f.ordinary, 2); assert.equal(f.summaries, 0); assert.equal(f.barrierChecks, 0);
-    assert.ok(f.pressureBytes > 90000, `complete actual wire payload ${f.pressureBytes} must exceed the original 90k budget`);
-    assert.ok(f.fullGuideInputLowerBoundBytes() > 90000, 'full guides alone with unchanged instructions/tools cannot fit, even without continuity or tool pair overhead');
+    assert.ok(f.pressureBytes > f.inputBudget, `complete actual wire payload ${f.pressureBytes} must exceed the configured ${f.inputBudget} budget`);
+    assert.ok(f.fullGuideInputLowerBoundBytes() > f.inputBudget, 'full guides alone with unchanged instructions/tools cannot fit, even without continuity or tool pair overhead');
     const ledger = await f.ledger(), run = ledger.runs[0];
     assert.equal(run.result!.modelRequests, 2);
     assert.ok(['context_maintenance_unhelpful', 'input_budget_exhausted'].includes(run.result!.reason), run.result!.reason);

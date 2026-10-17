@@ -23,8 +23,8 @@ const renderAgents = (agents?: NativeAgentSnapshot, policy?: NativeAgentRuntime,
 
 test('the current effective runtime remains visible before any child starts and never assumes a cap for old records', () => {
   const empty = renderAgents(undefined, { ...runtime, total: 0, active: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0 });
-  assert.match(empty, /本轮子 Agent/); assert.match(empty, /活跃 0 \/ 有效上限 12 · 已启动 0/);
-  assert.match(empty, /策略来源：跟随默认/); assert.match(empty, /完成和取消的任务不占并发/);
+  assert.match(empty, /本轮子 Agent/); assert.match(empty, /活跃 0 \/ 有效上限 12 · 任务总数 0/);
+  assert.match(empty, /策略来源：跟随默认/); assert.match(empty, /排队、完成和取消的任务不占并发/);
   assert.doesNotMatch(empty, /data-agent-id=/);
   const legacy = renderAgents(undefined, { ...runtime, maxSubagents: undefined, policySource: undefined });
   assert.match(legacy, /有效上限 未记录/); assert.match(legacy, /策略来源：旧记录未保存/);
@@ -33,13 +33,13 @@ test('the current effective runtime remains visible before any child starts and 
 
 test('a folded historical list exposes its full count without mixing it into current concurrency', () => {
   const html = renderAgents(snapshot, runtime);
-  assert.match(html, /活跃 2 \/ 有效上限 12 · 已启动 17/);
+  assert.match(html, /活跃 2 \/ 有效上限 12 · 任务总数 17/);
   assert.match(html, /最近一轮子任务记录（57）/); assert.match(html, /已显示 4 \/ 57 条记录/);
   assert.match(html, /此前执行回合，不计入上方本轮活跃数量/);
   assert.equal((html.match(/data-agent-id=/g) ?? []).length, 4);
   assert.match(html, /查看全部子 Agent（30）/); assert.match(html, /另有 27 个结果保留/);
   const stale = renderAgents(snapshot, runtime, 'offline');
-  assert.match(stale, /当前状态未知；以下为上次同步记录/); assert.match(stale, /上次记录：运行中 1/);
+  assert.match(stale, /当前状态未知；以下为上次同步记录/); assert.match(stale, /上次记录：排队中 0 · 运行中 1/);
   assert.doesNotMatch(stale, /data-agent-status="completed"/);
 });
 

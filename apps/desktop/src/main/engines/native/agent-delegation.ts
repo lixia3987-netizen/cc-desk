@@ -10,6 +10,7 @@ import { writeAgentArtifact, writeAgentReceipt } from './agent-artifacts';
 import type { NativeActivePauseSource } from './active-pause';
 import { nativeDelegationExecutionPath, type NativeDelegationExecution } from './agent-delegation-audit';
 import { normalizeNativeSkillInheritanceManifest, type NativeSkillInheritanceManifest } from './skill-inheritance';
+import { createNativeAgentTaskPool, NativeAgentTaskPoolClosedError, type NativeAgentTaskPool, type NativeAgentTaskSlot } from './agent-task-pool';
 
 export interface NativeDelegationBudget {
   /** 单个子任务自己的原子门控；父任务和同级子任务不消耗这份预算。 */
@@ -67,7 +68,9 @@ export interface NativeDelegationReceipt {
   title: string;
   goal: string;
   mode: 'review' | 'implement';
-  status: 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  status: 'queued' | 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  /** 稳定的批内入队次序；后续状态保留，绝不从模型输出推断。 */
+  queueIndex?: number;
   createdAt: string;
   updatedAt: string;
   receiptPath: string;
@@ -91,6 +94,8 @@ export interface NativeAgentDelegationOptions {
   storeDirectory: string;
   worktreeRoot: string;
   maxSubagents?: number;
+  /** 同一父运行的委派及质量角色共享；不提供时创建本工具自己的池。 */
+  taskPool?: NativeAgentTaskPool;
   createChildBudget(identity: RunIdentity): NativeDelegationBudget;
   assertOwnership(): Promise<void>;
   /** 必须创建独立的上下文和工作进程；子任务宿主不得注册委派能力。 */
@@ -133,25 +138,31 @@ const hash = (value: unknown) => createHash('sha256').update(encode(value)).dige
 interface CallState { prepared: PreparedTool; maxOutputBytes: number; baseline?: NativeAgentBaseline; nativeSkills?: NativeSkillInheritanceManifest; recovery?: { receipt: NativeDelegationReceipt; workspaceSha256?: string; workspaceHead?: string }; execution?: Promise<ToolResult>; effectsStarted?: boolean }
 const knownChildNotStarted = (error: unknown): boolean => Boolean(error && typeof error === 'object' && 'code' in error && error.code === 'child_start_preconditions_failed'
   && 'childNotStarted' in error && error.childNotStarted === true && !('cleanupUnconfirmed' in error && error.cleanupUnconfirmed === true));
+class NativeAgentReceiptPersistenceError extends Error {}
+class NativeAgentExecutionPersistenceError extends Error {}
 
 /** 一个批次对应父任务的一次工具调用，因此即使核心循环串行，同级任务仍可并行。 */
 export function createAgentDelegationTools(options: NativeAgentDelegationOptions): NativeAgentDelegationTools {
   const maxSubagents = z.number().int().min(1).max(30).parse(options.maxSubagents ?? 4);
+  const taskPool = options.taskPool ?? createNativeAgentTaskPool({ capacity: maxSubagents, signal: options.signal });
+  if (taskPool.capacity !== maxSubagents) throw new Error('子任务池与本轮有效并发容量不一致。');
   const definitions = structuredClone(options.policy === 'read_only' ? [toolDefinitions[0], { ...toolDefinitions[2], risk: 'read' as const }] : toolDefinitions);
   for (const definition of definitions) {
-    const tasks = definition.inputSchema.properties as JsonObject | undefined;
-    if (tasks?.tasks) (tasks.tasks as JsonObject).maxItems = maxSubagents;
-    definition.description += ` Maximum active children: ${maxSubagents}. Child failures are reported individually and do not stop the parent; inspect then recover_agent when safe.`;
+    definition.description += ` Maximum active children: ${maxSubagents}; submit up to 30 independent tasks in one batch. Excess tasks queue in FIFO order and start automatically when a sibling fully settles. Child failures are reported individually; inspect then recover_agent when safe. Unknown execution or cleanup stops queued launches.`;
   }
   const states = new Map<string, CallState>(), operations = new Set<Promise<ToolResult>>(), children = new Set<AbortController>();
   const parentIdentity = structuredClone(options.identity), identityKey = encode(parentIdentity), lifecycle = new AbortController();
   const retained = new Map<string, NativeDelegationReceipt>(), settled = new Set<string>(), recovered = new Set<string>(), recovering = new Set<string>();
-  let closing = false, reserved = 0;
-  const cancel = () => { lifecycle.abort(); for (const child of children) child.abort(); };
+  let closing = false, unsafe = false, reserved = 0;
+  const cancel = () => { lifecycle.abort('cancelled'); taskPool.close('cancelled'); for (const child of children) child.abort(); };
+  const halt = () => { unsafe = true; taskPool.close('unsafe'); lifecycle.abort('unsafe'); for (const child of children) child.abort(); };
+  const poolStopped = () => taskPool.signal.reason instanceof NativeAgentTaskPoolClosedError && taskPool.signal.reason.reason === 'unsafe' ? halt() : cancel();
+  taskPool.signal.addEventListener('abort', poolStopped, { once: true });
+  if (taskPool.signal.aborted) poolStopped();
   options.signal.addEventListener('abort', cancel);
   const credentials = (value: unknown) => assertNoModelCredential(value, options.forbiddenValues);
   const current = (context: ToolExecutionContext) => {
-    if (closing || options.signal.aborted || context.signal.aborted || encode(context.identity) !== identityKey) throw new Error('委派不属于当前运行。');
+    if (closing || unsafe || taskPool.signal.aborted || options.signal.aborted || context.signal.aborted || encode(context.identity) !== identityKey) throw new Error('委派不属于当前运行。');
   };
   const guard = async (context: ToolExecutionContext) => { current(context); await options.assertOwnership(); current(context); };
   const inheritance = (manifest: NativeSkillInheritanceManifest): NativeSkillInheritanceManifest => {
@@ -175,17 +186,20 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
   const save = async (receipt: NativeDelegationReceipt) => {
     credentials(receipt);
     receipt.updatedAt = new Date().toISOString();
-    await writeAgentReceipt(receipt.receiptPath, receipt);
-    await options.record?.(structuredClone(receipt));
+    try {
+      await writeAgentReceipt(receipt.receiptPath, receipt);
+      await options.record?.(structuredClone(receipt));
+    } catch { halt(); throw new NativeAgentReceiptPersistenceError(); }
     retained.set(receipt.childId, structuredClone(receipt));
   };
-  const operationCancelled = (context: ToolExecutionContext) => lifecycle.signal.aborted || options.signal.aborted || context.signal.aborted;
-  const canRecover = (receipt: NativeDelegationReceipt) => settled.has(receipt.childId) && !recovered.has(receipt.childId) &&
+  const operationCancelled = (context: ToolExecutionContext) => closing || options.signal.aborted || context.signal.aborted;
+  const safelySettled = (receipt: NativeDelegationReceipt) => settled.has(receipt.childId) &&
     ['failed', 'cancelled'].includes(receipt.status) && receipt.result?.committed === true && receipt.result.status !== 'recovery_required' &&
     (!receipt.workspace || receipt.workspaceVerified === true && !!receipt.artifact);
-  const verifyRecovery = async (recovery: NonNullable<CallState['recovery']>) => {
+  const canRecover = (receipt: NativeDelegationReceipt) => safelySettled(receipt) && !recovered.has(receipt.childId);
+  const verifyRecovery = async (recovery: NonNullable<CallState['recovery']>, admitted = false) => {
     const receipt = retained.get(recovery.receipt.childId);
-    if (!receipt || !canRecover(receipt) || encode(receipt) !== encode(recovery.receipt)) throw new Error('子 Agent 恢复前提已改变。');
+    if (!receipt || !safelySettled(receipt) || !admitted && recovered.has(receipt.childId) || encode(receipt) !== encode(recovery.receipt)) throw new Error('子 Agent 恢复前提已改变。');
     if (receipt.workspace) {
       await verifyAgentWorkspace(receipt.workspace, options.worktreeRoot);
       const evidence = await collectAgentWorkspaceEvidence(receipt.workspace, options.worktreeRoot);
@@ -211,8 +225,11 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     return { status, truncated: true, output: Buffer.byteLength(encode(batchReference)) <= context.maxOutputBytes ? batchReference : {
       parentRunId: parentIdentity.runId, batchId: receipts[0].batchId, children: receipts.map(r => ({ childId: r.childId })), details: 'Use read_agent_result with parentRunId and childId to inspect every saved status and result.' } };
   };
-  const executeReservedBatch = async (state: CallState, context: ToolExecutionContext, releaseSlot: () => void): Promise<ToolResult> => {
-    const operationSignal = AbortSignal.any([lifecycle.signal, options.signal, context.signal]);
+  const instant = () => ({ monotonicMs: performance.now(), wallTime: new Date().toISOString() });
+  type Instant = ReturnType<typeof instant>;
+  type SlotClaim = Promise<{ slot: NativeAgentTaskSlot; admitted: Instant; error?: never } | { error: unknown; slot?: never; admitted?: never }>;
+  const executeReservedBatch = async (state: CallState, context: ToolExecutionContext, claims: SlotClaim[], queued: Instant[], releaseAdmission: () => void): Promise<ToolResult> => {
+    const operationSignal = AbortSignal.any([lifecycle.signal, taskPool.signal, options.signal, context.signal]);
     const recovery = state.recovery;
     const input = recovery ? { tasks: [{ title: recovery.receipt.title, goal: recoverySchema.parse(state.prepared.input).goal ?? recovery.receipt.goal }] } :
       state.prepared.call.name === 'delegate_review' ? reviewSchema.parse(state.prepared.input) : implementSchema.parse(state.prepared.input);
@@ -222,59 +239,67 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     if (recovery) await verifyRecovery(recovery);
     if (state.baseline) await verifyAgentBaseline(state.baseline, operationSignal);
     const batchId = randomUUID(), batchPath = path.join(options.storeDirectory, 'delegations', parentIdentity.conversationId, parentIdentity.runId, batchId);
-    const receipts: NativeDelegationReceipt[] = input.tasks.map(task => {
+    const receipts: NativeDelegationReceipt[] = input.tasks.map((task, queueIndex) => {
       const childId = randomUUID(), now = new Date().toISOString();
       return { version: 1, batchId, childId, taskId: randomUUID(), identity: { sessionId: randomUUID(), conversationId: randomUUID(), runId: randomUUID(), requestId: randomUUID(), workerGeneration: 1 },
         parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, toolCallId: state.prepared.call.id, ...task,
-        mode, status: 'prepared', createdAt: now, updatedAt: now, receiptPath: path.join(batchPath, childId, 'receipt.json'), cwd: recovery?.receipt.cwd ?? options.cwd,
+        mode, status: 'queued', queueIndex, createdAt: now, updatedAt: now, receiptPath: path.join(batchPath, childId, 'receipt.json'), cwd: recovery?.receipt.cwd ?? options.cwd,
         ...(state.nativeSkills ? { nativeSkills: structuredClone(state.nativeSkills) } : {}),
         ...(recovery ? { recovery: { previousChildId: recovery.receipt.childId, previousRunId: recovery.receipt.identity.runId, attempt: (recovery.receipt.recovery?.attempt ?? 0) + 1,
           ...(recovery.receipt.workspace ? { workspaceOwnerChildId: recovery.receipt.recovery?.workspaceOwnerChildId ?? recovery.receipt.childId } : {}) },
-          ...(recovery.receipt.workspace ? { workspace: structuredClone(recovery.receipt.workspace), workspaceVerified: true } : {}) } : {}) };
+          } : {}) };
     });
-    const execution: NativeDelegationExecution = { version: 1, batchId, parentRunId: parentIdentity.runId, toolCallId: state.prepared.call.id, mode,
-      clock: { id: randomUUID(), timeOrigin: performance.timeOrigin }, children: receipts.map(receipt => ({ childId: receipt.childId, identity: structuredClone(receipt.identity) })) };
+    const execution: NativeDelegationExecution = { version: 1, batchId, parentRunId: parentIdentity.runId, toolCallId: state.prepared.call.id, mode, capacity: maxSubagents,
+      clock: { id: randomUUID(), timeOrigin: performance.timeOrigin }, children: receipts.map((receipt, index) => ({ childId: receipt.childId, identity: structuredClone(receipt.identity),
+        queued: queued[index] })) };
     let executionWrites = Promise.resolve();
     const saveExecution = () => {
       const snapshot = structuredClone(execution);
-      const write = executionWrites.then(() => writeAgentReceipt(nativeDelegationExecutionPath(options.storeDirectory, parentIdentity, batchId), snapshot));
+      const write = executionWrites.then(() => writeAgentReceipt(nativeDelegationExecutionPath(options.storeDirectory, parentIdentity, batchId), snapshot))
+        .catch(() => { halt(); throw new NativeAgentExecutionPersistenceError(); });
       executionWrites = write.catch(() => {}); return write;
     };
-    const instant = () => ({ monotonicMs: performance.now(), wallTime: new Date().toISOString() });
     // 任何工作树或子模型操作前先持久化执行意图；完全相同的重复调用复用已有执行。
     state.effectsStarted = true;
     if (recovery) recovered.add(recovery.receipt.childId);
     try { for (const receipt of receipts) await save(receipt); await saveExecution(); }
-    catch { return { status: 'unknown', output: { error: 'delegation_intent_unconfirmed', batchId } }; }
-    let baseCommit: string | undefined;
-    try {
-      if (state.baseline) baseCommit = await materializeAgentBaseline(state.baseline, options.worktreeRoot, operationSignal);
-    } catch (error) {
-      for (const receipt of receipts) {
-        receipt.status = operationSignal.aborted ? 'cancelled' : 'failed';
-        receipt.error = error instanceof NativeAgentWorktreeError ? error.code : 'baseline_materialization_failed';
-        try { await save(receipt); } catch { receipt.status = 'unknown'; }
-      }
-      return resultOutput(receipts, context);
-    }
-    await Promise.allSettled(receipts.map(async receipt => {
+    catch { halt(); return { status: 'unknown', output: { error: 'delegation_intent_unconfirmed', batchId } }; }
+    let baselineCommit: Promise<string> | undefined;
+    await Promise.allSettled(receipts.map(async (receipt, index) => {
       const abort = new AbortController(); children.add(abort);
       const signal = AbortSignal.any([abort.signal, operationSignal]);
-      let childStarted = false, worktreeAttempted = false, skillPreflightFailed = false;
+      let childStarted = false, worktreeAttempted = false, skillPreflightFailed = false, baselineMaterializationFailed = false;
       let childOperation: Promise<NativeAgentChildResult> | undefined;
-      const lifecycle = execution.children.find(child => child.childId === receipt.childId)!;
-      if (recovery?.receipt.workspace) worktreeAttempted = true;
+      let slot: NativeAgentTaskSlot | undefined;
+      const timing = execution.children.find(child => child.childId === receipt.childId)!;
       try {
+        const claim = await claims[index];
+        if (claim.error) { if (claim.error instanceof NativeAgentTaskPoolClosedError && claim.error.reason === 'unsafe') halt(); throw claim.error; }
+        slot = claim.slot;
+        timing.admitted = claim.admitted;
         if (signal.aborted) throw new NativeAgentWorktreeError('cancelled', '委派已取消。');
-        await options.assertOwnership();
+        receipt.status = 'prepared';
+        if (recovery?.receipt.workspace) {
+          receipt.workspace = structuredClone(recovery.receipt.workspace); receipt.workspaceVerified = true; worktreeAttempted = true;
+        }
+        await save(receipt); await saveExecution();
+        await guard(context);
+        try { await assertSkillsCurrent(state, context); } catch (error) { skillPreflightFailed = true; throw error; }
+        if (recovery) await verifyRecovery(recovery, true);
         if (state.baseline) {
+          await verifyAgentBaseline(state.baseline, signal);
+          baselineCommit ??= materializeAgentBaseline(state.baseline, options.worktreeRoot, operationSignal);
+          let baseCommit: string;
+          try { baseCommit = await baselineCommit; }
+          catch (error) { baselineMaterializationFailed = true; throw error; }
+          await guard(context); await verifyAgentBaseline(state.baseline, signal);
           const worktreePath = path.join(await fs.realpath(options.worktreeRoot), receipt.childId);
           receipt.workspace = { path: worktreePath, cwd: path.join(worktreePath, state.baseline.relativeCwd), branch: `codex/native-agent-${receipt.childId}`,
-            baseCommit: baseCommit!, parentHead: state.baseline.parentHead, baseline: state.baseline.mode };
+            baseCommit, parentHead: state.baseline.parentHead, baseline: state.baseline.mode };
           receipt.workspaceVerified = false;
           await save(receipt);
           worktreeAttempted = true;
-          receipt.workspace = await createAgentWorktree(state.baseline, options.worktreeRoot, baseCommit!, receipt.childId, signal);
+          receipt.workspace = await createAgentWorktree(state.baseline, options.worktreeRoot, baseCommit, receipt.childId, signal);
           receipt.workspaceVerified = true;
           receipt.cwd = receipt.workspace.cwd;
           await save(receipt);
@@ -292,17 +317,20 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
             await guard(context);
           } catch (error) { skillPreflightFailed = true; throw error; }
         }
+        await guard(context);
+        if (state.baseline) await verifyAgentBaseline(state.baseline, signal);
+        try { await assertSkillsCurrent(state, context); } catch (error) { skillPreflightFailed = true; throw error; }
         receipt.status = 'running'; await save(receipt);
         if (signal.aborted) throw new NativeAgentWorktreeError('cancelled', '委派已停止。');
         const budget = options.createChildBudget(structuredClone(receipt.identity));
         childStarted = true;
-        lifecycle.started = instant();
+        timing.started = instant();
         childOperation = options.runChild({ identity: structuredClone(receipt.identity), childId: receipt.childId, taskId: receipt.taskId,
           parentIdentity: structuredClone(parentIdentity), parentTaskId: options.parentTaskId, title: receipt.title, goal: receipt.goal,
           cwd: receipt.cwd, toolPolicy: mode === 'review' ? 'read_only' : 'workspace_write', budget, signal,
           ...(receipt.nativeSkills ? { nativeSkills: structuredClone(receipt.nativeSkills) } : {}),
           ...(childRecovery ? { recovery: childRecovery } : {}) })
-          .finally(() => { lifecycle.settled = instant(); });
+          .finally(() => { timing.settled = instant(); });
         // 持久化起点期间 worker 仍并行执行；及时附加拒绝处理，失败后也必须等待物理子任务结算。
         void childOperation.catch(() => {});
         await saveExecution();
@@ -315,18 +343,22 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
         receipt.status = !result.committed || result.status === 'recovery_required' ? 'unknown' : result.status === 'completed' ? 'completed' : result.status === 'cancelled' ? 'cancelled' : 'failed';
         if (result.status === 'recovery_required') receipt.error = 'child_recovery_required';
         else if (!result.committed) receipt.error = 'child_commit_unconfirmed';
+        if (receipt.status === 'unknown') halt();
       } catch (error) {
         const wasCancelled = signal.aborted;
         abort.abort();
-        if (childStarted && !lifecycle.settled) lifecycle.settled = instant();
+        if (childStarted && !timing.settled) timing.settled = instant();
         if (childOperation) await childOperation.catch(() => {});
         const notStarted = knownChildNotStarted(error);
-        if (notStarted) { delete lifecycle.started; delete lifecycle.settled; }
+        if (notStarted) { delete timing.started; delete timing.settled; }
         // 子任务启动被拒绝时仍可能已执行工具。除非
         // 宿主提供已持久化的终态 RunResult，否则必须恢复；绝不根据信号推断取消。
-        receipt.status = childStarted && !notStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : wasCancelled ? 'cancelled' : 'failed';
-        receipt.error = error instanceof NativeAgentWorktreeError ? error.code : notStarted ? 'child_start_preconditions_failed'
-          : skillPreflightFailed ? 'skill_inheritance_preflight_failed' : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
+        receipt.status = error instanceof NativeAgentReceiptPersistenceError || error instanceof NativeAgentExecutionPersistenceError || childStarted && !notStarted || worktreeAttempted && !receipt.workspaceVerified ? 'unknown' : wasCancelled && !unsafe ? 'cancelled' : 'failed';
+        receipt.error = error instanceof NativeAgentReceiptPersistenceError ? 'delegation_receipt_unconfirmed' : error instanceof NativeAgentExecutionPersistenceError ? 'delegation_execution_unconfirmed'
+          : error instanceof NativeAgentTaskPoolClosedError && error.reason === 'unsafe' || unsafe && !childStarted ? 'delegation_queue_halted'
+          : error instanceof NativeAgentWorktreeError ? error.code : notStarted ? 'child_start_preconditions_failed'
+          : baselineMaterializationFailed ? 'baseline_materialization_failed' : skillPreflightFailed ? 'skill_inheritance_preflight_failed' : childStarted ? 'child_run_unconfirmed' : 'child_launch_failed';
+        if (receipt.status === 'unknown') halt();
       } finally {
         children.delete(abort);
         settled.add(receipt.childId);
@@ -341,9 +373,25 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
               sha256: createHash('sha256').update(evidence.patch).digest('hex'), bytes: evidence.patch.byteLength };
           } catch { receipt.status = 'unknown'; receipt.error = 'workspace_evidence_unconfirmed'; }
         }
-        try { await saveExecution(); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_execution_unconfirmed'; }
-        try { await save(receipt); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_receipt_unconfirmed'; }
-        releaseSlot();
+        if (receipt.status === 'unknown') halt();
+        // 许可在真实 worker 和工作区证据都结算后才释放；未知状态先停止所有后续领取。
+        try { await saveExecution(); } catch { receipt.status = 'unknown'; receipt.error = 'delegation_execution_unconfirmed'; halt(); }
+        try { await save(receipt); }
+        catch {
+          receipt.status = 'unknown'; receipt.error = 'delegation_receipt_unconfirmed';
+          // 文件保存与投影确认是两个步骤；确认失败后尽力把已写的终态降为未知。
+          try { await save(receipt); } catch { /* 持续失败时保留现场，任务池已经停止。 */ }
+        }
+        if (receipt.status === 'unknown') halt();
+        if (slot) {
+          timing.released = instant();
+          try { await saveExecution(); }
+          catch {
+            receipt.status = 'unknown'; receipt.error = 'delegation_execution_unconfirmed'; halt();
+            try { await save(receipt); } catch { /* 已阻断后续启动，保留最后可确认的现场。 */ }
+          }
+        }
+        slot?.release(); releaseAdmission();
       }
     }));
     return resultOutput(receipts, context);
@@ -351,14 +399,28 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
   const executeBatch = async (state: CallState, context: ToolExecutionContext): Promise<ToolResult> => {
     const count = state.recovery ? 1 : reviewSchema.parse({ tasks: state.prepared.input.tasks }).tasks.length;
     if (state.recovery && (recovering.has(state.recovery.receipt.childId) || recovered.has(state.recovery.receipt.childId))) return { status: 'not_executed', output: { error: 'agent_recovery_already_started' } };
-    if (reserved + count > maxSubagents) return { status: 'not_executed', output: { error: 'delegation_capacity_exhausted' } };
+    if (reserved + count > 30) return { status: 'not_executed', output: { error: 'delegation_queue_full' } };
     // 在首次 await 前完成预留，包括持久化和 Git 准备，以免
     // 并发工具调用都观察到尚未占用的子任务容量。
     reserved += count; let remaining = count;
+    const batchAbort = new AbortController();
+    const admissionSignal = AbortSignal.any([lifecycle.signal, options.signal, context.signal, batchAbort.signal]);
+    // 同步排入共享 FIFO，并立即处理 rejection，避免保存意图期间取消造成未处理拒绝。
+    const queued: Instant[] = [];
+    const claims: SlotClaim[] = Array.from({ length: count }, () => {
+      queued.push(instant());
+      return taskPool.acquire(admissionSignal).then(slot => ({ slot, admitted: instant() }), error => ({ error }));
+    });
     if (state.recovery) recovering.add(state.recovery.receipt.childId);
-    const releaseSlot = () => { remaining--; reserved--; };
-    try { return await executeReservedBatch(state, context, releaseSlot); }
-    finally { reserved -= remaining; if (state.recovery) recovering.delete(state.recovery.receipt.childId); }
+    const releaseAdmission = () => { remaining--; reserved--; };
+    try { return await executeReservedBatch(state, context, claims, queued, releaseAdmission); }
+    finally {
+      batchAbort.abort();
+      // 早期校验或保存失败也要归还同步领取的许可，并取消尚未领取的请求。
+      for (const claim of await Promise.all(claims)) claim.slot?.release();
+      reserved -= remaining;
+      if (state.recovery) recovering.delete(state.recovery.receipt.childId);
+    }
   };
   return {
     definitions,
@@ -369,7 +431,6 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
       const previous = states.get(call.id);
       if (previous) { if (encode(previous.prepared.call) !== encode(call)) throw new Error('委派调用标识已使用。'); stateFor(previous.prepared, context); return structuredClone(previous.prepared); }
       const raw = JSON.parse(call.arguments), input = call.name === 'recover_agent' ? recoverySchema.parse(raw) : call.name === 'delegate_review' ? reviewSchema.parse(raw) : implementSchema.parse(raw);
-      if ('tasks' in input && input.tasks.length > maxSubagents) throw new Error('子 Agent 数量超过配置上限。');
       let recovery: CallState['recovery'];
       if (call.name === 'recover_agent') {
         const receipt = retained.get(recoverySchema.parse(raw).childId);
@@ -422,7 +483,9 @@ export function createAgentDelegationTools(options: NativeAgentDelegationOptions
     async closeAll() {
       closing = true; cancel();
       await Promise.allSettled([...operations]);
+      await taskPool.drain();
       options.signal.removeEventListener('abort', cancel);
+      taskPool.signal.removeEventListener('abort', poolStopped);
     },
   };
 }
