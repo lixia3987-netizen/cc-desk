@@ -64,7 +64,9 @@ function NativeContextMeter({ context, maintenance, currentRunId, compactDisable
     <div className="context-details">
       <CompactionPreview maintenance={maintenance} blockedReason={previewBlockedReason}/>
       {maintenance?.autoCompact && <span>{maintenance.autoCompact.enabled
-        ? maintenance.autoCompact.mode === 'before_send_and_during_run'
+        ? maintenance.autoCompact.mode === 'during_run'
+          ? `回合内自动压缩已开启：在完整响应与工具结果的边界达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时最多尝试一次。技能正文完整保留，摘要请求可能计费。`
+          : maintenance.autoCompact.mode === 'before_send_and_during_run'
           ? `自动压缩已开启：发送前与回合内达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试；发送前每次提交最多一次，回合内在完整响应与工具结果的边界最多一次。摘要请求可能计费；主 Agent 不限模型请求次数和运行时长，子 Agent 的摘要计入其独立预算。`
           : `自动压缩已开启：仅发送新指令前，达到本地预算 ${maintenance.autoCompact.thresholdPercent}% 时尝试，每次提交最多一次。摘要请求可能计费；主 Agent 不限模型请求次数和运行时长，子 Agent 的摘要计入其独立预算。`
         : '自动压缩已关闭，可在设置的“模型与上下文 → 自动压缩”中开启。'}</span>}

@@ -33,6 +33,7 @@ const secret = 'sk-native-catalog-fixture-private';
 const guide = 'CATALOG_GUIDE_FULL_BODY: Preserve unrelated files and verify every edit.';
 const inlineWorker: NonNullable<NativeExecutorOptions['worker']> = options => runAgent({ ...options.request, signal: options.signal }, {
   model: new ResponsesModel(options.model), tools: options.tools, store: options.store, approvals: options.approvals,
+  contextMaintenance: options.contextMaintenance,
   host: { now: Date.now, digest: hash, emit: options.onEvent, deadline: (timeout, parent) => {
     const controller = new AbortController(), abort = () => controller.abort();
     const timer = setTimeout(abort, timeout); parent.addEventListener('abort', abort, { once: true });
@@ -140,7 +141,7 @@ for (const order of ['load-first', 'write-first'] as const) test(`a real ${order
     assert.equal(await fs.readFile(path.join(project, 'new.txt'), 'utf8'), 'observed\n');
     assert.equal(f.server.requests.length, 3);
     const persisted = await f.ledger(), run = persisted.runs[0];
-    assert.equal(run.configuration.effectiveAutoCompact, 'off');
+    assert.equal(run.configuration.effectiveAutoCompact, 'during_run');
     assert.equal(run.configuration.nativeSkillCatalog !== undefined, true);
     assert.equal(persisted.records.filter(record => record.event.type === 'tool_completed' && record.event.call.id === 'load').length, 1);
     const loadSeq = persisted.records.find(record => record.event.type === 'tool_completed' && record.event.call.id === 'load')!.seq;

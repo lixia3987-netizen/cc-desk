@@ -1,6 +1,8 @@
-import { canonicalJson, type RunIdentity } from '@cc-desk/agent-core';
+import { canonicalJson, type ModelContext, type RunIdentity } from '@cc-desk/agent-core';
 import { SkillToolPort } from '@cc-desk/agent-node/skill-tools';
 import type { SkillSnapshotStore } from '@cc-desk/agent-node/skill-snapshots';
+import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
+import { readSkillContinuityEvidence, resolveSkillContinuity } from '@cc-desk/agent-node/skill-continuity';
 import type { LoadedCatalogSkill, SkillRegistry } from '@cc-desk/agent-node/skill-registry';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { normalizeNativeSkillSubmission, type NativeSkillSubmission, type SkillCatalogSnapshot, type SkillDescriptor } from '@cc-desk/contracts/native-skills';
@@ -133,6 +135,19 @@ export class NativeSkillRuntime {
       }
       await input.assertOwnership(); checkAbort(input.signal);
     };
-    return { tools, initialInstructions, catalogRevision: catalog.revision, submission, catalog, assertInitialCurrent };
+    const prepareContinuity = async (ledger: NativeRunStore, retainedContext: ModelContext) => {
+      await input.assertOwnership(); checkAbort(input.signal);
+      const evidence = readSkillContinuityEvidence(ledger, input.identity.runId, retainedContext);
+      if (!evidence) throw changed();
+      const section = await resolveSkillContinuity(evidence, this.options.snapshots, input.signal);
+      this.protect(section, await this.protectedValues(input.sessionId, input.forbiddenValues));
+      const active = tools.snapshot().activations.map(({ skillId, version, origin }) => ({ skillId, version, origin }));
+      const committed = section.manifest.entries.map(({ skillId, version, origin }) => ({ skillId, version, origin }));
+      if (!same(active, committed)) throw changed();
+      await tools.assertSourcesCurrent(input.signal);
+      await input.assertOwnership(); checkAbort(input.signal);
+      return section;
+    };
+    return { tools, initialInstructions, catalogRevision: catalog.revision, submission, catalog, assertInitialCurrent, prepareContinuity };
   }
 }

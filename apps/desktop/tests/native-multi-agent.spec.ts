@@ -425,8 +425,31 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
     const pending = page.evaluate(id => window.desktop.sendChat(id, '从当前未提交修改快照委派两个独立实现，不自动合并', [], 'multi-implement-request'), session.id);
-    await expect.poll(async () => (await snapshot(page, session.id)).pending.find(item => item.toolName === 'delegate_implement')?.requestId).toBeTruthy();
-    await expect(page.getByRole('region', { name: '工具审批' })).toContainText('snapshot');
+    let parentCompletion: { settled: boolean; success?: boolean; interrupted?: boolean; error?: string } = { settled: false };
+    void pending.then(result => { parentCompletion = { settled: true, success: result.success, interrupted: result.interrupted, error: result.error }; },
+      error => { parentCompletion = { settled: true, error: String(error) }; });
+    let initialApprovalId: string | undefined, phase = 'initial_host_approval';
+    try {
+      // #21's trace returned a valid approval at send+6.119s, after the generic
+      // 5s poll expired. This phase includes worker startup, two responses and
+      // the dirty baseline's Git checks; readiness is not a snapshot-I/O timer.
+      await expect.poll(async () => {
+        initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
+          .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
+        if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
+        return initialApprovalId;
+      }, { timeout: 15000 }).toBeTruthy();
+      phase = 'initial_ui_approval';
+      const approval = page.getByRole('region', { name: '工具审批' });
+      await expect(approval).toHaveAttribute('data-request-id', initialApprovalId!);
+      await expect(approval).toContainText('snapshot');
+    } catch (error) {
+      const diagnostic = JSON.stringify({ phase, parentCompletion, initialApprovalId, requests: fixture.requests.length,
+        fixtureErrors: fixture.errors.length, requestDiagnostics: requestDiagnostics.slice(-64),
+        omittedRequests: Math.max(0, requestDiagnostics.length - 64) }, null, 2).replaceAll(secret, '[redacted]');
+      await test.info().attach('native-initial-delegation-diagnostic.json', { body: Buffer.from(diagnostic), contentType: 'application/json' });
+      throw error;
+    }
     await page.getByRole('button', { name: '允许本次', exact: true }).click();
     await waitForChildren(started, page, session.id, fixture, f.data, pending); expect(await childrenMetrics(app)).toBeGreaterThanOrEqual(3);
     expect(await fs.readFile(path.join(f.cwd, 'fixture.txt'), 'utf8')).toBe('unstaged parent draft\n'); barrier.release();

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type RunIdentity, type Usage } from '@cc-desk/agent-core';
+import { canonicalJson, contextBudgetUsage, type ContextMaintenancePort, type ContextMaintenanceResult, type ContextMaintenanceFailureReason, type JsonValue, type ModelContext, type RunIdentity, type Usage } from '@cc-desk/agent-core';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { contextSummaryItem, runContinuityItem } from '@cc-desk/agent-node/context-maintenance';
+import { skillContinuityItems, type SkillContinuitySection } from '@cc-desk/agent-node/skill-continuity';
 import { NativeContextSummaryError, prepareNativeContextSummary, summarizeNativeContext } from './context-summary';
 import type { runNativeWorker } from './worker-host';
 import { sameRun } from './worker-protocol';
@@ -17,6 +18,11 @@ export function createInRunCompaction(options: {
   forbiddenValues: readonly string[]; signal: AbortSignal; remainingMs(): number;
   assertOwnership(): Promise<void>; assertInstructions(signal: AbortSignal): Promise<void>;
   continuity(): Promise<string>; onCompacting(): void | Promise<void>; onSettled(): Promise<void>;
+  /** Full guides are preserved independently of the task/evidence summary. */
+  skills?: {
+    prepare(retainedContext: ModelContext): Promise<SkillContinuitySection | undefined>;
+    onCommitted(seq: number, section: SkillContinuitySection): void;
+  };
   worker?: typeof runNativeWorker;
 }): ContextMaintenancePort {
   let attempted = false, maintaining = false;
@@ -43,14 +49,21 @@ export function createInRunCompaction(options: {
       // 不能移除当前用户请求、项目规则、工具及最近一次完整的
       // 工具批次，以制造付费摘要已成功的假象。
       let continuity: string;
+      let nativeSkills: SkillContinuitySection | undefined;
       try {
         continuity = await options.continuity();
         assertNoModelCredential(continuity, options.forbiddenValues);
+        nativeSkills = await options.skills?.prepare(source.retainedContext);
+        if (nativeSkills) assertNoModelCredential(nativeSkills, options.forbiddenValues);
         prepareNativeContextSummary({ context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens,
           maxOutputTokens: request.budget.maxOutputTokens, maxContextBytes: request.budget.maxContextBytes, forbiddenValues: options.forbiddenValues });
       } catch { return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' }; }
-      const minimum = { ...source.retainedContext, items: [...source.retainedContext.items,
-        contextSummaryItem('摘要', source.retainedContext.protocol), runContinuityItem(continuity, source.retainedContext.protocol)] };
+      const replacement = (summary: string) => ({ ...source.retainedContext, items: [
+        ...source.retainedContext.items.slice(0, source.retainedPrefixItems),
+        contextSummaryItem(summary, source.retainedContext.protocol), runContinuityItem(continuity, source.retainedContext.protocol),
+        ...(nativeSkills ? skillContinuityItems(nativeSkills, source.retainedContext.protocol) : []),
+        ...source.retainedContext.items.slice(source.retainedPrefixItems)] });
+      const minimum = replacement('摘要');
       if (contextBudgetUsage(minimum, model.estimateInputUsage?.(minimum, request.budget.maxOutputTokens) ?? model.estimateInputTokens(minimum), request.budget).status === 'exceeded') {
         return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' };
       }
@@ -84,19 +97,30 @@ export function createInRunCompaction(options: {
       }
       if (request.signal.aborted || options.signal.aborted) return await fail('context_maintenance_failed', summary.usage);
       await options.assertOwnership();
-      try { await options.assertInstructions(request.signal); }
+      try {
+        const latestSkills = await options.skills?.prepare(source.retainedContext);
+        if (canonicalJson((latestSkills ?? null) as unknown as JsonValue) !== canonicalJson((nativeSkills ?? null) as unknown as JsonValue)) throw new Error('Skill continuity changed during compaction.');
+        await options.assertInstructions(request.signal);
+      }
       catch { return await fail('context_maintenance_failed', summary.usage); }
       if (request.signal.aborted || options.signal.aborted) return await fail('context_maintenance_failed', summary.usage);
+      const candidate = replacement(summary.summary);
+      if (contextBudgetUsage(candidate, model.estimateInputUsage?.(candidate, request.budget.maxOutputTokens) ?? model.estimateInputTokens(candidate), request.budget).status === 'exceeded') {
+        return await fail('context_maintenance_unhelpful', summary.usage);
+      }
       await options.assertOwnership();
+      let receipt;
       try {
-        const receipt = await options.ledger.commitRunCompaction(options.identity, { requestId, contextHash: source.contextHash,
-          summary: summary.summary, continuity, usage: summary.usage });
-        // 主工作进程切换前，宿主账本必须先成为权威依据。
-        return { kind: 'compacted', modelRequests: 1, usage: summary.usage, context: receipt.context };
+        receipt = await options.ledger.commitRunCompaction(options.identity, { requestId, contextHash: source.contextHash,
+          summary: summary.summary, continuity, usage: summary.usage, ...(nativeSkills ? { nativeSkills } : {}) });
       } catch (error) {
         if (['compaction_not_smaller', 'invalid_summary', 'invalid_continuity'].includes(errorCode(error) ?? '')) return await fail('context_maintenance_unhelpful', summary.usage);
         throw error;
       }
+      // Reset observation only after the complete replacement is durable. A
+      // failed hook must propagate, never relabel a committed replacement as failed.
+      if (receipt.nativeSkills) options.skills?.onCommitted(receipt.seq, receipt.nativeSkills);
+      return { kind: 'compacted', modelRequests: 1, usage: summary.usage, context: receipt.context };
     } finally {
       maintaining = false;
       // 界面修复不能将已提交的替换变成结果不确定的写入。

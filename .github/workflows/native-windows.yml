@@ -18,6 +18,7 @@ on:
       - 'packages/agent-node/src/tools/**'
       - 'packages/agent-node/tests/skill-*.test.mjs'
       - 'packages/agent-node/tests/run-store-startup.test.mjs'
+      - 'packages/agent-node/tests/run-store-skill-continuity.test.mjs'
       - 'packages/agent-node/src/process-supervisor.ts'
       - 'packages/agent-node/src/run-store.ts'
       - 'packages/agent-node/src/windows-*.ts'
@@ -198,7 +199,7 @@ jobs:
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
         timeout-minutes: 5
         run: |
-          node --test --test-concurrency=1 --test-reporter=tap packages/contracts/tests/*.test.mjs packages/agent-node/tests/skill-*.test.mjs packages/agent-node/tests/run-store-startup.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/native-skills.tap
+          node --test --test-concurrency=1 --test-reporter=tap packages/contracts/tests/*.test.mjs packages/agent-node/tests/skill-*.test.mjs packages/agent-node/tests/run-store-startup.test.mjs packages/agent-node/tests/run-store-skill-continuity.test.mjs 2>&1 | Tee-Object -FilePath test-results/windows-native/native-skills.tap
           exit $LASTEXITCODE
       - name: 验证真实 Claude Windows 后代进程清理
         if: ${{ !cancelled() && steps.packages.outcome == 'success' }}
@@ -215,6 +216,16 @@ jobs:
         run: |
           npm run test:e2e -- tests/native-agent.spec.ts tests/native-multi-agent.spec.ts 2>&1 | Tee-Object -FilePath test-results/windows-native/electron-smoke.log
           exit $LASTEXITCODE
+      - name: 及时保留 Electron 失败轨迹
+        uses: actions/upload-artifact@v4
+        if: ${{ failure() && steps.native_e2e.outcome == 'failure' }}
+        with:
+          name: native-electron-failure-${{ github.run_attempt }}
+          if-no-files-found: warn
+          retention-days: 7
+          path: |
+            test-results/windows-native/electron-smoke.log
+            test-results/desktop/**
       - name: 验证全部桌面单元测试与真实 PTY 运行时
         if: ${{ !cancelled() && steps.packages.outcome == 'success' && steps.native.outcome == 'success' }}
         # GUI 失败仍运行独立的单元与 PTY 检查，保留同一候选的完整证据。

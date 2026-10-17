@@ -110,7 +110,7 @@ export interface NativeContextMaintenance {
   preview?: NativeContextCompactionPreview;
   compacting?: boolean;
   compactionTrigger?: 'manual' | 'automatic' | 'in_turn';
-  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' };
+  autoCompact?: { enabled: boolean; thresholdPercent: 90; blocked?: boolean; mode?: 'off' | 'before_send' | 'before_send_and_during_run' | 'during_run' };
   lastCompaction?: { beforeBytes: number; afterBytes: number; createdAt: string; trigger?: 'manual' | 'automatic' | 'in_turn' };
   /** 宿主管理的回执。仅收到摘要响应并不代表压缩已提交。 */
   inTurn?: {

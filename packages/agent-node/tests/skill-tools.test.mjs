@@ -61,6 +61,26 @@ function otherTools() {
   };
   return { port, effects, preparations };
 }
+function continuityManifest(f, change = () => {}) {
+  const manifest = { schemaVersion: 1, identity: clone(f.ctx.identity), catalogRevision: f.catalog.revision,
+    entries: f.port.snapshot().activations.map(activation => {
+      const descriptor = f.skills.find(item => item.descriptor.skillId === activation.skillId).descriptor;
+      return { skillId: activation.skillId, sourceId: descriptor.sourceId, relativePath: descriptor.relativePath,
+        version: clone(activation.version), origin: activation.origin,
+        evidence: activation.origin === 'model' ? { kind: 'tool_completed', seq: activation.receiptSeq, callId: 'load' } : { kind: 'run_started', seq: 1 },
+        placement: activation.origin === 'model' ? 'compacted_context' : 'initial_instructions' };
+    }), digest: '' };
+  change(manifest);
+  const { digest: _digest, ...payload } = manifest;
+  manifest.digest = contentHash(canonicalJson(payload));
+  return manifest;
+}
+function replaceContext(f, manifest = continuityManifest(f)) {
+  const seq = f.state.seq + 1;
+  f.port.observeContextReplacement(seq, manifest);
+  f.state.seq = seq;
+  return { seq, manifest };
+}
 
 test('catalog is frozen, uses exact IDs, paginates whole descriptions and exposes only read-risk tools', async () => {
   const f = fixture({ skills: Array.from({ length: 8 }, (_, i) => skill(i)) });
@@ -255,6 +275,224 @@ test('final side-effect hook checks the run, observation and live source without
   await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal));
   f.state.owned = true; f.controller.abort();
   await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /cancelled/);
+});
+
+test('source-only compaction checks allow unconfirmed guides and batches but still verify sources and ownership', async () => {
+  const f = fixture({ skills: [skill(0), skill(1)] });
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result);
+  f.observe({ type: 'model_response', response: response([f.loadCall('next-load', 1)]) });
+  await f.port.assertSourcesCurrent(f.controller.signal);
+  await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /observation/);
+  f.state.current = false;
+  await assert.rejects(f.port.assertSourcesCurrent(f.controller.signal), /source_changed/);
+  f.state.current = true; f.state.owned = false;
+  await assert.rejects(f.port.assertSourcesCurrent(f.controller.signal));
+  f.state.owned = true; f.controller.abort();
+  await assert.rejects(f.port.assertSourcesCurrent(f.controller.signal), /cancelled/);
+});
+
+test('context replacement retains provenance but requires a new persisted request and complete response', async () => {
+  const f = fixture(), other = otherTools(), guarded = f.port.guard(other.port);
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result); f.confirm();
+  const before = f.port.snapshot();
+  const stale = await guarded.prepare(call('before-replacement', 'fixture_write'), f.ctx);
+  f.observe({ type: 'model_request_started', attempt: 20 });
+  replaceContext(f);
+  const replaced = f.port.snapshot();
+  assert.equal(replaced.activationRevision, before.activationRevision + 1);
+  assert.deepEqual(replaced.activations, before.activations.map(({ offeredToRequestId, confirmedByResponseId, ...activation }) => activation));
+  await assert.rejects(guarded.prepare(call('unconfirmed-write', 'fixture_write'), f.ctx), unconfirmedFeedback);
+  f.observe({ type: 'model_response', response: response() });
+  assert.equal(f.port.snapshot().activations[0].confirmedByResponseId, undefined, 'a pre-replacement request cannot confirm the new context');
+  f.observe({ type: 'model_request_started', attempt: 21 });
+  f.observe({ type: 'model_response', response: response([], { finishReason: 'incomplete' }) });
+  await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /observation/);
+  f.observe({ type: 'model_request_started', attempt: 22 });
+  f.observe({ type: 'model_request_failed', attempt: 22, failure: { category: 'network', retryable: false }, partial: true });
+  f.observe({ type: 'model_response', response: response() });
+  await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /observation/);
+  f.confirm();
+  await assert.rejects(guarded.validate(stale, f.ctx), /active_skills_changed/);
+  assert.equal((await guarded.execute(stale, f.ctx)).output.error, 'active_skills_changed');
+  const fresh = await guarded.prepare(call('after-replacement', 'fixture_write'), f.ctx);
+  assert.equal((await guarded.execute(fresh, f.ctx)).status, 'completed');
+  assert.deepEqual(other.effects, ['after-replacement']);
+});
+
+test('every replacement invalidates inert effects even with no active guides', async () => {
+  const f = fixture(), guarded = f.port.guard(otherTools().port);
+  const stale = await guarded.prepare(call('empty-context-write', 'fixture_write'), f.ctx);
+  const digest = f.port.snapshot().digest;
+  replaceContext(f);
+  assert.equal(f.port.snapshot().activationRevision, 1);
+  assert.equal(f.port.snapshot().digest, digest);
+  await assert.rejects(guarded.validate(stale, f.ctx), /active_skills_changed/);
+});
+
+test('duplicate committed replacement never resets later confirmation or new activations', async () => {
+  const f = fixture({ skills: [skill(0), skill(1)] });
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result); f.confirm();
+  const replacement = replaceContext(f);
+  f.confirm();
+  const second = await f.execute(f.loadCall('second', 1));
+  const confirmed = f.port.snapshot();
+  f.port.observeContextReplacement(replacement.seq, replacement.manifest);
+  assert.deepEqual(f.port.snapshot(), confirmed, 'a duplicate is harmless even while a later load is pending');
+  f.commit(second.prepared, second.result); f.confirm();
+  const expanded = f.port.snapshot();
+  f.port.observeContextReplacement(replacement.seq, replacement.manifest);
+  assert.deepEqual(f.port.snapshot(), expanded);
+  const changed = continuityManifest(f, manifest => { manifest.entries = clone(replacement.manifest.entries); manifest.entries[0].placement = 'retained_receipt'; });
+  assert.throws(() => f.port.observeContextReplacement(replacement.seq, changed), /journal_sequence/);
+  assert.deepEqual(f.port.snapshot(), expanded);
+});
+
+test('replacement validates identity, descriptors, versions, origins and original evidence without partial mutation', async () => {
+  const initial = skill(1);
+  const f = fixture({ skills: [skill(0), initial], portOptions: { initialSkills: [{ ...initial, origin: 'pinned' }] } });
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result); f.confirm();
+  const before = f.port.snapshot(), seq = f.state.seq + 1;
+  const mutations = [
+    manifest => { manifest.identity.workerGeneration++; },
+    manifest => { manifest.catalogRevision = 'other'; },
+    manifest => { manifest.entries.pop(); },
+    manifest => { manifest.entries.push(clone(manifest.entries[0])); },
+    manifest => { manifest.entries[1].skillId = 'missing'; },
+    manifest => { manifest.entries[1].sourceId = 'other'; },
+    manifest => { manifest.entries[1].relativePath = 'other/SKILL.md'; },
+    manifest => { manifest.entries[1].version.bodyHash = contentHash('changed'); },
+    manifest => { manifest.entries[1].origin = 'explicit'; },
+    manifest => { manifest.entries[0].evidence.callId = 'forged-load'; },
+    manifest => { manifest.entries[0].evidence.seq++; },
+    manifest => { manifest.entries[0].evidence.kind = 'run_started'; },
+    manifest => { manifest.entries[1].evidence = { kind: 'tool_completed', seq: 1, callId: 'forged' }; },
+    manifest => { manifest.entries[1].evidence.seq = 0; },
+    manifest => { manifest.entries[1].evidence.seq = seq; },
+    manifest => { manifest.entries[1].placement = 'missing'; },
+    manifest => { manifest.entries[0].placement = 'initial_instructions'; },
+    manifest => { manifest.entries[1].placement = 'compacted_context'; },
+    manifest => { manifest.entries[1].placement = 'retained_receipt'; },
+  ];
+  for (const mutation of mutations) {
+    assert.throws(() => f.port.observeContextReplacement(seq, continuityManifest(f, mutation)), /context_replacement_invalid/);
+    assert.deepEqual(f.port.snapshot(), before);
+  }
+  const badDigest = continuityManifest(f); badDigest.digest = contentHash('forged');
+  assert.throws(() => f.port.observeContextReplacement(seq, badDigest), /context_replacement_invalid/);
+  for (const value of [0, -1, NaN, 1.5, f.state.seq, f.state.seq - 1]) {
+    assert.throws(() => f.port.observeContextReplacement(value, continuityManifest(f)), /journal_sequence/);
+  }
+  replaceContext(f, continuityManifest(f, manifest => { manifest.entries[0].placement = 'retained_receipt'; }));
+  f.confirm();
+  const stable = f.port.snapshot();
+  assert.throws(() => f.port.observeContextReplacement(f.state.seq + 1, continuityManifest(f, manifest => { manifest.entries[1].evidence.seq = 2; })), /context_replacement_invalid/);
+  assert.deepEqual(f.port.snapshot(), stable, 'initial run evidence stays fixed across later replacements');
+});
+
+test('replacement blocks prepared, loading and uncommitted guides until the actual load receipt settles', async () => {
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = fixture({ load: async () => { entered(); await gate; } });
+  const prepared = await f.port.prepare(f.loadCall(), f.ctx);
+  const manifest = continuityManifest(f);
+  const blocked = () => assert.throws(() => f.port.observeContextReplacement(f.state.seq + 1, manifest), /activation_blocked_by_operation/);
+  blocked();
+  const running = f.port.execute(prepared, f.ctx);
+  await waiting; blocked();
+  release();
+  const result = await running;
+  blocked();
+  f.commit(prepared, result);
+  replaceContext(f);
+  await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /observation/);
+});
+
+test('replacement blocks preparations before their first ownership await and while downstream preparation waits', async () => {
+  for (const kind of ['own', 'guard']) {
+    let block = false, entered, release;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const f = fixture({ portOptions: { assertOwnership: async () => { if (block) { entered(); await gate; } } } });
+    const guarded = f.port.guard(otherTools().port);
+    block = true;
+    const preparing = kind === 'own' ? f.port.prepare(f.loadCall(), f.ctx) : guarded.prepare(call('preparing', 'fixture_write'), f.ctx);
+    await waiting;
+    assert.throws(() => f.port.observeContextReplacement(1, continuityManifest(f)), /activation_blocked_by_operation/);
+    release(); await preparing;
+  }
+  const f = fixture(), other = otherTools(), original = other.port.prepare;
+  let entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  other.port.prepare = async (...args) => { entered(); await gate; return original(...args); };
+  const guarded = f.port.guard(other.port), preparing = guarded.prepare(call('downstream', 'fixture_write'), f.ctx);
+  await waiting;
+  assert.throws(() => f.port.observeContextReplacement(1, continuityManifest(f)), /activation_blocked_by_operation/);
+  release(); await preparing;
+  replaceContext(f);
+});
+
+test('replacement requires durable operation settlement and cannot forget unknown side effects', async () => {
+  for (const outcome of ['completed', 'unknown', 'throw']) {
+    const f = fixture(), other = otherTools();
+    let entered, release;
+    const waiting = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    other.port.execute = async () => { entered(); await gate;
+      if (outcome === 'throw') throw new Error('unknown operation outcome');
+      return { status: outcome, output: { done: outcome === 'completed' } };
+    };
+    const guarded = f.port.guard(other.port), prepared = await guarded.prepare(call('operation', 'fixture_write'), f.ctx);
+    const running = guarded.execute(prepared, f.ctx);
+    await waiting;
+    const blocked = () => assert.throws(() => f.port.observeContextReplacement(1 + f.state.seq, continuityManifest(f)), /activation_blocked_by_operation/);
+    blocked(); release();
+    if (outcome === 'throw') {
+      await assert.rejects(running, /unknown operation outcome/);
+      blocked(); f.commit(prepared, { status: 'failed', output: { executed: false } }); blocked();
+    } else {
+      const result = await running;
+      blocked(); f.commit(prepared, result);
+      if (outcome === 'completed') replaceContext(f); else blocked();
+    }
+  }
+});
+
+test('failed own and downstream preparations release replacement admission immediately', async () => {
+  for (const kind of ['own', 'guard']) {
+    const f = fixture(), guarded = f.port.guard(otherTools().port);
+    f.state.owned = false;
+    await assert.rejects(kind === 'own' ? f.port.prepare(f.loadCall(), f.ctx) : guarded.prepare(call('denied', 'fixture_write'), f.ctx));
+    f.state.owned = true;
+    replaceContext(f);
+  }
+  const f = fixture(), other = otherTools();
+  other.port.prepare = async () => { throw new Error('downstream preparation failed'); };
+  await assert.rejects(f.port.guard(other.port).prepare(call('failed', 'fixture_write'), f.ctx), /downstream preparation failed/);
+  replaceContext(f);
+});
+
+test('replacement preserves current-source checks after fresh model confirmation', async () => {
+  const f = fixture(), guarded = f.port.guard(otherTools().port);
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result); f.confirm();
+  replaceContext(f); f.confirm(); f.state.current = false;
+  await assert.rejects(f.port.assertSourcesCurrent(f.controller.signal), /source_changed/);
+  await assert.rejects(f.port.assertSideEffectsCurrent(f.controller.signal), /source_changed/);
+  await assert.rejects(guarded.prepare(call('changed-source', 'fixture_write'), f.ctx), error => getToolPreparationFeedback(error)?.code === 'source_changed');
+});
+
+test('source-only final ownership check detects a replacement during its awaited callback', async () => {
+  let gated = false, checks = 0, entered, release;
+  const waiting = new Promise(resolve => { entered = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = fixture({ portOptions: { assertOwnership: async () => { if (gated && ++checks === 3) { entered(); await gate; } } } });
+  const loaded = await f.execute(); f.commit(loaded.prepared, loaded.result);
+  gated = true;
+  const checking = f.port.assertSourcesCurrent(f.controller.signal);
+  await waiting;
+  replaceContext(f); release();
+  await assert.rejects(checking, /active_skills_changed/);
 });
 
 test('final ownership await cannot hide an activation committed while its callback is suspended', async () => {
