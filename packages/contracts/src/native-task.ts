@@ -1,3 +1,5 @@
+import type { NativeWorkflowQualityState } from './native-workflow-quality.js';
+
 /** 持久化的工程任务状态，绝不替代运行层面的 RunStatus。 */
 export interface NativeTaskIdentity {
   sessionId: string; conversationId: string; runId: string; requestId: string; workerGeneration: number;
@@ -77,6 +79,8 @@ export interface NativeExecutionReceipt {
     'command' | 'exitCode' | 'outputDigest' | 'truncated' | 'stale'>>;
   usage: { modelRequests: number; toolCalls: number; activeMs: number };
   truncated: boolean;
+  /** 宿主独立审查记录；不会替代任务面板中的人工验收。 */
+  workflowQuality?: NativeWorkflowQualityState;
 }
 export type NativeTaskMutation =
   | { type: 'plan'; plan: NativeTaskPlan; explanation?: string }

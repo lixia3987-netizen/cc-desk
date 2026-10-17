@@ -36,3 +36,14 @@
 .native-agent-review-input label{display:block;color:var(--text-secondary)}
 .native-agent-review-input textarea{display:block;box-sizing:border-box;width:100%;margin-top:6px;resize:vertical;font:inherit}
 @media(max-width:650px){.native-agent-panel{margin:8px;max-height:30vh}}
+.native-agent-runtime{padding-bottom:8px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.native-workflow-quality{flex-shrink:0;margin:8px 18px;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--surface);font-size:calc(11px * var(--ui-font-scale));line-height:1.6;min-width:0;max-height:36vh;overflow:auto;overflow-wrap:anywhere}
+.native-workflow-quality.compact{margin:8px 0;max-height:38vh;padding:8px}
+.native-workflow-quality summary{cursor:pointer;color:var(--text-secondary)}
+.native-workflow-quality p{margin:6px 0}
+.native-workflow-quality code{font-size:inherit;white-space:pre-wrap;overflow-wrap:anywhere}
+.native-quality-round,.native-quality-role,.native-quality-finding{margin:7px 0;padding:6px 9px;border-left:2px solid var(--border)}
+.native-quality-finding.blocking,.native-quality-finding.high{border-left-color:var(--error)}
+.native-workflow-quality ul{padding-left:18px}
+.native-workflow-quality summary:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+@media(max-width:650px){.native-workflow-quality{margin:8px;max-height:30vh}}

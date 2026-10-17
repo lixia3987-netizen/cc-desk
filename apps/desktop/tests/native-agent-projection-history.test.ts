@@ -24,9 +24,9 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
     engineConfig: { schemaVersion: 1, options: {} }, status: 'running', archived: false, createdAt: at, updatedAt: at };
   const projections: NativeProjection[] = [], errors: Error[] = [];
   const create = () => { const projection = new NativeProjection(directory, new ExecutionEvents(), () => session, () => true, (_id, error) => errors.push(error)); projections.push(projection); return projection; };
-  const begin = async (identity: RunIdentity, delegated = false) => {
+  const begin = async (identity: RunIdentity, delegated = false, options?: { maxSubagents: number; runtimePolicy?: 'custom' | 'defaults' }, effectiveSubagentPolicy?: { maxSubagents: number; policySource: 'defaults' | 'session' }) => {
     await store.beginRun({ identity, input: 'review', inputDigest: identity.requestId, userItems: [{ role: 'user', content: 'review' }],
-      protocol: { id: 'openai-responses', version: 1 }, configuration: {}, policyRevision: 'policy' });
+      protocol: { id: 'openai-responses', version: 1 }, configuration: { ...(options ? { sessionOptions: options } : {}), ...(effectiveSubagentPolicy ? { effectiveSubagentPolicy } : {}) }, policyRevision: 'policy' });
     if (delegated) {
       const call = { id: randomUUID(), name: 'delegate_review', arguments: '{"tasks":[]}' };
       await store.append(identity, { type: 'model_response', response: { outputItems: [], toolCalls: [call], finishReason: 'tool_calls', usage: null } });
@@ -43,7 +43,7 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
       receiptPath: path.join(nativeAgentReceiptDirectory(directory, identity), batchId, childId, 'receipt.json') };
   };
   t.after(async () => { projections.forEach(value => value.flush()); await store.close(); await fs.rm(directory, { recursive: true, force: true }); });
-  return { directory, parent, store, create, begin, finish, child, errors };
+  return { directory, parent, store, create, begin, finish, child, errors, session };
 }
 
 test('a new parent run retains ledger-owned collaboration after restart without reviving old running children', async t => {
@@ -72,6 +72,49 @@ test('corrupt current collaboration is not hidden by successful historical resul
   const projection = f.create(); await projection.hydrate(next.sessionId, f.store);
   assert.equal(projection.snapshot(next.sessionId).nativeAgents?.parentRunId, next.runId);
   assert.equal(projection.snapshot(next.sessionId).nativeAgents?.incomplete, true);
+});
+
+test('the current durable parent policy remains visible before delegation without relabelling historical child scope', async t => {
+  const f = await fixture(t); await f.begin(f.parent, true, { maxSubagents: 7, runtimePolicy: 'custom' });
+  const retained = f.child(f.parent); await writeAgentReceipt(retained.receiptPath, retained); await f.finish(f.parent);
+  const next = { ...f.parent, runId: randomUUID(), requestId: randomUUID(), workerGeneration: 2 };
+  await f.begin(next, false, { maxSubagents: 4, runtimePolicy: 'defaults' }, { maxSubagents: 12, policySource: 'defaults' });
+  f.session.engineConfig.options.maxSubagents = 30;
+  const projection = f.create(); await projection.hydrate(next.sessionId, f.store);
+  const saved = projection.snapshot(next.sessionId);
+  assert.equal(saved.nativeRun?.runId, next.runId);
+  assert.deepEqual(saved.nativeAgentRuntime, { parentRunId: next.runId, maxSubagents: 12, policySource: 'defaults', total: 0,
+    active: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 });
+  assert.equal(saved.nativeAgents?.parentRunId, f.parent.runId);
+  assert.equal(saved.nativeAgents?.runtime?.maxSubagents, 7); assert.equal(saved.nativeAgents?.runtime?.policySource, 'session');
+  assert.equal(saved.nativeAgents?.runtime?.total, 1); assert.equal(saved.nativeAgents?.runtime?.active, 0);
+  const restarted = f.create(); await restarted.hydrate(next.sessionId, f.store);
+  assert.deepEqual(restarted.snapshot(next.sessionId).nativeAgentRuntime, saved.nativeAgentRuntime);
+  const current = f.child(next); await writeAgentReceipt(current.receiptPath, current); restarted.nativeAgent(next.sessionId, current);
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgentRuntime?.maxSubagents, 12);
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgentRuntime?.total, 1);
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgentRuntime?.active, 1);
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgents?.parentRunId, next.runId);
+  restarted.state(next.sessionId, 'completed');
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgentRuntime?.active, 0);
+  assert.equal(restarted.snapshot(next.sessionId).nativeAgentRuntime?.unknown, 1);
+  assert.deepEqual(f.errors, []);
+});
+
+test('legacy parent configuration keeps its limit and policy source unknown', async t => {
+  const f = await fixture(t); await f.begin(f.parent);
+  f.session.engineConfig.options.maxSubagents = 30;
+  const projection = f.create(); await projection.hydrate(f.parent.sessionId, f.store);
+  const runtime = projection.snapshot(f.parent.sessionId).nativeAgentRuntime;
+  assert.equal(runtime?.parentRunId, f.parent.runId); assert.equal(runtime?.total, 0);
+  assert.equal(runtime?.maxSubagents, undefined); assert.equal(runtime?.policySource, undefined);
+});
+
+test('legacy defaults-following configuration cannot reconstruct an effective limit from its old session value', async t => {
+  const f = await fixture(t); await f.begin(f.parent, false, { maxSubagents: 4, runtimePolicy: 'defaults' });
+  const projection = f.create(); await projection.hydrate(f.parent.sessionId, f.store);
+  assert.equal(projection.snapshot(f.parent.sessionId).nativeAgentRuntime?.maxSubagents, undefined);
+  assert.equal(projection.snapshot(f.parent.sessionId).nativeAgentRuntime?.policySource, undefined);
 });
 
 test('result IPC accepts identities and bounded pages but rejects arbitrary file access before dispatch', () => {

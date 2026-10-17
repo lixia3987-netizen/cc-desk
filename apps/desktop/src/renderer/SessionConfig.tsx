@@ -45,6 +45,7 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
     return fallback === undefined ? [] : [[key, fallback]];
   }));
   const effective = native ? resolveNativeRuntimeConfig({ ...value, options: { permissionMode: 'default', ...nativeSubagentDefaults, ...value.options } }, engineDefaults(descriptor, settings)) : value;
+  const savedEffective = native ? resolveNativeRuntimeConfig({ ...session.engineConfig, options: { ...nativeSubagentDefaults, ...session.engineConfig.options } }, engineDefaults(descriptor, settings)) : session.engineConfig;
   const fields = engineFieldsForGroup(descriptor, group, effective);
   const projectSkills = value.options.projectSkills;
   const validProjectSkills = projectSkills === undefined || Array.isArray(projectSkills) && projectSkills.every(path => typeof path === 'string');
@@ -72,14 +73,20 @@ function SessionConfigForSession({ session, descriptor, onError, group = 'contex
     {dirty && <p className="panel-note" role="status">会话修改尚未保存；切换分类或作用范围会保留草稿。保存配置会应用此会话在各分类中的全部修改。</p>}
     {dirty && !conflict && <button type="button" className="secondary compact" disabled={busy} onClick={() => store.discard(session.id)}>放弃会话草稿</button>}
     {!supported ? <p className="panel-note">当前执行器无法编辑此配置，原始值已保留。</p> : <>
-      {policyGroup && <label>会话运行策略来源<select aria-label="会话运行策略来源" value={followsDefaults ? 'defaults' : 'custom'} disabled={locked} onChange={event => {
+      {policyGroup && <label>会话运行策略来源<select aria-label="会话运行策略来源" value={followsDefaults ? 'defaults' : 'custom'} disabled={locked || conflict} onChange={event => {
         const source = event.target.value;
         setValue(current => source === 'custom' ? { ...effective, options: { ...effective.options, runtimePolicy: 'custom' } }
           : { ...current, options: { ...current.options, runtimePolicy: 'defaults' } });
       }}><option value="defaults">跟随默认</option><option value="custom">单独设置</option></select></label>}
       {policyGroup && <p className="panel-note">此来源统一控制上下文预算、自动压缩、失败重试及子 Agent 预算与并发上限。{followsDefaults ? '当前跟随已保存的默认策略；选择“单独设置”会复制整套当前策略，再为此会话调整。' : '当前使用此会话单独保存的整套策略；切换来源会同时影响以上配置。'}</p>}
       {native && group === 'context' && <NativeContextSettingsInfo config={effective}/>}
-      {native && group === 'limits' && <p className="panel-note">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。</p>}
+      {native && group === 'limits' && <>
+        <p className="panel-note">此会话下轮并发上限（已保存）：{Number.isInteger(savedEffective.options.maxSubagents) ? String(savedEffective.options.maxSubagents) : '未记录'} · 来源：{session.engineConfig.options.runtimePolicy === 'defaults' ? '跟随默认' : '此会话单独设置'}。</p>
+        {dirty && <p className="panel-note">草稿并发上限：{Number.isInteger(effective.options.maxSubagents) ? String(effective.options.maxSubagents) : '未记录'}，保存后用于下一轮。本轮有效值请查看聊天区“子 Agent”。</p>}
+        {!followsDefaults && <button type="button" className="secondary compact" disabled={locked || dirty || conflict} onClick={() => setValue(current => ({ ...current, options: { ...current.options, runtimePolicy: 'defaults' } }))}>改为跟随默认（保存后生效）</button>}
+        <p className="panel-note">全局修改只影响跟随默认的会话；旧会话单独设置会继续保留。切换来源同时影响整套运行策略，请检查后保存。本轮配置在开始时固定。</p>
+        <p className="panel-note">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。并发上限不要求启动相同数量的子 Agent。</p>
+      </>}
       <EngineConfigFields value={effective} fields={fields} prefix="会话" disabled={locked || followsDefaults || bindingLocked} running={running} onChange={setValue} />
       {group === 'context' && effective.options.inputBudgetMode === 'model' && <p className="panel-note">窗口未知时备用输入预算：{Number(effective.options.maxInputTokens ?? 64000).toLocaleString()} tokens。</p>}
       {bindingLocked && <p className="panel-note">已有模型上下文，请新建会话切换模型连接或模型。</p>}

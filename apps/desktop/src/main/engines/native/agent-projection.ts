@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 import { canonicalJson, type JsonValue, type RunIdentity } from '@cc-desk/agent-core';
-import type { NativeAgentSnapshot, NativeAgentView } from '../../../shared/chat';
+import type { NativeAgentRuntime, NativeAgentSnapshot, NativeAgentView } from '../../../shared/chat';
 import type { NativeDelegationReceipt } from './agent-delegation';
 import { isNativeSkillInheritanceManifest, normalizeNativeSkillInheritanceManifest, type NativeSkillInheritanceManifest } from './skill-inheritance';
 
@@ -66,7 +66,18 @@ export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIde
   return view;
 }
 
-function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receiptDirectory: string, active: boolean, incomplete = false): NativeAgentSnapshot {
+type RuntimePolicy = Pick<NativeAgentRuntime, 'maxSubagents' | 'policySource'>;
+const effectiveRuntimePolicy = z.object({ maxSubagents: z.number().int().min(1).max(30), policySource: z.enum(['defaults', 'session']) }).strict();
+/** 上限必须确实保存在本轮配置中，不能用当前设置或解析器默认值补写旧回执。 */
+export function nativeAgentRuntimePolicy(configuration: unknown): RuntimePolicy {
+  if (configuration !== null && typeof configuration === 'object' && Object.hasOwn(configuration, 'effectiveSubagentPolicy')) {
+    const effective = effectiveRuntimePolicy.safeParse((configuration as Record<string, unknown>).effectiveSubagentPolicy);
+    return effective.success ? effective.data : {};
+  }
+  const parsed = z.object({ sessionOptions: z.object({ maxSubagents: z.number().int().min(1).max(30), runtimePolicy: z.enum(['custom', 'defaults']).optional() }).passthrough() }).passthrough().safeParse(configuration);
+  return parsed.success && parsed.data.sessionOptions.runtimePolicy !== 'defaults' ? { maxSubagents: parsed.data.sessionOptions.maxSubagents, policySource: 'session' } : {};
+}
+function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receiptDirectory: string, active: boolean, incomplete = false, policy: RuntimePolicy = {}): NativeAgentSnapshot {
   const all = [...items].map(item => {
     const view = structuredClone(item);
     if (!active && ['prepared', 'running'].includes(view.status)) { view.status = 'unknown'; view.missingTerminal = true; }
@@ -74,7 +85,10 @@ function snapshot(items: Iterable<NativeAgentView>, parent: RunIdentity, receipt
   });
   all.sort((a, b) => Number(['prepared', 'running'].includes(b.status)) - Number(['prepared', 'running'].includes(a.status)) ||
     b.createdAt.localeCompare(a.createdAt) || b.batchId.localeCompare(a.batchId) || a.childId.localeCompare(b.childId));
-  return { parentRunId: parent.runId, items: all.slice(0, 30), omitted: Math.max(0, all.length - 30), receiptDirectory, ...(incomplete ? { incomplete: true } : {}) };
+  const runtime: NativeAgentRuntime = { parentRunId: parent.runId, ...policy, total: all.length, active: 0, running: 0, prepared: 0, completed: 0, failed: 0, cancelled: 0, unknown: 0 };
+  for (const item of all) runtime[item.status]++;
+  runtime.active = runtime.running + runtime.prepared;
+  return { parentRunId: parent.runId, items: all.slice(0, 30), omitted: Math.max(0, all.length - 30), receiptDirectory, runtime, ...(incomplete ? { incomplete: true } : {}) };
 }
 
 /** 保留并展示父任务运行的全部回执，展示最近三十条，保留全部历史回执。 */
@@ -82,7 +96,10 @@ export class NativeAgentProjection {
   private items = new Map<string, NativeAgentView>();
   private retained = new Map<string, NativeDelegationReceipt>();
   private incomplete = false;
-  constructor(readonly parent: RunIdentity, readonly receiptDirectory: string) { identity.parse(parent); this.parent = structuredClone(parent); }
+  private readonly policy: RuntimePolicy;
+  constructor(readonly parent: RunIdentity, readonly receiptDirectory: string, configuration?: unknown) {
+    identity.parse(parent); this.parent = structuredClone(parent); this.policy = nativeAgentRuntimePolicy(configuration);
+  }
   record(receipt: NativeDelegationReceipt): void {
     const view = nativeAgentView(receipt, this.parent);
     const expected = path.join(this.receiptDirectory, view.batchId, view.childId, 'receipt.json');
@@ -103,7 +120,7 @@ export class NativeAgentProjection {
     this.items.set(view.childId, view);
     this.retained.set(view.childId, structuredClone(receipt));
   }
-  snapshot(active = false): NativeAgentSnapshot { return snapshot(this.items.values(), this.parent, this.receiptDirectory, active, this.incomplete); }
+  snapshot(active = false): NativeAgentSnapshot { return snapshot(this.items.values(), this.parent, this.receiptDirectory, active, this.incomplete, this.policy); }
   /** 用于目录隔离和恢复的已验证宿主记录；绝不据此授权新工作进程。 */
   receipts(): NativeDelegationReceipt[] { return structuredClone([...this.retained.values()]); }
   merge(current: NativeAgentProjection | undefined): void {
@@ -120,9 +137,9 @@ export class NativeAgentProjection {
   markIncomplete(): void { this.incomplete = true; }
 }
 
-/** 有界读取当前父任务运行，禁止符号链接；绝不接管旧工作进程。 */
-export async function loadNativeAgents(dataDirectory: string, parent: RunIdentity): Promise<NativeAgentProjection> {
-  const directory = nativeAgentReceiptDirectory(dataDirectory, parent), projection = new NativeAgentProjection(parent, directory);
+/** 逐个校验当前父任务运行的全部回执，禁止符号链接；绝不接管旧工作进程。 */
+export async function loadNativeAgents(dataDirectory: string, parent: RunIdentity, configuration?: unknown): Promise<NativeAgentProjection> {
+  const directory = nativeAgentReceiptDirectory(dataDirectory, parent), projection = new NativeAgentProjection(parent, directory, configuration);
   try {
     for (let current = directory; current !== path.dirname(current) && current !== path.resolve(dataDirectory); current = path.dirname(current)) {
       const stat = await fs.lstat(current); if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('Unsafe Native child receipt directory.');
@@ -131,8 +148,7 @@ export async function loadNativeAgents(dataDirectory: string, parent: RunIdentit
     for (const batch of batches) {
       if (!batch.isDirectory() || batch.isSymbolicLink() || !uuid.safeParse(batch.name).success) { projection.markIncomplete(); continue; }
       const batchPath = path.join(directory, batch.name), children = await fs.readdir(batchPath, { withFileTypes: true });
-      if (children.length > 30) projection.markIncomplete();
-      for (const child of children.slice(0, 30)) {
+      for (const child of children) {
         try {
           if (!child.isDirectory() || child.isSymbolicLink() || !uuid.safeParse(child.name).success) throw new Error('Unsafe Native child directory.');
           const file = path.join(batchPath, child.name, 'receipt.json'), stat = await fs.lstat(file);

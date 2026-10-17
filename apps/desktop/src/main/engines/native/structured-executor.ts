@@ -49,14 +49,15 @@ import { nativeExecutionReceipt, readNativeExecutionReceipt, saveNativeExecution
 import { parseNativeExecutionPolicy, restrictNativeTools } from './execution-policy';
 import { NativeAggregateBudget } from './aggregate-budget';
 import { createNativeChildBudget } from './child-budget';
-import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentDelegationTools } from './agent-delegation';
+import { createAgentDelegationTools, type NativeAgentChildInput, type NativeAgentChildResult, type NativeAgentDelegationTools } from './agent-delegation';
 import { runNativeAgentChild, nativeChildExcludedRoots } from './agent-child-runner';
 import { NativeActivePause } from './active-pause';
 import { loadNativeAgents } from './agent-projection';
 import { readNativeAgentResult } from './agent-results';
 import { createAgentResultTools } from './agent-result-tool';
 import type { NativeAgentResultRequest, NativeAgentResult } from '../../../shared/chat';
-import { buildNativeParentInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativeParallelReviewIntent, nativePromptInstructionSections } from './agent-prompts';
+import { buildNativeParentInstructions, NATIVE_DELEGATION_PROMPT_VERSION, nativeParallelReviewIntent, nativeWorkflowCollaborationIntent, nativePromptInstructionSections } from './agent-prompts';
+import { createNativeWorkflowQualityController, loadNativeWorkflowQuality, type NativeWorkflowQualityController } from './workflow-quality';
 import { nativeDelegationAuditFailure, saveNativeDelegationAudit } from './agent-delegation-audit';
 import { reportNativeDiagnostic } from './diagnostic';
 import { normalizeNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
@@ -453,6 +454,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     let receiptOnly = false;
     let mcpTools: ManagedMcpToolPort | undefined;
     let commandTools: NativeCommandTools | undefined;
+    let quality: NativeWorkflowQualityController | undefined;
     let startup: { identity: RunIdentity; startupId: string } | undefined;
     let startedAt = performance.now();
     const activePause = new NativeActivePause();
@@ -559,14 +561,70 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       };
       const stdioConnections = mcpConnections.filter(item => item.transport === 'stdio');
       active.children = new Map(); active.childApprovalQueue = Promise.resolve(); active.childLeases = new Map();
+      const createChildBudget = (childIdentity: RunIdentity) => {
+        const budget = createNativeChildBudget(childIdentity, config, active.abort.signal);
+        childBudgets.set(childIdentity.runId, { budget, modelRequests: 0, toolCalls: 0 }); return budget;
+      };
+      // All roles in one round share the same captured capability; recapturing the
+      // same digest concurrently would invalidate another role's preflight.
+      const qualityInheritance = new Map<number, ReturnType<NonNullable<typeof skillRun>['prepareInheritance']>>();
+      const runChild = async (input: NativeAgentChildInput): Promise<NativeAgentChildResult> => {
+        await assertOwnership();
+        if (input.quality && skillRun && !input.nativeSkills) {
+          let capture = qualityInheritance.get(input.quality.round);
+          if (!capture) {
+            capture = skillRun.prepareInheritance(ledger);
+            qualityInheritance.set(input.quality.round, capture);
+          }
+          const nativeSkills = await capture;
+          await this.options.skills!.preflightChild({ sessionId: id, parentIdentity: identity, inheritance: nativeSkills,
+            signal: input.signal, forbiddenValues, identity: input.identity, projectRoot: input.cwd,
+            excludedRoots: await nativeChildExcludedRoots(this.store.directory, input.cwd) });
+          input = { ...input, nativeSkills };
+        }
+        active.children!.set(input.identity.runId, input);
+        let lease: { assert(): void | Promise<void>; release(): void | Promise<void> } | undefined;
+        let retainLease = false;
+        try {
+          if (input.toolPolicy === 'workspace_write' || input.toolPolicy === 'workspace_verify' || input.quality) {
+            lease = await this.options.acquireChildOwnership?.(id, input.identity, input.cwd);
+            if (lease) active.childLeases!.set(input.identity.runId, lease);
+          }
+          const run = await runNativeAgentChild(input, { dataDirectory: this.store.directory,
+            model: { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL,
+              model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
+            config, forbiddenValues, worker: this.options.worker, ...(skillRun ? { skills: this.options.skills } : {}),
+            assertOwnership: async () => { await assertOwnership(); await lease?.assert(); },
+            approvals: { request: (request, signal) => {
+              const operation = active.childApprovalQueue!.then(async () => {
+                if (signal.aborted) return { binding: request.binding, expiresAt: request.expiresAt, decision: 'denied' as const };
+                return await this.approve(id, active, request, signal, input);
+              });
+              active.childApprovalQueue = operation.then(() => {}, () => {});
+              return operation;
+            } },
+          });
+          const usage = childBudgets.get(input.identity.runId);
+          if (usage) { usage.modelRequests = run.modelRequests; usage.toolCalls = run.toolCalls; }
+          retainLease = !run.committed || run.status === 'recovery_required';
+          return run;
+        } catch (error) {
+          retainLease = Boolean(error && typeof error === 'object' && 'cleanupUnconfirmed' in error && error.cleanupUnconfirmed);
+          throw error;
+        } finally {
+          active.children!.delete(input.identity.runId);
+          if (retainLease) { active.cleanupUnconfirmed = true; this.recovery.add(id); }
+          else if (lease) {
+            try { await lease.release(); active.childLeases!.delete(input.identity.runId); }
+            catch { active.cleanupUnconfirmed = true; this.recovery.add(id); throw new NativeWorkerCleanupError(); }
+          }
+        }
+      };
       active.delegation = createAgentDelegationTools({ identity, parentTaskId: active.taskId, cwd: session.cwd,
         policy: active.executionPolicy?.toolPolicy === 'read_only' ? 'read_only' : 'workspace_write',
         signal: active.abort.signal, forbiddenValues, storeDirectory: path.join(this.store.directory, 'native'),
         worktreeRoot: path.join(this.store.directory, 'native', 'agent-worktrees'), maxSubagents: config.maxSubagents,
-        createChildBudget: childIdentity => {
-          const budget = createNativeChildBudget(childIdentity, config, active.abort.signal);
-          childBudgets.set(childIdentity.runId, { budget, modelRequests: 0, toolCalls: 0 }); return budget;
-        }, assertOwnership,
+        createChildBudget, assertOwnership, runChild,
         ...(skillRun ? { skills: {
           freeze: () => skillRun.prepareInheritance(ledger),
           assertCurrent: (inheritance, signal, recovery) => this.options.skills!.assertInheritanceCurrent({ sessionId: id, parentIdentity: identity,
@@ -577,47 +635,44 @@ export class NativeStructuredExecutor implements StructuredExecutor {
             ...(input.recovery ? { allowAdditionalActivations: true } : {}) }),
         } } : {}),
         record: async receipt => { try { this.projection.nativeAgent(id, receipt); } catch { this.options.onError?.(new Error('Native child state projection needs repair.')); } },
-        runChild: async input => {
-          await assertOwnership();
-          active.children!.set(input.identity.runId, input);
-          let lease: { assert(): void | Promise<void>; release(): void | Promise<void> } | undefined;
-          let retainLease = false;
-          try {
-            if (input.toolPolicy === 'workspace_write') {
-              lease = await this.options.acquireChildOwnership?.(id, input.identity, input.cwd);
-              if (lease) active.childLeases!.set(input.identity.runId, lease);
-            }
-            const run = await runNativeAgentChild(input, { dataDirectory: this.store.directory,
-              model: { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL,
-                model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp },
-              config, forbiddenValues, worker: this.options.worker, ...(skillRun ? { skills: this.options.skills } : {}),
-              assertOwnership: async () => { await assertOwnership(); await lease?.assert(); },
-              approvals: { request: (request, signal) => {
-                const operation = active.childApprovalQueue!.then(async () => {
-                  if (signal.aborted) return { binding: request.binding, expiresAt: request.expiresAt, decision: 'denied' as const };
-                  return await this.approve(id, active, request, signal, input);
-                });
-                active.childApprovalQueue = operation.then(() => {}, () => {});
-                return operation;
-              } },
-            });
-            const usage = childBudgets.get(input.identity.runId);
-            if (usage) { usage.modelRequests = run.modelRequests; usage.toolCalls = run.toolCalls; }
-            retainLease = !run.committed || run.status === 'recovery_required';
-            return run;
-          } catch (error) {
-            retainLease = Boolean(error && typeof error === 'object' && 'cleanupUnconfirmed' in error && error.cleanupUnconfirmed);
-            throw error;
-          } finally {
-            active.children!.delete(input.identity.runId);
-            if (retainLease) { active.cleanupUnconfirmed = true; this.recovery.add(id); }
-            else if (lease) {
-              try { await lease.release(); active.childLeases!.delete(input.identity.runId); }
-              catch { active.cleanupUnconfirmed = true; this.recovery.add(id); throw new NativeWorkerCleanupError(); }
-            }
-          }
-        },
+
       });
+      // Only current user input or the host's explicit workflow policy may request this team.
+      const workflowIntent = active.executionPolicy ? undefined : nativeWorkflowCollaborationIntent(active.input);
+      const collaboration = active.executionPolicy?.collaboration ?? workflowIntent?.collaboration;
+      const singleAgent = collaboration === 'single_agent' || nativeParallelReviewIntent(active.input).mode === 'single_agent';
+      const validationMode = active.executionPolicy ? active.executionPolicy.qualityValidation ??
+        (active.executionPolicy.toolPolicy === 'standard' ? 'commands' : undefined) : workflowIntent?.validationMode;
+      if (collaboration && !singleAgent && validationMode) {
+        quality = createNativeWorkflowQualityController({ identity, parentTaskId: active.taskId, cwd: session.cwd,
+          dataDirectory: this.store.directory, collaboration, validationMode, goal: active.input,
+          maxSubagents: config.maxSubagents, forbiddenValues, signal: active.abort.signal, createChildBudget, assertOwnership, runChild,
+          readDelivery: async () => {
+            for (let end = ledger.usage.records; end > 0;) {
+              const start = Math.max(0, end - 1000), records = ledger.replay(start, end - start);
+              for (let index = records.length - 1; index >= 0; index--) {
+                const record = records[index];
+                if (record.identity && sameRun(record.identity, identity) && record.event.type === 'model_response')
+                  return extractNativeAssistantText(record.event.response.outputItems);
+              }
+              end = start;
+            }
+            throw new Error('独立质量核查缺少当前运行的实际交付正文。');
+          },
+          materialPaths: async () => {
+            await active.tasks!.settled();
+            const task = active.tasks!.store.read(active.taskId), run = ledger.getRun(identity.runId);
+            const paths = new Set([...(task?.workspace?.changes.added ?? []), ...(task?.workspace?.changes.modified ?? [])]);
+            for (const tool of run?.tools ?? []) {
+              const output = tool.completed?.result.output;
+              if (tool.call.name === 'read_file' && tool.completed?.result.status === 'completed' && output &&
+                  typeof output === 'object' && !Array.isArray(output) && typeof output.path === 'string') paths.add(output.path);
+            }
+            return paths.size ? [...paths] : undefined;
+          },
+          onChanged: state => this.projection.workflowQuality(id, state),
+        });
+      }
       let assertStartupCurrent: (() => Promise<void>) | undefined;
       if (stdioConnections.length) {
         const metadata = await mcpStartupMetadata(mcpConnections, session.cwd);
@@ -745,7 +800,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       // 单 Agent 或明确禁止委派的请求在宿主侧不注册委派工具，不能靠模型自律放宽。
       const stageTools = () => {
         const ordinary = active.tasks!.wrapTools(composeToolPorts([createTools(),
-          ...(nativeParallelReviewIntent(active.input).mode === 'single_agent' ? [] : [active.delegation!]), resultTools]), active.taskId, identity);
+          ...(singleAgent ? [] : [active.delegation!]), resultTools]), active.taskId, identity);
         const combined = skillRun ? composeToolPorts([skillRun.tools.guard(ordinary), ...(skillRun.catalog.entries.some(entry => entry.autoMatchable) ? [skillRun.tools] : [])]) : ordinary;
         return restrictNativeTools(combined, active.executionPolicy);
       };
@@ -793,7 +848,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
           // 模型完成不会释放仍在运行的命令。提交模型结果前，所有管理的
           // 进程树和终态回执必须先结束。
           if (event.type === 'run_finished') {
-            try { await active.delegation?.closeAll(); await commandTools?.closeAll(); }
+            try { await quality?.closeAll(); await active.delegation?.closeAll(); await commandTools?.closeAll(); }
             catch (error) { active.cleanupUnconfirmed = true; throw error; }
           }
           const accepted = await ledger.append(run, event);
@@ -811,13 +866,21 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.changed(id, 'starting');
       await skillRun?.assertInitialCurrent();
       const run = await worker({
-        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n') }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}), ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated }, initialNativeSkills: skillRun.tools.snapshot(), effectiveAutoCompact: config.autoCompact } : {}), ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n') }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, effectiveSubagentPolicy: { maxSubagents: config.maxSubagents, policySource: requestedConfig.runtimePolicy === 'defaults' ? 'defaults' : 'session' }, ...(quality ? { nativeWorkflowQualityPolicy: { collaboration, validationMode } } : {}), ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}), ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated }, initialNativeSkills: skillRun.tools.snapshot(), effectiveAutoCompact: config.autoCompact } : {}), ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const resume = activePause.pause();
           try { return await this.approve(id, active, request, signal); }
           finally { resume(); }
         } }, signal: active.abort.signal,
+        ...(quality ? { completionValidation: { validate: async candidate => {
+          await assertOwnership();
+          if (!sameRun(candidate.identity, identity) || canonicalJson(json(candidate.context)) !== canonicalJson(json(ledger.loadContext()))) throw new Error('独立质量核查的父运行上下文已改变。');
+          const pending = ledger.getRun(identity.runId)?.tools.filter(tool => tool.commandProgress?.length && tool.commandProgress.at(-1)?.status !== 'finished') ?? [];
+          if (pending.length) return { kind: 'continue' as const, code: 'workflow_quality_changes_requested' as const, paths: [],
+            feedback: JSON.stringify({ issue: 'parent_commands_not_terminal', instruction: 'Await command_status or use stop_command for all current command handles before requesting independent validation. Startup does not prove validation completed.' }) };
+          return quality!.validate(candidate);
+        } } } : {}),
         ...(config.autoCompact === 'before_send_and_during_run' ? { contextMaintenance: createInRunCompaction({ ledger, identity,
           model: { ...model, instructions: modelInstructions }, forbiddenValues, signal: active.abort.signal,
           remainingMs: () => Number.POSITIVE_INFINITY, assertOwnership,
@@ -865,7 +928,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await active.imageSnapshot?.catch(() => {});
       active.phase = undefined;
       active.approval?.settle('denied');
-      try { await active.delegation?.closeAll(); await active.childApprovalQueue; }
+      try { await quality?.closeAll(); await active.delegation?.closeAll(); await active.childApprovalQueue; }
       catch { active.cleanupUnconfirmed = true; }
       if (active.identity) this.options.skills?.releaseInheritance(active.identity);
       stopPauseClock();
@@ -980,6 +1043,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         const savedTime = savedOptions && typeof savedOptions === 'object' && !Array.isArray(savedOptions) ? savedOptions.maxActiveMs : undefined;
         const savedCeiling = typeof savedTime === 'number' && Number.isSafeInteger(savedTime) && savedTime > 0 ? savedTime : DEFAULT_RUN_BUDGET.maxActiveMs;
         receipt = nativeExecutionReceipt(result, task, activeMs ?? savedCeiling, counts);
+        const workflowQuality = await loadNativeWorkflowQuality({ dataDirectory: this.store.directory, identity: result.identity });
+        if (workflowQuality) receipt.workflowQuality = workflowQuality;
         await saveNativeExecutionReceipt(this.store.directory, receipt);
       }
     } catch {
@@ -996,9 +1061,19 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         }
       }
     }
-    return { success: result.status === 'completed' && result.committed && !delegationFailure,
+    const expectedQuality = storedRun?.configuration.nativeWorkflowQualityPolicy;
+    const qualityRequired = expectedQuality !== undefined;
+    const workflowQuality = receipt?.workflowQuality;
+    const qualityFailure = qualityRequired && (!expectedQuality || typeof expectedQuality !== 'object' || Array.isArray(expectedQuality) ||
+      workflowQuality?.status !== 'passed' || workflowQuality.automaticReview !== 'passed' ||
+      !sameRun(workflowQuality.parentIdentity, result.identity) || workflowQuality.taskId !== receipt?.taskId ||
+      workflowQuality.collaboration !== expectedQuality.collaboration || workflowQuality.validationMode !== expectedQuality.validationMode ||
+      receipt?.workspace?.complete !== true || workflowQuality.workspaceFingerprint !== receipt.workspace.fingerprint ||
+      workflowQuality.rounds.at(-1)?.deliveryDigest !== digest(summary))
+      ? '独立质量核查尚未通过或回执无法确认，本轮不能作为已验收交付。' : undefined;
+    return { success: result.status === 'completed' && result.committed && !delegationFailure && !qualityFailure,
       summary: delegationFailure ? `${delegationFailure}${summary ? `\n模型原回复（未通过宿主并行核验）：\n${summary}` : ''}` : summary,
-      ...(receipt ? { nativeReceipt: receipt } : {}), ...(delegationFailure ? { error: delegationFailure } : {}),
+      ...(receipt ? { nativeReceipt: receipt } : {}), ...(qualityFailure ? { error: qualityFailure } : {}), ...(delegationFailure ? { error: delegationFailure } : {}),
       ...(result.status !== 'completed' ? { error: nativeRunError(result.reason, details), interrupted: result.status === 'cancelled' } : {}) };
   }
   private approve(id: string, active: ActiveRun, request: ApprovalRequest, signal: AbortSignal, child?: NativeAgentChildInput): Promise<ApprovalDecision> {

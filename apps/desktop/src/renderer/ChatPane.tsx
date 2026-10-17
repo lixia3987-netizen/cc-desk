@@ -35,6 +35,7 @@ import { VirtualChatMessages, type VirtualChatMessagesHandle } from './VirtualCh
 import { runConfirmedChatAction } from './confirmed-chat-action';
 import { NativeTaskPanel } from './NativeTaskPanel';
 import { NativeAgentPanel } from './NativeAgentPanel';
+import { NativeWorkflowQualityPanel } from './NativeWorkflowQualityPanel';
 import { appendNativeAgentReviewDraft } from './native-agent-review';
 import { NativeChildApprovalContext } from './NativeChildApprovalContext';
 import './native-agent.css';
@@ -399,10 +400,10 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
     {session.execution.providerId!=='native'&&<SubtaskPanel session={session}/>}
     {session.execution.providerId==='native' && <div className="native-assistance">
       <div className="native-assistance-tabs" role="group" aria-label="执行辅助详情">
-        {!!snapshot?.nativeAgents?.items.length && <button className="text-button" aria-pressed={assistance==='agents'} aria-expanded={assistance==='agents'} aria-controls="native-assistance-agents" onClick={()=>toggleAssistance('agents')}>子 Agent · {snapshot.nativeAgents.items.length}{syncState.error?' · 状态未知':snapshot.nativeAgents.items.some(item=>['prepared','running'].includes(item.status))?' · 运行中':''}</button>}
+        {(snapshot?.nativeAgentRuntime || !!snapshot?.nativeAgents?.items.length || snapshot?.nativeAgents?.incomplete) && <button className="text-button" aria-pressed={assistance==='agents'} aria-expanded={assistance==='agents'} aria-controls="native-assistance-agents" onClick={()=>toggleAssistance('agents')}>子 Agent · {snapshot?.nativeAgentRuntime ? `活跃 ${snapshot.nativeAgentRuntime.active} / ${snapshot.nativeAgentRuntime.maxSubagents ?? '上限未记录'} · 已启动 ${snapshot.nativeAgentRuntime.total}` : `已保存 ${snapshot?.nativeAgents?.items.length ?? 0}`}{syncState.error?' · 状态未知':''}</button>}
         {(snapshot?.nativeTask||syncState.error||snapshot?.nativeTaskError) && <button className="text-button" aria-pressed={assistance==='task'} aria-expanded={assistance==='task'} aria-controls="native-assistance-task" onClick={()=>toggleAssistance('task')}>任务与验收 · {syncState.error||snapshot?.nativeTaskError?'状态未知':snapshot?.nativeTask?.verification==='passed'?'验收通过':'待核查'}</button>}
       </div>
-      <div id="native-assistance-agents" className="native-assistance-body" hidden={assistance!=='agents'}>{visitedAssistance.agents&&<NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} loadError={syncState.error}
+      <div id="native-assistance-agents" className="native-assistance-body" hidden={assistance!=='agents'}>{visitedAssistance.agents&&<NativeAgentPanel sessionId={session.id} agents={snapshot?.nativeAgents} runtime={snapshot?.nativeAgentRuntime} loadError={syncState.error}
       readOnly={readOnly||session.archived||!!archive||composerDisabled||submitting||!!descriptor?.maintenance}
       onReviewPrompt={(text,parentTaskId)=>{
         if(!mounted.current||readOnly||session.archived||archive||composerDisabled||submitting||descriptor?.maintenance)throw new Error('当前会话仅供查看，不能追加审阅交接。');
@@ -416,6 +417,7 @@ export function ChatPane({session,draft,onDraft,onSent,onError,onAttach,onDropFi
         isCurrent:()=>mounted.current&&currentConversation.current===sourceConversation,onError,refreshFresh:loadFresh,
         execute:()=>window.desktop.nativeTaskReview(session.id,input)});}}/>}</div>
     </div>}
+    {session.execution.providerId==='native'&&snapshot?.nativeWorkflowQuality&&<NativeWorkflowQualityPanel state={snapshot.nativeWorkflowQuality} loadError={syncState.error}/>}
     {continuationTaskId&&<div className="panel-note" role="status">下一条消息将继续任务 {continuationTaskId}。<button className="text-button" disabled={submitting} onClick={()=>setContinuationTaskId(undefined)}>取消关联</button></div>}
     <div className="chat-meta"><span className={'dot '+(syncState.error||task==='error'?'error':running?'running':'idle')}/>{!syncState.error&&sessionStatus==='stopping'?'正在停止':taskLabel}{snapshot?.model&&<span className="chat-model" title="引擎报告的当前模型">{snapshot.model}</span>}{snapshot?.usage&&<span className="usage" title={session.execution.providerId==='native'?'当前父回合的累计用量，包含回合内摘要；子代理、发送前及手动摘要另计。输入总量已含缓存分项，不能重复相加。估价按本回合保存的用户费率，未知计数或费率不作为零，实际账单为准。':'引擎实际返回的用量与费用估算'}>{chatUsageLabel(snapshot.usage, session.execution.providerId==='native')}</span>}</div>
     {descriptor?.capabilities.contextUsage&&<ContextMeter context={snapshot?.context} native={session.execution.providerId==='native'}

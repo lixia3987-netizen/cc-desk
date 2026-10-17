@@ -4,11 +4,16 @@ import type { ToolPort } from '@cc-desk/agent-core';
 
 const schema = z.object({
   toolPolicy: z.enum(['read_only', 'standard']),
+  collaboration: z.enum(['auto', 'single_agent', 'parallel', 'adversarial']).optional(),
+  qualityValidation: z.enum(['static', 'commands']).optional(),
   budget: z.object({ maxModelRequests: z.number().int().min(1).max(10000), maxToolCalls: z.number().int().min(1).max(10000),
     maxActiveMs: z.number().int().min(1).max(24 * 60 * 60_000) }).strict().optional(),
   parent: z.object({ sessionId: z.string().uuid(), runId: z.string().uuid(), taskId: z.string().uuid(),
     depth: z.number().int().min(1).max(1) }).strict().optional(),
-}).strict();
+}).strict().refine(value => value.qualityValidation === undefined ||
+  value.collaboration !== undefined && value.collaboration !== 'single_agent' &&
+  value.qualityValidation === (value.toolPolicy === 'read_only' ? 'static' : 'commands'),
+  '独立质量检查必须遵守阶段权限和协作策略。');
 export function parseNativeExecutionPolicy(value: unknown): NativeExecutionPolicy | undefined {
   return value === undefined ? undefined : schema.parse(value);
 }

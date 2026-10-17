@@ -4,7 +4,7 @@ import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED } from '../sh
 import type { NewWorkflow, WorkflowBinding, WorkflowRun, WorkflowStage, WorkflowStageResult } from '../shared/workflows';
 import type { WorkflowConfirmation, WorkflowNativeReceipt, WorkflowVerification } from '../shared/workflows';
 import { getNativeTaskCriterionVerification, type NativeTaskView } from '@cc-desk/contracts/native-task';
-import { MAX_STORED_RUNS, newWorkflowSchema, validateGraph, workflowBindingSchema, workflowNativeReceiptSchema } from './workflow-schema';
+import { MAX_STORED_RUNS, newWorkflowSchema, validateGraph, workflowBindingSchema, workflowNativeReceiptSchema, workflowQualityFailure } from './workflow-schema';
 import type { WorkflowState } from './workflow-schema';
 import { WorkflowStorage } from './workflow-storage';
 import type { ExecutionSubmission } from './execution/ports';
@@ -89,6 +89,7 @@ export class WorkflowEngine {
     if (binding.sessionId !== parsed.sessionId) throw new Error('工作流会话绑定不匹配');
     const definitions = parsed.stages ?? DEFAULT_WORKFLOW_STAGES;
     const policiesEnabled = this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED;
+    if (parsed.collaboration && (binding.providerId !== 'native' || !policiesEnabled)) throw new Error('显式协作策略仅支持已启用阶段权限的自研 Agent。');
     if (!policiesEnabled && parsed.stages?.some(stage => stage.toolPolicy === 'read_only')) throw new Error('阶段只读权限尚未启用。');
     if (binding.providerId !== 'native' && (parsed.budget || definitions.some(stage => stage.gate === 'native_task') || parsed.stages?.some(stage => stage.toolPolicy === 'read_only'))) throw new Error('严格只读、任务证据门槛和旧版累计预算仅支持自研 Agent；请使用普通阶段或切换执行器。');
     const stages: WorkflowStage[] = definitions.map(stage => ({
@@ -101,6 +102,7 @@ export class WorkflowEngine {
     const run: WorkflowRun = {
       ...binding, id: randomUUID(), title: parsed.title ?? parsed.goal.slice(0, 80),
       goal: parsed.goal, status: 'draft', stages, pauseAfterEachStage: parsed.pauseAfterEachStage,
+      ...(parsed.collaboration ? { collaboration: parsed.collaboration } : {}),
       createdAt: now, updatedAt: now,
       ...(binding.providerId === 'native' ? { usage: { modelRequests: 0, toolCalls: 0, activeMs: 0, recordedExecutionIds: [], complete: true } } : {}),
     };
@@ -199,7 +201,38 @@ export class WorkflowEngine {
 
   private completeGatedStage(run: WorkflowRun, stage: WorkflowStage): void {
     stage.status = 'completed'; delete stage.gateReason;
-    run.status = run.stages.every(item => item.status === 'completed') ? 'completed' : 'paused';
+    // 新协作策略在人工验收后仍需异步核查最终工作区；继续操作只核查，不重复阶段。
+    run.status = run.stages.every(item => item.status === 'completed') && !this.qualityEnabled(run) ? 'completed' : 'paused';
+  }
+
+  private qualityEnabled(run: WorkflowRun): boolean {
+    return run.providerId === 'native' && Boolean(run.collaboration && run.collaboration !== 'single_agent');
+  }
+
+  private qualityValidation(run: WorkflowRun, stage: WorkflowStage): 'commands' | 'static' | undefined {
+    if (!this.qualityEnabled(run)) return;
+    if (stage.toolPolicy !== 'read_only') return 'commands';
+    if (run.stages.every(item => item.toolPolicy === 'read_only') && run.stages.every(item => item.id === stage.id || item.status === 'completed')) return 'static';
+  }
+
+  /** 后续合法实现会让旧快照过期；只将最后一次标准阶段的完整审查作为最终版本依据。 */
+  private async finalQualityFailure(run: WorkflowRun, latestReceipt?: WorkflowNativeReceipt): Promise<string | undefined> {
+    if (!this.qualityEnabled(run)) return;
+    const standard = run.stages.filter(stage => stage.toolPolicy !== 'read_only');
+    const history = (standard.length ? standard : run.stages).flatMap(stage => stage.nativeReceipts ?? []);
+    const ordered = run.usage?.recordedExecutionIds ?? [];
+    const receipt = latestReceipt ?? history.sort((left, right) => ordered.indexOf(left.identity.runId) - ordered.indexOf(right.identity.runId)).at(-1);
+    const invalid = workflowQualityFailure(receipt, run.collaboration!, standard.length ? 'commands' : 'static');
+    if (invalid) return invalid;
+    if (!receipt) return '缺少最终质量审查的执行回执。';
+    if (!this.options.inspectNativeTask) return '当前执行器无法核查最终工作区版本，不能完成独立质量交付。';
+    try {
+      const task = await this.options.inspectNativeTask(structuredClone(receipt));
+      if (!task || task.taskId !== receipt.taskId || (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => task.identity[key] !== receipt.identity[key])) return '最终质量审查对应任务身份已变化，不能完成工作流。';
+      if (task.execution === 'active' || !task.workspace?.current.complete || task.workspace.current.fingerprint !== receipt.workspace?.fingerprint
+        || task.workspace.current.fingerprint !== receipt.workflowQuality?.workspaceFingerprint) return '最终工作区版本已变化或核查不完整，请修复并重新进行独立质量审查。';
+      if (task.planRevision !== receipt.planRevision || task.acceptanceRevision !== receipt.acceptanceRevision) return '最终质量审查后任务计划或验收条件已变化，请重新审查。';
+    } catch (error) { return `最终质量审查版本核查失败：${errorText(error)}`; }
   }
 
   private recordReceipt(run: WorkflowRun, stage: WorkflowStage, receipt?: WorkflowNativeReceipt): void {
@@ -352,7 +385,11 @@ export class WorkflowEngine {
       const run = this.get(id);
       const stage = run.stages.find(item => item.status === 'pending' && item.dependsOn.every(dependency => run.stages.find(other => other.id === dependency)?.status === 'completed'));
       if (!stage) {
-        if (run.stages.every(item => item.status === 'completed')) this.update(id, draft => { draft.status = 'completed'; });
+        if (run.stages.every(item => item.status === 'completed')) {
+          const failure = await this.finalQualityFailure(run);
+          if (token.cancelled) return;
+          this.update(id, draft => { draft.status = failure ? 'interrupted' : 'completed'; if (failure) draft.error = failure; });
+        }
         else throw new Error('工作流没有可执行阶段，请检查依赖和阶段状态');
         return;
       }
@@ -365,10 +402,11 @@ export class WorkflowEngine {
         delete current.gateReason; delete current.confirmation;
       });
       let result: WorkflowStageResult;
+      const qualityValidation = this.qualityValidation(run, stage);
       try { result = await this.options.runStage(run.sessionId, this.prompt(run, stage), run.goal, {
         requestId: `workflow:${run.id}:${stage.id}:${stage.attempts + 1}`,
         source: 'workflow', workflowRunId: run.id, stageId: stage.id, attempt: stage.attempts + 1,
-        ...(run.providerId === 'native' && (this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED) ? { nativeExecutionPolicy: { toolPolicy: stage.toolPolicy ?? 'standard' } } : {}),
+        ...(run.providerId === 'native' && (this.options.nativePoliciesEnabled ?? NATIVE_WORKFLOW_POLICIES_ENABLED) ? { nativeExecutionPolicy: { toolPolicy: stage.toolPolicy ?? 'standard', ...(run.collaboration ? { collaboration: run.collaboration } : {}), ...(qualityValidation ? { qualityValidation } : {}) } } : {}),
       }); }
       catch (error) { result = { success: false, summary: '', error: errorText(error) }; }
       if (!result || typeof result.success !== 'boolean' || typeof result.summary !== 'string') {
@@ -392,6 +430,18 @@ export class WorkflowEngine {
         if (receipt || run.providerId === 'native') try { this.update(id, draft => { this.recordReceipt(draft, draft.stages.find(item => item.id === stage.id)!, receipt); }); }
         catch (error) { token.persistenceFailed = true; throw error; }
         return;
+      }
+      if (result.success && qualityValidation) {
+        const failure = workflowQualityFailure(receipt, run.collaboration!, qualityValidation);
+        if (failure) result = { ...result, success: false, error: failure };
+      }
+      if (result.success && !['manual', 'native_task'].includes(stage.gate ?? 'none') && run.stages.every(item => item.id === stage.id || item.status === 'completed')) {
+        const failure = await this.finalQualityFailure(run, qualityValidation ? receipt : undefined);
+        if (token.cancelled) {
+          this.update(id, draft => this.recordReceipt(draft, draft.stages.find(item => item.id === stage.id)!, receipt));
+          return;
+        }
+        if (failure) result = { ...result, success: false, error: failure };
       }
       this.update(id, draft => {
         const current = draft.stages.find(item => item.id === stage.id)!;
@@ -430,7 +480,9 @@ export class WorkflowEngine {
       `用户目标：\n${run.goal}`, `本阶段要求：\n${stage.instruction}`,
       dependencies ? `已完成的前置阶段：\n${dependencies}` : '',
       stage.attempts > 0 ? '这是用户手动发起的再次执行。先核查已有改动与工具结果，避免重复具有副作用的操作。' : '',
-      '保持当前会话的项目与工作目录，遵守现有权限和审批；不要自行跳过审批或另开独立执行任务。完成后明确报告实际产物、验证结果及仍需人工处理的事项。',
+      run.collaboration ? `本工作流协作策略：${run.collaboration}。${run.collaboration === 'single_agent' ? '由当前 Agent 完成本阶段，不创建子 Agent。' : '按可独立开展的问题、代码范围和验证风险选择并解释子任务数量；并发上限仅代表容量，不固定使用 4 个，也不要求填满上限。仅通过宿主委派工具创建子任务；独立质量审查及修复后重验由宿主强制编排，不能用最终文字声明代替。'}` : '',
+      stage.toolPolicy === 'read_only' ? '本阶段为严格只读：只允许读取材料和静态审查，不执行命令、不写入文件；继承的阶段成果仍需核对当前版本。' : '',
+      '保持当前会话的项目与工作目录，遵守现有权限和审批；不要自行跳过审批或绕过宿主启动独立进程、会话或外部 Agent。完成后明确报告实际产物、验证结果及仍需人工处理的事项。',
     ].filter(Boolean).join('\n\n');
   }
 

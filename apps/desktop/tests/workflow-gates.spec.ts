@@ -59,6 +59,7 @@ async function configure(app: ElectronApplication, projectId: string, baseURL: s
 }
 async function create(page: Page, gate: 'manual' | 'native_task') {
   await page.getByLabel('工作流目标', { exact: true }).fill(goal);
+  await page.getByLabel('工作流协作方式', { exact: true }).selectOption('single_agent');
   await page.getByLabel('分析与计划验收门槛', { exact: true }).selectOption(gate);
   await page.getByRole('button', { name: '创建工作流', exact: true }).click();
   const run = page.locator('.workflow-run'); await expect(run).toHaveCount(1);
