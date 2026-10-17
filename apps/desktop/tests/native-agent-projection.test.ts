@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { BeginRunRequest, RunIdentity } from '@cc-desk/agent-core';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { NativeProjection } from '../src/main/engines/native/projection';
-import { loadNativeAgents, nativeAgentReceiptDirectory, NativeAgentProjection } from '../src/main/engines/native/agent-projection';
+import { loadNativeAgents, nativeAgentReceiptDirectory, nativeAgentRuntimePolicy, NativeAgentProjection } from '../src/main/engines/native/agent-projection';
 import { writeAgentReceipt } from '../src/main/engines/native/agent-artifacts';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
 import { ExecutionEvents } from '../src/main/execution/events';
@@ -131,4 +131,41 @@ test('receipt merge keeps a newer callback while durable replay is loading older
   old.record(child); latest.record(complete(child)); old.merge(latest);
   assert.equal(old.snapshot().items[0].status, 'completed'); assert.equal(old.receipts()[0].result!.committed, true);
   latest.record({ ...child, updatedAt: at }); assert.equal(latest.snapshot().items[0].status, 'completed', 'old callbacks cannot regress a terminal state');
+});
+
+test('runtime counts all durable children before display trimming and releases terminal or orphaned children', async t => {
+  const directory = await temporary(t), parent = newIdentity(), batchId = randomUUID();
+  const configuration = { sessionOptions: { maxSubagents: 4, runtimePolicy: 'defaults' }, effectiveSubagentPolicy: { maxSubagents: 12, policySource: 'defaults' } };
+  const projection = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(directory, parent), configuration);
+  for (let index = 0; index < 37; index++) {
+    const value = receipt(directory, parent, { batchId });
+    value.receiptPath = path.join(nativeAgentReceiptDirectory(directory, parent), batchId, value.childId, 'receipt.json');
+    const terminal = index < 32 ? complete(value) : index === 32 ? { ...value, status: 'prepared' as const } : value;
+    await writeAgentReceipt(terminal.receiptPath, terminal); projection.record(terminal);
+  }
+  const live = projection.snapshot(true);
+  assert.equal(live.items.length, 30); assert.equal(live.omitted, 7);
+  assert.deepEqual(live.runtime, { parentRunId: parent.runId, maxSubagents: 12, policySource: 'defaults', total: 37, active: 5,
+    queued: 0, prepared: 1, running: 4, completed: 32, failed: 0, cancelled: 0, unknown: 0 });
+  const loaded = await loadNativeAgents(directory, parent, configuration);
+  assert.equal(loaded.receipts().length, 37); assert.equal(loaded.snapshot().incomplete, undefined);
+  assert.deepEqual(loaded.snapshot(true).runtime, live.runtime);
+  assert.deepEqual(loaded.snapshot().runtime, { ...live.runtime, active: 0, prepared: 0, running: 0, unknown: 5 });
+  live.runtime!.active = 999; assert.equal(projection.snapshot(true).runtime!.active, 5);
+  const active = projection.receipts().filter(value => value.status === 'running');
+  projection.record({ ...active[0], status: 'cancelled', updatedAt: '2026-10-08T01:02:00.000Z' });
+  projection.record({ ...active[1], status: 'failed', updatedAt: '2026-10-08T01:02:00.000Z' });
+  assert.equal(projection.snapshot(true).runtime!.active, 3);
+  assert.equal(projection.snapshot(true).runtime!.cancelled, 1); assert.equal(projection.snapshot(true).runtime!.failed, 1);
+});
+
+test('runtime policy requires a durable explicit limit and never substitutes current defaults for old receipts', () => {
+  for (const value of [undefined, {}, { sessionOptions: {} }, { sessionOptions: { runtimePolicy: 'defaults' } }, { sessionOptions: { runtimePolicy: 'defaults', maxSubagents: 4 } },
+    { sessionOptions: { maxSubagents: 31 } }, { sessionOptions: { maxSubagents: 4.5 } }, { sessionOptions: { maxSubagents: 12, runtimePolicy: 'other' } }])
+    assert.deepEqual(nativeAgentRuntimePolicy(value), {});
+  assert.deepEqual(nativeAgentRuntimePolicy({ sessionOptions: { maxSubagents: 30 } }), { maxSubagents: 30, policySource: 'session' });
+  assert.deepEqual(nativeAgentRuntimePolicy({ sessionOptions: { maxSubagents: 7, runtimePolicy: 'custom' } }), { maxSubagents: 7, policySource: 'session' });
+  assert.deepEqual(nativeAgentRuntimePolicy({ sessionOptions: { maxSubagents: 4, runtimePolicy: 'defaults' }, effectiveSubagentPolicy: { maxSubagents: 12, policySource: 'defaults' } }), { maxSubagents: 12, policySource: 'defaults' });
+  assert.deepEqual(nativeAgentRuntimePolicy({ sessionOptions: { maxSubagents: 4 }, effectiveSubagentPolicy: { maxSubagents: 9, policySource: 'session' } }), { maxSubagents: 9, policySource: 'session' });
+  assert.deepEqual(nativeAgentRuntimePolicy({ sessionOptions: { maxSubagents: 4 }, effectiveSubagentPolicy: { maxSubagents: 31, policySource: 'session' } }), {});
 });

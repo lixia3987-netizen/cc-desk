@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowDownToLine, Check, ChevronRight, Loader2, Play, Plus, RefreshCw, Square, Trash2 } from 'lucide-react';
 import type { Session } from '../shared/types';
-import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED, type WorkflowGate, type WorkflowNativeReceipt, type WorkflowRun, type WorkflowToolPolicy } from '../shared/workflows';
+import { DEFAULT_WORKFLOW_STAGES, NATIVE_WORKFLOW_POLICIES_ENABLED, type WorkflowCollaboration, type WorkflowGate, type WorkflowNativeReceipt, type WorkflowRun, type WorkflowToolPolicy } from '../shared/workflows';
 import { PendingAction, type PendingActionState } from './pending-action';
 import { paintActionFeedback } from './action-feedback';
 import { MessageText } from './MessageText';
 import type { UpdateDraft, WorkflowDraft } from '../shared/panel-drafts';
+import { NativeWorkflowQualityPanel } from './NativeWorkflowQualityPanel';
 
 const labels: Record<string, string> = { draft: '待开始', running: '执行中', paused: '等待继续', waiting_verification: '等待验收', waiting_confirmation: '等待确认', completed: '已完成', failed: '失败', cancelled: '已取消', interrupted: '已中断', pending: '待执行' };
 const gates: Record<WorkflowGate, string> = { none: '执行结束后继续', manual: '人工确认产出', native_task: '检查任务验收条件' };
+const collaborationLabels: Record<WorkflowCollaboration, string> = { adversarial: '独立对抗验证', auto: '按任务自动协作', single_agent: '单 Agent', parallel: '并行协作' };
 
 export function WorkflowReceiptDetails({ receipt }: { receipt: WorkflowNativeReceipt }) {
   return <details><summary>执行成果与验证记录</summary>
@@ -19,6 +21,7 @@ export function WorkflowReceiptDetails({ receipt }: { receipt: WorkflowNativeRec
     {receipt.criteria.length > 0 && <><strong>验收条件</strong><ul>{receipt.criteria.map(criterion => <li key={criterion.id}>{criterion.description}</li>)}</ul></>}
     {receipt.evidence.length > 0 && <><strong>证据引用</strong><ul>{receipt.evidence.map(evidence => <li key={evidence.id}>{evidence.command ? [evidence.command.executable, ...evidence.command.argv].join(' ') : evidence.source === 'manual' ? '人工复核' : '代码位置'} · {evidence.status === 'passed' ? '已确认通过' : evidence.status === 'failed' ? '失败' : evidence.status === 'not_applicable' ? '不适用' : '未验证'}{evidence.exitCode !== undefined ? ` · 退出码 ${evidence.exitCode ?? '未知'}` : ''}{evidence.stale ? ' · 已过期' : ''}{evidence.truncated ? ' · 日志截断' : ''}</li>)}</ul></>}
     {receipt.truncated && <p className="panel-note">成果记录已截断，请结合任务面板和完整执行记录核查。</p>}
+    <NativeWorkflowQualityPanel state={receipt.workflowQuality} compact/>
     <details><summary>任务与执行标识</summary><p className="panel-note">任务：{receipt.taskId ?? '未建立任务计划'}<br />执行：{receipt.identity.runId}</p></details>
   </details>;
 }
@@ -33,6 +36,7 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
   const { goal, pauseAfterEachStage: pause, maxAttempts: attempts, editing, instructions, allRuns } = draft;
   const instruction = instructions[editing] ?? '';
   const native = session.execution.providerId === 'native';
+  const collaboration = draft.collaboration ?? 'adversarial';
   const setInstruction = (value: string) => onDraft(current => ({ ...current, instructions: { ...current.instructions, [editing]: value } }));
   const editStage = (key: string, fallback: string) => onDraft(current => ({ ...current, editing: key, instructions: { ...current.instructions, [key]: current.instructions[key] ?? fallback } }));
   const saveInstruction = async (runId: string, stageId: string) => {
@@ -90,10 +94,15 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
     <div className="workflow-create-view" hidden={!creating}>{session.execution.mode !== 'structured' ? <><p className="panel-note">自动阶段执行需要结构化会话。终端会话可以使用以下提示词。</p><button className="secondary compact full" onClick={() => onTemplate('请完成以下任务：\n\n【填写目标】\n\n按规划、实现、验证三个阶段执行；阅读项目规范，检查当前改动，完成实现并运行相关测试，最后报告结果与剩余问题。')}>添加完整开发提示词</button></> :
       <form className="workflow-create" onSubmit={event => { event.preventDefault(); if (disabled || busy) return; void act(async () => {
         await window.desktop.createWorkflow({ sessionId: session.id, goal, pauseAfterEachStage: pause, maxAttempts: attempts,
+          ...(native ? { collaboration } : {}),
           ...(native || Object.values(draft.stageGates ?? {}).some(value => value !== 'none') ? { stages: stageDefinitions } : {}),
         }); onDraft(current => current.goal === goal ? { ...current, goal: '' } : current); setCreating(false); setShowHistory(false);
       }, '正在创建工作流…', `create:${session.id}`); }}>
         <textarea aria-label="工作流目标" placeholder="这次工作要交付什么？" value={goal} onChange={event => onDraft(current => ({ ...current, goal: event.target.value }))} maxLength={20000} />
+        {native && <><label>协作方式<select aria-label="工作流协作方式" value={collaboration} disabled={busy} onChange={event => onDraft(current => ({ ...current, collaboration: event.target.value as WorkflowCollaboration }))}>
+          {(Object.keys(collaborationLabels) as WorkflowCollaboration[]).map(mode => <option value={mode} key={mode}>{collaborationLabels[mode]}</option>)}
+        </select></label><p className="panel-note">{collaboration === 'adversarial' ? '前期协作主动围绕实现、风险与反例拆分任务。' : collaboration === 'single_agent' ? '由主 Agent 按阶段执行，不要求委派子 Agent。' : collaboration === 'parallel' ? '前期优先并行处理可独立执行的任务；并发上限来自本轮有效会话配置，不要求填满。' : '前期由主 Agent 根据任务决定拆分与协作方式；并发上限是容量，不要求填满。'}</p>
+        {collaboration !== 'single_agent' && <p className="panel-note">交付前由宿主组织独立审阅者、反例检查者和隔离验证者检查。实现任务核对隔离命令回执，只读分析核对静态材料与最终交付正文。发现阻塞问题后修复并重新审查，最多自动审查两轮；人工验收单独记录。</p>}</>}
         {stageDefinitions.map(stage => <div className="workflow-stage" key={stage.id}><div><strong>{stage.title}</strong>
           <label>阶段结束后<select aria-label={`${stage.title}验收门槛`} value={stage.gate} onChange={event => onDraft(current => ({ ...current, stageGates: { ...current.stageGates, [stage.id]: event.target.value as WorkflowGate } }))}>
             <option value="none">{gates.none}</option><option value="manual">{gates.manual}</option>{native && <option value="native_task">{gates.native_task}</option>}
@@ -110,6 +119,8 @@ export function WorkflowPanel({ session, onError, onTemplate, draft, onDraft, di
     {!creating && !refreshing && !actionError && !visibleRuns.length && <p className="panel-note">{showHistory ? '暂无已结束的工作流。' : '暂无正在运行或等待处理的工作流。可新建工作流，按阶段推进任务。'}</p>}
     {!creating && visibleRuns.map(run => <section className="workflow-run" key={run.id}>
       <header><strong>{run.title}</strong><span className={'status-tag ' + (run.status === 'running' ? 'running' : '')}>{labels[run.status] ?? run.status}</span></header><p className="workflow-goal">{run.goal}</p>
+      {run.providerId === 'native' && <p className="panel-note">协作方式：{run.collaboration ? collaborationLabels[run.collaboration] : '旧记录未保存协作策略，保留原阶段执行方式'}。</p>}
+      {run.providerId === 'native' && run.collaboration && run.status === 'paused' && run.stages.every(stage => stage.status === 'completed') && <p className="panel-note">阶段验收已记录；点击“继续”核查最终工作区版本并完成交付。</p>}
       {run.error && <p className="chat-error">{run.error}</p>}
       {run.usage && <p className="panel-note">累计模型请求 {run.usage.modelRequests} · 工具调用 {run.usage.toolCalls} · 执行 {(run.usage.activeMs / 60_000).toFixed(1)} 分钟{!run.usage.complete ? ' · 用量不完整，需核查执行记录' : ''}</p>}
       {run.providerId === 'native' && run.budget && <p className="panel-note">此记录中的旧版工作流累计预算已停用；主 Agent 不再受其限制。</p>}

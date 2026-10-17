@@ -13,11 +13,12 @@ import { SkillRegistry } from '@cc-desk/agent-node/skill-registry';
 import { SkillSnapshotStore } from '@cc-desk/agent-node/skill-snapshots';
 import type { NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import { NativeSkillRuntime, type NativeSkillInheritanceManifest } from '../src/main/engines/native/skill-runtime';
-import { runNativeAgentChild, NativeAgentChildNotStartedError, type NativeAgentChildRunnerOptions } from '../src/main/engines/native/agent-child-runner';
+import { runNativeAgentChild, nativeChildExcludedRoots, NativeAgentChildNotStartedError, type NativeAgentChildRunnerOptions } from '../src/main/engines/native/agent-child-runner';
 import type { NativeAgentChildInput } from '../src/main/engines/native/agent-delegation';
 import { createNativeChildBudget } from '../src/main/engines/native/child-budget';
 import { parseNativeConfig } from '../src/main/engines/native/config';
 import type { NativeWorkerOptions } from '../src/main/engines/native/worker-host';
+import { captureTaskWorkspace } from '../src/main/engines/native/task-evidence';
 // @ts-expect-error Shared local HTTP/SSE fixtures have no TypeScript declarations.
 import { startResponsesFixture, functionCall, assistantMessage } from '../../../packages/agent-node/tests/fixtures/responses-server.mjs';
 // @ts-expect-error Shared local HTTP/SSE fixtures have no TypeScript declarations.
@@ -360,4 +361,86 @@ test('actual recovered child keeps original skill provenance with a fresh identi
   assert.equal(current.records.filter(record => record.event.type === 'tool_completed' && record.event.call.id === 'prior-child-only-read').length, 0);
   assert.equal(current.records.filter(record => record.event.type === 'tool_completed' && record.event.call.id === 'recovered-child-new-read').length, 1);
   assert.equal(f.parentRequests, 1); assert.deepEqual(f.server.errors, []);
+});
+
+async function isolatedQualityInput(f: Awaited<ReturnType<typeof fixture>>, role: 'reviewer' | 'challenger' | 'verifier') {
+  const cwd = path.join(f.dataDirectory, 'native', 'agent-worktrees', randomUUID());
+  await fs.mkdir(path.dirname(cwd), { recursive: true });
+  await fs.cp(f.childRoot, cwd, { recursive: true });
+  const workspace = await captureTaskWorkspace({ projectRoot: cwd, excludedRoots: await nativeChildExcludedRoots(f.dataDirectory, cwd, true) });
+  assert.equal(workspace.complete, true);
+  return f.childInput({ cwd, title: `Independent ${role} with exact guides`, toolPolicy: role === 'verifier' ? 'workspace_verify' : 'read_only',
+    quality: { role, round: 1, snapshotCommit: 'a'.repeat(40), workspaceFingerprint: workspace.fingerprint,
+      deliveryDigest: digest('Actual parent delivery awaiting independent review.'), validationMode: 'commands', materialPaths: ['fixture.txt'], previousFindings: [] } });
+}
+
+for (const role of ['reviewer', 'challenger', 'verifier'] as const) test(`quality ${role} retains exact inherited Skills, can load candidates and submits a host-bound report`, { timeout: 25000 }, async t => {
+  const f = await fixture(t, 'responses', { dynamicParent: true }), input = await isolatedQualityInput(f, role);
+  let step = 0, prematureCommands = 0, approvals = 0;
+  const verify = role === 'verifier', readId = 'quality-complete-material', commandId = 'quality-independent-command';
+  f.setHandler((body, request) => {
+    const tools = (body.tools ?? []).map(tool => tool.name ?? tool.function?.name);
+    assert.ok(tools.includes('submit_quality_report')); assert.ok(tools.includes('load_skill')); assert.ok(tools.includes('list_skills'));
+    for (const name of ['apply_patch', 'delegate_review', 'delegate_implement', 'recover_agent']) assert.equal(tools.includes(name), false);
+    assert.equal(tools.includes('run_command'), verify);
+    const text = instructions(body);
+    assert.equal(text.split(fixedBody).length - 1, 1); assert.equal(text.split(dynamicBody).length - 1, 1);
+    const index = step++;
+    if (index === 0) return f.call('quality-load-optional', 'load_skill', { skillId: f.entries.optional.skillId,
+      catalogRevision: (request.request.configuration.nativeSkillCatalog as any).revision });
+    if (index === 1) { assert.ok(JSON.stringify(body).includes(optionalBody)); return f.call(readId, 'read_file', { path: 'fixture.txt' }); }
+    if (index === 2 && verify) return f.call(commandId, 'run_command', { executable: process.execPath,
+      argv: ['-e', 'const fs=require("node:fs");if(fs.readFileSync("fixture.txt","utf8")!=="original material\\n")process.exit(1);process.stdout.write("actual isolated material check passed")'],
+      cwd: '.', timeoutMs: 10000, maxOutputBytes: 4096 });
+    if (index === (verify ? 3 : 2)) return f.call('quality-submit-real-report', 'submit_quality_report', { verdict: 'passed', reviewedPaths: ['fixture.txt'],
+      limitations: [], findings: [], resolutions: [], verification: { status: verify ? 'executed' : 'not_applicable', commandToolCallIds: verify ? [commandId] : [],
+        reason: verify ? 'Executed the independent check against the isolated material.' : 'Static independent reviewer; command verification belongs to the verifier.' } });
+    assert.equal(index, verify ? 4 : 3); return f.message('Independent actual report and exact guide evidence submitted.');
+  });
+  const result = await runNativeAgentChild(input, { ...f.childOptions, approvals: { request: async request => {
+    approvals++; assert.equal(request.tool.name, 'run_command'); return approved.request(request, input.signal);
+  } }, worker: async request => {
+    if (verify) {
+      await assert.rejects(request.tools.prepare({ id: 'premature-quality-command', name: 'run_command', arguments: JSON.stringify({ executable: process.execPath,
+        argv: ['-e', 'process.stdout.write("must not execute")'], cwd: '.', timeoutMs: 10000, maxOutputBytes: 4096 }) },
+      { identity: input.identity, policyRevision: request.request.policyRevision, signal: request.signal, maxOutputBytes: 65536 }), error => {
+        assert.deepEqual(getToolPreparationFeedback(error), { error: 'skill_precondition_failed', code: 'context_unconfirmed', action: 'continue_model' }); return true;
+      });
+      prematureCommands++;
+    }
+    return f.childOptions.worker!(request);
+  } });
+  assert.equal(result.status, 'completed'); assert.equal(result.committed, true);
+  assert.equal(prematureCommands, verify ? 1 : 0); assert.equal(approvals, verify ? 1 : 0);
+  assert.equal(result.qualityReport?.role, role); assert.deepEqual(result.qualityReport?.identity, input.identity);
+  assert.equal(result.qualityReport?.workspaceFingerprint, input.quality!.workspaceFingerprint);
+  assert.equal(result.qualityReport?.deliveryDigest, input.quality!.deliveryDigest);
+  assert.deepEqual(result.qualityReport?.materialReads, [{ toolCallId: readId, path: 'fixture.txt', fileHash: digest('original material\n') }]);
+  assert.deepEqual(result.qualityReport?.commandReceipts, verify ? [{ toolCallId: commandId, exitCode: 0, successful: true }] : []);
+  const child = await f.readChild(input), run = child.runs[0];
+  assert.equal(child.recovery, null); assert.equal(run.configuration.nativeSkillInheritance !== undefined, true);
+  const initial = run.configuration.initialNativeSkills as any;
+  assert.equal(initial.activations.length, 2); assert.ok(initial.activations.every((activation: any) => activation.origin === 'inherited'
+    && activation.runId === input.identity.runId && !activation.confirmedByResponseId));
+  assert.equal(child.records.filter(row => row.event.type === 'tool_completed' && row.event.call.name === 'submit_quality_report').length, 1);
+  assert.equal(child.records.some(row => row.event.type === 'tool_prepared' && row.event.prepared.call.id === 'premature-quality-command'), false);
+  assert.equal(await fs.readFile(path.join(f.parentRoot, 'fixture.txt'), 'utf8'), 'original material\n');
+  assert.deepEqual(f.server.errors, []);
+});
+
+test('quality verifier rechecks exact Skill source after command approval and cannot execute with changed inherited guidance', async t => {
+  const f = await fixture(t), input = await isolatedQualityInput(f, 'verifier'); let step = 0, approvals = 0;
+  f.setHandler(() => ++step === 1 ? f.call('quality-before-approval-read', 'read_file', { path: 'fixture.txt' }) : step === 2 ? f.call('quality-source-changed-command', 'run_command', {
+    executable: process.execPath, argv: ['-e', 'require("node:fs").writeFileSync("must-not-exist.txt","unsafe")'], cwd: '.', timeoutMs: 10000, maxOutputBytes: 4096,
+  }) : f.message('A source change leaves quality verification unconfirmed.'));
+  const result = await runNativeAgentChild(input, { ...f.childOptions, approvals: { request: async request => {
+    approvals++; await fs.appendFile(path.join(input.cwd, '.agents', 'skills', 'fixed', 'SKILL.md'), '\nChanged during verifier approval.');
+    return approved.request(request, input.signal);
+  } } });
+  assert.equal(approvals, 1); assert.notEqual(result.status, 'completed'); assert.equal(result.qualityReport, undefined);
+  await assert.rejects(fs.stat(path.join(input.cwd, 'must-not-exist.txt')), { code: 'ENOENT' });
+  const child = await f.readChild(input), command = child.records.find(row => row.event.type === 'tool_completed' && row.event.call.id === 'quality-source-changed-command');
+  assert.ok(command); assert.equal(command.event.type, 'tool_completed');
+  if (command.event.type === 'tool_completed') { assert.equal(command.event.result.status, 'failed'); assert.deepEqual(command.event.result.output, { error: 'tool_preconditions_changed', executed: false }); }
+  assert.deepEqual(f.server.errors, []);
 });

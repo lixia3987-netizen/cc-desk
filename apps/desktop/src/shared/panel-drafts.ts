@@ -1,4 +1,4 @@
-import type { WorkflowBudget, WorkflowGate, WorkflowToolPolicy } from './workflows';
+import type { WorkflowBudget, WorkflowCollaboration, WorkflowGate, WorkflowToolPolicy } from './workflows';
 export interface WorkflowDraft {
   goal: string;
   pauseAfterEachStage: boolean;
@@ -8,6 +8,8 @@ export interface WorkflowDraft {
   allRuns: boolean;
   stageGates?: Record<string, WorkflowGate>;
   stageToolPolicies?: Record<string, WorkflowToolPolicy>;
+  /** 缺省兼容旧草稿，Native 创建界面显式采用独立对抗验证。 */
+  collaboration?: WorkflowCollaboration;
   /** @deprecated 兼容旧版草稿；不再提交累计预算。 */
   budget?: WorkflowBudget;
 }

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
-import type { NativeAgentSnapshot, NativeAgentView, NativeAgentResult } from '../shared/chat';
+import type { NativeAgentSnapshot, NativeAgentView, NativeAgentResult, NativeAgentRuntime } from '../shared/chat';
 import { Dialog } from './Dialog';
 import { NativeAgentResultReader, nativeAgentReviewPrompt } from './native-agent-review';
 
 const labels: Record<NativeAgentView['status'], string> = {
-  prepared: '准备中', running: '运行中', completed: '执行已完成', failed: '执行失败', cancelled: '已取消', unknown: '结果未知，待核查',
+  queued: '排队中', prepared: '准备中', running: '运行中', completed: '执行已完成', failed: '执行失败', cancelled: '已取消', unknown: '结果未知，待核查',
 };
 const referenceId = (childId: string, kind: string) => `native-agent-${childId}-${kind}`;
 function revealReference(event: MouseEvent<HTMLAnchorElement>, id: string) {
@@ -32,6 +32,7 @@ function Agent({ agent, loadError, onRead }: { agent: NativeAgentView; loadError
   return <details className="native-agent-entry" data-agent-id={agent.childId} data-agent-status={status}>
     <summary><strong>{agent.title}</strong><span>{agent.mode === 'review' ? '只读审阅' : '隔离实现'}</span><span className={`native-agent-state ${status}`}>{labels[status]}</span></summary>
     <button type="button" className="secondary compact native-agent-read" onClick={onRead}>查看保存成果</button>
+    {agent.status === 'queued' && !loadError && <p className="native-agent-note">等待执行名额，尚未启动，不占活跃并发；空闲后按提交顺序启动。</p>}
     <nav aria-label={`${agent.title}的结果引用`}>{links.map(link => <a key={link.kind} href={`#${referenceId(agent.childId, link.kind)}`}
       onClick={event => revealReference(event, referenceId(agent.childId, link.kind))}>{link.label}</a>)}</nav>
     {agent.missingTerminal && <p className="native-agent-warning">未找到可确认的终局回执，无法确认子 Agent 已停止或成果已完整保存。</p>}
@@ -159,24 +160,35 @@ function ResultDialog({ sessionId, agent, readOnly, onReviewPrompt, onClose }: {
   </Dialog>;
 }
 
-export function NativeAgentPanel({ sessionId, agents, loadError, readOnly = false, onReviewPrompt }: {
-  sessionId: string; agents?: NativeAgentSnapshot; loadError?: string; readOnly?: boolean; onReviewPrompt?: (text: string, parentTaskId: string) => void;
+export function NativeAgentPanel({ sessionId, agents, runtime, loadError, readOnly = false, onReviewPrompt }: {
+  sessionId: string; agents?: NativeAgentSnapshot; runtime?: NativeAgentRuntime; loadError?: string; readOnly?: boolean; onReviewPrompt?: (text: string, parentTaskId: string) => void;
 }) {
   const [expanded, setExpanded] = useState(false), [selection, setSelection] = useState<{ sessionId: string; parentRunId: string; childId: string }>();
   useEffect(() => { setSelection(undefined); setExpanded(false); }, [sessionId, agents?.parentRunId]);
-  if (!agents?.items.length && !agents?.incomplete) return null;
-  const retained = agents.items.slice(0, 30), visible = expanded ? retained : retained.slice(0, 4);
-  const omitted = agents.omitted + Math.max(0, agents.items.length - 30);
-  const selected = selection?.sessionId === sessionId && selection.parentRunId === agents.parentRunId ? retained.find(agent => agent.childId === selection.childId) : undefined;
+  if (!agents?.items.length && !agents?.incomplete && !runtime) return null;
+  const retained = agents?.items.slice(0, 30) ?? [], visible = expanded ? retained : retained.slice(0, 4);
+  const omitted = (agents?.omitted ?? 0) + Math.max(0, (agents?.items.length ?? 0) - 30);
+  const historical = !!runtime && !!agents && runtime.parentRunId !== agents.parentRunId;
+  const selected = selection?.sessionId === sessionId && selection.parentRunId === agents?.parentRunId ? retained.find(agent => agent.childId === selection.childId) : undefined;
   return <section className="native-agent-panel" aria-label="Native Agent 协作">
-    {selected && <ResultDialog key={`${sessionId}:${agents.parentRunId}:${selected.childId}`} sessionId={sessionId} agent={selected} readOnly={readOnly || !!loadError} onReviewPrompt={onReviewPrompt} onClose={() => setSelection(undefined)}/>}
-    <details open><summary>子 Agent（{agents.items.length}）</summary>
+    {runtime && <div className="native-agent-runtime" aria-label="本轮子 Agent 配置" data-parent-run-id={runtime.parentRunId}>
+      <strong>本轮子 Agent</strong>
+      <p>{loadError ? '当前状态未知；以下为上次同步记录。' : <>活跃 {runtime.active} / 有效上限 {runtime.maxSubagents ?? '未记录'} · 任务总数 {runtime.total}</>}</p>
+      <p>策略来源：{runtime.policySource === 'defaults' ? '跟随默认' : runtime.policySource === 'session' ? '此会话单独设置' : '旧记录未保存'} · 本轮开始时固定，已保存的修改在下一轮生效。</p>
+      <p className="native-agent-note">{loadError ? '上次记录：' : ''}排队中 {runtime.queued ?? 0} · 运行中 {runtime.running} · 准备中 {runtime.prepared} · 执行完成 {runtime.completed} · 失败 {runtime.failed} · 取消 {runtime.cancelled} · 未知 {runtime.unknown}</p>
+      <p className="native-agent-note">活跃数仅包含准备中与运行中的任务；排队、完成和取消的任务不占并发。单次可提交最多 30 个任务，空闲后按提交顺序补位。独立质量审查角色在质量面板单独记录。</p>
+    </div>}
+    {selected && agents && <ResultDialog key={`${sessionId}:${agents.parentRunId}:${selected.childId}`} sessionId={sessionId} agent={selected} readOnly={readOnly || !!loadError} onReviewPrompt={onReviewPrompt} onClose={() => setSelection(undefined)}/>}
+    {!!agents && (!!retained.length || agents.incomplete) && <details open><summary>{historical ? '最近一轮子任务记录' : '子 Agent'}（{agents.runtime?.total ?? agents.items.length + agents.omitted}）</summary>
+      {historical && <p className="native-agent-note">以下属于此前执行回合，不计入上方本轮活跃数量。</p>}
+      {agents.runtime && (!runtime || historical) && <p className="native-agent-note">本记录的有效上限：{agents.runtime.maxSubagents ?? '未记录'} · 来源：{agents.runtime.policySource === 'defaults' ? '跟随默认' : agents.runtime.policySource === 'session' ? '此会话单独设置' : '未记录'}。</p>}
+      <p className="native-agent-note">已显示 {visible.length} / {agents.runtime?.total ?? agents.items.length + agents.omitted} 条记录{retained.length > 4 && !expanded ? '，默认折叠为最近 4 条。' : '。'}</p>
       <p className="native-agent-note">子 Agent 执行完成后，结果、命令回执及隔离工作区保留供审阅；任务验收需另行确认。</p>
       {(agents.incomplete || loadError) && <p className="native-agent-warning" role="alert">{loadError ? `当前状态未知：${loadError}。` : '部分子 Agent 记录无法读取或校验。'}请核查保存的执行回执。</p>}
       {visible.map(agent => <Agent key={agent.childId} agent={agent} loadError={loadError} onRead={() => setSelection({ sessionId, parentRunId: agents.parentRunId, childId: agent.childId })}/>)}
       {retained.length > 4 && <button type="button" className="secondary compact native-agent-read" onClick={() => setExpanded(value => !value)}>{expanded ? '仅显示最近 4 项' : `查看全部子 Agent（${retained.length}）`}</button>}
       {omitted > 0 && <p className="native-agent-note">另有 {omitted} 个结果保留在父回合记录中。</p>}
       {omitted > 0 && <Reference id={`native-agent-history-${agents.parentRunId}`} label="父回合子 Agent 记录目录" value={agents.receiptDirectory}/>}
-    </details>
+    </details>}
   </section>;
 }

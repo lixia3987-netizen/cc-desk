@@ -80,7 +80,14 @@ async function migrationBackups(data: string) {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
 }
 
-test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2 choices separately, and retains them through MCP saves and restart without requests', async () => {
+function expectNoExecutionRequests(requests: readonly string[]) {
+  // The existing model-capacity panel may read metadata after a connection is
+  // selected. Only those exact read-only endpoints are allowed: inference POSTs,
+  // MCP traffic and any other request must still fail this assertion.
+  expect(requests.filter(request => request !== 'GET /v1/models/fixture-model' && request !== 'GET /v1/models')).toEqual([]);
+}
+
+test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2 choices separately, and retains them through MCP saves and restart without inference or MCP requests', async () => {
   const f = await workspace([{ schemaVersion: 1, options: { projectSkills: initialPaths, mcpConnections: ['missing-mcp'], maxSubagents: 7 } }]);
   let app = await f.launch();
   try {
@@ -115,7 +122,7 @@ test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2
     const originalWorkspace = await fs.readFile(path.join(f.data, 'workspace.json'), 'utf8');
     const backupName = `workspace.pre-native-skills-v2.${createHash('sha256').update(originalWorkspace).digest('hex')}.json`;
     const backupFile = path.join(f.data, 'native-session-skills', backupName);
-    expect(f.requests).toEqual([]);
+    expectNoExecutionRequests(f.requests);
 
     await page.getByRole('button', { name: '升级技能配置', exact: true }).click();
     const skills = page.getByRole('region', { name: '会话技能配置', exact: true });
@@ -124,10 +131,14 @@ test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2
     expect(await migrationBackups(f.data)).toEqual([backupName]);
     expect(await fs.readFile(backupFile, 'utf8')).toBe(originalWorkspace);
     for (const source of initialPaths) await expect(skills.getByRole('checkbox', { name: source, exact: true })).toBeChecked();
-    expect(f.requests).toEqual([]);
+    expectNoExecutionRequests(f.requests);
 
     await skills.getByRole('button', { name: '读取项目 Skills', exact: true }).click();
-    await skills.getByRole('checkbox', { name: missingPath, exact: true }).uncheck();
+    const missingChoice = skills.getByRole('checkbox', { name: missingPath, exact: true });
+    await expect(missingChoice).toBeChecked();
+    // A missing entry disappears when deselected. Assert that result directly;
+    // uncheck() would re-inspect a checkbox that React has already removed.
+    await missingChoice.click();
     await expect(skills.getByRole('checkbox', { name: missingPath, exact: true })).toHaveCount(0);
     await skills.getByRole('checkbox', { name: additionalPath, exact: true }).check();
     const selected = [availablePath, additionalPath, customPath];
@@ -140,7 +151,10 @@ test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2
 
     const mcp = page.getByRole('region', { name: '会话 MCP 工具', exact: true });
     await mcp.getByRole('button', { name: '读取 MCP 连接', exact: true }).click();
-    await mcp.getByLabel('MCP missing-mcp (missing-mcp)', { exact: true }).uncheck();
+    const missingMcp = mcp.getByLabel('MCP missing-mcp (missing-mcp)', { exact: true });
+    await expect(missingMcp).toBeChecked();
+    await missingMcp.click();
+    await expect(missingMcp).toHaveCount(0);
     await mcp.getByLabel(`MCP Skills 配置 MCP (${configured.id})`, { exact: true }).check();
     await page.locator('.session-config').getByRole('button', { name: '保存配置', exact: true }).click();
     const expected = { ...original, schemaVersion: 2, options: { ...original.options, projectSkills: selected, skills: expectedSkills, mcpConnections: [configured.id] } };
@@ -148,7 +162,7 @@ test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2
     expect(await migrationBackups(f.data)).toEqual([backupName]);
     expect(await fs.readFile(backupFile, 'utf8')).toBe(originalWorkspace);
     await closeSessionSettings(page);
-    expect(f.requests).toEqual([]);
+    expectNoExecutionRequests(f.requests);
 
     await closeNativeApp(app); app = await f.launch(); page = await readyWindow(app);
     await openSessionSettings(page, 'tools');
@@ -160,7 +174,7 @@ test('explicit legacy Skills upgrade preserves missing and custom pins, saves v2
     expect((await page.evaluate(sessionId => window.desktop.nativeSkills.getSessionSkills({ sessionId }), f.sessionIds[0])).policy).toEqual(expectedSkills);
     expect(await migrationBackups(f.data)).toEqual([backupName]);
     expect(await fs.readFile(backupFile, 'utf8')).toBe(originalWorkspace);
-    expect(f.requests).toEqual([]);
+    expectNoExecutionRequests(f.requests);
   } finally { try { await closeNativeApp(app); } finally { await f.dispose(); } }
 });
 

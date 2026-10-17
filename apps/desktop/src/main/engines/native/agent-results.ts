@@ -105,7 +105,7 @@ export async function readNativeAgentResult(dataDirectory: string, parent: RunId
   const receipt = projection.receipts().find(value => value.childId === input.childId);
   if (!receipt) failure(snapshot.incomplete ? 'receipt_invalid' : 'result_not_found');
   const agent = nativeAgentView(receipt, parent);
-  if (['prepared', 'running'].includes(agent.status)) { agent.status = 'unknown'; agent.missingTerminal = true; }
+  if (['queued', 'prepared', 'running'].includes(agent.status)) { agent.status = 'unknown'; agent.missingTerminal = true; }
   const forbidden = options.forbiddenValues ?? [];
   try { assertNoModelCredential(receipt, forbidden); } catch { failure('protected_value'); }
   const result: NativeAgentResult = { agent, goal: receipt.goal, acceptance: 'not_assessed' };

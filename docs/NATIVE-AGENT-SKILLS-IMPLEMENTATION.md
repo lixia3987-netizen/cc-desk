@@ -235,3 +235,22 @@ Windows #24 全部完成后，桌面/PTY 组为 1909 项：1874 通过、3 失�
 新增物理 Electron 用例覆盖真实 IPC 的迁移/精确备份/重启、迟到读取隔离，以及慢保存即时反馈/同帧防重复/ACK 保留后续编辑，并已加入 Windows 必跑命令。发现与导入校验不等于实际 GUI 通过；慢保存附件记录下一次绘制时的反馈状态，不能据此宣称完整性能验收或 p95 达标。本批最终结果以固定候选的正式检查登记为准。
 
 迁移前的完整工作区快照保存在应用数据目录的 `native-session-skills/workspace.pre-native-skills-v2.<内容 SHA>.json`，后续普通保存和技能编辑不会覆盖它。需要回退时应先退出应用并另存当前工作区，再选择包含所需会话的迁移前快照恢复 `workspace.json`；恢复完整快照会回到当时的工作区状态，不能通过删除 v2 字段强行降级。
+
+### M3 第四批 Windows 阻塞诊断与 main 集成
+
+候选 `40212afd6a8aeadc78570533de029256fde58bf8` 的 [Windows #26](https://github.com/lixia3987-netizen/cc-desk/actions/runs/39019861108) 已失败，未合入。独立 CIM 成功；物理 Electron 为 17 项、15 通过、2 失败；桌面全量 1979 项，1946 通过、32 平台条件跳过、1 项因测试超时取消、0 普通失败，进程退出码为 1。三个阻塞分开处理，不称为全部偶发，也不重跑旧候选。
+
+- 新迁移用例误将设置页既有的模型能力 GET `/v1/models/fixture-model` 和 `/v1/models` 当作推理请求；宿主与源码表明它们来自已有只读容量展示。夹具仍记录全部请求，仅此连接配置用例精确允许这两个方法与路径；推理 POST、MCP 和其他请求继续失败。无连接的两项用例仍要求请求数组为空。
+- 后续实际 Linux 窗口验证进一步发现：取消缺失 Skills/MCP 选择会立即移除对应行，Playwright `uncheck()` 点击后的原元素后验检查会等待已卸载元素。改为先验证已勾选、真实点击，再严格验证条目消失；最终保存选择、缺失项移除、原备份字节和重启断言均保持。
+- 旧物理委派用例在 15s 内未看到首个实现审批；trace 中第二个委派响应于发送后 11.959s 就绪，15s 观察结束时父仍在运行，fixture 无错误。缺少父账本/worker 现场，根因未知；保留原 15s，失败时复用先读只读账本与队列、后标记 hydration 快照的有界诊断，采集 2s、附件 1s，不保存正文或凭据。
+- `chat-completions` 图片摘要取消用例触发原 10s 总超时，旧工件未记录等待阶段，无法判定传输、停止、重启或清理中的具体阻塞。保留全部取消、账本及重启不重发断言和原超时；记录固定阶段/耗时/计数，等待摘要时同时识别发送提前终局，超时先中断并关闭夹具挂起连接，清理失败不覆盖原失败。两协议定向 2/2、整文件 34/34 通过；早终局及原 10s 截止故障注入均能报告阶段并自然退出。最后追加的阶段取消检查又经定向 2/2 与独立复核，未据此宣称旧 Windows 根因已修复。
+
+同期整合 `main@b1377d7f59916fabc3690eaeedc7b97eab3e41bb` 的并发可见、独立质量审查及 FIFO 自动补位；解决三处冲突，实际运行配置同时保留 `sessionOptionsSchemaVersion`、`effectiveSubagentPolicy` 与 `nativeWorkflowQualityPolicy`。新增真实执行器回归证明 v2 legacy 完整正文只注入一次，跟随全局 12 并发时记录实际来源，默认改为 30 后冷启动仍展示旧轮 12、旧 request 冲突不重发、新轮才采用 30。相关新旧版本及投影定向组 21/21 通过。
+
+Linux Node v24.19.0、Electron v44.4.3、Xvfb TCP 显示连接的真实物理界面组 25/25 通过，包含三项 Skills 配置、既有原生执行/委派以及新增 main 的工作流质量和排队场景；首个迁移用例单独验证亦通过。该结果不代替新候选的 Windows 验收。Windows 必跑命令已加入质量与任务池用例，原门限未扩大；最终完整本地结果与确切远程候选在本批 PR 单独登记。
+
+新增 Windows 必跑场景还进行了 `core.autocrlf=true` 注入复核，8 项中先复现 3 失败。任务池的实际 `read_file` 回执只差 Git 正常 checkout 的 CRLF，仍是批准的 dirty 内容；独立 Git 临时 index/commit-tree/worktree 实验证明父字节和 index 不变。仅将此夹具的 baseline 文本 CRLF 转为 LF 后精确比较，后续补丁仍绑定真实 raw hash，最终写入、命令、父文件和 index 断言不变。质量用例经真实生产 `prepareAgentBaseline` / `materializeAgentBaseline` / `createAgentWorktree` 路径复现：CRLF 导致固定模型误判 broken/fixed、严格 LF 验证命令失败。该夹具用 `/fixture.txt -text` 明确固定示例字节，继续继承全局 autocrlf；新增读取值白名单断言，避免未知字节被当成通过。未改生产逻辑、全局 Git 设置或超时；相同注入下 8/8 通过。
+
+整合后的完整 `npm run check` 通过：3408 项，3378 通过、30 平台条件跳过、0 失败/取消；contracts 13、engine 44、core 246、node 1016、desktop 2089 项，类型检查与生产构建通过，只有既有 Vite chunk 提示。这轮完整检查早于最后三项 GUI 行尾夹具修正；其后仅调整 GUI fixture，相关最终类型和物理复验另行登记，不将重叠检查累加。生产新版 catalog 入口仍关闭。
+
+最后三项 GUI 夹具修正后，最终桌面类型检查通过；相同 `core.autocrlf=true` 的完整相关物理组 8/8、默认设置下受影响的三项物理用例 3/3 通过。上述结果与原 25 项及完整 check 重叠，分别登记，不相加；新 Windows 候选仍须独立完成全量检查。

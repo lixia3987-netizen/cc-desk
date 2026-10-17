@@ -23,6 +23,8 @@ import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
 import { loadNativeAgents, nativeAgentReceiptDirectory, NativeAgentProjection } from './agent-projection';
 import type { NativeDelegationReceipt } from './agent-delegation';
+import type { NativeWorkflowQualityState } from '@cc-desk/contracts/native-workflow-quality';
+import { loadNativeWorkflowQuality } from './workflow-quality';
 import { reportNativeDiagnostic, type NativeDiagnosticStage } from './diagnostic';
 
 export const MISSING_NATIVE_CONTEXT_MESSAGE = '原始模型记录缺失，此会话只读。已保留展示历史；展示内容不能代替完整模型上下文，请核查备份或新建会话。';
@@ -77,6 +79,8 @@ interface ProjectionEntry {
   pending: ChatApproval[];
   commands?: NativeCommandSnapshot;
   agents?: NativeAgentProjection;
+  currentAgents?: NativeAgentProjection;
+  workflowQuality?: NativeWorkflowQualityState;
   stream?: { identity: AgentEvent['identity']; responseNumber: number; text: string; createdAt: string };
   override?: { taskState: TaskState; error?: string; requestId?: string };
   missingSource?: string;
@@ -426,10 +430,13 @@ export class NativeProjection {
     if (this.isActive(id)) snapshot.taskState = finalState;
     const stream = old.stream && (streamEpochs.get(old.stream.identity.runId) ?? 0) === old.stream.responseNumber && !['completed', 'interrupted', 'error'].includes(finalState) ? old.stream : undefined;
     const terminal = ['completed', 'interrupted', 'error'].includes(finalState);
-    let agents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity) : undefined;
+    let workflowQuality = currentIdentity ? await loadNativeWorkflowQuality({ dataDirectory: this.dataDirectory, identity: currentIdentity }) : undefined;
+    const currentAgents = currentIdentity ? await loadNativeAgents(this.dataDirectory, currentIdentity, configuration) : undefined;
+    let agents = currentAgents;
     // 账本投影等待文件 I/O 时，回执回调可能到达。
     // 发布重建快照时保留这条最新的宿主事实。
     agents?.merge(this.entry(id).agents);
+    agents?.merge(this.entry(id).currentAgents);
     // 继续父任务时不得抹除最后保留的协作记录。
     // 候选项来自当前会话的账本，绝不来自渲染进程路径。
     if (agents && !agents.snapshot().items.length && !agents.snapshot().incomplete) {
@@ -438,7 +445,7 @@ export class NativeProjection {
         (run.tools.some(tool => ['delegate_review', 'delegate_implement'].includes(tool.call.name)) ||
           run.identity.runId === previousAgents?.parent.runId));
       for (const run of candidates) {
-        const retained = await loadNativeAgents(this.dataDirectory, run.identity);
+        const retained = await loadNativeAgents(this.dataDirectory, run.identity, run.configuration);
         retained.merge(this.entry(id).agents);
         const snapshot = retained.snapshot();
         if (snapshot.items.length || snapshot.incomplete) { agents = retained; break; }
@@ -448,8 +455,14 @@ export class NativeProjection {
     // 冷历史和启动/摘要记录仍可能指向上一回合。只有当前请求的 run_started
     // 才能接管宿主启动状态；同时保留文件 I/O 期间到达的最新宿主状态。
     const live = this.entry(id), override = live.override;
+    currentAgents?.merge(live.currentAgents);
+    if (currentAgents && (currentAgents.snapshot().items.length || currentAgents.snapshot().incomplete)) agents = currentAgents;
+    // 质量回执不写入模型上下文；读取期间已发布的新宿主状态不能被旧文件覆盖。
+    const currentQuality = this.entry(id).workflowQuality;
+    if (currentIdentity && currentQuality && (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).every(key => currentQuality.parentIdentity[key] === currentIdentity[key]) &&
+      (!workflowQuality || currentQuality.updatedAt >= workflowQuality.updatedAt)) workflowQuality = clone(currentQuality);
     const pendingOverride = this.isActive(id) && override?.requestId && override.requestId !== currentIdentity?.requestId ? override : undefined;
-    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal && !pendingOverride ? [] : live.pending, stream, commands: projectNativeCommands(records), agents, ...(pendingOverride ? { override: pendingOverride } : {}) });
+    this.entries.set(id, { history, seq: latest.seq, hash: latest.hash, conversationId: store.conversationId, streamEpochs, currentIdentity, currentTerminal, pending: terminal && !pendingOverride ? [] : live.pending, stream, commands: projectNativeCommands(records), agents, currentAgents, workflowQuality, ...(pendingOverride ? { override: pendingOverride } : {}) });
     this.archive.forget(id);
     if (old.seq && old.conversationId === store.conversationId) for (const item of projected) if (item.seq > old.seq) this.journal(id, item.event);
     this.changed(id);
@@ -495,13 +508,23 @@ export class NativeProjection {
   nativeAgent(id: string, receipt: NativeDelegationReceipt): void {
     const entry = this.entry(id), parent = receipt.parentIdentity;
     if (parent.sessionId !== id || entry.currentIdentity && (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => parent[key] !== entry.currentIdentity![key])) throw new Error('子 Agent 不属于当前父回合。');
-    if (!entry.agents || entry.agents.parent.runId !== parent.runId) entry.agents = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(this.dataDirectory, parent));
-    entry.agents.record(receipt); this.changed(id);
+    if (!entry.currentAgents || entry.currentAgents.parent.runId !== parent.runId) entry.currentAgents = new NativeAgentProjection(parent, nativeAgentReceiptDirectory(this.dataDirectory, parent));
+    entry.currentAgents.record(receipt); entry.agents = entry.currentAgents; this.changed(id);
+  }
+  /** 仅接收宿主已保存的质量状态；模型声明不能直接调用此发布入口。 */
+  workflowQuality(id: string, state: NativeWorkflowQualityState): void {
+    const entry = this.entry(id), parent = state.parentIdentity;
+    if (!entry.currentIdentity || parent.sessionId !== id || (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).some(key => parent[key] !== entry.currentIdentity![key])) throw new Error('质量审查不属于当前父回合。');
+    if (path.resolve(state.receiptPath) !== path.resolve(this.dataDirectory, 'native', 'workflow-quality', parent.conversationId, `${parent.runId}.json`)) throw new Error('质量审查回执路径不属于当前父回合。');
+    if (entry.workflowQuality && entry.workflowQuality.updatedAt > state.updatedAt) return;
+    entry.workflowQuality = clone(state); this.changed(id);
   }
 
   snapshot(id: string): ChatSnapshot {
     const entry = this.entry(id);
     const snapshot = clone(entry.history.get(id));
+    // 展示缓存不能提供当前运行策略或自动审查结论，二者只能由宿主账本恢复。
+    delete snapshot.nativeAgentRuntime; delete snapshot.nativeWorkflowQuality;
     if (entry.projectionFailed) snapshot.sourceIncomplete = true;
     if (entry.currentIdentity) snapshot.nativeRun = clone(entry.currentIdentity);
     // 活动条目可能仅因清理未确认或日志失败而保留，
@@ -512,6 +535,9 @@ export class NativeProjection {
     const agents = entry.agents?.snapshot(entry.agents.parent.runId === entry.currentIdentity?.runId &&
       this.isActive(id) && !entry.currentTerminal && !terminalOverride);
     if (agents && (agents.items.length || agents.incomplete)) snapshot.nativeAgents = agents;
+    if (entry.currentAgents && entry.currentAgents.parent.runId === entry.currentIdentity?.runId) snapshot.nativeAgentRuntime =
+      entry.currentAgents === entry.agents ? agents?.runtime : entry.currentAgents.snapshot(this.isActive(id) && !entry.currentTerminal && !terminalOverride).runtime;
+    if (entry.workflowQuality) snapshot.nativeWorkflowQuality = clone(entry.workflowQuality);
     snapshot.pending = clone(entry.pending);
     if (entry.override) { snapshot.taskState = entry.override.taskState; snapshot.error = entry.override.error; }
     else if (entry.pending.length) snapshot.taskState = entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval';

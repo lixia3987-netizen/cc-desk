@@ -9,6 +9,7 @@ import path from 'node:path';
 import { desktopRoot } from './helpers/paths';
 import { electronLaunchArgs } from './helpers/electron-launch';
 import { captureNativeDiagnostics, closeNativeApp } from './helpers/native-app-cleanup';
+import { nativeQueueDiagnosticSources, withNativeQueueDiagnostics } from './helpers/native-queue-diagnostics';
 import { NativeTaskStore } from '@cc-desk/agent-node/task-store';
 import { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import type { NativeDelegationReceipt } from '../src/main/engines/native/agent-delegation';
@@ -424,6 +425,9 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
   const app = await f.launch();
   try {
     const page = await ready(app), session = await configure(page, f.projectId, fixture.baseURL);
+    const initialDiagnostics = nativeQueueDiagnosticSources({ app, page, dataDirectory: f.data, sessionId: session.id, fixture });
+    const initialTiming: Record<string, number | readonly number[] | undefined> = {};
+    const initialClock = performance.now();
     const pending = page.evaluate(id => window.desktop.sendChat(id, '从当前未提交修改快照委派两个独立实现，不自动合并', [], 'multi-implement-request'), session.id);
     let parentCompletion: { settled: boolean; success?: boolean; interrupted?: boolean; error?: string } = { settled: false };
     void pending.then(result => { parentCompletion = { settled: true, success: result.success, interrupted: result.interrupted, error: result.error }; },
@@ -433,12 +437,21 @@ test('physical implementation children inherit an explicit dirty snapshot, appro
       // #21's trace returned a valid approval at send+6.119s, after the generic
       // 5s poll expired. This phase includes worker startup, two responses and
       // the dirty baseline's Git checks; readiness is not a snapshot-I/O timer.
-      await expect.poll(async () => {
-        initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
-          .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
-        if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
-        return initialApprovalId;
-      }, { timeout: 15000 }).toBeTruthy();
+      // Preserve the 15s readiness requirement. When it fails, collect the
+      // parent's bounded journal/process evidence before snapshot hydration;
+      // response-ready timestamps alone cannot identify which host phase stalled.
+      await withNativeQueueDiagnostics(async () => {
+        initialTiming.approvalWaitStartedElapsedMs = performance.now() - initialClock;
+        try {
+          await expect.poll(async () => {
+            initialApprovalId = await page.evaluate(async id => (await window.desktop.chatAttention())
+              .find(item => item.sessionId === id && item.toolName === 'delegate_implement')?.requestId, session.id);
+            if (!initialApprovalId && parentCompletion.settled) throw new Error('Parent settled before delegation approval: ' + JSON.stringify(parentCompletion));
+            return initialApprovalId;
+          }, { timeout: 15000 }).toBeTruthy();
+        } finally { initialTiming.approvalWaitSettledElapsedMs = performance.now() - initialClock; }
+      }, { phase: 'initial-delegation-approval', conversationId: session.execution.conversationId!, sources: initialDiagnostics,
+        timing: initialTiming, attach: (name, options) => test.info().attach(name, options) });
       phase = 'initial_ui_approval';
       const approval = page.getByRole('region', { name: '工具审批' });
       await expect(approval).toHaveAttribute('data-request-id', initialApprovalId!);

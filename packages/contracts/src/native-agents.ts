@@ -8,7 +8,9 @@ export interface NativeAgentView {
   childId: string; batchId: string; taskId: string; parentTaskId: string;
   identity: NativeTaskIdentity; parentIdentity: NativeTaskIdentity; toolCallId: string;
   title: string; mode: 'review' | 'implement';
-  status: 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  status: 'queued' | 'prepared' | 'running' | 'completed' | 'failed' | 'cancelled' | 'unknown';
+  /** 宿主保存的批内任务次序；不是实时队列位置。旧记录可缺失。 */
+  queueIndex?: number;
   createdAt: string; updatedAt: string; cwd: string; receiptPath: string;
   /** 缺少持久化的子任务终态结果；宿主绝不恢复看似仍在运行的工作任务。 */
   missingTerminal?: boolean;
@@ -19,14 +21,28 @@ export interface NativeAgentView {
   evidence?: { taskSnapshotPath?: string; runJournalPath?: string;
     commandReceipts: Array<{ toolCallId: string; status: string; exitCode: number | null; receiptPath: string }> };
 }
+/** 当前父回合的普通委派计数；质量审查角色由 nativeWorkflowQuality 单独记录。 */
+export interface NativeAgentRuntime {
+  parentRunId: string;
+  /** 只从本轮已持久化的有效配置恢复，旧记录缺失时保持未知。 */
+  maxSubagents?: number;
+  policySource?: 'defaults' | 'session';
+  /** 根据全部宿主回执计数，不受面板折叠或三十条展示上限影响。 */
+  total: number; active: number; running: number; prepared: number;
+  /** 尚未取得执行名额，不占活跃并发；旧记录可缺失。 */
+  queued?: number;
+  completed: number; failed: number; cancelled: number; unknown: number;
+}
 export interface NativeAgentSnapshot {
   parentRunId: string;
-  /** 展示最近最多 30 个子任务，优先显示活跃项；实际并发由会话配置限制。 */
+  /** 展示最多 30 个子任务，优先显示活跃项和等待项；实际并发由会话配置限制。 */
   items: NativeAgentView[];
   /** 其他结果保留在父任务运行的回执目录中。 */
   omitted: number; receiptDirectory: string;
   /** 部分已保存记录无法读取或校验。 */
   incomplete?: boolean;
+  /** 始终绑定本快照 parentRunId，历史记录不能借用当前回合配置。 */
+  runtime?: NativeAgentRuntime;
 }
 
 /** 宿主根据账本管理的父任务运行及子任务回执解析所有路径。 */

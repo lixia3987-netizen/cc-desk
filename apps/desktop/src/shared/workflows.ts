@@ -4,6 +4,8 @@ export type WorkflowNativeReceipt = NativeExecutionReceipt;
 export const NATIVE_WORKFLOW_POLICIES_ENABLED = true;
 export type WorkflowGate = 'none' | 'manual' | 'native_task';
 export type WorkflowToolPolicy = 'read_only' | 'standard';
+/** 缺省字段保留旧工作流语义；新 Native 工作流应显式选择协作策略。 */
+export type WorkflowCollaboration = 'auto' | 'single_agent' | 'parallel' | 'adversarial';
 /** @deprecated 仅保留旧版存档和请求兼容；Native 主任务不再使用累计预算。 */
 export interface WorkflowBudget { maxModelRequests: number; maxToolCalls: number; maxActiveMs: number }
 export interface WorkflowUsage { modelRequests: number; toolCalls: number; activeMs: number; recordedExecutionIds: string[]; complete: boolean }
@@ -69,6 +71,7 @@ export interface WorkflowRun extends WorkflowBinding {
   status: WorkflowStatus;
   stages: WorkflowStage[];
   pauseAfterEachStage: boolean;
+  collaboration?: WorkflowCollaboration;
   createdAt: string;
   updatedAt: string;
   error?: string;
@@ -83,6 +86,7 @@ export interface NewWorkflow {
   goal: string;
   stages?: WorkflowStageDefinition[];
   pauseAfterEachStage?: boolean;
+  collaboration?: WorkflowCollaboration;
   /** 包含首次尝试，每次重试都必须由用户明确操作触发。 */
   maxAttempts?: number;
   /** @deprecated 接受旧版客户端请求时忽略此字段。 */

@@ -67,7 +67,7 @@ export function EngineDefaultsGroup({ value, onChange, executors, group, disable
     const fields = engineFieldsForGroup(descriptor, group, config);
     if (!fields.length) return null;
     const controls = configurationSupported(descriptor, config) ? <EngineConfigFields value={config} fields={fields} prefix="默认" disabled={disabled || descriptor.maintenance} onChange={engineConfig => onChange({ ...value, engineDefaults: { ...value.engineDefaults, [descriptor.providerId]: engineConfig } })} /> : <p className="hint">已保存的默认配置版本暂不受支持，原值已保留。</p>;
-    return <div className="settings-engine-defaults" key={descriptor.providerId}><h5>{descriptor.displayName ?? descriptor.providerId}</h5>{group === 'context' && <NativeContextSettingsInfo config={config}/>} {group === 'limits' && descriptor.providerId === 'native' && <p className="hint">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。</p>}{controls}
+    return <div className="settings-engine-defaults" key={descriptor.providerId}><h5>{descriptor.displayName ?? descriptor.providerId}</h5>{group === 'context' && <NativeContextSettingsInfo config={config}/>} {group === 'limits' && descriptor.providerId === 'native' && <><p className="hint">保存后的全局策略用于新会话和选择“跟随默认”的会话，从下一轮开始生效。已有“单独设置”的会话保留各自上限；请切到“当前会话”检查策略来源。</p><p className="hint">主 Agent 不限制执行时长、模型请求次数和工具调用次数。以下预算分别用于每个子 Agent，子任务之间不累计共享。并发上限是容量，实际子 Agent 数量按任务拆分决定。</p></>}{controls}
       {group === 'context' && config.options.inputBudgetMode === 'model' && <p className="hint">自动使用已知模型窗口，并为输出预留空间；窗口未知时采用 {Number(config.options.maxInputTokens ?? 64000).toLocaleString()} tokens 输入上限。实际预算不会超过模型输入限制。</p>}
     </div>;
   })}</>;
