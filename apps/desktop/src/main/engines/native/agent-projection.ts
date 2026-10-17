@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
-import type { RunIdentity } from '@cc-desk/agent-core';
+import { canonicalJson, type JsonValue, type RunIdentity } from '@cc-desk/agent-core';
 import type { NativeAgentSnapshot, NativeAgentView } from '../../../shared/chat';
 import type { NativeDelegationReceipt } from './agent-delegation';
+import { isNativeSkillInheritanceManifest, normalizeNativeSkillInheritanceManifest, type NativeSkillInheritanceManifest } from './skill-inheritance';
 
 const uuid = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 const identifier = z.string().min(1).max(100).regex(/^[a-z0-9-]+$/i);
@@ -29,6 +30,7 @@ const receiptSchema = z.object({ version: z.literal(1), batchId: uuid, childId: 
     sha256: z.string().regex(/^[0-9a-f]{64}$/).optional(), bytes: z.number().int().nonnegative().safe().optional(),
   }).strict().refine(value => (value.sha256 === undefined) === (value.bytes === undefined)).optional(),
   recovery: z.object({ previousChildId: uuid, previousRunId: identifier, attempt: z.number().int().positive(), workspaceOwnerChildId: uuid.optional() }).strict().optional(),
+  nativeSkills: z.custom<NativeSkillInheritanceManifest>(isNativeSkillInheritanceManifest).transform(normalizeNativeSkillInheritanceManifest).optional(),
   result: result.optional(), error: z.string().max(256).optional(),
 }).strict();
 const sameIdentity = (a: RunIdentity, b: RunIdentity) => (['sessionId', 'conversationId', 'runId', 'requestId', 'workerGeneration'] as const).every(key => a[key] === b[key]);
@@ -42,7 +44,8 @@ export function nativeAgentView(receipt: NativeDelegationReceipt, parent: RunIde
   const value = receiptSchema.parse(receipt);
   if (!sameIdentity(value.parentIdentity, parent) || value.identity.sessionId === parent.sessionId || value.identity.conversationId === parent.conversationId || value.identity.runId === parent.runId ||
       value.result && (!sameIdentity(value.result.identity, value.identity) || value.result.taskId !== value.taskId) ||
-      value.workspace && (value.mode !== 'implement' || value.workspace.branch !== `codex/native-agent-${value.recovery?.workspaceOwnerChildId ?? value.childId}`)) throw new Error('Native child receipt identity mismatch.');
+      value.workspace && (value.mode !== 'implement' || value.workspace.branch !== `codex/native-agent-${value.recovery?.workspaceOwnerChildId ?? value.childId}`) ||
+      value.nativeSkills && !sameIdentity(value.nativeSkills.context.parentManifest.identity, parent)) throw new Error('Native child receipt identity mismatch.');
   const view: NativeAgentView = { childId: value.childId, batchId: value.batchId, taskId: value.taskId, parentTaskId: value.parentTaskId,
     identity: structuredClone(value.identity), parentIdentity: structuredClone(parent), toolCallId: value.toolCallId,
     title: value.title, mode: value.mode, status: value.status, createdAt: value.createdAt, updatedAt: value.updatedAt, cwd: value.cwd, receiptPath: value.receiptPath };
@@ -92,6 +95,10 @@ export class NativeAgentProjection {
       evidence.runJournalPath && path.resolve(evidence.runJournalPath) !== expectedJournal || evidence.commandReceipts?.some(command => path.resolve(command.receiptPath) !== expectedJournal))) throw new Error('Native child evidence path changed.');
     const previous = this.items.get(view.childId);
     if (previous && (previous.batchId !== view.batchId || previous.taskId !== view.taskId || !sameIdentity(previous.identity, view.identity))) throw new Error('Native child identity changed.');
+    const previousReceipt = this.retained.get(view.childId);
+    if (previousReceipt && canonicalJson((previousReceipt.nativeSkills ?? null) as unknown as JsonValue) !== canonicalJson((receipt.nativeSkills ?? null) as unknown as JsonValue)) {
+      throw new Error('Native child skill inheritance changed.');
+    }
     if (previous && previous.updatedAt > view.updatedAt) return;
     this.items.set(view.childId, view);
     this.retained.set(view.childId, structuredClone(receipt));

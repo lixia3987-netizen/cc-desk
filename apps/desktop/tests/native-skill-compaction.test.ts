@@ -90,7 +90,7 @@ async function fixture(protocol: Protocol, options: { mode?: Mode; autoCompact?:
   const server = await serverFactory({ assertReplay: false, handler: async ({ body }: { body: WireBody }) => {
     if (!body.tools?.length) { summaries++; return message(summary); }
     requireCompleteContext({ protocol: nativeModelProtocol(protocol), items: contextItems(body) });
-    assert.ok(body.tools.every(tool => !['delegate_review', 'delegate_implement', 'recover_agent'].includes(tool.name ?? tool.function?.name)));
+    for (const name of ['delegate_review', 'delegate_implement', 'recover_agent']) assert.ok(body.tools.some(tool => (tool.name ?? tool.function?.name) === name));
     const index = ordinary++;
     if (index === 0) return call('load-removed', 'load_skill', { skillId: entries.removed.skillId, catalogRevision: catalog.revision });
     if (index === 1) {

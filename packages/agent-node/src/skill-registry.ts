@@ -115,6 +115,13 @@ export class SkillRegistry {
   private cacheBytes = 0;
   constructor(options: SkillRegistryOptions) { this.options = validateOptions(options); }
 
+  /** Trusted-host-only root rebinding; logical source identities and user capabilities stay fixed. */
+  rebindProject(projectRoot: string, excludedRoots: readonly string[] = this.options.excludedRoots ?? []): SkillRegistry {
+    return new SkillRegistry({ ...this.options, projectRoot, excludedRoots: [...excludedRoots],
+      sources: this.options.sources.map(source => ({ ...source,
+        ...(source.explicitPaths === undefined ? {} : { explicitPaths: [...source.explicitPaths] }) })) });
+  }
+
   private async sourceAccess(source: SkillRegistrySource, signal?: AbortSignal): Promise<SourceAccess> {
     throwIfAborted(signal);
     let excludedRoots = this.options.excludedRoots;
