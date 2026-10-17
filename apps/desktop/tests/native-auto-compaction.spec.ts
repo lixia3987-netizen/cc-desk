@@ -20,9 +20,9 @@ const recentGoal = 'AUTO_RECENT_TURN_读取 fixture.txt，保留完整工具调�
 const nextGoal = 'AUTO_NEXT_TASK_沿用历史继续，不重复先前操作。';
 const summaryText = 'AUTO_COMPACTED_HISTORY_前两轮分析已完成，文件没有改动；后续仍遵守最初约束。';
 const automaticAttemptNotice = '本次发送尝试自动压缩。原始记录保留；若未完成，请手动压缩或调整设置后继续。摘要可能产生费用，不会自动重复尝试。';
-// 三个已完成轮次超过 50,000 字节输入预算的 90%。前两个轮次
+// 三个已完成轮次超过 55,000 估算 tokens 输入预算的 90%。前两个轮次
 // 仍可容纳在一个摘要请求中，而最后一个完整轮次可与摘要和下一条指令
-// 一同容纳在预算内，并留有余量。
+// 一同容纳在预算内，并为当前工具定义与系统指令留出低于 90% 的余量。
 const longAnswer = (turn: number) => `AUTO_ORIGINAL_ANSWER_${turn}\n${'x'.repeat(16_000)}`;
 
 async function workspace() {
@@ -74,7 +74,7 @@ async function seedHistory(page: Page, sessionId: string) {
   await send(page, sessionId, recentGoal);
 }
 async function saveAutomaticCompaction(page: Page, sessionId: string, enabled: boolean) {
-  const value = enabled ? 'before_send' : 'off', maxInputTokens = enabled ? 50_000 : 128_000;
+  const value = enabled ? 'before_send' : 'off', maxInputTokens = enabled ? 55_000 : 128_000;
   await openSessionSettings(page, 'compaction');
   await page.getByLabel('会话运行策略来源', { exact: true }).selectOption('custom');
   await page.getByLabel('会话自动压缩', { exact: true }).selectOption(value);
@@ -118,7 +118,7 @@ test('native opt-in auto compaction persists UI settings and sends one summary b
     await openSessionSettings(page, 'compaction');
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toHaveValue('before_send');
     await openSessionSettings(page, 'context');
-    await expect(page.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('50000');
+    await expect(page.getByLabel('会话输入预算（估算 tokens）', { exact: true })).toHaveValue('55000');
     await closeSessionSettings(page);
     await restoreCredential(page);
     expect(fixture.requests).toHaveLength(4);
@@ -158,6 +158,20 @@ test('native opt-in auto compaction persists UI settings and sends one summary b
     expect(JSON.stringify(fixture.requests[6].input)).toContain(summaryText);
     expect(fixture.requests.filter(request => (request.tools as unknown[]).length === 0)).toHaveLength(1);
     expect(fixture.errors).toEqual([]);
+  } catch (error) {
+    const requests = fixture.requests.map((request, index) => {
+      const input = request.input as Array<Record<string, unknown>>;
+      return { index, toolCount: (request.tools as unknown[]).length, inputBytes: Buffer.byteLength(JSON.stringify(input)),
+        toolDefinitionBytes: Buffer.byteLength(JSON.stringify(request.tools)), instructionBytes: Buffer.byteLength(JSON.stringify(request.instructions ?? '')),
+        payloadBytes: Buffer.byteLength(JSON.stringify(request)),
+        lastUser: JSON.stringify(input.filter(item => item.role === 'user').at(-1) ?? null).slice(0, 2048),
+        functionCalls: input.filter(item => item.type === 'function_call').map(item => ({ callId: item.call_id, name: item.name })),
+        resultCallIds: input.filter(item => item.type === 'function_call_output').map(item => item.call_id) };
+    });
+    const file = test.info().outputPath('automatic-compaction-offline-requests.json');
+    await fs.writeFile(file, JSON.stringify({ requests, errors: fixture.errors }, null, 2));
+    await test.info().attach('automatic-compaction-offline-requests.json', { path: file, contentType: 'application/json' });
+    throw error;
   } finally { try { await closeNativeApp(app); await f.dispose(); } finally { await fixture.close(); } }
 });
 

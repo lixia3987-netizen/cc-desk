@@ -198,6 +198,7 @@ export class SharedChatSnapshots {
       state: state => {
         if (!entry.active || this.entries.get(entry.id) !== entry || entry.sync !== sync) return;
         this.publish(entry, { ...entry.view, state, canAutoRefresh: sync.canAutoRefresh });
+        if (!state.loading && state.error) this.retry(entry, state.failures);
       },
     };
     const sync = previous ? previous.fork(ports) : new ChatSnapshotSync(entry.id, ports);
@@ -228,6 +229,16 @@ export class SharedChatSnapshots {
         if (entry.active && this.entries.get(id) === entry && entry.sync.canAutoRefresh) void this.refresh(id);
       }, 80);
     });
+  }
+
+  /** Errors retain stale evidence but must not permanently stop synchronization. */
+  private retry(entry: Entry, failures: number): void {
+    this.clearTimer(entry);
+    const delay = failures <= 1 ? 5_000 : failures === 2 ? 15_000 : 30_000;
+    entry.timer = this.ports.schedule(() => {
+      entry.timer = undefined;
+      if (entry.active && this.entries.get(entry.id) === entry && entry.view.state.error) void this.refresh(entry.id);
+    }, delay);
   }
 
   private clearTimer(entry: Entry): void {

@@ -59,9 +59,10 @@ test('authoritative Native projection binds cold display pages to the current co
     replay.mock.restore();
     const firstPage = await cold.readDisplay(id);
     session.execution.conversationId = randomUUID();
-    for (const options of [{}, { before: firstPage.messages[0].id }, { around: firstPage.messages[0].id }]) {
-      const unavailable = await cold.readDisplay(id, options);
-      assert.deepEqual(unavailable.messages, []); assert.equal(unavailable.incomplete, true);
+    const unavailable = await cold.readDisplay(id);
+    assert.deepEqual(unavailable.messages, []); assert.equal(unavailable.incomplete, true);
+    for (const options of [{ before: firstPage.messages[0].id }, { after: firstPage.messages[0].id }, { around: firstPage.messages[0].id }]) {
+      await assert.rejects(cold.readDisplay(id, options), /会话记录正在更新/);
     }
     await ledger.close(); ledger = await NativeRunStore.open({ rootDirectory: path.join(directory, 'ledgers'), conversationId: session.execution.conversationId });
     await finish(request(session.execution.conversationId, 'new conversation'));

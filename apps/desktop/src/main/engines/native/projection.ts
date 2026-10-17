@@ -44,6 +44,8 @@ export async function renameNativeProjection(source: string, target: string, pla
 const MAX_TEXT = 256 * 1024;
 const MAX_INPUT = 64 * 1024;
 const MAX_PROJECTION = 256 * 1024 * 1024;
+const WRITE_CHUNK_BYTES = 256 * 1024;
+const STREAM_NOTIFY_MS = 50;
 const clone = <T>(value: T): T => structuredClone(value);
 const object = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
 const safeText = (value: unknown): string => typeof value === 'string' ? value : JSON.stringify(value) ?? '';
@@ -91,6 +93,7 @@ interface ProjectionEntry {
 export class NativeProjection {
   private entries = new Map<string, ProjectionEntry>();
   private serial = new Map<string, Promise<void>>();
+  private streamNotifications = new Map<string, { timer: NodeJS.Timeout; conversationId: string }>();
   private missingContext = new Set<string>();
   private archive: ChatArchive;
   private display: ChatDisplayReader;
@@ -119,7 +122,35 @@ export class NativeProjection {
     }
     return entry;
   }
-  private changed(id: string): void { this.events.emit({ type: 'conversation.changed', identity: getSessionIdentity(this.getSession(id)), taskState: this.snapshot(id).taskState }); }
+  private changed(id: string): void {
+    const notification = this.streamNotifications.get(id);
+    if (notification) clearTimeout(notification.timer);
+    this.streamNotifications.delete(id);
+    const entry = this.entry(id);
+    // 通知只需要状态，不能为每个流式片段复制整个有界快照。
+    const taskState = entry.override?.taskState ?? (entry.pending.length
+      ? entry.pending.some(item => item.kind === 'question') ? 'waiting_input' : 'waiting_approval'
+      : entry.history.get(id).taskState);
+    this.events.emit({ type: 'conversation.changed', identity: getSessionIdentity(this.getSession(id)), taskState });
+  }
+  private publishStreamChanged(id: string): void {
+    const notification = this.streamNotifications.get(id);
+    if (!notification) return;
+    clearTimeout(notification.timer);
+    this.streamNotifications.delete(id);
+    if (!this.entries.has(id)) return;
+    const execution = this.getSession(id).execution;
+    // /clear 或引擎切换后，旧流不能借用新对话身份要求界面刷新。
+    if (execution.providerId === 'native' && execution.mode === 'structured' && execution.conversationId === notification.conversationId) this.changed(id);
+  }
+  private streamChanged(id: string, conversationId: string): void {
+    if (this.streamNotifications.has(id)) return;
+    const timer = setTimeout(() => {
+      if (this.streamNotifications.get(id)?.timer === timer) this.publishStreamChanged(id);
+    }, STREAM_NOTIFY_MS);
+    timer.unref?.();
+    this.streamNotifications.set(id, { timer, conversationId });
+  }
   private journal(id: string, event: ChatJournalEvent): void { this.events.emit({ type: 'journal', identity: getSessionIdentity(this.getSession(id)), event }); }
 
   hydrate(id: string, store: NativeRunStore): Promise<void> {
@@ -388,12 +419,19 @@ export class NativeProjection {
     try {
       const handle = await fsp.open(temporary, 'wx', 0o600);
       try {
+        let chunk: string[] = [], chunkBytes = 0;
         for (const { seq, event } of projected) {
           const line = JSON.stringify({ nativeSchemaVersion: 1, conversationId: store.conversationId, nativeSeq: seq, ...event }) + '\n';
-          bytes += Buffer.byteLength(line);
+          const lineBytes = Buffer.byteLength(line);
+          bytes += lineBytes;
           if (bytes > MAX_PROJECTION) throw new Error('Native 展示记录超过磁盘预算。');
-          await handle.writeFile(line);
+          if (chunkBytes && chunkBytes + lineBytes > WRITE_CHUNK_BYTES) {
+            await handle.writeFile(chunk.join(''));
+            chunk = []; chunkBytes = 0;
+          }
+          chunk.push(line); chunkBytes += lineBytes;
         }
+        if (chunkBytes) await handle.writeFile(chunk.join(''));
         diagnosticStage = 'sync';
         await handle.sync();
       } finally {
@@ -421,7 +459,7 @@ export class NativeProjection {
       catch (error) { reportNativeDiagnostic('other', error); throw error; }
     }
     const history = this.history();
-    const snapshot = history.get(id);
+    const snapshot = history.loadProjection(id, projected.map(item => item.event), bytes);
     // 派生尾页仅改善展示；失配或缺失时读侧退回有界日志尾部，不影响权威投影。
     try { await writeDisplaySidecar(this.directory, id, store.conversationId, displayPage(snapshot.messages, !!snapshot.truncated, !!snapshot.sourceIncomplete)); }
     catch { /* 缓存发布失败不能改变已提交的展示日志或执行回执。 */ }
@@ -561,7 +599,7 @@ export class NativeProjection {
     if (event.type !== 'text_delta' || entry.currentTerminal) return;
     if (!entry.stream || entry.stream.identity.runId !== event.identity.runId) entry.stream = { identity: clone(event.identity), responseNumber: entry.streamEpochs.get(event.identity.runId) ?? 0, text: '', createdAt: new Date().toISOString() };
     entry.stream.text = (entry.stream.text + event.text).slice(0, MAX_TEXT);
-    this.changed(id);
+    this.streamChanged(id, event.identity.conversationId);
   }
   approval(id: string, approval: ChatApproval | undefined): void {
     const entry = this.entry(id);
@@ -576,7 +614,13 @@ export class NativeProjection {
     entry.override = { taskState, ...(error ? { error } : {}), ...(requestId ? { requestId } : {}) };
     this.journal(id, { type: 'state', taskState, ...(error ? { error } : {}) }); this.changed(id);
   }
-  flush(): void { for (const entry of this.entries.values()) entry.history.flush(); }
-  forget(id: string): void { this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); this.display.forget(id); }
+  flush(): void {
+    for (const id of this.streamNotifications.keys()) this.publishStreamChanged(id);
+    for (const entry of this.entries.values()) entry.history.flush();
+  }
+  forget(id: string): void {
+    this.publishStreamChanged(id);
+    this.entries.get(id)?.history.flush(); this.entries.delete(id); this.archive.forget(id); this.display.forget(id);
+  }
   exportPath(id: string): string { this.validId(id); this.flush(); return path.join(this.directory, `${id}.jsonl`); }
 }

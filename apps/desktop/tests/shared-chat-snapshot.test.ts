@@ -340,3 +340,50 @@ test('fresh failures throw instead of returning cached authority and explicit re
     f.reads[4].result.resolve(snapshot('session', 11)); await settle();
   } finally { f.close(); }
 });
+
+test('failed active snapshots retry at 5s, 15s and 30s without notifications and recover their authority', async () => {
+  const f = fixture();
+  try {
+    f.store.acquire('session', 'context');
+    const initial = f.store.refresh('session');
+    f.reads[0].result.resolve(snapshot('session', 1)); await initial; await settle();
+    const failed = f.store.refresh('session');
+    f.reads[1].result.reject(new Error('temporarily unavailable')); await failed; await settle();
+    assert.equal(f.store.get('session').snapshot?.version?.revision, 1);
+    f.emit('session', version(3)); f.advance(4_999); assert.equal(f.reads.length, 2);
+    f.advance(1); assert.equal(f.reads.length, 3);
+    f.reads[2].result.reject(new Error('still unavailable')); await settle();
+    assert.equal(f.store.get('session').canAutoRefresh, false, 'fast notification retries remain paused');
+    f.emit('session', version(4)); f.advance(14_999); assert.equal(f.reads.length, 3);
+    f.advance(1); assert.equal(f.reads.length, 4, 'a passive retry survives the two-failure threshold');
+    f.reads[3].result.reject(new Error('unavailable again')); await settle();
+    f.advance(29_999); assert.equal(f.reads.length, 4);
+    f.advance(1); assert.equal(f.reads.length, 5);
+    f.reads[4].result.resolve(snapshot('session', 6)); await settle();
+    assert.equal(f.store.get('session').state.failures, 0);
+    assert.equal(f.store.get('session').state.error, undefined);
+    assert.equal(f.store.get('session').canAutoRefresh, true);
+    assert.equal(f.store.get('session').snapshot?.version?.revision, 6);
+    f.advance(60_000); assert.equal(f.reads.length, 5, 'successful authority cancels the retry chain');
+    f.emit('session', version(7)); f.advance(80); assert.equal(f.reads.length, 6);
+    f.reads[5].result.resolve(snapshot('session', 8)); await settle();
+  } finally { f.close(); }
+});
+
+test('pending passive retries are cancelled when their last consumer leaves or their context is removed', async () => {
+  const f = fixture();
+  try {
+    const release = f.store.acquire('session', 'context');
+    const failure = f.store.refresh('session');
+    f.reads[0].result.reject(new Error('unavailable')); await failure; await settle();
+    assert.equal(f.timers.size, 1);
+    release(); assert.equal(f.timers.size, 0);
+    f.advance(60_000); assert.equal(f.reads.length, 1);
+    f.store.acquire('session', 'context'); f.advance(200);
+    f.reads[1].result.reject(new Error('still unavailable')); await settle();
+    assert.equal(f.timers.size, 1);
+    f.store.retain([]); assert.equal(f.timers.size, 0);
+    f.advance(60_000); assert.equal(f.reads.length, 2);
+    assert.equal(f.store.get('session').snapshot, undefined);
+  } finally { f.close(); }
+});

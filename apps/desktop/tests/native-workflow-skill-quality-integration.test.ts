@@ -38,7 +38,9 @@ test('one parent workflow quality round freezes Skills once while all three inde
   await fs.writeFile(path.join(project, '.gitattributes'), '/.agents/skills/engineering/SKILL.md -text\n/fixture.txt -text\n');
   await fs.writeFile(skillPath, '---\nname: engineering\ndescription: Exact independent quality engineering guide.\n---\nINHERITED_QUALITY_GUIDE Preserve unrelated files and cite actual material evidence.\n');
   await fs.writeFile(path.join(project, 'fixture.txt'), 'actual quality material\n');
-  for (const args of [['init'], ['config', 'user.name', 'Local workflow fixture'], ['config', 'user.email', 'fixture@example.invalid'], ['add', '.'], ['commit', '-m', 'fixture baseline']]) await exec('git', args, { cwd: project });
+  // Strict Skill inheritance compares exact source bytes; system autocrlf must
+  // not rewrite this fixture's LF files when the child worktrees are checked out.
+  for (const args of [['init'], ['config', 'core.autocrlf', 'false'], ['config', 'user.name', 'Local workflow fixture'], ['config', 'user.email', 'fixture@example.invalid'], ['add', '.'], ['commit', '-m', 'fixture baseline']]) await exec('git', args, { cwd: project });
   const id = randomUUID(), projectId = randomUUID(), conversationId = randomUUID();
   const registry = () => new SkillRegistry({ projectId, projectRoot: project, excludedRoots: [data], sources: [
     { id: 'project-agents', scope: 'project', kind: 'project-agents', rootPath: '.agents/skills', enabled: true, revision: 1 },
