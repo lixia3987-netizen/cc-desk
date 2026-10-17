@@ -37,7 +37,8 @@ export function sameEngineDefaults(left: Settings['engineDefaults'], right: Sett
 }
 
 export function configurationSupported(descriptor: ExecutionDescriptor | undefined, config: EngineConfig): boolean {
-  return !!descriptor && config.schemaVersion > 0 && (!descriptor.configuration || descriptor.configuration.schemaVersion === config.schemaVersion);
+  return !!descriptor && config.schemaVersion > 0 && (!descriptor.configuration ||
+    (descriptor.configuration.supportedSchemaVersions ?? [descriptor.configuration.schemaVersion]).includes(config.schemaVersion));
 }
 
 export function executionUnavailable(descriptor: ExecutionDescriptor | undefined, session: Session): string | undefined {

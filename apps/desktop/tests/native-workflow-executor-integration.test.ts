@@ -12,7 +12,7 @@ import { StateStore } from '../src/main/store';
 import { ExecutionEvents } from '../src/main/execution/events';
 import { ConnectionStore } from '../src/main/engines/native/connections';
 import { NativeStructuredExecutor, type NativeExecutorOptions } from '../src/main/engines/native/structured-executor';
-import { createNativeConfig } from '../src/main/engines/native/config';
+import { createNativeConfig, normalizeNativeLegacySkillPolicy, readNativeRunConfig } from '../src/main/engines/native/config';
 import { parseNativeExecutionPolicy } from '../src/main/engines/native/execution-policy';
 
 type WorkerOptions = Parameters<NonNullable<NativeExecutorOptions['worker']>>[0];
@@ -28,19 +28,26 @@ const toolResponse = (id: string, name: string, input: unknown): ModelResponse =
 
 async function fixture(t: TestContext, options: {
   policy?: 'defaults' | 'custom' | 'legacy'; sessionMax?: number; defaultMax?: number; instructions?: string;
+  configVersion?: 1 | 2;
   beforeWorker?: (options: WorkerOptions) => Promise<void>;
   generate?: (request: GenerateRequest, worker: WorkerOptions) => Promise<ModelResponse>;
 } = {}) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-workflow-executor-policy-'));
   const project = path.join(directory, 'project'), data = path.join(directory, 'data');
   await fs.mkdir(project); await fs.writeFile(path.join(project, 'file.txt'), 'actual local material\n');
+  const projectSkills = options.configVersion === 2 ? ['guides/SKILL.md'] : [];
+  if (projectSkills.length) {
+    await fs.mkdir(path.join(project, 'guides'));
+    await fs.writeFile(path.join(project, projectSkills[0]), '---\nname: legacy-policy-regression\n---\nV2_LEGACY_GUIDE Preserve actual local evidence.\n');
+  }
   if (options.instructions) await fs.writeFile(path.join(project, 'AGENTS.md'), options.instructions);
   const store = new StateStore(data), connections = new ConnectionStore(data);
   const connection = connections.import({ name: 'workflow policy fixture', protocol: 'responses', authHeader: 'authorization', baseURL: 'https://example.invalid/v1',
     model: 'fixture', enabled: true, allowLoopbackHttp: false, auth: { mode: 'memory' } }, { mode: 'memory', secret: 'sk-workflow-policy-private' });
   const id = randomUUID(), conversationId = randomUUID(), projectId = randomUUID(), now = new Date().toISOString();
-  const config = options.policy === 'legacy' ? { schemaVersion: 1, options: { connectionId: connection.id } } : createNativeConfig({ schemaVersion: 1,
-    options: { connectionId: connection.id, permissionMode: 'bypassPermissions', runtimePolicy: options.policy ?? 'defaults', maxSubagents: options.sessionMax ?? 4 } });
+  const config = options.policy === 'legacy' ? { schemaVersion: 1, options: { connectionId: connection.id } } : createNativeConfig({ schemaVersion: options.configVersion ?? 1,
+    options: { connectionId: connection.id, permissionMode: 'bypassPermissions', runtimePolicy: options.policy ?? 'defaults', maxSubagents: options.sessionMax ?? 4,
+      ...(options.configVersion === 2 ? { projectSkills, skills: normalizeNativeLegacySkillPolicy(projectSkills) } : {}) } });
   store.change(state => {
     state.projects.push({ id: projectId, name: 'integration fixture', path: project, createdAt: now });
     state.settings.engineDefaults.native = createNativeConfig({ schemaVersion: 1, options: { maxSubagents: options.defaultMax ?? 12 } });
@@ -66,10 +73,15 @@ async function fixture(t: TestContext, options: {
         } },
     });
   };
-  const executor = new NativeStructuredExecutor(store, connections, new ExecutionEvents(), { worker });
+  let executor = new NativeStructuredExecutor(store, connections, new ExecutionEvents(), { worker });
   await executor.initialize();
   t.after(async () => { await executor.shutdown(); store.flush(); await fs.rm(directory, { recursive: true, force: true }); });
-  return { id, store, executor, calls, data, project,
+  return { id, store, get executor() { return executor; }, calls, data, project,
+    async restart() {
+      await executor.shutdown();
+      executor = new NativeStructuredExecutor(store, connections, new ExecutionEvents(), { worker });
+      await executor.initialize();
+    },
     async ledger() {
       const ledger = await NativeRunStore.open({ rootDirectory: path.join(data, 'native', 'conversations'), conversationId });
       try { return { runs: ledger.listRuns(), records: ledger.replay() }; } finally { await ledger.close(); }
@@ -132,6 +144,50 @@ test('ordinary direct workflow input registers host quality validation and persi
     assert.deepEqual((await f.ledger()).runs[0].configuration.nativeWorkflowQualityPolicy, { collaboration, validationMode });
     assert.equal(f.calls.length, 1, 'refusing the parent completion never fabricates successful quality children');
   }
+});
+
+test('v2 legacy workflow keeps its config version, effective defaults and quality policy together across restart', async t => {
+  const f = await fixture(t, { configVersion: 2, policy: 'defaults', sessionMax: 4, defaultMax: 12 });
+  const requestId = randomUUID(), input = '使用workflow，分析这个文档';
+  const result = await f.executor.send(f.id, input, [], undefined, { requestId });
+  assert.equal(result.success, false, 'a fixture refusal cannot become independent quality acceptance');
+  assert.equal(f.calls.length, 1);
+  assert.equal(typeof f.calls[0].completionValidation?.validate, 'function');
+  const first = (await f.ledger()).runs[0];
+  assert.equal(first.configuration.sessionOptionsSchemaVersion, 2);
+  assert.deepEqual(first.configuration.effectiveSubagentPolicy, { maxSubagents: 12, policySource: 'defaults' });
+  assert.deepEqual(first.configuration.nativeWorkflowQualityPolicy, { collaboration: 'auto', validationMode: 'static' });
+  const savedConfig = readNativeRunConfig(first.configuration);
+  assert.equal(savedConfig.schemaVersion, 2);
+  assert.equal(savedConfig.options.maxSubagents, 12);
+  assert.deepEqual(savedConfig.options.skills, normalizeNativeLegacySkillPolicy(['guides/SKILL.md']));
+  assert.deepEqual(savedConfig.options.projectSkills, ['guides/SKILL.md']);
+  assert.match(String(first.configuration.modelInstructions), /---\nname: legacy-policy-regression\n---\nV2_LEGACY_GUIDE Preserve actual local evidence\./);
+  const repeated = await f.executor.send(f.id, input, [], undefined, { requestId });
+  assert.equal(repeated.success, false);
+  assert.deepEqual(repeated.nativeReceipt?.identity, first.identity);
+  assert.equal(f.calls.length, 1, 'the unchanged v2 request reads its original receipt without another model call');
+
+  // New defaults must not relabel this historical turn or replace its saved v2 policy.
+  f.store.change(state => { state.settings.engineDefaults.native = createNativeConfig({ schemaVersion: 1, options: { maxSubagents: 30 } }); });
+  await f.restart();
+  const snapshot = f.executor.snapshot(f.id);
+  assert.equal(snapshot.nativeRun?.runId, first.identity.runId);
+  assert.equal(snapshot.nativeAgentRuntime?.maxSubagents, 12);
+  assert.equal(snapshot.nativeAgentRuntime?.policySource, 'defaults');
+  assert.ok(snapshot.context?.budget, 'v2 saved options must still produce a budget after cold projection hydration');
+  assert.notEqual(snapshot.nativeWorkflowQuality?.status, 'passed');
+  assert.deepEqual((await f.ledger()).runs[0], first, 'restart cannot rewrite the original run configuration');
+  const duplicate = await f.executor.send(f.id, input, [], undefined, { requestId });
+  assert.equal(duplicate.success, false);
+  assert.match(duplicate.error ?? '', /此提交标识已用于不同的输入或配置/);
+  assert.equal(f.calls.length, 1, 'changed defaults reject reuse of an old request without another model call');
+
+  assert.equal((await f.executor.send(f.id, 'Inspect the next project state.')).success, true);
+  const next = (await f.ledger()).runs[1];
+  assert.equal(next.configuration.sessionOptionsSchemaVersion, 2);
+  assert.deepEqual(next.configuration.effectiveSubagentPolicy, { maxSubagents: 30, policySource: 'defaults' });
+  assert.equal(next.configuration.nativeWorkflowQualityPolicy, undefined);
 });
 
 test('legacy host policies and unquoted repository instructions cannot activate ordinary-chat workflow quality', async t => {

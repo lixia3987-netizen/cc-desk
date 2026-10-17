@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { NATIVE_PERMISSION_MODES } from '../../shared/native-permissions';
 import { changeNativePermissionForNextTurn } from '../native-session-permission';
+import { assertNativeSkillConfigChangeAllowed } from '../engines/native/skill-config-guard';
 import type { EngineConfig, Session } from '../../shared/types';
 import { engineConfigSchema, idSchema, panelDraftsSchema } from '../../shared/schema';
 import type { StateStore } from '../store';
@@ -99,6 +100,7 @@ export function registerSessionHandlers(handle: Register, ports: SessionPorts): 
       if (ports.runtime.has(session.id)) throw new Error('终端模式请停止会话后修改启动配置。');
       await ports.manage(session.id, async () => {
         const validated = ports.validateConfig(session.id, engineConfig);
+        if (session.execution.providerId === 'native') assertNativeSkillConfigChangeAllowed(ports.session(session.id).engineConfig, validated);
         if (input.archived && ports.chat.has(session.id)) await ports.chat.stopIdle(session.id);
         if (session.execution.mode === 'structured') {
           // 提供方提交每项已确认变更；不能用请求中的旧视图

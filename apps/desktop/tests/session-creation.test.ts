@@ -14,6 +14,7 @@ import { execFileAsync } from '../src/main/commands';
 import { worktreeInfo } from '../src/main/git';
 import type { TerminalExecutor } from '../src/main/execution/ports';
 import type { NewSession, Session } from '../src/shared/types';
+import { createNativeConfig, normalizeNativeLegacySkillPolicy } from '../src/main/engines/native/config';
 
 function fixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccdesk-session-creation-'));
@@ -57,6 +58,20 @@ function fixture() {
   return { root, projectPath, projectId, store, creation, input, register,
     dispose: async () => { try { await service.shutdown(); } finally { fs.rmSync(root, { recursive: true, force: true }); } } };
 }
+
+test('Native creation cannot bypass explicit Skills migration through input or saved defaults', async () => {
+  const f = fixture(); f.register('native');
+  const config = createNativeConfig({ schemaVersion: 2, options: { projectSkills: [], skills: normalizeNativeLegacySkillPolicy([]) } });
+  try {
+    await assert.rejects(f.creation.create(f.input({ providerId: 'native', engineConfig: config, isolated: true })), /创建后.*Skills/);
+    f.store.change(state => { state.settings.engineDefaults.native = structuredClone(config); });
+    await assert.rejects(f.creation.create(f.input({ providerId: 'native', isolated: true })), /原默认配置已保留/);
+    assert.deepEqual(f.store.state.settings.engineDefaults.native, config);
+    assert.equal(f.store.state.sessions.length, 0);
+    assert.equal(f.creation.pending(f.projectId), false);
+    assert.deepEqual(fs.readdirSync(f.projectPath), []);
+  } finally { await f.dispose(); }
+});
 
 test('session creation accepts opaque provider identities while Claude alone requires UUIDs', async () => {
   const f = fixture();

@@ -17,7 +17,7 @@ import { ChatHistory } from '../../chat-history';
 import { ChatArchive } from '../../chat-archive';
 import { ChatDisplayReader, displayPage, writeDisplaySidecar } from '../../chat-display-reader';
 import type { ExecutionEvents } from '../../execution/events';
-import { parseNativeConfig } from './config';
+import { parseNativeConfig, readNativeRunConfig } from './config';
 import { nativeModelBudget, nativeModelCapabilityUsage } from './model-budget';
 import { nativeRunError, nativeModelFailureMessage } from './run-errors';
 import { projectNativeCommands, snapshotNativeCommands } from './command-projection';
@@ -360,13 +360,15 @@ export class NativeProjection {
     }
     const modelContext = store.loadContext();
     if (configuration && modelContext) {
-      const options = parseNativeConfig({ schemaVersion: 1, options: object(configuration.sessionOptions) ? configuration.sessionOptions : {} });
       const instructions = typeof configuration.modelInstructions === 'string' ? configuration.modelInstructions : '';
       const definitions = Array.isArray(configuration.toolDefinitions) ? configuration.toolDefinitions as unknown as ToolDefinition[] : [];
       const model = typeof configuration.model === 'string' ? configuration.model : undefined;
       const modelCapabilities = model ? nativeModelCapabilityUsage(configuration.modelCapabilities, model) : undefined;
       let budget;
-      try { budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: nativeModelBudget(options, modelCapabilities?.capabilities).maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }); }
+      try {
+        const options = parseNativeConfig(readNativeRunConfig(configuration));
+        budget = contextBudgetUsage(modelContext, estimateNativeInputTokens(modelContext, instructions, definitions), { maxInputTokens: nativeModelBudget(options, modelCapabilities?.capabilities).maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes });
+      }
       catch { /* 未知协议记录仍可读取，不虚构预算。 */ }
       projected.push({ seq: latest.seq, event: { type: 'context', context: {
         ...(model ? { model, requestModel: model } : {}),

@@ -65,10 +65,14 @@ export class SessionCreation {
         options: { ...freshDefaults.options, inputBudgetMode: 'model', ...savedDefaults?.options, runtimePolicy: 'defaults' },
       };
     }
+    const engineConfig = this.services.execution.defaultConfig(providerId, mode, configured);
+    if (providerId === 'native' && engineConfig.schemaVersion !== 1) {
+      throw new Error('新建会话暂时保留兼容配置；请创建后通过会话 Skills 设置升级。原默认配置已保留。');
+    }
     const session: Session = {
       id, projectId: project.id, ...title, cwd: sourcePath, kind: input.kind, execution,
       started: !!execution.imported,
-      engineConfig: this.services.execution.defaultConfig(providerId, mode, configured),
+      engineConfig,
       taskState: 'idle', draft, status: 'idle', archived: false, createdAt: now, updatedAt: now,
     };
     this.services.execution.validateSession(session);

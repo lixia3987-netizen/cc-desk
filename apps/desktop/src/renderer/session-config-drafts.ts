@@ -1,4 +1,5 @@
 import type { EngineConfig, JsonValue } from '../shared/execution';
+import { NativeSessionSkillsDraftStore } from './native-session-skills-drafts';
 
 export interface SessionConfigDraft {
   readonly value: EngineConfig;
@@ -32,14 +33,18 @@ export class SessionConfigDraftStore {
   private readonly entries = new Map<string, SessionConfigDraft>();
   private readonly listeners = new Set<() => void>();
   private revision = 0;
+  readonly nativeSkills = new NativeSessionSkillsDraftStore(() => {
+    this.revision += 1;
+    for (const listener of this.listeners) listener();
+  });
   readonly subscribe = (listener: () => void): (() => void) => {
     this.listeners.add(listener);
     return () => { this.listeners.delete(listener); };
   };
   readonly getRevision = (): number => this.revision;
   get(sessionId: string): SessionConfigDraft | undefined { return this.entries.get(sessionId); }
-  hasDirty(): boolean { return [...this.entries.values()].some(draft => draft.dirty); }
-  dirtySessionIds(): string[] { return [...this.entries].filter(([, draft]) => draft.dirty).map(([id]) => id); }
+  hasDirty(): boolean { return [...this.entries.values()].some(draft => draft.dirty) || this.nativeSkills.dirtySessionIds().length > 0; }
+  dirtySessionIds(): string[] { return [...new Set([...this.entries].filter(([, draft]) => draft.dirty).map(([id]) => id).concat(this.nativeSkills.dirtySessionIds()))]; }
 
   private publish(sessionId: string, draft: SessionConfigDraft): void {
     this.entries.set(sessionId, draft);
@@ -90,7 +95,7 @@ export class SessionConfigDraftStore {
 
   async save(sessionId: string, write: (config: EngineConfig) => Promise<void>): Promise<void> {
     const current = this.entries.get(sessionId);
-    if (!current || !current.dirty || current.busy || current.conflict) return;
+    if (!current || !current.dirty || current.busy || current.conflict || this.nativeSkills.get(sessionId)?.saving) return;
     const submitted = structuredClone(current.value);
     this.publish(sessionId, { ...current, busy: true, saved: false });
     try {

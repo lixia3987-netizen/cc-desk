@@ -392,11 +392,11 @@ test('migration refuses unsupported or malformed config without rewriting or dis
   }
 });
 
-test('M1 migration previews cannot be executed through the production Native configuration parser', () => {
+test('migration preview can be validated as legacy v2 without enabling catalog or mutating the source session', () => {
   const config: EngineConfig = { schemaVersion: 1, options: { projectSkills: ['tools/review/SKILL.md'] } };
   assert.doesNotThrow(() => parseNativeConfig(config));
   const preview = previewNativeSkillMigration(config);
   assert.equal(preview.runtimeEnabled, false);
-  assert.throws(() => parseNativeConfig(preview.proposed), /不支持此 native 配置版本/);
+  assert.deepEqual(parseNativeConfig(preview.proposed).skills, preview.proposed.options.skills);
   assert.equal(config.schemaVersion, 1);
 });

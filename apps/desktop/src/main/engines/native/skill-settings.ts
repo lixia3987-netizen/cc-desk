@@ -11,7 +11,7 @@ import { parseNativeConfig } from './config';
 
 export interface NativeSkillsSettingsView {
   settings: NativeSkillsSettings;
-  /** M1 仅提供来源设置与迁移预览，绝不授权新的运行链路。 */
+  /** 来源设置本身不授权 catalog 运行链路。 */
   runtimeEnabled: false;
   error?: string;
 }
@@ -204,7 +204,7 @@ export interface NativeSkillMigrationPreview {
   legacyPins: Array<Extract<NativeSkillPin, { kind: 'legacy' }>>;
 }
 
-/** 纯预览：不读取项目文件、不检查缺失、不写回工作区，M1 不能用于运行或保存 v2。 */
+/** 纯预览：不读取项目文件、不检查缺失、不写回工作区；实际迁移必须另经 CAS 和备份保存。 */
 export function previewNativeSkillMigration(config: EngineConfig): NativeSkillMigrationPreview {
   if (config.schemaVersion !== 1 || !config.options || typeof config.options !== 'object' || Array.isArray(config.options) || Object.hasOwn(config.options, 'skills')) {
     throw new NativeSkillSettingsError('migration_invalid', '仅可预览有效 Native v1 会话的 Skills 迁移。');
