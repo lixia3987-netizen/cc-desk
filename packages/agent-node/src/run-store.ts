@@ -299,7 +299,6 @@ function validateCall(call: ToolCall): void {
 }
 function validateConfiguration(value: unknown): void {
   if (!object(value)) fail('invalid_record', 'Configuration must be a JSON object');
-  if (Object.hasOwn(value, 'nativeSkills') && !isNativeSkillSubmission(value.nativeSkills)) fail('invalid_record', 'Invalid Native skill submission');
   for (const [key, item] of Object.entries(value)) {
     if (SECRET_FIELD.test(key)) fail('secret_rejected', 'Credential fields cannot enter a run configuration');
     const visit = (child: unknown): void => {
@@ -527,6 +526,7 @@ export class NativeRunStore implements RunStore {
       text(request.inputDigest, 'input digest', 256); text(request.policyRevision, 'policy revision', 256);
       validateContext({ protocol: request.protocol, items: request.userItems });
       validateConfiguration(request.configuration);
+      if (Object.hasOwn(request.configuration, 'nativeSkills') && !isNativeSkillSubmission(request.configuration.nativeSkills)) fail('invalid_record', 'Invalid Native skill submission');
       if (event.payloadDigest !== payloadDigest(request)) fail('payload_mismatch', 'Submission payload digest mismatch');
       if (this.runs.has(identity.runId) || this.submissions.has(identity.requestId)) fail('payload_mismatch', 'Duplicate run or submission in journal');
       for (const [requestId, startups] of this.startups) {

@@ -296,3 +296,18 @@ test('run configuration refuses malformed skill references before journal admiss
   await f.reopen();
   assert.equal(f.store.listRuns().length, 0);
 });
+
+test('nested MCP tool schema and business fields named nativeSkills retain their original JSON meaning', async t => {
+  const f = await fixture(t), req = runRequest(f.conversationId);
+  req.configuration.toolDefinitions = [{ name: 'mcp_fixture', risk: 'command', description: 'A business payload',
+    inputSchema: { type: 'object', properties: { nativeSkills: { type: 'string' } }, required: ['nativeSkills'] } }];
+  req.configuration.mcpMetadata = { nativeSkills: 'ordinary provider metadata' };
+  const launch = startup(req, { metadata: { nativeSkills: 'ordinary startup metadata' } });
+  await f.store.prepareStartup(launch);
+  assert.equal((await f.store.beginRun(req)).kind, 'accepted');
+  const result = await finish(f.store, req);
+  await f.store.closeStartup(req.identity, launch.startupId);
+  await f.reopen();
+  assert.deepEqual((await f.store.beginRun(req)).result, result);
+  assert.deepEqual(f.store.listRuns()[0].configuration, req.configuration);
+});
