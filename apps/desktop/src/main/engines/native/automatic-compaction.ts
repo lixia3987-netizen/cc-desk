@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { canonicalJson, contextBudgetUsage, DEFAULT_RUN_BUDGET, type JsonValue, type ModelContext, type RunIdentity, type UserImage } from '@cc-desk/agent-core';
-import { nativeSubmissionInputDigest, type NativeRunStore } from '@cc-desk/agent-node/run-store';
+import { nativeSubmissionInputDigest, type NativeRunStore, type ContextCompactionSource } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { contextSummaryItem } from '@cc-desk/agent-node/context-maintenance';
+import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
+import { conversationSkillContinuityItems, readConversationSkillContinuityEvidence, type ConversationSkillContinuitySection } from '@cc-desk/agent-node/skill-continuity';
 import type { NativeImageAttachment } from '@cc-desk/contracts/chat';
 import type { NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
 import type { parseNativeConfig } from './config';
@@ -32,6 +34,12 @@ export async function autoCompactBeforeSend(options: {
   model: NativeModelOptions; instructions: string; signal: AbortSignal;
   forbiddenValues?: readonly (string | undefined)[];
   startedAt: number; assertOwnership(): Promise<void>; onCompacting(): void; onCommitted(): Promise<void>;
+  /** Historical guides stay exact without becoming this turn's activations. */
+  skills?: {
+    prepare(retainedContext: ModelContext): Promise<ConversationSkillContinuitySection | undefined>;
+    /** Check the current turn's instruction sources as well as historical CAS data. */
+    assertCurrent?(): Promise<void>;
+  };
   worker?: typeof runNativeWorker;
   /** 主 Agent 无累计调用/时长上限，摘要请求仍保留自身的传输超时。 */
   unlimited?: boolean;
@@ -59,19 +67,50 @@ export async function autoCompactBeforeSend(options: {
   if (contextBudgetUsage(minimum, estimator.estimateInputUsage?.(minimum, config.maxOutputTokens) ?? estimator.estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
     throw new Error('本次新输入、项目指令与工具定义已超过运行预算，未调用自动摘要；请减少输入、所选工具或调整预算。');
   }
-  let source;
+  let source: ContextCompactionSource;
   try { source = ledger.getCompactionSource(); }
   catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'nothing_to_compact') return { compacted: false, remainingRequests };
     throw error;
   }
   if (previous || ledger.getAutoCompactionForCurrentContext()) throw blocked();
+  const prepareSkills = async (retainedContext: ModelContext) => {
+    if (!options.skills && readConversationSkillContinuityEvidence(ledger, retainedContext)) {
+      throw new Error('历史技能的精确保留尚未准备完成，未替换原始上下文。');
+    }
+    const section = await options.skills?.prepare(retainedContext);
+    if (section) assertNoModelCredential(section, [model.apiKey, ...(options.forbiddenValues ?? [])]);
+    return section === undefined ? undefined : structuredClone(section);
+  };
+  const nativeSkills = await prepareSkills(source.retainedContext);
+  const assertSkillsCurrent = async (retainedContext: ModelContext) => {
+    await options.skills?.assertCurrent?.();
+    const latestSkills = await prepareSkills(retainedContext);
+    if (canonicalJson((latestSkills ?? null) as unknown as JsonValue) !== canonicalJson((nativeSkills ?? null) as unknown as JsonValue)) {
+      throw new Error('摘要期间技能依据已变化，未替换原始上下文。');
+    }
+    // Historical CAS reads may await I/O after the caller's source check.
+    // Reconfirm ownership before reserving or dispatching a summary.
+    await options.assertOwnership();
+  };
+  // Match the ledger planner's native wire order: original goal, summary,
+  // historical exact guides, then the retained complete suffix.
+  const replacement = (summary: string) => ({ ...source.retainedContext, items: [
+    ...source.retainedContext.items.slice(0, source.retainedPrefixItems),
+    contextSummaryItem(summary, source.retainedContext.protocol),
+    ...(nativeSkills ? conversationSkillContinuityItems(nativeSkills, source.retainedContext.protocol) : []),
+    ...source.retainedContext.items.slice(source.retainedPrefixItems),
+  ] });
   // 图片会固定从其首次出现轮次开始的全部后续内容。即使最短的
   // 摘要也必须与这些后续内容、当前输入、指令及工具一起落在额度内。
-  const retainedMinimum = pendingNativeContext({ ...source.retainedContext,
-    items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] }, input, model, images);
+  const retainedMinimum = pendingNativeContext(replacement('摘要'), input, model, images);
   if (contextBudgetUsage(retainedMinimum, estimator.estimateInputUsage?.(retainedMinimum, config.maxOutputTokens) ?? estimator.estimateInputTokens(retainedMinimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
     throw new Error('必须保留的上下文、本次输入、项目指令与工具定义已超过运行预算，未调用自动摘要；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
+  }
+  // Initial guide bodies may not have appeared in the old model context. If
+  // exact retention already prevents any shrinkage, no paid summary can help.
+  if (nativeSkills && Buffer.byteLength(JSON.stringify(replacement('_'))) >= source.beforeBytes) {
+    throw new Error('精确保留历史技能后上下文已无法缩小，未调用自动摘要；请提高预算或新建会话。');
   }
   prepareNativeContextSummary({ context: source.context, model, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, forbiddenValues: options.forbiddenValues });
   if (!options.unlimited && config.maxModelRequests < 2) throw new Error('自动压缩需要为摘要和本次任务各保留一次请求；请提高模型请求次数上限，或关闭自动压缩后重新发送。');
@@ -79,11 +118,13 @@ export async function autoCompactBeforeSend(options: {
   if (remainingMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');
   options.onCompacting();
   await options.assertOwnership();
+  await assertSkillsCurrent(source.retainedContext);
   const reservation = await ledger.reserveAutoCompaction({ requestId: identity.requestId, inputDigest, configurationDigest, expectedHash: source.expectedHash });
   if (reservation.kind !== 'reserved') throw blocked();
   // 预留操作本身会推进日志；计划只能绑定推进后的日志头。
   source = ledger.getCompactionSource();
   await options.assertOwnership();
+  await assertSkillsCurrent(source.retainedContext);
   const summaryMs = options.unlimited ? 60_000 : Math.floor(config.maxActiveMs - (performance.now() - options.startedAt));
   if (summaryMs < 1) throw new Error('本次执行时长预算已耗尽，未调用自动摘要。');
   const result = await summarizeNativeContext({ identity: { ...identity, runId: randomUUID(), requestId: `auto-compact:${identity.requestId}` },
@@ -98,7 +139,11 @@ export async function autoCompactBeforeSend(options: {
     throw new Error('摘要期间上下文已变化，未替换原始历史。');
   }
   source = latestSource;
-  const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: source.expectedHash, usage: result.usage, automaticRequestId: identity.requestId });
+  await assertSkillsCurrent(source.retainedContext);
+  assertNativeInputBudget(replacement(result.summary), input, options.instructions, config, model, images);
+  await options.assertOwnership();
+  const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: source.expectedHash, usage: result.usage, automaticRequestId: identity.requestId,
+    ...(nativeSkills ? { nativeSkills } : {}) });
   await ledger.commitContextCompaction(plan);
   await options.onCommitted();
   await options.assertOwnership();

@@ -60,6 +60,7 @@ import { buildNativeParentInstructions, NATIVE_DELEGATION_PROMPT_VERSION, native
 import { nativeDelegationAuditFailure, saveNativeDelegationAudit } from './agent-delegation-audit';
 import { reportNativeDiagnostic } from './diagnostic';
 import { normalizeNativeSkillSubmission, type NativeSkillSubmission } from '@cc-desk/contracts/native-skills';
+import { conversationSkillContinuityItems } from '@cc-desk/agent-node/skill-continuity';
 import type { NativeSkillRuntime } from './skill-runtime';
 
 const RECOVERY = '上次执行的副作用或保存状态尚未确认。已保留原始记录，请核查工作目录、进程及远端 MCP 操作；此会话只读，请新建会话继续。';
@@ -234,7 +235,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   }
   private async refreshProjection(id: string, ledger: NativeRunStore, bestEffortDisplay = false) {
     const runs = ledger.listRuns();
-    if (runs.some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) this.skillContinuityBlocked.add(id);
+    if (!this.options.skills && runs.some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) this.skillContinuityBlocked.add(id);
     else this.skillContinuityBlocked.delete(id);
     this.agentResultParents.set(id, new Map(runs.filter(run => run.identity.sessionId === id &&
       run.identity.conversationId === this.session(id).execution.conversationId).map(run => [run.identity.runId, structuredClone(run.identity)])));
@@ -384,9 +385,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
     const runtimeConfig = view ? active?.runtimeConfig ?? operation?.runtimeConfig ?? this.runtimeConfig(this.session(id).engineConfig) : undefined;
     if (this.recovery.has(id)) snapshot.nativeRecovery = { ...(recovery ?? { status: 'blocked', headHash: view?.headHash ?? '', tools: { completed: 0, notExecuted: 0, unknown: 0 } }), ...(this.acknowledged.has(id) ? { status: 'acknowledged' as const } : {}), reason: this.recoveryMessage(id) };
     const skillsContinuityBlocked = this.skillContinuityBlocked.has(id);
-    const skillInRunMaintenance = Boolean(this.options.skills && active?.identity && runtimeConfig?.autoCompact === 'before_send_and_during_run');
-    const automaticMode = skillInRunMaintenance ? 'during_run' as const
-      : this.options.skills || skillsContinuityBlocked ? 'off' as const : runtimeConfig?.autoCompact ?? 'off';
+    const automaticMode = skillsContinuityBlocked ? 'off' as const : runtimeConfig?.autoCompact ?? 'off';
     if (view) snapshot.nativeContextMaintenance = { ...view, canCompact: view.canCompact && !this.has(id) && !this.recovery.has(id) && !skillsContinuityBlocked,
       preview: this.recovery.has(id) ? { status: 'unavailable', reason: 'recovery_required' }
         : skillsContinuityBlocked ? { status: 'unavailable', reason: 'unsupported_context' }
@@ -473,8 +472,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       await this.hydration.get(id);
       this.assertActive(id, active);
       const session = this.session(id), requestedConfig = active.runtimeConfig;
-      // The internal skill path now supports in-run maintenance. Pre-send,
-      // manual, cross-turn and delegated continuity remain separately gated.
+      // Internal Skills support fresh turns and exact context maintenance.
+      // Delegated inheritance remains separately gated.
       const boundedConfig = requestedConfig;
       let config = boundedConfig;
       const optionsDigest = digest(active.options + (active.executionPolicy ? canonicalJson(json(active.executionPolicy)) : '') + (active.nativeSkills ? canonicalJson(json(active.nativeSkills)) : ''));
@@ -507,9 +506,8 @@ export class NativeStructuredExecutor implements StructuredExecutor {
         result = { success: false, summary: '', error: '此提交已尝试启动本地 MCP 服务，不会重复启动。请重新发送新任务。' };
       } else {
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error(RECOVERY);
-      // M2 is internal-only: a later new turn cannot silently drop prior active
-      // skill constraints before M3 implements full version continuity.
-      if (ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) throw new Error('新版技能会话的跨回合连续性尚未开放，请新建会话；原提交仍可查询回执。');
+      const hasHistoricalSkills = ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined);
+      if (hasHistoricalSkills && !this.options.skills) throw new Error('当前执行器尚未启用新版技能连续性，不能继续此会话；原提交仍可查询回执。');
       this.changed(id, 'starting');
       const connection = this.connections.resolve(config.connectionId, config.model || undefined);
       const capabilitySnapshot = await this.options.modelCapabilities?.resolve(connection, { timeoutMs: 3000 });
@@ -541,7 +539,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       let instructions = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
       this.assertActive(id, active);
       const assertOwnership = async () => { this.assertActive(id, active); await this.options.assertOwnership?.(id, identity); this.assertActive(id, active); };
-      const skillRun = await this.options.skills?.createRun({ sessionId: id, identity, submission: active.nativeSkills, signal: active.abort.signal,
+      const skillRun = await this.options.skills?.createRun({ sessionId: id, identity, submission: active.nativeSkills, signal: active.abort.signal, hasHistoricalSkills,
         baseInstructionBytes: 2 + Buffer.byteLength(buildNativeParentInstructions({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text })),
         forbiddenValues, assertOwnership, canActivate: () => {
           if (active.approval || active.cleanupUnconfirmed) return false;
@@ -747,7 +745,16 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       for (const secret of forbiddenValues) assertNoModelCredential({ input: active.input, instructions: modelInstructions, tools: tools.definitions, context: ledger.loadContext() }, secret);
       const automatic = await autoCompactBeforeSend({ ledger, identity, input: active.input, images: active.images, imageAttachments: active.imageAttachments,
         ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}),
-        config: skillRun ? { ...config, autoCompact: 'off' } : config, model, instructions: modelInstructions, forbiddenValues,
+        config, model, instructions: modelInstructions, forbiddenValues,
+        ...(skillRun ? { skills: {
+          prepare: retainedContext => this.options.skills!.prepareConversationContinuity(id, ledger, retainedContext, active.abort.signal, forbiddenValues),
+          assertCurrent: async () => {
+            await skillRun.assertInitialCurrent();
+            const current = await loadProjectInstructions({ projectRoot: session.cwd, excludedRoots: [this.store.directory], projectSkills: config.projectSkills }, active.abort.signal);
+            if (current.digest !== instructions.digest) throw new Error('摘要期间项目指令或 Skills 已改变，未替换原始上下文。');
+            await assertOwnership();
+          },
+        } } : {}),
         signal: active.abort.signal, startedAt, assertOwnership, worker, unlimited: true,
         onCompacting: () => { active.phase = 'compacting'; this.changed(id, 'thinking'); },
         onCommitted: () => this.refreshProjection(id, ledger) });
@@ -795,7 +802,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       this.changed(id, 'starting');
       await skillRun?.assertInitialCurrent();
       const run = await worker({
-        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n') }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}), ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated }, initialNativeSkills: skillRun.tools.snapshot(), effectiveAutoCompact: config.autoCompact === 'before_send_and_during_run' ? 'during_run' : 'off' } : {}), ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
+        request: { identity, input: active.input, diagnosticPurpose: 'normal', diagnosticInstructionSections: nativePromptInstructionSections({ permissionInstructions: nativePermissionInstructions(config.permissionMode), projectInstructions: instructions.text, projectRules: projectInstructionText(instructions.sources.filter(source => !source.path.endsWith('/SKILL.md'))), skills: [projectInstructionText(instructions.sources.filter(source => source.path.endsWith('/SKILL.md'))), skillRun?.initialInstructions].filter(Boolean).join('\n\n') }), ...(active.images.length ? { images: json(active.images) } : {}), policyRevision, modelRetry: config.modelRetry, configuration: json({ ...(active.imageAttachments.length ? { imageAttachments: active.imageAttachments } : {}), connectionId: connection.connectionId, connectionRevision: connection.revision, protocol: connection.protocol, baseURL: connection.baseURL, model: connection.model, ...(connection.pricing ? { pricing: connection.pricing } : {}), sessionOptions: requestedConfig, ...(active.nativeSkills ? { nativeSkills: active.nativeSkills } : {}), ...(skillRun ? { nativeSkillCatalog: { revision: skillRun.catalogRevision, entries: skillRun.catalog.entries.map(({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format }) => ({ skillId, sourceId, relativePath, sourceRevision, sourceFingerprint, metadataHash, format })), truncated: skillRun.catalog.truncated }, initialNativeSkills: skillRun.tools.snapshot(), effectiveAutoCompact: config.autoCompact } : {}), ...(active.executionPolicy ? { nativeExecutionPolicy: active.executionPolicy } : {}), ...(modelCapabilities ? { modelCapabilities } : {}), effectiveBudget: { maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens }, ...(active.continuedTaskId ? { continuedTaskId: active.continuedTaskId } : {}), nativeTaskId: active.taskId, delegationPromptVersion: NATIVE_DELEGATION_PROMPT_VERSION, delegationIntent: nativeParallelReviewIntent(active.input), modelInstructions, toolDefinitions: tools.definitions, mcpConnections: mcpMetadata, adapterVersion: 1, instructions: instructions.sources.map(({ path: sourcePath, scope, hash }) => ({ path: sourcePath, scope, hash })) }), budget: { unlimited: true, maxModelRequests: config.maxModelRequests, maxToolCalls: config.maxToolCalls, maxActiveMs, maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens } },
         model: { ...model, instructions: modelInstructions }, forbiddenValues,
         tools, store: durable, approvals: { request: async (request, signal) => {
           const resume = activePause.pause();
@@ -817,6 +824,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
               run: ledger.listRuns().find(item => sameRun(item.identity, identity)), issues: this.taskErrors.has(id) ? [this.taskErrors.get(id)!] : [] });
           }, ...(skillRun ? { skills: {
             prepare: retainedContext => skillRun.prepareContinuity(ledger, retainedContext),
+            prepareHistorical: retainedContext => this.options.skills!.prepareConversationContinuity(id, ledger, retainedContext, active.abort.signal, forbiddenValues, identity.runId),
             onCommitted: (seq, section) => skillRun.tools.observeContextReplacement(seq, section.manifest),
           } } : {}),
           onCompacting: async () => { active.phase = 'compacting_in_turn'; this.changed(id, 'thinking'); await this.refreshProjection(id, ledger); },
@@ -911,6 +919,9 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       image_context_compaction_unsupported: '仅可压缩首张图片所在轮次之前的完整纯文本历史，当前没有这样的历史，未调用摘要模型；请提高输入预算或新建会话，原始图片和记录保持不变。',
       unsupported_protocol: '记录包含暂不支持压缩或恢复的协议内容，原始记录保持不变。',
       stale_context: '上下文记录已改变，请刷新后重试。',
+      skill_snapshot_unavailable: '历史技能的精确版本快照缺失或损坏，未替换上下文。请核查技能快照与原始记录；不会自动重试摘要。',
+      invalid_skill_evidence: '技能历史的版本或持久回执无法核验，未替换上下文。请核查原始记录。',
+      invalid_skill_continuity: '完整技能历史无法在连续性限制内核验或保留，未替换上下文。请核查版本与输入预算，或新建会话。',
       limit_exceeded: '本地记录达到容量限制，请检查数据目录；压缩不会删除原始记录或释放账本空间。',
     };
     if (typeof code === 'string' && contextErrors[code]) return contextErrors[code];
@@ -1135,7 +1146,6 @@ export class NativeStructuredExecutor implements StructuredExecutor {
   compactContext(id: string, expectedHead: string): Promise<void> {
     return this.contextOperation(id, 'compact', expectedHead, async operation => {
       let ledger = operation.store!;
-      if (ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) throw new Error('新版技能的压缩连续性尚未开放，当前会话不能压缩；原始上下文保持不变。');
       const previousCompaction = ledger.getLastCompaction();
       if (previousCompaction?.expectedHash === expectedHead) return;
       // 手动摘要诊断推进日志头后，提交计划绑定的是诊断后的头。
@@ -1144,6 +1154,7 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       if (previousCompaction && priorDiagnostic?.hash === previousCompaction.expectedHash && priorDiagnostic.event.type === 'model_request_diagnostic' &&
           priorDiagnostic.event.diagnostic.purpose === 'summary_manual' && priorDiagnostic.event.diagnostic.phase === 'finished' &&
           priorDiagnostic.event.diagnostic.outcome === 'completed' && priorDiagnostic.event.diagnostic.identity.requestId === `compact:${expectedHead}`) return;
+      if (!this.options.skills && ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.nativeSkills !== undefined)) throw new Error('当前执行器尚未启用新版技能连续性，不能压缩此会话；原始上下文保持不变。');
       if (ledger.recoveryRequired || this.recovery.has(id)) throw new Error('请先核查恢复状态，再压缩上下文。');
       const source = ledger.getCompactionSource();
       if (source.expectedHash !== expectedHead) throw new Error('上下文已改变，请刷新后重新压缩。');
@@ -1158,10 +1169,23 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const previous = ledger.listRuns().at(-1)?.configuration;
       if (previous && (previous.connectionId !== connection.connectionId || previous.model !== connection.model || previous.baseURL !== connection.baseURL || (previous.protocol ?? 'responses') !== connection.protocol)) throw new Error('已有上下文绑定原服务、协议与模型。切换服务、协议或模型请新建会话。');
       const model = { protocol: connection.protocol, authHeader: connection.authHeader, baseURL: connection.baseURL, model: connection.model, apiKey: connection.apiKey, allowLoopbackHttp: connection.allowLoopbackHttp };
+      const historicalSkills = await this.options.skills?.prepareConversationContinuity(id, ledger, source.retainedContext, operation.abort.signal, [connection.apiKey]);
+      this.assertContextOperation(id, operation);
+      const replacement = (summary: string) => ({ ...source.retainedContext, items: [
+        ...source.retainedContext.items.slice(0, source.retainedPrefixItems), contextSummaryItem(summary, source.retainedContext.protocol),
+        ...(historicalSkills ? conversationSkillContinuityItems(historicalSkills, source.retainedContext.protocol) : []),
+        ...source.retainedContext.items.slice(source.retainedPrefixItems),
+      ] });
+      const estimator = createNativeModel(model);
+      const withinBudget = (context: ReturnType<typeof replacement>) => contextBudgetUsage(context,
+        estimator.estimateInputUsage?.(context, config.maxOutputTokens) ?? estimator.estimateInputTokens(context),
+        { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status !== 'exceeded';
       // 手动维护没有当前任务或工具目录。此处检查保留的
       // 上下文本身；发送时连同规则重新检查完整请求。
-      const minimum = { ...source.retainedContext, items: [...source.retainedContext.items, contextSummaryItem('摘要', source.retainedContext.protocol)] };
-      if (contextBudgetUsage(minimum, createNativeModel(model).estimateInputTokens(minimum), { maxInputTokens: config.maxInputTokens, maxContextBytes: DEFAULT_RUN_BUDGET.maxContextBytes }).status === 'exceeded') {
+      if (historicalSkills && Buffer.byteLength(JSON.stringify(replacement('_'))) >= source.beforeBytes) {
+        throw new Error('完整技能历史与必须保留的上下文已无法缩小，未请求摘要；请调整预算或新建会话。');
+      }
+      if (!withinBudget(replacement('摘要'))) {
         throw new Error('必须保留的上下文已超过运行预算，未调用摘要模型；含图会话仅可压缩首张图片所在轮次之前的纯文本，请提高预算或新建会话。');
       }
       await ledger.close(); operation.store = undefined;
@@ -1172,17 +1196,25 @@ export class NativeStructuredExecutor implements StructuredExecutor {
       const identity: RunIdentity = { sessionId: id, conversationId: ledger.conversationId, runId: randomUUID(), requestId: `compact:${expectedHead}`, workerGeneration: Math.max(0, ...ledger.listRuns().map(run => run.identity.workerGeneration)) + 1 };
       operation.identity = identity;
       const maxActiveMs = 60_000;
+      const preparedSkills = await this.options.skills?.prepareConversationContinuity(id, ledger, source.retainedContext, operation.abort.signal, [connection.apiKey]);
+      if (canonicalJson(json(preparedSkills ?? null)) !== canonicalJson(json(historicalSkills ?? null))) throw new Error('技能历史在压缩前发生变化，未请求摘要。');
+      this.assertContextOperation(id, operation);
       const result = await summarizeNativeContext({ identity, context: source.context,
         model,
         maxInputTokens: config.maxInputTokens, maxOutputTokens: config.maxOutputTokens, maxActiveMs,
-        signal: operation.abort.signal, worker: this.options.worker, diagnosticPurpose: 'summary_manual',
+        signal: operation.abort.signal, worker: this.options.worker, diagnosticPurpose: 'summary_manual', forbiddenValues: [connection.apiKey],
         onDiagnostic: async diagnostic => { await ledger.recordModelDiagnostic(diagnostic); } });
       this.assertContextOperation(id, operation);
       // 诊断元数据推进日志头，须重新核对原始历史不变，再用新头提交摘要。
       const latestSource = ledger.getCompactionSource();
       if (canonicalJson(json(latestSource.context)) !== canonicalJson(json(source.context)) ||
           canonicalJson(json(latestSource.retainedContext)) !== canonicalJson(json(source.retainedContext))) throw new Error('摘要期间上下文已变化，未替换原始历史。');
-      const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: latestSource.expectedHash, usage: result.usage });
+      const latestSkills = await this.options.skills?.prepareConversationContinuity(id, ledger, latestSource.retainedContext, operation.abort.signal, [connection.apiKey]);
+      if (canonicalJson(json(latestSkills ?? null)) !== canonicalJson(json(historicalSkills ?? null))) throw new Error('技能历史在摘要期间发生变化，未替换原始上下文。');
+      this.assertContextOperation(id, operation);
+      if (!withinBudget(replacement(result.summary))) throw new Error('完整历史技能与摘要超过运行预算，未替换原始上下文。');
+      const plan = ledger.planContextCompaction({ summary: result.summary, expectedHash: latestSource.expectedHash, usage: result.usage,
+        ...(historicalSkills ? { nativeSkills: historicalSkills } : {}) });
       await ledger.commitContextCompaction(plan);
       await this.refreshProjection(id, ledger);
     });

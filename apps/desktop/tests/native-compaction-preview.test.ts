@@ -223,7 +223,7 @@ test('only recognized store codes become user reasons; error data never enters t
 
 test('missing or inconsistent source metadata fails closed', () => {
   const protocol = { id: 'openai-responses', version: 1 }, context: ModelContext = { protocol, items: userItems(protocol, 'text') };
-  const valid: ContextCompactionSource = { expectedHash: 'head', sourceSeq: 1, scope: 'prefix', beforeBytes: 999, context, retainedContext: context };
+  const valid: ContextCompactionSource = { expectedHash: 'head', sourceSeq: 1, scope: 'prefix', beforeBytes: 999, context, retainedContext: context, retainedPrefixItems: 1 };
   for (const source of [undefined, null, {}, { ...valid, scope: 'everything' }, { ...valid, context: { ...context, items: [] } },
     { ...valid, retainedContext: { protocol: { id: 'future', version: 1 }, items: [] } },
     { ...valid, context: { protocol, items: userItems(protocol, 'image', 1) } }]) {

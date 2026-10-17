@@ -141,7 +141,7 @@ for (const order of ['load-first', 'write-first'] as const) test(`a real ${order
     assert.equal(await fs.readFile(path.join(project, 'new.txt'), 'utf8'), 'observed\n');
     assert.equal(f.server.requests.length, 3);
     const persisted = await f.ledger(), run = persisted.runs[0];
-    assert.equal(run.configuration.effectiveAutoCompact, 'during_run');
+    assert.equal(run.configuration.effectiveAutoCompact, 'before_send_and_during_run');
     assert.equal(run.configuration.nativeSkillCatalog !== undefined, true);
     assert.equal(persisted.records.filter(record => record.event.type === 'tool_completed' && record.event.call.id === 'load').length, 1);
     const loadSeq = persisted.records.find(record => record.event.type === 'tool_completed' && record.event.call.id === 'load')!.seq;
@@ -151,10 +151,11 @@ for (const order of ['load-first', 'write-first'] as const) test(`a real ${order
     assert.equal(JSON.stringify(persisted).includes(secret), false);
     const duplicate = await f.executor.send(f.id, 'Use the relevant review guide and edit', [], undefined, { requestId: 'model-load' });
     assert.equal(duplicate.success, true); assert.equal(f.server.requests.length, 3);
-    const fresh = await f.executor.send(f.id, 'Next new turn', [], undefined, { requestId: 'continuity-disabled' });
-    assert.equal(fresh.success, false); assert.match(fresh.error!, /跨回合连续性尚未开放/); assert.equal(f.server.requests.length, 3);
-    await assert.rejects(f.executor.compactContext(f.id, persisted.head!), /压缩连续性尚未开放/);
-    assert.equal(f.server.requests.length, 3);
+    const fresh = await f.executor.send(f.id, 'Next new turn', [], undefined, { requestId: 'fresh-turn' });
+    assert.equal(fresh.success, true, JSON.stringify(fresh)); assert.equal(f.server.requests.length, 4);
+    const next = (await f.ledger()).runs[1];
+    assert.equal((next.configuration.initialNativeSkills as { activations: unknown[] }).activations.length, 0);
+    assert.match(f.server.requests[3].instructions, /earlier turns are historical evidence/);
   } finally { await f.dispose(); }
 });
 

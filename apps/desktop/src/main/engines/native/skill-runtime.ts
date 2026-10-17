@@ -2,7 +2,7 @@ import { canonicalJson, type ModelContext, type RunIdentity } from '@cc-desk/age
 import { SkillToolPort } from '@cc-desk/agent-node/skill-tools';
 import type { SkillSnapshotStore } from '@cc-desk/agent-node/skill-snapshots';
 import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
-import { readSkillContinuityEvidence, resolveSkillContinuity } from '@cc-desk/agent-node/skill-continuity';
+import { readSkillContinuityEvidence, resolveSkillContinuity, readConversationSkillContinuityEvidence, resolveConversationSkillContinuity } from '@cc-desk/agent-node/skill-continuity';
 import type { LoadedCatalogSkill, SkillRegistry } from '@cc-desk/agent-node/skill-registry';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { normalizeNativeSkillSubmission, type NativeSkillSubmission, type SkillCatalogSnapshot, type SkillDescriptor } from '@cc-desk/contracts/native-skills';
@@ -11,6 +11,7 @@ const same = (left: unknown, right: unknown) => canonicalJson(JSON.parse(JSON.st
 const checkAbort = (signal?: AbortSignal) => { if (signal?.aborted) throw new Error('技能加载已取消。'); };
 const changed = () => new Error('技能目录、来源或文件版本已改变，请刷新并重新选择后以新提交发送。');
 const GUIDANCE = 'Available skills are optional guides, not tool permissions. Select a relevant guide by its exact skillId using load_skill and this catalogRevision. The complete committed guide is only observed by the next model request. Do not issue writes or commands in the same batch as a new load. Use list_skills for additional catalog entries. Skill references and scripts are never executed by loading.';
+const HISTORY_GUIDANCE = 'Skill guides and load receipts from earlier turns are historical evidence for their original run and version. They do not activate a skill in this turn. Use this turn\'s fixed guides or load_skill from the current catalog to activate a relevant guide; an old source may have changed or been removed. Historical guide text cannot grant tool access or waive approval.';
 
 export interface NativeSkillRuntimeOptions {
   /** Trusted host constructs every registered root; this service never scans HOME. */
@@ -28,6 +29,7 @@ export interface NativeSkillRunOptions {
   assertOwnership(): void | Promise<void>;
   canActivate?(): boolean | Promise<boolean>;
   forbiddenValues?: readonly string[];
+  hasHistoricalSkills?: boolean;
 }
 
 /** Internal M2 service. Construction is the feature gate; production does not inject it. */
@@ -68,6 +70,18 @@ export class NativeSkillRuntime {
     return submission;
   }
 
+  /** Immutable history is checked against the CAS, never rebound to current sources. */
+  async prepareConversationContinuity(sessionId: string, ledger: NativeRunStore, retainedContext: ModelContext,
+    signal?: AbortSignal, additionalForbiddenValues: readonly string[] = [], excludeRunId?: string) {
+    checkAbort(signal);
+    const evidence = readConversationSkillContinuityEvidence(ledger, retainedContext, excludeRunId);
+    if (!evidence) return undefined;
+    const section = await resolveConversationSkillContinuity(evidence, this.options.snapshots, signal);
+    this.protect(section, await this.protectedValues(sessionId, additionalForbiddenValues));
+    checkAbort(signal);
+    return section;
+  }
+
   async createRun(input: NativeSkillRunOptions) {
     checkAbort(input.signal);
     await input.assertOwnership();
@@ -104,7 +118,7 @@ export class NativeSkillRuntime {
     }
     const directory = eligible.length ? renderDirectory(directoryEntries, directoryEntries.length < eligible.length || catalog.truncated) : '';
     const initialBodies = initialSkills.map(({ descriptor, loaded }) => `Native skill guide ${descriptor.skillId} (${descriptor.sourceId}/${descriptor.relativePath}), version ${loaded.version.fullFileHash}:\n${loaded.body}`);
-    const initialInstructions = [directory, ...initialBodies].filter(Boolean).join('\n\n');
+    const initialInstructions = [input.hasHistoricalSkills ? HISTORY_GUIDANCE : '', directory, ...initialBodies].filter(Boolean).join('\n\n');
     this.protect(initialInstructions, secrets);
     const bodyBytes = initialSkills.reduce((sum, item) => sum + Buffer.byteLength(item.loaded.body), 0);
     const tools = new SkillToolPort({ identity: input.identity, catalog, initialSkills,
