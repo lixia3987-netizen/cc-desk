@@ -45,7 +45,8 @@ const inlineWorker: NonNullable<NativeExecutorOptions['worker']> = options => ru
   } },
 });
 async function fixture(options: { handler?: Handler; enabled?: boolean; autoApprove?: boolean; skillBody?: string; stdio?: boolean; independentRuns?: boolean; executorOptions?: Partial<NativeExecutorOptions> } = {}) {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-runtime-'));
+  // Match startup's canonical data root, including Windows temp 8.3 aliases.
+  const directory = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'native-skill-runtime-')));
   const data = path.join(directory, 'data'), project = path.join(directory, 'project');
   const skillPath = path.join(project, '.agents/skills/review/SKILL.md');
   await fs.mkdir(path.dirname(skillPath), { recursive: true });
@@ -101,6 +102,8 @@ const output = (body: Body, id: string) => {
   const result = body.input.find(item => item.type === 'function_call_output' && item.call_id === id);
   return result ? JSON.parse(String(result.output)) : undefined;
 };
+const assertFixtureHealthy = (errors: unknown[]) => assert.deepEqual(errors.map(error =>
+  String(error).replaceAll(secret, '[redacted]').slice(0, 2000)), [], 'local model fixture assertions must not be hidden by a generic HTTP 500');
 
 test('the real parent executor blocks a load/delegate batch, then delegates exact observed skills to independent read-only children', { timeout: 30000 }, async () => {
   let selected: NativeSkillSubmission, parentRequests = 0, childRequests = 0;
@@ -125,7 +128,7 @@ test('the real parent executor blocks a load/delegate batch, then delegates exac
     if (phase === 1) {
       assert.equal(childRequests, 0, 'no child starts before the parent has observed the loaded guide');
       assert.notEqual(output(body, 'delegate-too-early')?.status, 'completed');
-      assert.equal(output(body, 'parent-load')?.status, 'completed');
+      assert.equal(output(body, 'parent-load')?.status, 'completed', JSON.stringify(output(body, 'parent-load')));
       return { output: [functionCall('observed-delegation', 'delegate_review', { tasks: [
         { title: 'contents', goal: 'Read fixture.txt and check original contents.' },
         { title: 'constraints', goal: 'Read fixture.txt and check review constraints.' },
@@ -140,12 +143,13 @@ test('the real parent executor blocks a load/delegate batch, then delegates exac
         parentRunId: delegated.output.parentRunId, childId: child.childId,
       })) };
     }
-    for (const id of ['read-child-0', 'read-child-1']) assert.equal(output(body, id)?.status, 'completed');
+    for (const id of ['read-child-0', 'read-child-1']) assert.equal(output(body, id)?.status, 'completed', JSON.stringify(output(body, id)));
     return { output: [assistantMessage('parent-final', 'Reviewed both retained child results.')] };
   } });
   try {
     selected = await f.submission();
     const result = await f.executor.send(f.id, 'Use a relevant skill and inspect fixture contents.');
+    assertFixtureHealthy(f.server.errors);
     assert.equal(result.success, true, result.error);
     assert.equal(parentRequests, 4); assert.equal(childRequests, 4); assert.equal(childFirst.size, 2);
     const saved = await f.ledger(), delegated = saved.runs[0].tools.find(tool => tool.call.id === 'observed-delegation');
@@ -177,8 +181,8 @@ test('a startup source rejection with failed child ownership release remains unk
       baseline: 'head', tasks: [{ title: 'owned implementation', goal: 'Inspect fixture.txt.' }],
     })] };
     const delegated = output(body, 'delegate-owned-child');
-    assert.equal(delegated.output.children[0].status, 'unknown');
-    assert.equal(delegated.output.children[0].error, 'child_result_unknown');
+    assert.equal(delegated.output.children[0].status, 'unknown', JSON.stringify(delegated));
+    assert.equal(delegated.output.children[0].error, 'child_run_unconfirmed');
     return { output: [assistantMessage('parent-stop', 'Ownership cleanup needs recovery.')] };
   }, executorOptions: {
     acquireChildOwnership: async (_sessionId, _identity, cwd) => {
@@ -190,8 +194,11 @@ test('a startup source rejection with failed child ownership release remains unk
   try {
     const git = (args: string[]) => promisify(execFile)('git', args, { cwd: f.project });
     await git(['init']); await git(['config', 'user.name', 'Skills fixture']); await git(['config', 'user.email', 'skills-fixture@example.invalid']);
+    // The inherited guide deliberately compares exact bytes across worktrees.
+    await git(['config', 'core.autocrlf', 'false']);
     await git(['add', '.']); await git(['commit', '-m', 'initial skill fixture']);
     const result = await f.executor.send(f.id, 'Inspect the project using an implementation child.');
+    assertFixtureHealthy(f.server.errors);
     assert.equal(result.success, false); assert.equal(f.executor.recoveryRequired(f.id), true);
     assert.ok(releaseAttempts >= 1); assert.equal(parentRequests, 2);
     const saved = await f.ledger(), delegated = saved.runs[0].tools.find(tool => tool.call.id === 'delegate-owned-child')!;
