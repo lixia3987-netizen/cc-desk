@@ -39,6 +39,10 @@
     "./native-commands": {
       "types": "./dist/native-commands.d.ts",
       "default": "./dist/native-commands.js"
+    },
+    "./native-workflow-quality": {
+      "types": "./dist/native-workflow-quality.d.ts",
+      "default": "./dist/native-workflow-quality.js"
     }
   },
   "scripts": {

@@ -81,7 +81,7 @@ async function configure(app: ElectronApplication, projectId: string, fixture: F
   await expect.poll(() => fixture.requests.length).toBe(3);
   expect(fixture.requests[2].tools).toHaveLength(0);
   const meter = page.locator('details.context-meter');
-  if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator('summary').click();
+  if (!(await meter.evaluate(element => (element as HTMLDetailsElement).open))) await meter.locator(':scope > summary').click();
   await expect(meter).toContainText('持久保存后继续当前任务；取消会停止本回合');
   await openSessionSettings(page, 'compaction');
   await expect(setting).toBeDisabled();
@@ -119,7 +119,7 @@ test('native in-turn compaction exposes the host phase across reload and persist
     await expect(page.getByLabel('会话自动压缩', { exact: true })).toHaveValue('before_send_and_during_run');
     await closeSessionSettings(page);
     expect((await snapshot(page, session.id)).nativeContextMaintenance?.inTurn).toEqual(after.nativeContextMaintenance?.inTurn);
-    const meter = page.locator('details.context-meter'); await meter.locator('summary').click();
+    const meter = page.locator('details.context-meter'); await meter.locator(':scope > summary').click();
     await expect(meter).toContainText('回合内压缩已持久保存');
     await expect(meter).toContainText('已计入所属回合汇总，不需重复相加');
     expect(f.fixture.requests).toHaveLength(4); expect(f.fixture.errors).toEqual([]);

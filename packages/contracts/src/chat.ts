@@ -2,9 +2,10 @@ import type { SessionCommand, SessionStatus, ContextUsage } from './execution.js
 import type { NativeChangeSetPreview, NativeChangeSetResult } from './native-changes.js';
 import type { NativeTaskIdentity, NativeTaskView } from './native-task.js';
 import type { NativeCommandDescriptor, NativeCommandResult } from './native-commands.js';
-import type { NativeAgentSnapshot, NativeAgentApprovalScope } from './native-agents.js';
+import type { NativeAgentSnapshot, NativeAgentApprovalScope, NativeAgentRuntime } from './native-agents.js';
 import type { NativeSkillSubmission } from './native-skills.js';
-export type { NativeAgentView, NativeAgentSnapshot, NativeAgentApprovalScope, NativeAgentResultRequest, NativeAgentResult, NativeAgentPatchPage } from './native-agents.js';
+import type { NativeWorkflowQualityState } from './native-workflow-quality.js';
+export type { NativeAgentView, NativeAgentSnapshot, NativeAgentRuntime, NativeAgentApprovalScope, NativeAgentResultRequest, NativeAgentResult, NativeAgentPatchPage } from './native-agents.js';
 /** 一轮交互的状态，与 CLI 进程的生命周期无关。 */
 export type TaskState = 'idle' | 'starting' | 'thinking' | 'tool_running' | 'waiting_approval' | 'waiting_input' | 'completed' | 'interrupted' | 'error';
 /** 随一条 Native 用户消息提交的字节数据的不可变元数据，绝不包含文件路径或图像载荷。 */
@@ -156,6 +157,10 @@ export interface ChatSnapshot {
   nativeTaskError?: string;
   nativeCommands?: NativeCommandSnapshot;
   nativeAgents?: NativeAgentSnapshot;
+  /** 当前 durable 父回合，与可能保留上一回合的 nativeAgents 列表独立。 */
+  nativeAgentRuntime?: NativeAgentRuntime;
+  /** 当前父回合的独立自动审查记录，不改变人工任务验收。 */
+  nativeWorkflowQuality?: NativeWorkflowQualityState;
   version?: ChatSnapshotVersion;
   /** 当前进程的命令目录，绝不从磁盘恢复。 */
   commands?: SessionCommand[];

@@ -313,7 +313,8 @@ export interface AgentPorts {
 }
 
 export type CompletionValidationDecision = { kind: 'accept' } |
-  { kind: 'continue'; code: 'declared_material_reads_missing'; paths: string[] }
+  { kind: 'continue'; code: 'declared_material_reads_missing'; paths: string[] } |
+  { kind: 'continue'; code: 'workflow_quality_changes_requested'; paths: string[]; feedback: string }
 export interface CompletionValidationPort {
   /** 只检查当前已持久化响应及宿主证据，不代替模型执行工具。 */
   validate(request: { identity: RunIdentity; attempt: number; context: ModelContext; signal: AbortSignal }): Promise<CompletionValidationDecision>

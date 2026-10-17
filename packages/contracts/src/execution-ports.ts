@@ -37,6 +37,8 @@ export interface SessionExport {
 /** 稳定的来源身份在派发及确认重试后保持不变。 */
 export interface NativeExecutionPolicy {
   toolPolicy: 'read_only' | 'standard';
+  collaboration?: 'auto' | 'single_agent' | 'parallel' | 'adversarial';
+  qualityValidation?: 'static' | 'commands';
   budget?: { maxModelRequests: number; maxToolCalls: number; maxActiveMs: number };
   parent?: { sessionId: string; runId: string; taskId: string; depth: number };
 }

@@ -29,7 +29,9 @@ export interface NativeAgentChildInput {
   goal: string;
   cwd: string;
   /** 这些限制必须由宿主强制执行，不能仅依赖提示词。 */
-  toolPolicy: 'read_only' | 'workspace_write';
+  toolPolicy: 'read_only' | 'workspace_write' | 'workspace_verify';
+  /** 仅由完成前质量宿主创建；通用委派工具不能提供此绑定。 */
+  quality?: import('./workflow-quality-report').NativeQualityChildBinding;
   signal: AbortSignal;
   budget: NativeDelegationBudget;
   recovery?: { previousChildId: string; previousRunId: string; summary: string; reason: string; receiptPath: string; patchPath?: string };
@@ -48,6 +50,7 @@ export interface NativeAgentChildResult {
     runJournalPath?: string;
     commandReceipts?: Array<{ toolCallId: string; status: string; exitCode: number | null; receiptPath: string }>;
   };
+  qualityReport?: import('@cc-desk/contracts/native-workflow-quality').NativeQualityReport;
 }
 export interface NativeDelegationReceipt {
   version: 1;
