@@ -13,7 +13,8 @@ import { isNativeSkillSubmission, normalizeNativeSkillSubmission } from '@cc-des
 import { acquireWriter, assertUuid, readRegularFile, RunStoreError, safeDirectory, syncDirectory } from './store-files.js';
 import { readStoreSnapshot } from './store-read.js';
 import { contextSummaryItem, requireCompleteContext, contextPendingCalls, nativeCompletionFeedbackItems, nativeToolResultItems, runContinuityItem } from './context-maintenance.js';
-import { readSkillContinuityEvidence, skillContinuityItems, validateSkillContinuitySection, type SkillContinuitySection } from './skill-continuity.js';
+import { readSkillContinuityEvidence, skillContinuityItems, validateSkillContinuitySection, type SkillContinuitySection,
+  readConversationSkillContinuityEvidence, conversationSkillContinuityItems, validateConversationSkillContinuitySection, type ConversationSkillContinuitySection } from './skill-continuity.js';
 
 export { RunStoreError } from './store-files.js';
 export const RUN_STORE_SCHEMA_VERSION = 1;
@@ -101,6 +102,8 @@ export interface ContextCompactionSource {
   context: ModelContext;
   /** 摘要不能移除的精确目标及完整后缀。 */
   retainedContext: ModelContext;
+  /** Exact original goal items before the retained suffix; preserves wire order. */
+  retainedPrefixItems: number;
   beforeBytes: number;
   scope: 'prefix';
 }
@@ -117,6 +120,8 @@ export interface ContextCompactionPlan {
   usage?: Usage | null;
   /** 为单次自动摘要请求持久化预留的额度。 */
   automaticRequestId?: string;
+  /** Historical exact guide data, independently checked against committed runs. */
+  nativeSkills?: ConversationSkillContinuitySection;
 }
 export interface ContextCompactionReceipt {
   expectedHash: string;
@@ -165,6 +170,8 @@ export interface RunCompactionInput extends RunCompactionRequest {
   usage: Usage | null;
   /** Exact same-run guide retention, independently reconstructed from committed receipts. */
   nativeSkills?: SkillContinuitySection;
+  /** Exact older-run evidence; this never activates a skill in the current run. */
+  historicalSkills?: ConversationSkillContinuitySection;
 }
 export interface RunCompactionFailure { requestId: string; reason: string; usage: Usage | null }
 interface RunCompactionPlan extends RunCompactionInput {
@@ -174,7 +181,7 @@ interface RunCompactionPlan extends RunCompactionInput {
   retainedTurns: Array<{ runId: string; start: number }>;
   retainedBatches: Array<{ runId: string; start: number }>;
 }
-export interface RunCompactionReceipt { seq: number; context: ModelContext; beforeBytes: number; afterBytes: number; nativeSkills?: SkillContinuitySection }
+export interface RunCompactionReceipt { seq: number; context: ModelContext; beforeBytes: number; afterBytes: number; nativeSkills?: SkillContinuitySection; historicalSkills?: ConversationSkillContinuitySection }
 type RecoveryCompletion = Extract<RunJournalEvent, { type: 'tool_completed' }>;
 type StoreEvent =
   | { type: 'conversation_created' }
@@ -564,7 +571,8 @@ export class NativeRunStore implements RunStore {
     }
     if (event.type === 'context_compacted') {
       if (identity || !object(event.plan)) fail('invalid_record', 'Invalid context compaction event');
-      const expected = this.planContextCompaction({ summary: event.plan.summary, keepRecentTurns: event.plan.keepRecentTurns, expectedHash: event.plan.expectedHash, usage: event.plan.usage, automaticRequestId: event.plan.automaticRequestId });
+      const expected = this.buildContextCompactionPlan({ summary: event.plan.summary, keepRecentTurns: event.plan.keepRecentTurns, expectedHash: event.plan.expectedHash, usage: event.plan.usage, automaticRequestId: event.plan.automaticRequestId,
+        ...(event.plan.nativeSkills === undefined ? {} : { nativeSkills: event.plan.nativeSkills }) }, true);
       if (!equal(event.plan, expected)) fail('invalid_record', 'Compaction cannot introduce context absent from its verified plan');
       return;
     }
@@ -1304,8 +1312,11 @@ export class NativeRunStore implements RunStore {
     const { boundary, goals, currentStart, imageSuffix } = this.runCompactionBoundary(identity);
     const nativeSkills = input.nativeSkills === undefined ? undefined : validateSkillContinuitySection(
       readSkillContinuityEvidence(this, identity.runId, source.retainedContext), input.nativeSkills);
+    const historicalSkills = input.historicalSkills === undefined ? undefined : validateConversationSkillContinuitySection(
+      readConversationSkillContinuityEvidence(this, source.retainedContext, identity.runId), input.historicalSkills);
     const prefix = [...goals, contextSummaryItem(input.summary, this.context!.protocol), runContinuityItem(input.continuity, this.context!.protocol),
-      ...(nativeSkills ? skillContinuityItems(nativeSkills, this.context!.protocol) : [])];
+      ...(nativeSkills ? skillContinuityItems(nativeSkills, this.context!.protocol) : []),
+      ...(historicalSkills ? conversationSkillContinuityItems(historicalSkills, this.context!.protocol) : [])];
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
     requireCompleteContext(context);
     const afterBytes = Buffer.byteLength(JSON.stringify(context));
@@ -1313,6 +1324,7 @@ export class NativeRunStore implements RunStore {
     if (Buffer.byteLength(canonical({ schemaVersion: 1, conversationId: this.conversationId, seq: this.records.length + 1, journalHash: ZERO_HASH, context, hash: ZERO_HASH })) > this.limits.maxCheckpointBytes) fail('limit_exceeded', 'Compacted context exceeds checkpoint limit');
     return { requestId: input.requestId, contextHash: input.contextHash, summary: input.summary, continuity: input.continuity, usage: clone(input.usage), beforeBytes: source.beforeBytes, afterBytes, context,
       ...(nativeSkills ? { nativeSkills } : {}),
+      ...(historicalSkills ? { historicalSkills } : {}),
       retainedTurns: imageSuffix ? this.contextTurns.filter(turn => turn.start >= boundary).map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length }))
         : [{ runId: identity.runId, start: currentStart }],
       retainedBatches: imageSuffix ? this.contextBatches.filter(batch => batch.start >= boundary).map(batch => ({ runId: batch.runId, start: batch.start - boundary + prefix.length }))
@@ -1327,17 +1339,21 @@ export class NativeRunStore implements RunStore {
       if (attempt?.compactionSeq !== undefined) {
         const prior = this.records[attempt.compactionSeq - 1].event;
         if (prior.type !== 'run_context_compacted' || !equal(input, { requestId: prior.plan.requestId, contextHash: prior.plan.contextHash, summary: prior.plan.summary, continuity: prior.plan.continuity, usage: prior.plan.usage,
-          ...(prior.plan.nativeSkills ? { nativeSkills: prior.plan.nativeSkills } : {}) })) fail('payload_mismatch', 'In-turn compaction receipt cannot change');
+          ...(prior.plan.nativeSkills ? { nativeSkills: prior.plan.nativeSkills } : {}),
+          ...(prior.plan.historicalSkills ? { historicalSkills: prior.plan.historicalSkills } : {}) })) fail('payload_mismatch', 'In-turn compaction receipt cannot change');
         return { seq: attempt.compactionSeq, context: clone(prior.plan.context), beforeBytes: prior.plan.beforeBytes, afterBytes: prior.plan.afterBytes,
-          ...(prior.plan.nativeSkills ? { nativeSkills: clone(prior.plan.nativeSkills) } : {}) };
+          ...(prior.plan.nativeSkills ? { nativeSkills: clone(prior.plan.nativeSkills) } : {}),
+          ...(prior.plan.historicalSkills ? { historicalSkills: clone(prior.plan.historicalSkills) } : {}) };
       }
       // Old records without the optional section still replay exactly. New skill
       // compactions cannot publish a summary that silently drops active bodies.
       if (input.nativeSkills === undefined && readSkillContinuityEvidence(this, identity.runId)?.manifest.entries.length) fail('invalid_skill_continuity', 'Active skill compaction requires complete exact guide retention');
+      if (input.historicalSkills === undefined && readConversationSkillContinuityEvidence(this, undefined, identity.runId)) fail('invalid_skill_continuity', 'Historical skill compaction requires complete exact guide retention');
       const plan = this.planRunCompaction(identity, input);
       const receipt = await this.commit(identity, { type: 'run_context_compacted', plan });
       return { ...receipt, context: clone(plan.context), beforeBytes: plan.beforeBytes, afterBytes: plan.afterBytes,
-        ...(plan.nativeSkills ? { nativeSkills: clone(plan.nativeSkills) } : {}) };
+        ...(plan.nativeSkills ? { nativeSkills: clone(plan.nativeSkills) } : {}),
+        ...(plan.historicalSkills ? { historicalSkills: clone(plan.historicalSkills) } : {}) };
     });
   }
 
@@ -1375,6 +1391,7 @@ export class NativeRunStore implements RunStore {
     const context = { protocol: clone(this.context!.protocol), items: clone(this.context!.items.slice(0, boundary)) };
     requireCompleteContext(context);
     return { expectedHash: latest.hash, sourceSeq: latest.seq, context, beforeBytes: Buffer.byteLength(JSON.stringify(this.context)), scope: 'prefix',
+      retainedPrefixItems: this.originalUserItems!.length,
       retainedContext: { protocol: clone(this.context!.protocol), items: [...clone(this.originalUserItems!), ...clone(this.context!.items.slice(boundary))] } };
   }
 
@@ -1409,7 +1426,11 @@ export class NativeRunStore implements RunStore {
     return requestId === undefined ? null : clone(this.autoCompactionAttempts.get(requestId)!);
   }
 
-  planContextCompaction(options: { summary: string; keepRecentTurns?: number; expectedHash?: string; usage?: Usage | null; automaticRequestId?: string }): ContextCompactionPlan {
+  planContextCompaction(options: { summary: string; keepRecentTurns?: number; expectedHash?: string; usage?: Usage | null; automaticRequestId?: string; nativeSkills?: ConversationSkillContinuitySection }): ContextCompactionPlan {
+    return this.buildContextCompactionPlan(options, false);
+  }
+
+  private buildContextCompactionPlan(options: Parameters<NativeRunStore['planContextCompaction']>[0], legacyReplay: boolean): ContextCompactionPlan {
     if (options.usage !== undefined && options.usage !== null) {
       validateSummaryUsage(options.usage);
     }
@@ -1425,9 +1446,14 @@ export class NativeRunStore implements RunStore {
         record.event.diagnostic.purpose === 'summary_before_send' && record.event.diagnostic.identity.requestId === `auto-compact:${attempt.requestId}`);
       if (options.expectedHash !== source.expectedHash || attempt.contextHash !== digest(this.context) || !diagnosticOnly) fail('stale_context', 'Automatic compaction reservation no longer owns the current conversation head');
     }
+    // Old absent-field records retain their old transition semantics. New
+    // bounds/parsers must not retrospectively reject previously valid history.
+    const evidence = legacyReplay && options.nativeSkills === undefined ? undefined : readConversationSkillContinuityEvidence(this, source.retainedContext);
+    if (!legacyReplay && evidence && options.nativeSkills === undefined) fail('invalid_skill_continuity', 'Historical skill compaction requires complete exact guide retention');
+    const nativeSkills = options.nativeSkills === undefined ? undefined : validateConversationSkillContinuitySection(evidence, options.nativeSkills);
     const summary = contextSummaryItem(options.summary, this.context!.protocol);
     const boundary = this.compactionBoundary(keepRecentTurns);
-    const prefix = [...clone(this.originalUserItems!), summary];
+    const prefix = [...clone(this.originalUserItems!), summary, ...(nativeSkills ? conversationSkillContinuityItems(nativeSkills, this.context!.protocol) : [])];
     const context: ModelContext = { protocol: clone(this.context!.protocol), items: [...prefix, ...clone(this.context!.items.slice(boundary))] };
     requireCompleteContext(context);
     const afterBytes = Buffer.byteLength(JSON.stringify(context));
@@ -1438,6 +1464,7 @@ export class NativeRunStore implements RunStore {
       beforeBytes: source.beforeBytes, afterBytes, context,
       ...(options.usage === undefined ? {} : { usage: clone(options.usage) }),
       ...(options.automaticRequestId === undefined ? {} : { automaticRequestId: options.automaticRequestId }),
+      ...(nativeSkills ? { nativeSkills } : {}),
       retainedTurns: (contextHasUserImages(this.context!) ? this.contextTurns.filter(turn => turn.start >= boundary) : this.contextTurns.slice(-keepRecentTurns))
         .map(turn => ({ runId: turn.runId, start: turn.start - boundary + prefix.length })) };
   }
@@ -1453,6 +1480,7 @@ export class NativeRunStore implements RunStore {
         if (prior.type !== 'context_compacted' || !equal(prior.plan, plan)) fail('payload_mismatch', 'Compaction identity was reused with a different plan');
         return { seq: priorSeq };
       }
+      if (plan.nativeSkills === undefined && readConversationSkillContinuityEvidence(this)) fail('invalid_skill_continuity', 'Historical skill compaction requires complete exact guide retention');
       return this.commit(undefined, { type: 'context_compacted', plan });
     });
   }

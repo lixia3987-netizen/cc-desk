@@ -4,7 +4,7 @@ import type { NativeRunStore } from '@cc-desk/agent-node/run-store';
 import { createNativeModel, type NativeModelOptions } from '@cc-desk/agent-node/native-model';
 import { assertNoModelCredential } from '@cc-desk/agent-node/responses-model';
 import { contextSummaryItem, runContinuityItem } from '@cc-desk/agent-node/context-maintenance';
-import { skillContinuityItems, type SkillContinuitySection } from '@cc-desk/agent-node/skill-continuity';
+import { skillContinuityItems, conversationSkillContinuityItems, type SkillContinuitySection, type ConversationSkillContinuitySection } from '@cc-desk/agent-node/skill-continuity';
 import { NativeContextSummaryError, prepareNativeContextSummary, summarizeNativeContext } from './context-summary';
 import type { runNativeWorker } from './worker-host';
 import { sameRun } from './worker-protocol';
@@ -21,6 +21,7 @@ export function createInRunCompaction(options: {
   /** Full guides are preserved independently of the task/evidence summary. */
   skills?: {
     prepare(retainedContext: ModelContext): Promise<SkillContinuitySection | undefined>;
+    prepareHistorical?(retainedContext: ModelContext): Promise<ConversationSkillContinuitySection | undefined>;
     onCommitted(seq: number, section: SkillContinuitySection): void;
   };
   worker?: typeof runNativeWorker;
@@ -50,11 +51,19 @@ export function createInRunCompaction(options: {
       // 工具批次，以制造付费摘要已成功的假象。
       let continuity: string;
       let nativeSkills: SkillContinuitySection | undefined;
+      let historicalSkills: ConversationSkillContinuitySection | undefined;
       try {
+        if (options.ledger.listRuns().some(run => run.configuration.nativeSkillCatalog !== undefined || run.configuration.initialNativeSkills !== undefined)
+          && (!options.skills || !options.skills.prepareHistorical && options.ledger.listRuns().some(run => run.identity.runId !== options.identity.runId
+            && (run.configuration.nativeSkillCatalog !== undefined || run.configuration.initialNativeSkills !== undefined)))) {
+          throw new Error('Exact skill continuity is unavailable.');
+        }
         continuity = await options.continuity();
         assertNoModelCredential(continuity, options.forbiddenValues);
         nativeSkills = await options.skills?.prepare(source.retainedContext);
         if (nativeSkills) assertNoModelCredential(nativeSkills, options.forbiddenValues);
+        historicalSkills = await options.skills?.prepareHistorical?.(source.retainedContext);
+        if (historicalSkills) assertNoModelCredential(historicalSkills, options.forbiddenValues);
         prepareNativeContextSummary({ context: source.context, model: options.model, maxInputTokens: request.budget.maxInputTokens,
           maxOutputTokens: request.budget.maxOutputTokens, maxContextBytes: request.budget.maxContextBytes, forbiddenValues: options.forbiddenValues });
       } catch { return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' }; }
@@ -62,8 +71,12 @@ export function createInRunCompaction(options: {
         ...source.retainedContext.items.slice(0, source.retainedPrefixItems),
         contextSummaryItem(summary, source.retainedContext.protocol), runContinuityItem(continuity, source.retainedContext.protocol),
         ...(nativeSkills ? skillContinuityItems(nativeSkills, source.retainedContext.protocol) : []),
+        ...(historicalSkills ? conversationSkillContinuityItems(historicalSkills, source.retainedContext.protocol) : []),
         ...source.retainedContext.items.slice(source.retainedPrefixItems)] });
       const minimum = replacement('摘要');
+      if ((nativeSkills || historicalSkills) && Buffer.byteLength(JSON.stringify(replacement('_'))) >= source.beforeBytes) {
+        return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' };
+      }
       if (contextBudgetUsage(minimum, model.estimateInputUsage?.(minimum, request.budget.maxOutputTokens) ?? model.estimateInputTokens(minimum), request.budget).status === 'exceeded') {
         return { kind: 'failed', modelRequests: 0, usage: null, reason: 'context_maintenance_unhelpful' };
       }
@@ -100,6 +113,8 @@ export function createInRunCompaction(options: {
       try {
         const latestSkills = await options.skills?.prepare(source.retainedContext);
         if (canonicalJson((latestSkills ?? null) as unknown as JsonValue) !== canonicalJson((nativeSkills ?? null) as unknown as JsonValue)) throw new Error('Skill continuity changed during compaction.');
+        const latestHistoricalSkills = await options.skills?.prepareHistorical?.(source.retainedContext);
+        if (canonicalJson((latestHistoricalSkills ?? null) as unknown as JsonValue) !== canonicalJson((historicalSkills ?? null) as unknown as JsonValue)) throw new Error('Historical skill continuity changed during compaction.');
         await options.assertInstructions(request.signal);
       }
       catch { return await fail('context_maintenance_failed', summary.usage); }
@@ -112,7 +127,8 @@ export function createInRunCompaction(options: {
       let receipt;
       try {
         receipt = await options.ledger.commitRunCompaction(options.identity, { requestId, contextHash: source.contextHash,
-          summary: summary.summary, continuity, usage: summary.usage, ...(nativeSkills ? { nativeSkills } : {}) });
+          summary: summary.summary, continuity, usage: summary.usage, ...(nativeSkills ? { nativeSkills } : {}),
+          ...(historicalSkills ? { historicalSkills } : {}) });
       } catch (error) {
         if (['compaction_not_smaller', 'invalid_summary', 'invalid_continuity'].includes(errorCode(error) ?? '')) return await fail('context_maintenance_unhelpful', summary.usage);
         throw error;

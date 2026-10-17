@@ -221,7 +221,7 @@ for (const protocol of ['responses', 'chat-completions', 'anthropic'] as const) 
   try {
     const result = await f.send(); assert.equal(result.success, true, JSON.stringify(result)); assert.deepEqual(f.server.errors, []);
     assert.equal(f.summaries, 1); assert.equal(f.ordinary, 5); assert.equal(f.barrierChecks, 1);
-    assert.equal(f.activeMode, 'during_run');
+    assert.equal(f.activeMode, 'before_send_and_during_run');
     assert.ok(f.pressureBytes >= budget * 0.9 && f.pressureBytes <= budget, `actual wire pressure ${f.pressureBytes} must cross 90% without exceeding the original budget`);
     assert.ok(f.replacementContext); requireCompleteContext(f.replacementContext);
     assert.ok(f.wireBytes(f.replacementContext) < budget * 0.9);
@@ -229,7 +229,7 @@ for (const protocol of ['responses', 'chat-completions', 'anthropic'] as const) 
     await assert.rejects(fs.stat(path.join(f.project, 'premature.txt')), { code: 'ENOENT' });
     const ledger = await f.ledger(), run = ledger.runs[0];
     assert.equal(ledger.runs.length, 1); assert.equal(ledger.recovery, null);
-    assert.equal(run.configuration.effectiveAutoCompact, 'during_run');
+    assert.equal(run.configuration.effectiveAutoCompact, 'before_send_and_during_run');
     assert.equal(run.result!.modelRequests, 6);
     assert.deepEqual(run.result!.usage, protocol === 'anthropic'
       ? { outputTokens: 42, ...unknownCache, nonCachedInputTokens: 66 }
@@ -262,9 +262,8 @@ for (const protocol of ['responses', 'chat-completions', 'anthropic'] as const) 
     const requests = f.server.requests.length;
     await f.restart(); assert.equal((await f.send()).success, true); assert.equal(f.server.requests.length, requests);
     assert.deepEqual((await f.ledger()).context, ledger.context);
-    const next = await f.executor.send(f.id, 'A fresh turn still needs explicit continuity support.', [], undefined, { requestId: 'skill-compaction-next-turn' });
-    assert.equal(next.success, false); assert.match(next.error!, /跨回合连续性尚未开放/);
-    await assert.rejects(f.executor.compactContext(f.id, ledger.head!.hash), /压缩连续性尚未开放/);
+    const preview = f.executor.snapshot(f.id).nativeContextMaintenance?.preview;
+    assert.ok(preview?.status !== 'unavailable' || preview.reason !== 'unsupported_context');
     assert.equal(f.server.requests.length, requests);
   } finally { await f.dispose(); }
 });
